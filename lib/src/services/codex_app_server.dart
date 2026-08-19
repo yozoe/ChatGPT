@@ -6,6 +6,20 @@ import 'package:flutter/foundation.dart';
 
 typedef JsonMap = Map<String, dynamic>;
 
+class CodexRuntimeProbe {
+  const CodexRuntimeProbe({
+    required this.isAvailable,
+    this.executablePath,
+    this.version,
+    this.error,
+  });
+
+  final bool isAvailable;
+  final String? executablePath;
+  final String? version;
+  final String? error;
+}
+
 class ServerEvent {
   const ServerEvent({
     required this.method,
@@ -32,10 +46,10 @@ class CodexAppServer {
     String? executable,
     @visibleForTesting void Function(JsonMap message)? messageSink,
   }) : _messageSink = messageSink,
-       executable =
+       _executable =
            executable ?? Platform.environment['CODEX_EXECUTABLE'] ?? 'codex';
 
-  final String executable;
+  String _executable;
   final void Function(JsonMap message)? _messageSink;
   final StreamController<ServerEvent> _events =
       StreamController<ServerEvent>.broadcast();
@@ -50,6 +64,51 @@ class CodexAppServer {
 
   Stream<ServerEvent> get events => _events.stream;
   bool get isRunning => _process != null;
+  String get executable => _executable;
+
+  void setExecutable(String? executable) {
+    if (isRunning) {
+      throw StateError(
+        'Stop the Codex runtime before changing its executable.',
+      );
+    }
+    _executable = executable?.trim().isNotEmpty == true
+        ? executable!.trim()
+        : Platform.environment['CODEX_EXECUTABLE'] ?? 'codex';
+  }
+
+  Future<CodexRuntimeProbe> probe() async {
+    final resolvedExecutable = await _findExecutable();
+    if (resolvedExecutable == null) {
+      return const CodexRuntimeProbe(
+        isAvailable: false,
+        error: '未找到 Codex CLI。请安装 Codex 或手动选择可执行文件。',
+      );
+    }
+    try {
+      final result = await Process.run(resolvedExecutable, const [
+        '--version',
+      ], runInShell: false).timeout(const Duration(seconds: 5));
+      if (result.exitCode != 0) {
+        return CodexRuntimeProbe(
+          isAvailable: false,
+          executablePath: resolvedExecutable,
+          error: _redact(result.stderr.toString().trim()),
+        );
+      }
+      return CodexRuntimeProbe(
+        isAvailable: true,
+        executablePath: resolvedExecutable,
+        version: result.stdout.toString().trim(),
+      );
+    } catch (error) {
+      return CodexRuntimeProbe(
+        isAvailable: false,
+        executablePath: resolvedExecutable,
+        error: _redact(error.toString()),
+      );
+    }
+  }
 
   Future<void> start({
     required String workingDirectory,
@@ -303,22 +362,39 @@ class CodexAppServer {
   }
 
   Future<String> _resolveExecutable() async {
-    if (executable.contains('/')) {
-      if (await File(executable).exists()) return executable;
-      throw StateError('找不到 Codex CLI：$executable');
-    }
+    final executable = await _findExecutable();
+    if (executable != null) return executable;
+    throw StateError('未找到 Codex CLI。请安装 Codex 或手动选择可执行文件。');
+  }
 
+  Future<String?> _findExecutable() async {
+    final requested = executable;
+    if (requested.contains('/')) {
+      return await File(requested).exists() ? requested : null;
+    }
     final home = Platform.environment['HOME'];
+    final pathDirectories = (Platform.environment['PATH'] ?? '')
+        .split(Platform.pathSeparator)
+        .where((directory) => directory.isNotEmpty);
     final candidates = <String>[
-      executable,
+      '/Applications/ChatGPT.app/Contents/Resources/codex',
+      '/Applications/Codex.app/Contents/Resources/codex',
       '/opt/homebrew/bin/codex',
       '/usr/local/bin/codex',
+      if (home != null)
+        '$home/Applications/ChatGPT.app/Contents/Resources/codex',
+      if (home != null) '$home/Applications/Codex.app/Contents/Resources/codex',
       if (home != null) '$home/.local/bin/codex',
+      if (home != null) '$home/.codex/bin/codex',
+      if (home != null) '$home/.npm-global/bin/codex',
+      if (home != null) '$home/Library/pnpm/codex',
+      if (home != null) '$home/.bun/bin/codex',
+      ...pathDirectories.map((directory) => '$directory/codex'),
     ];
-    for (final candidate in candidates.skip(1)) {
+    for (final candidate in candidates) {
       if (await File(candidate).exists()) return candidate;
     }
-    return executable;
+    return null;
   }
 
   Future<void> stop() async {

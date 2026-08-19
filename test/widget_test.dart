@@ -181,4 +181,14 @@ void main() {
     );
     controller.dispose();
   });
+
+  test('reports a clear diagnostic for a missing Codex executable', () async {
+    final server = CodexAppServer(executable: '/not/a/codex');
+
+    final probe = await server.probe();
+
+    expect(probe.isAvailable, isFalse);
+    expect(probe.error, contains('未找到 Codex CLI'));
+    await server.dispose();
+  });
 }

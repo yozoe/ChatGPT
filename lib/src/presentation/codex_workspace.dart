@@ -258,6 +258,94 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     apiKey.dispose();
   }
 
+  Future<void> _showRuntime() async {
+    await widget.controller.inspectRuntime();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AnimatedBuilder(
+        animation: widget.controller,
+        builder: (context, _) {
+          final controller = widget.controller;
+          final probe = controller.runtimeProbe;
+          return AlertDialog(
+            title: const Text('Codex CLI 运行时'),
+            content: SizedBox(
+              width: 460,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (controller.runtimeChecking)
+                    const LinearProgressIndicator()
+                  else if (probe?.isAvailable == true) ...[
+                    const Text('已检测到可用的 Codex CLI。'),
+                    const SizedBox(height: 8),
+                    SelectableText(probe!.executablePath ?? ''),
+                    if (probe.version?.isNotEmpty == true) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        probe.version!,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ] else ...[
+                    Text(controller.runtimeError ?? '尚未检测到 Codex CLI。'),
+                    const SizedBox(height: 12),
+                    const Text('可在终端执行以下官方安装命令：'),
+                    const SizedBox(height: 6),
+                    const SelectableText(
+                      'curl -fsSL https://chatgpt.com/codex/install.sh | sh',
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  Text(
+                    '选择的路径仅保存为本应用设置；启动时会再次验证，不依赖 Finder 的 PATH。',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed:
+                    controller.canConfigureRuntime &&
+                        !controller.runtimeChecking
+                    ? () async {
+                        final file = await openFile(
+                          confirmButtonText: '使用此 Codex CLI',
+                        );
+                        if (file != null) {
+                          await controller.setRuntimeExecutable(file.path);
+                        }
+                      }
+                    : null,
+                child: const Text('选择可执行文件'),
+              ),
+              if (controller.canConfigureRuntime)
+                TextButton(
+                  onPressed: controller.runtimeChecking
+                      ? null
+                      : controller.resetRuntimeExecutable,
+                  child: const Text('恢复自动检测'),
+                ),
+              TextButton(
+                onPressed: controller.runtimeChecking
+                    ? null
+                    : controller.inspectRuntime,
+                child: const Text('重新检测'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('关闭'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -286,6 +374,7 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
                           _Sidebar(
                             controller: controller,
                             onChooseWorkspace: _chooseWorkspace,
+                            onConfigureRuntime: _showRuntime,
                           ),
                           const VerticalDivider(width: 1),
                           Expanded(
@@ -417,10 +506,15 @@ class _TopBar extends StatelessWidget {
 }
 
 class _Sidebar extends StatelessWidget {
-  const _Sidebar({required this.controller, required this.onChooseWorkspace});
+  const _Sidebar({
+    required this.controller,
+    required this.onChooseWorkspace,
+    required this.onConfigureRuntime,
+  });
 
   final CodexController controller;
   final VoidCallback onChooseWorkspace;
+  final Future<void> Function() onConfigureRuntime;
 
   @override
   Widget build(BuildContext context) {
@@ -480,6 +574,12 @@ class _Sidebar extends StatelessWidget {
             else
               _ThreadTile(threadId: controller.activeThreadId!),
             const Spacer(),
+            OutlinedButton.icon(
+              onPressed: onConfigureRuntime,
+              icon: const Icon(Icons.memory_outlined, size: 18),
+              label: const Text('Codex CLI'),
+            ),
+            const SizedBox(height: 10),
             const _MutedText('本地优先 · stdio JSON-RPC'),
           ],
         ),

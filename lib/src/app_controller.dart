@@ -8,6 +8,7 @@ import 'domain/relay_provider_configuration.dart';
 import 'domain/timeline_entry.dart';
 import 'services/codex_app_server.dart';
 import 'services/relay_provider_store.dart';
+import 'services/runtime_configuration_store.dart';
 
 enum RuntimeStatus { stopped, starting, ready, running, failed }
 
@@ -17,8 +18,11 @@ class CodexController extends ChangeNotifier {
   CodexController({
     CodexAppServer? server,
     RelayProviderStore? relayProviderStore,
+    RuntimeConfigurationStore? runtimeConfigurationStore,
   }) : _server = server ?? CodexAppServer(),
-       _relayProviderStore = relayProviderStore ?? RelayProviderStore() {
+       _relayProviderStore = relayProviderStore ?? RelayProviderStore(),
+       _runtimeConfigurationStore =
+           runtimeConfigurationStore ?? RuntimeConfigurationStore() {
     _entries.add(
       _entry(
         TimelineKind.system,
@@ -27,10 +31,12 @@ class CodexController extends ChangeNotifier {
       ),
     );
     _relayLoad = _loadRelayProvider();
+    _runtimeLoad = _loadRuntimeConfiguration();
   }
 
   final CodexAppServer _server;
   final RelayProviderStore _relayProviderStore;
+  final RuntimeConfigurationStore _runtimeConfigurationStore;
   StreamSubscription<ServerEvent>? _eventSubscription;
   final List<TimelineEntry> _entries = [];
   final Map<String, int> _agentEntryIndexByItem = {};
@@ -38,6 +44,7 @@ class CodexController extends ChangeNotifier {
   bool _disposed = false;
   bool _startingRuntime = false;
   late final Future<void> _relayLoad;
+  late final Future<void> _runtimeLoad;
 
   RuntimeStatus status = RuntimeStatus.stopped;
   String? workspacePath;
@@ -55,6 +62,9 @@ class CodexController extends ChangeNotifier {
   bool relayLoading = true;
   bool relaySaving = false;
   String? relayError;
+  CodexRuntimeProbe? runtimeProbe;
+  String? runtimeError;
+  bool runtimeChecking = false;
 
   List<TimelineEntry> get entries => List.unmodifiable(_entries);
   bool get canSend =>
@@ -80,6 +90,10 @@ class CodexController extends ChangeNotifier {
     AuthStatus.external => '外部 Provider',
   };
   String get providerLabel => relayProvider == null ? 'OpenAI' : '中转站';
+  bool get canConfigureRuntime =>
+      !_startingRuntime &&
+      status != RuntimeStatus.starting &&
+      !_server.isRunning;
 
   Future<void> selectWorkspace(String path) async {
     if (!canChooseWorkspace) {
@@ -138,7 +152,11 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      await _relayLoad;
+      await Future.wait([_relayLoad, _runtimeLoad]);
+      final probe = await _inspectRuntime(notify: false);
+      if (!probe.isAvailable) {
+        throw StateError(probe.error ?? 'Codex CLI 不可用。');
+      }
       _eventSubscription ??= _server.events.listen(_handleServerEvent);
       if (_server.isRunning) await _server.stop();
       await _server.start(
@@ -285,6 +303,60 @@ class CodexController extends ChangeNotifier {
       relayError = _messageOf(error);
     } finally {
       relaySaving = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  Future<void> inspectRuntime() async {
+    await _runtimeLoad;
+    await _inspectRuntime(notify: true);
+  }
+
+  Future<void> setRuntimeExecutable(String path) async {
+    if (!canConfigureRuntime) {
+      runtimeError = '请先停止运行时，再修改 Codex CLI 路径。';
+      notifyListeners();
+      return;
+    }
+    await _runtimeLoad;
+    final previous = _server.executable;
+    runtimeChecking = true;
+    runtimeError = null;
+    notifyListeners();
+    try {
+      _server.setExecutable(path);
+      final probe = await _inspectRuntime(notify: false);
+      if (!probe.isAvailable || probe.executablePath == null) {
+        throw StateError(probe.error ?? '所选文件不是可用的 Codex CLI。');
+      }
+      await _runtimeConfigurationStore.saveExecutable(probe.executablePath!);
+      runtimeProbe = probe;
+    } catch (error) {
+      _server.setExecutable(previous);
+      runtimeError = _messageOf(error);
+    } finally {
+      runtimeChecking = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  Future<void> resetRuntimeExecutable() async {
+    if (!canConfigureRuntime) {
+      runtimeError = '请先停止运行时，再修改 Codex CLI 路径。';
+      notifyListeners();
+      return;
+    }
+    runtimeChecking = true;
+    runtimeError = null;
+    notifyListeners();
+    try {
+      _server.setExecutable(null);
+      await _runtimeConfigurationStore.clear();
+      await _inspectRuntime(notify: false);
+    } catch (error) {
+      runtimeError = _messageOf(error);
+    } finally {
+      runtimeChecking = false;
       if (!_disposed) notifyListeners();
     }
   }
@@ -527,6 +599,28 @@ class CodexController extends ChangeNotifier {
       relayLoading = false;
       if (!_disposed) notifyListeners();
     }
+  }
+
+  Future<void> _loadRuntimeConfiguration() async {
+    try {
+      final executable = await _runtimeConfigurationStore.readExecutable();
+      if (executable != null && executable.trim().isNotEmpty) {
+        _server.setExecutable(executable);
+      }
+    } catch (error) {
+      runtimeError = '无法读取已保存的 Codex CLI 路径：${_messageOf(error)}';
+    }
+  }
+
+  Future<CodexRuntimeProbe> _inspectRuntime({required bool notify}) async {
+    runtimeChecking = true;
+    if (notify && !_disposed) notifyListeners();
+    final probe = await _server.probe();
+    runtimeProbe = probe;
+    runtimeError = probe.isAvailable ? null : probe.error;
+    runtimeChecking = false;
+    if (notify && !_disposed) notifyListeners();
+    return probe;
   }
 
   void _clearStreamingState() {
