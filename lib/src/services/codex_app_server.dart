@@ -51,7 +51,10 @@ class CodexAppServer {
   Stream<ServerEvent> get events => _events.stream;
   bool get isRunning => _process != null;
 
-  Future<void> start({required String workingDirectory}) async {
+  Future<void> start({
+    required String workingDirectory,
+    Map<String, String>? environment,
+  }) async {
     if (_disposed) throw StateError('The Codex runtime has been disposed.');
     if (_process != null) return;
 
@@ -60,6 +63,9 @@ class CodexAppServer {
       resolvedExecutable,
       const ['app-server', '--listen', 'stdio://'],
       workingDirectory: workingDirectory,
+      environment: environment == null
+          ? null
+          : {...Platform.environment, ...environment},
       runInShell: false,
     );
     _process = process;
@@ -106,8 +112,18 @@ class CodexAppServer {
     notify('initialized');
   }
 
-  Future<String> startThread({required String workingDirectory}) async {
-    final response = await request('thread/start', {'cwd': workingDirectory});
+  Future<String> startThread({
+    required String workingDirectory,
+    String? modelProvider,
+    String? model,
+    JsonMap? config,
+  }) async {
+    final response = await request('thread/start', {
+      'cwd': workingDirectory,
+      'modelProvider': ?modelProvider,
+      'model': ?model,
+      'config': ?config,
+    });
     _throwIfError(response);
     final result = JsonMap.from(response['result'] as Map);
     final thread = JsonMap.from(result['thread'] as Map);

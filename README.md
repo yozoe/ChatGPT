@@ -10,6 +10,7 @@
 - 任务时间线与运行时状态界面
 - ChatGPT 浏览器登录与 OpenAI API Key 登录入口
 - 命令、文件变更与额外权限的显式审批
+- OpenAI Responses API 兼容中转站：模型、Base URL 与 macOS Keychain 密钥管理
 
 ## 运行
 
@@ -24,7 +25,7 @@ flutter run -d macos
 - 不会在项目文件、应用日志或界面中保存 API Key；密钥仅提交给本地 Codex 运行时。
 - 运行时只通过本机 `stdio` JSON-RPC 通信；不会启用远程 WebSocket。
 - 审批默认逐次确认；不会在后台自动批准命令、文件变更或额外权限。
-- 自定义中转站仍未接入。它必须通过 Responses API 与流式协议兼容性验证，并使用系统安全存储保存密钥。
+- 中转站仅接受 HTTPS（localhost 可用 HTTP），并要求 Responses API 与 SSE 流式协议兼容。密钥存入 macOS Keychain，Provider 定义仅注入本应用创建的 Thread，不修改 `~/.codex/config.toml`。
 
 ## 参考
 

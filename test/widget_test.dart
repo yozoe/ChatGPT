@@ -1,5 +1,6 @@
 import 'package:chatgpt/src/app.dart';
 import 'package:chatgpt/src/app_controller.dart';
+import 'package:chatgpt/src/domain/relay_provider_configuration.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -111,5 +112,41 @@ void main() {
     expect(controller.authStatus, AuthStatus.chatgpt);
     expect(controller.authLabel, 'ChatGPT plus');
     controller.dispose();
+  });
+
+  test(
+    'builds a Responses-only relay configuration without leaking its key',
+    () {
+      const relay = RelayProviderConfiguration(
+        baseUrl: 'https://relay.example.com/v1',
+        model: 'codex-compatible-model',
+        apiKey: 'relay-secret',
+      );
+
+      expect(relay.processEnvironment, {
+        RelayProviderConfiguration.environmentVariable: 'relay-secret',
+      });
+      expect(relay.threadConfig, {
+        'model_providers': {
+          RelayProviderConfiguration.providerId: {
+            'name': 'Codex Desk Relay',
+            'base_url': 'https://relay.example.com/v1',
+            'env_key': RelayProviderConfiguration.environmentVariable,
+            'wire_api': 'responses',
+          },
+        },
+      });
+    },
+  );
+
+  test('only permits HTTPS relay URLs except localhost', () {
+    expect(
+      () => RelayProviderConfiguration.normalizeBaseUrl('http://relay.test/v1'),
+      throwsFormatException,
+    );
+    expect(
+      RelayProviderConfiguration.normalizeBaseUrl('http://localhost:8080/v1/'),
+      'http://localhost:8080/v1',
+    );
   });
 }

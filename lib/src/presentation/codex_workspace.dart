@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../app_controller.dart';
 import '../domain/pending_approval.dart';
 import '../domain/timeline_entry.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 class CodexWorkspace extends StatefulWidget {
   const CodexWorkspace({required this.controller, super.key});
@@ -169,6 +169,115 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     apiKey.dispose();
   }
 
+  Future<void> _showRelayProvider() async {
+    final current = widget.controller.relayProvider;
+    final baseUrl = TextEditingController(text: current?.baseUrl ?? '');
+    final model = TextEditingController(text: current?.model ?? '');
+    final apiKey = TextEditingController();
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AnimatedBuilder(
+        animation: widget.controller,
+        builder: (context, _) {
+          final controller = widget.controller;
+          return AlertDialog(
+            title: const Text('中转站 Provider'),
+            content: SizedBox(
+              width: 460,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('仅支持 Responses API 与 SSE 流式响应兼容的服务。'),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: baseUrl,
+                    keyboardType: TextInputType.url,
+                    autocorrect: false,
+                    enableSuggestions: false,
+                    decoration: const InputDecoration(
+                      labelText: 'Base URL',
+                      hintText: 'https://relay.example.com/v1',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: model,
+                    autocorrect: false,
+                    enableSuggestions: false,
+                    decoration: const InputDecoration(
+                      labelText: '模型名称',
+                      hintText: 'relay-model-name',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: apiKey,
+                    obscureText: true,
+                    autocorrect: false,
+                    enableSuggestions: false,
+                    decoration: InputDecoration(
+                      labelText: current == null
+                          ? '中转站 API Key'
+                          : '中转站 API Key（留空则保留已存密钥）',
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '凭据只保存在 macOS Keychain。Provider 配置仅随本应用新建的 Thread 发送，不会修改 ~/.codex/config.toml。',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  if (controller.relayError case final error?) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      error,
+                      style: const TextStyle(color: Color(0xFFFFB4AB)),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              if (current != null)
+                TextButton(
+                  onPressed: controller.relaySaving
+                      ? null
+                      : () => controller.clearRelayProvider(),
+                  child: const Text('移除配置'),
+                ),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: controller.relaySaving
+                    ? null
+                    : () async {
+                        await controller.saveRelayProvider(
+                          baseUrl: baseUrl.text,
+                          model: model.text,
+                          apiKey: apiKey.text,
+                        );
+                        apiKey.clear();
+                        if (controller.relayError == null && context.mounted) {
+                          Navigator.of(context).pop();
+                        }
+                      },
+                child: Text(controller.relaySaving ? '保存中…' : '保存并使用'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    baseUrl.dispose();
+    model.dispose();
+    apiKey.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -185,6 +294,7 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
                   onStart: controller.startRuntime,
                   onStop: controller.stopRuntime,
                   onAccount: _showAccount,
+                  onRelay: _showRelayProvider,
                 ),
                 const Divider(height: 1),
                 Expanded(
@@ -230,6 +340,7 @@ class _TopBar extends StatelessWidget {
     required this.onStart,
     required this.onStop,
     required this.onAccount,
+    required this.onRelay,
   });
 
   final CodexController controller;
@@ -237,9 +348,11 @@ class _TopBar extends StatelessWidget {
   final Future<void> Function() onStart;
   final Future<void> Function() onStop;
   final Future<void> Function() onAccount;
+  final Future<void> Function() onRelay;
 
   @override
   Widget build(BuildContext context) {
+    final compact = MediaQuery.sizeOf(context).width < 1000;
     final color = switch (controller.status) {
       RuntimeStatus.ready => const Color(0xFF68E0B8),
       RuntimeStatus.running => const Color(0xFF82B1FF),
@@ -266,11 +379,31 @@ class _TopBar extends StatelessWidget {
             const SizedBox(width: 16),
             _StatusPill(label: label, color: color),
             const Spacer(),
-            TextButton.icon(
-              onPressed: onAccount,
-              icon: const Icon(Icons.person_outline),
-              label: Text(controller.authLabel),
-            ),
+            if (compact)
+              IconButton(
+                tooltip: '账户：${controller.authLabel}',
+                onPressed: onAccount,
+                icon: const Icon(Icons.person_outline),
+              )
+            else
+              TextButton.icon(
+                onPressed: onAccount,
+                icon: const Icon(Icons.person_outline),
+                label: Text(controller.authLabel),
+              ),
+            const SizedBox(width: 8),
+            if (compact)
+              IconButton(
+                tooltip: 'Provider：${controller.providerLabel}',
+                onPressed: onRelay,
+                icon: const Icon(Icons.route_outlined),
+              )
+            else
+              TextButton.icon(
+                onPressed: onRelay,
+                icon: const Icon(Icons.route_outlined),
+                label: Text(controller.providerLabel),
+              ),
             const SizedBox(width: 8),
             TextButton.icon(
               onPressed: controller.canChooseWorkspace
@@ -400,7 +533,7 @@ class _ConversationPane extends StatelessWidget {
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
               ),
-              const _ProviderChip(),
+              _ProviderChip(label: '${controller.providerLabel} / App Server'),
               const SizedBox(width: 8),
               const _ProviderChip(label: 'workspace-write'),
             ],

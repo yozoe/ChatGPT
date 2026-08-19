@@ -4,31 +4,39 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import 'domain/pending_approval.dart';
+import 'domain/relay_provider_configuration.dart';
 import 'domain/timeline_entry.dart';
 import 'services/codex_app_server.dart';
+import 'services/relay_provider_store.dart';
 
 enum RuntimeStatus { stopped, starting, ready, running, failed }
 
 enum AuthStatus { checking, signedOut, chatgpt, apiKey, external }
 
 class CodexController extends ChangeNotifier {
-  CodexController({CodexAppServer? server})
-    : _server = server ?? CodexAppServer() {
+  CodexController({
+    CodexAppServer? server,
+    RelayProviderStore? relayProviderStore,
+  }) : _server = server ?? CodexAppServer(),
+       _relayProviderStore = relayProviderStore ?? RelayProviderStore() {
     _entries.add(
       _entry(
         TimelineKind.system,
         '欢迎使用 Codex Desk',
-        '选择本地项目后启动 Codex App Server。应用不会保存你的 API Key。',
+        '选择本地项目后启动 Codex App Server。密钥不会写入项目或日志。',
       ),
     );
+    _relayLoad = _loadRelayProvider();
   }
 
   final CodexAppServer _server;
+  final RelayProviderStore _relayProviderStore;
   StreamSubscription<ServerEvent>? _eventSubscription;
   final List<TimelineEntry> _entries = [];
   final Map<String, int> _agentEntryIndexByItem = {};
   Timer? _deltaNotificationTimer;
   bool _disposed = false;
+  late final Future<void> _relayLoad;
 
   RuntimeStatus status = RuntimeStatus.stopped;
   String? workspacePath;
@@ -42,6 +50,10 @@ class CodexController extends ChangeNotifier {
   String? loginUrl;
   bool loginInProgress = false;
   bool requiresOpenaiAuth = false;
+  RelayProviderConfiguration? relayProvider;
+  bool relayLoading = true;
+  bool relaySaving = false;
+  String? relayError;
 
   List<TimelineEntry> get entries => List.unmodifiable(_entries);
   bool get canSend =>
@@ -66,6 +78,7 @@ class CodexController extends ChangeNotifier {
     AuthStatus.apiKey => 'API Key',
     AuthStatus.external => '外部 Provider',
   };
+  String get providerLabel => relayProvider == null ? 'OpenAI' : '中转站';
 
   Future<void> selectWorkspace(String path) async {
     if (!canChooseWorkspace) {
@@ -104,6 +117,7 @@ class CodexController extends ChangeNotifier {
   }
 
   Future<void> startRuntime() async {
+    await _relayLoad;
     final workspace = workspacePath;
     if (workspace == null) {
       lastError = '请先选择一个本地项目目录。';
@@ -122,7 +136,10 @@ class CodexController extends ChangeNotifier {
     try {
       _eventSubscription ??= _server.events.listen(_handleServerEvent);
       if (_server.isRunning) await _server.stop();
-      await _server.start(workingDirectory: workspace);
+      await _server.start(
+        workingDirectory: workspace,
+        environment: relayProvider?.processEnvironment,
+      );
       await _server.initialize();
       await refreshAccount();
       status = RuntimeStatus.ready;
@@ -146,7 +163,14 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      activeThreadId ??= await _server.startThread(workingDirectory: workspace);
+      activeThreadId ??= await _server.startThread(
+        workingDirectory: workspace,
+        modelProvider: relayProvider == null
+            ? null
+            : RelayProviderConfiguration.providerId,
+        model: relayProvider?.model,
+        config: relayProvider?.threadConfig,
+      );
       final id = activeThreadId!;
       final shortId = id.length > 12 ? id.substring(0, 12) : id;
       _add(TimelineKind.system, '任务已创建', 'Thread $shortId');
@@ -191,6 +215,71 @@ class CodexController extends ChangeNotifier {
       _add(TimelineKind.error, '停止运行时失败', lastError!);
     }
     notifyListeners();
+  }
+
+  Future<void> saveRelayProvider({
+    required String baseUrl,
+    required String model,
+    required String apiKey,
+  }) async {
+    if (canStopRuntime) {
+      relayError = '请先停止运行时，再修改中转站配置。';
+      notifyListeners();
+      return;
+    }
+    final existingKey = relayProvider?.apiKey;
+    final key = apiKey.trim().isEmpty ? existingKey : apiKey.trim();
+    if (key == null || key.isEmpty) {
+      relayError = '请输入中转站 API Key。';
+      notifyListeners();
+      return;
+    }
+    final modelName = model.trim();
+    if (modelName.isEmpty) {
+      relayError = '请输入中转站提供的模型名称。';
+      notifyListeners();
+      return;
+    }
+
+    relaySaving = true;
+    relayError = null;
+    notifyListeners();
+    try {
+      final configuration = RelayProviderConfiguration(
+        baseUrl: RelayProviderConfiguration.normalizeBaseUrl(baseUrl),
+        model: modelName,
+        apiKey: key,
+      );
+      await _relayProviderStore.save(configuration);
+      relayProvider = configuration;
+      _add(TimelineKind.system, '中转站已配置', '将在下次启动运行时后生效。');
+    } catch (error) {
+      relayError = _messageOf(error);
+    } finally {
+      relaySaving = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  Future<void> clearRelayProvider() async {
+    if (canStopRuntime) {
+      relayError = '请先停止运行时，再移除中转站配置。';
+      notifyListeners();
+      return;
+    }
+    relaySaving = true;
+    relayError = null;
+    notifyListeners();
+    try {
+      await _relayProviderStore.clear();
+      relayProvider = null;
+      _add(TimelineKind.system, '中转站已移除', '下次启动将使用默认 OpenAI Provider。');
+    } catch (error) {
+      relayError = _messageOf(error);
+    } finally {
+      relaySaving = false;
+      if (!_disposed) notifyListeners();
+    }
   }
 
   Future<void> refreshAccount() async {
@@ -420,6 +509,17 @@ class CodexController extends ChangeNotifier {
       null || 'null' => AuthStatus.signedOut,
       _ => AuthStatus.external,
     };
+  }
+
+  Future<void> _loadRelayProvider() async {
+    try {
+      relayProvider = await _relayProviderStore.read();
+    } catch (error) {
+      relayError = '无法读取 Keychain 中的中转站配置：${_messageOf(error)}';
+    } finally {
+      relayLoading = false;
+      if (!_disposed) notifyListeners();
+    }
   }
 
   void _clearStreamingState() {
