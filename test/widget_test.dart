@@ -97,4 +97,19 @@ void main() {
     expect(controller.lastError, contains('先停止当前运行时'));
     controller.dispose();
   });
+
+  test('updates visible account state from App Server notifications', () {
+    final controller = CodexController(server: CodexAppServer());
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'account/updated',
+        params: {'authMode': 'chatgpt', 'planType': 'plus'},
+      ),
+    );
+
+    expect(controller.authStatus, AuthStatus.chatgpt);
+    expect(controller.authLabel, 'ChatGPT plus');
+    controller.dispose();
+  });
 }

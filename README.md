@@ -8,6 +8,8 @@
 - 通过 `stdio` 启动 `codex app-server`
 - JSON-RPC 初始化、创建线程、发起任务与中断任务的最小客户端
 - 任务时间线与运行时状态界面
+- ChatGPT 浏览器登录与 OpenAI API Key 登录入口
+- 命令、文件变更与额外权限的显式审批
 
 ## 运行
 
@@ -19,9 +21,10 @@ flutter run -d macos
 
 ## 安全边界
 
-- 不会在应用内保存或显示 API Key。
+- 不会在项目文件、应用日志或界面中保存 API Key；密钥仅提交给本地 Codex 运行时。
 - 运行时只通过本机 `stdio` JSON-RPC 通信；不会启用远程 WebSocket。
-- 当前版本仅建立协议闭环；Provider 管理、Keychain、文件 Diff 和审批操作会在后续阶段加入。
+- 审批默认逐次确认；不会在后台自动批准命令、文件变更或额外权限。
+- 自定义中转站仍未接入。它必须通过 Responses API 与流式协议兼容性验证，并使用系统安全存储保存密钥。
 
 ## 参考
 

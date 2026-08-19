@@ -138,6 +138,38 @@ class CodexAppServer {
     _throwIfError(response);
   }
 
+  Future<JsonMap> readAccount() async {
+    final response = await request('account/read', {'refreshToken': false});
+    _throwIfError(response);
+    final result = response['result'];
+    if (result is! Map) {
+      throw const FormatException('App Server did not return account details.');
+    }
+    return JsonMap.from(result);
+  }
+
+  Future<JsonMap> startChatgptLogin() async {
+    final response = await request('account/login/start', {
+      'type': 'chatgpt',
+      'useHostedLoginSuccessPage': true,
+      'appBrand': 'chatgpt',
+    });
+    _throwIfError(response);
+    final result = response['result'];
+    if (result is! Map) {
+      throw const FormatException('App Server did not return a login URL.');
+    }
+    return JsonMap.from(result);
+  }
+
+  Future<void> loginWithApiKey(String apiKey) async {
+    final response = await request('account/login/start', {
+      'type': 'apiKey',
+      'apiKey': apiKey,
+    });
+    _throwIfError(response);
+  }
+
   Future<JsonMap> request(String method, [JsonMap params = const {}]) {
     final process = _process;
     if (process == null) throw StateError('The Codex runtime is not running.');

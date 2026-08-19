@@ -9,6 +9,8 @@ import 'services/codex_app_server.dart';
 
 enum RuntimeStatus { stopped, starting, ready, running, failed }
 
+enum AuthStatus { checking, signedOut, chatgpt, apiKey, external }
+
 class CodexController extends ChangeNotifier {
   CodexController({CodexAppServer? server})
     : _server = server ?? CodexAppServer() {
@@ -34,9 +36,18 @@ class CodexController extends ChangeNotifier {
   String? lastError;
   PendingApproval? pendingApproval;
   bool approvalResponding = false;
+  AuthStatus authStatus = AuthStatus.checking;
+  String? accountEmail;
+  String? accountPlan;
+  String? loginUrl;
+  bool loginInProgress = false;
+  bool requiresOpenaiAuth = false;
 
   List<TimelineEntry> get entries => List.unmodifiable(_entries);
-  bool get canSend => status == RuntimeStatus.ready && workspacePath != null;
+  bool get canSend =>
+      status == RuntimeStatus.ready &&
+      workspacePath != null &&
+      (!requiresOpenaiAuth || authStatus != AuthStatus.signedOut);
   bool get canStop => status == RuntimeStatus.running && activeThreadId != null;
   bool get canChooseWorkspace =>
       status == RuntimeStatus.stopped ||
@@ -47,6 +58,14 @@ class CodexController extends ChangeNotifier {
       status == RuntimeStatus.running;
   bool get canRespondToApproval =>
       pendingApproval != null && !approvalResponding;
+  String get authLabel => switch (authStatus) {
+    AuthStatus.checking => '检查账户',
+    AuthStatus.signedOut => '未登录',
+    AuthStatus.chatgpt =>
+      accountPlan == null ? 'ChatGPT' : 'ChatGPT $accountPlan',
+    AuthStatus.apiKey => 'API Key',
+    AuthStatus.external => '外部 Provider',
+  };
 
   Future<void> selectWorkspace(String path) async {
     if (!canChooseWorkspace) {
@@ -105,6 +124,7 @@ class CodexController extends ChangeNotifier {
       if (_server.isRunning) await _server.stop();
       await _server.start(workingDirectory: workspace);
       await _server.initialize();
+      await refreshAccount();
       status = RuntimeStatus.ready;
       _add(TimelineKind.system, '运行时已连接', 'App Server 已通过本地 stdio 通道就绪。');
     } catch (error) {
@@ -173,6 +193,61 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> refreshAccount() async {
+    if (!_server.isRunning) return;
+    authStatus = AuthStatus.checking;
+    try {
+      final accountResult = await _server.readAccount();
+      _updateAccount(accountResult);
+    } catch (error) {
+      authStatus = AuthStatus.signedOut;
+      lastError = _messageOf(error);
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> startChatgptLogin() async {
+    if (!_server.isRunning || loginInProgress) return;
+    loginInProgress = true;
+    loginUrl = null;
+    lastError = null;
+    notifyListeners();
+    try {
+      final result = await _server.startChatgptLogin();
+      final url = result['authUrl'] as String?;
+      if (url == null || url.isEmpty) {
+        throw const FormatException('App Server did not return an auth URL.');
+      }
+      loginUrl = url;
+      _add(TimelineKind.system, '等待 ChatGPT 登录', '请在浏览器中完成登录。');
+    } catch (error) {
+      loginInProgress = false;
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '无法开始登录', lastError!);
+    }
+    notifyListeners();
+  }
+
+  Future<void> loginWithApiKey(String apiKey) async {
+    final value = apiKey.trim();
+    if (!_server.isRunning || value.isEmpty || loginInProgress) return;
+    loginInProgress = true;
+    loginUrl = null;
+    lastError = null;
+    notifyListeners();
+    try {
+      await _server.loginWithApiKey(value);
+      await refreshAccount();
+      _add(TimelineKind.system, 'API Key 已提交', '密钥仅交给本地 Codex 运行时处理。');
+    } catch (error) {
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, 'API Key 登录失败', lastError!);
+    } finally {
+      loginInProgress = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> respondToApproval({required bool accepted}) async {
     final approval = pendingApproval;
     if (approval == null || approvalResponding) return;
@@ -220,6 +295,16 @@ class CodexController extends ChangeNotifier {
     }
 
     switch (event.method) {
+      case 'account/updated':
+        _updateAccount(event.params);
+      case 'account/login/completed':
+        loginInProgress = false;
+        if (event.params['success'] == true) {
+          loginUrl = null;
+          unawaited(refreshAccount());
+        } else {
+          lastError = event.params['error']?.toString() ?? '登录未完成。';
+        }
       case 'item/agentMessage/delta':
         _appendAgentDelta(event.params);
         _scheduleDeltaNotification();
@@ -316,6 +401,25 @@ class CodexController extends ChangeNotifier {
         status = RuntimeStatus.ready;
         _add(TimelineKind.system, '任务完成', '你可以继续在同一线程追问。');
     }
+  }
+
+  void _updateAccount(JsonMap result) {
+    final account = result['account'];
+    final accountMap = account is Map ? JsonMap.from(account) : null;
+    final authMode =
+        result['authMode']?.toString() ?? accountMap?['type']?.toString();
+    if (result.containsKey('requiresOpenaiAuth')) {
+      requiresOpenaiAuth = result['requiresOpenaiAuth'] == true;
+    }
+    accountEmail = accountMap?['email']?.toString();
+    accountPlan =
+        result['planType']?.toString() ?? accountMap?['planType']?.toString();
+    authStatus = switch (authMode) {
+      'chatgpt' => AuthStatus.chatgpt,
+      'apikey' || 'apiKey' => AuthStatus.apiKey,
+      null || 'null' => AuthStatus.signedOut,
+      _ => AuthStatus.external,
+    };
   }
 
   void _clearStreamingState() {
