@@ -1,3 +1,4 @@
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -25,37 +26,16 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
   }
 
   Future<void> _chooseWorkspace() async {
-    final input = TextEditingController(
-      text: widget.controller.workspacePath ?? '',
-    );
-    final path = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('选择本地项目'),
-        content: TextField(
-          controller: input,
-          autofocus: true,
-          decoration: const InputDecoration(
-            hintText: '/Users/you/Code/project',
-            labelText: '项目路径',
-          ),
-          onSubmitted: (value) => Navigator.of(context).pop(value),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(input.text),
-            child: const Text('使用此目录'),
-          ),
-        ],
-      ),
-    );
-    input.dispose();
-    if (path != null && path.trim().isNotEmpty) {
-      await widget.controller.selectWorkspace(path);
+    try {
+      final path = await getDirectoryPath(confirmButtonText: '选择项目');
+      if (path != null && path.trim().isNotEmpty) {
+        await widget.controller.selectWorkspace(path);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('无法打开目录选择器。')));
     }
   }
 

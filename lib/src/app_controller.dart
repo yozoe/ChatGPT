@@ -36,6 +36,7 @@ class CodexController extends ChangeNotifier {
   final Map<String, int> _agentEntryIndexByItem = {};
   Timer? _deltaNotificationTimer;
   bool _disposed = false;
+  bool _startingRuntime = false;
   late final Future<void> _relayLoad;
 
   RuntimeStatus status = RuntimeStatus.stopped;
@@ -117,23 +118,27 @@ class CodexController extends ChangeNotifier {
   }
 
   Future<void> startRuntime() async {
-    await _relayLoad;
     final workspace = workspacePath;
     if (workspace == null) {
       lastError = '请先选择一个本地项目目录。';
       notifyListeners();
       return;
     }
-    if (status == RuntimeStatus.ready || status == RuntimeStatus.running) {
+    if (_startingRuntime ||
+        status == RuntimeStatus.starting ||
+        status == RuntimeStatus.ready ||
+        status == RuntimeStatus.running) {
       return;
     }
 
+    _startingRuntime = true;
     status = RuntimeStatus.starting;
     lastError = null;
     _add(TimelineKind.system, '正在启动本地运行时', 'codex app-server · $workspace');
     notifyListeners();
 
     try {
+      await _relayLoad;
       _eventSubscription ??= _server.events.listen(_handleServerEvent);
       if (_server.isRunning) await _server.stop();
       await _server.start(
@@ -148,6 +153,8 @@ class CodexController extends ChangeNotifier {
       status = RuntimeStatus.failed;
       lastError = _messageOf(error);
       _add(TimelineKind.error, '无法启动运行时', lastError!);
+    } finally {
+      _startingRuntime = false;
     }
     notifyListeners();
   }

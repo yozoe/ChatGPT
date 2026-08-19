@@ -1,9 +1,20 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:chatgpt/src/app.dart';
 import 'package:chatgpt/src/app_controller.dart';
 import 'package:chatgpt/src/domain/relay_provider_configuration.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
+import 'package:chatgpt/src/services/relay_provider_store.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+class _DelayedRelayProviderStore extends RelayProviderStore {
+  final completer = Completer<RelayProviderConfiguration?>();
+
+  @override
+  Future<RelayProviderConfiguration?> read() => completer.future;
+}
 
 void main() {
   testWidgets('shows the Codex Desk shell', (tester) async {
@@ -148,5 +159,26 @@ void main() {
       RelayProviderConfiguration.normalizeBaseUrl('http://localhost:8080/v1/'),
       'http://localhost:8080/v1',
     );
+  });
+
+  test('locks runtime startup before waiting for Keychain', () async {
+    final store = _DelayedRelayProviderStore();
+    final controller = CodexController(
+      server: CodexAppServer(executable: '/not/a/codex'),
+      relayProviderStore: store,
+    )..workspacePath = Directory.systemTemp.path;
+
+    final firstStart = controller.startRuntime();
+    final secondStart = controller.startRuntime();
+
+    expect(controller.status, RuntimeStatus.starting);
+    store.completer.complete(null);
+    await Future.wait([firstStart, secondStart]);
+
+    expect(
+      controller.entries.where((entry) => entry.title == '正在启动本地运行时'),
+      hasLength(1),
+    );
+    controller.dispose();
   });
 }
