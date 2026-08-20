@@ -22,6 +22,7 @@
 - 右侧“文件变更”及对话区顶部入口会按 App Server 事件列出 AI 修改的文件；可展开查看每个文件与本次任务的统一 Diff，不扫描本地项目文件
 - 推理强度选项由当前 Codex 模型能力动态提供；选择会保存，并用于后续新建或恢复的任务
 - 活跃与归档线程列表会跟随 App Server 分页加载，不限于首 50 条
+- 提供“插件”管理入口：读取本机 Codex CLI 的已安装与可安装插件、注册本地 marketplace、安装插件并启用或停用已安装插件；变更后需重启运行时并新建任务才会生效
 - 如果 App Server 暂时返回空线程列表，活跃列表会回退读取当前项目的本地 Codex session 元数据；回退读取只解析每个文件开头的有限元数据，并按工作区合并并缓存 10 秒，服务端有结果时始终以服务端为准，归档列表不使用此回退
 - 归档恢复操作具备重复提交防护，线程状态通知会同步刷新活跃与归档列表
 - 历史线程恢复会保留原 Provider，并防止过期刷新结果污染当前列表
@@ -64,6 +65,7 @@ dart run tool/verify_app_server_history.dart --cwd /path/to/workspace
 - 审批默认逐次确认；可在“变更与审批”切换为自动批准。自动模式会直接允许命令、文件变更与额外权限请求，并在时间线留下记录。
 - 中转站仅接受 HTTPS（localhost 可用 HTTP），并要求 Responses API 与 SSE 流式协议兼容。密钥存入 macOS Keychain，Provider 定义仅注入本应用创建的 Thread，不修改 `~/.codex/config.toml`。
 - macOS 桌面构建不启用 App Sandbox：客户端需要启动本机 `codex` 并读取其 `~/.codex` 配置。中转站凭据与运行时路径仍使用标准 macOS Keychain 保存，不依赖本地 ad-hoc 签名无法提供的 Data Protection Keychain entitlement。
+- 插件管理会调用本机 `codex plugin` 子命令，并仅修改 `~/.codex/config.toml` 中相应插件的 `enabled` 状态；请只添加和安装可信来源的 marketplace 与插件。
 
 ## 开发约定
 

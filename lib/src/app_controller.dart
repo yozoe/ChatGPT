@@ -4,11 +4,13 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import 'domain/codex_thread.dart';
+import 'domain/codex_plugin.dart';
 import 'domain/codex_file_change.dart';
 import 'domain/pending_approval.dart';
 import 'domain/relay_provider_configuration.dart';
 import 'domain/timeline_entry.dart';
 import 'services/codex_app_server.dart';
+import 'services/codex_plugin_store.dart';
 import 'services/conversation_history_store.dart';
 import 'services/local_session_thread_store.dart';
 import 'services/relay_provider_store.dart';
@@ -75,6 +77,7 @@ class CodexController extends ChangeNotifier {
     RuntimeConfigurationStore? runtimeConfigurationStore,
     ConversationHistoryStore? conversationHistoryStore,
     LocalSessionThreadStore? localSessionThreadStore,
+    CodexPluginStore? pluginStore,
   }) : _server = server ?? CodexAppServer(),
        _relayProviderStore = relayProviderStore ?? RelayProviderStore(),
        _runtimeConfigurationStore =
@@ -85,6 +88,9 @@ class CodexController extends ChangeNotifier {
            ConversationHistoryStore(),
        _localSessionThreadStore =
            localSessionThreadStore ?? LocalSessionThreadStore() {
+    _pluginStore =
+        pluginStore ??
+        CodexPluginStore(executableProvider: () => _server.executable);
     _entries.add(
       _entry(
         TimelineKind.system,
@@ -106,6 +112,7 @@ class CodexController extends ChangeNotifier {
   final RuntimeConfigurationStore _runtimeConfigurationStore;
   final ConversationHistoryStore _conversationHistoryStore;
   final LocalSessionThreadStore _localSessionThreadStore;
+  late final CodexPluginStore _pluginStore;
   StreamSubscription<ServerEvent>? _eventSubscription;
   final List<TimelineEntry> _entries = [];
   final Map<String, CodexFileChange> _fileChangesByPath = {};
@@ -158,6 +165,10 @@ class CodexController extends ChangeNotifier {
   List<CodexThread> archivedThreads = const [];
   bool archivedThreadsLoading = false;
   String? archivedThreadsError;
+  List<CodexPlugin> plugins = const [];
+  bool pluginsLoading = false;
+  bool pluginSaving = false;
+  String? pluginsError;
 
   /// 返回不可修改的当前时间线副本视图。
   /// Returns an unmodifiable view of the current timeline.
@@ -445,6 +456,50 @@ class CodexController extends ChangeNotifier {
         if (!_disposed) notifyListeners();
       }
     }
+  }
+
+  /// 从本机 Codex CLI 刷新已安装和可安装插件。
+  /// Refreshes installed and available plugins from the local Codex CLI.
+  Future<void> refreshPlugins() async {
+    if (pluginSaving) return;
+    pluginsLoading = true;
+    pluginsError = null;
+    if (!_disposed) notifyListeners();
+    try {
+      plugins = await _pluginStore.listPlugins();
+    } catch (error) {
+      pluginsError = _messageOf(error);
+    } finally {
+      pluginsLoading = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  /// 注册一个本地 marketplace，并刷新可安装插件。
+  /// Registers a local marketplace and refreshes installable plugins.
+  Future<void> addLocalPluginMarketplace(String directory) async {
+    await _runPluginAction(
+      () => _pluginStore.addLocalMarketplace(directory),
+      '已添加本地插件市场',
+    );
+  }
+
+  /// 安装所选 marketplace 插件，并刷新插件列表。
+  /// Installs the selected marketplace plugin and refreshes the plugin list.
+  Future<void> installPlugin(CodexPlugin plugin) async {
+    await _runPluginAction(
+      () => _pluginStore.installPlugin(plugin),
+      '已安装插件：${plugin.name}',
+    );
+  }
+
+  /// 更新插件启用状态；新状态会在下一个运行时会话生效。
+  /// Updates a plugin enabled state; it takes effect in the next runtime session.
+  Future<void> setPluginEnabled(CodexPlugin plugin, bool enabled) async {
+    await _runPluginAction(
+      () => _pluginStore.setPluginEnabled(plugin, enabled),
+      '${enabled ? '已启用' : '已停用'}插件：${plugin.name}',
+    );
   }
 
   /// 从 App Server 分页刷新当前工作区的归档线程列表。
@@ -1535,6 +1590,33 @@ class CodexController extends ChangeNotifier {
     runtimeChecking = false;
     if (notify && !_disposed) notifyListeners();
     return probe;
+  }
+
+  /// 执行一个插件配置变更，避免在任务执行中修改运行时配置。
+  /// Runs a plugin configuration change while avoiding runtime changes mid-turn.
+  Future<void> _runPluginAction(
+    Future<void> Function() action,
+    String successMessage,
+  ) async {
+    if (status == RuntimeStatus.running) {
+      pluginsError = '请等待当前任务完成后再变更插件。';
+      if (!_disposed) notifyListeners();
+      return;
+    }
+    if (pluginSaving) return;
+    pluginSaving = true;
+    pluginsError = null;
+    if (!_disposed) notifyListeners();
+    try {
+      await action();
+      _add(TimelineKind.system, successMessage, '请在新建任务前重启本地运行时，以加载最新插件。');
+      plugins = await _pluginStore.listPlugins();
+    } catch (error) {
+      pluginsError = _messageOf(error);
+    } finally {
+      pluginSaving = false;
+      if (!_disposed) notifyListeners();
+    }
   }
 
   /// 取消流式更新计时器并清除 Agent 条目索引。

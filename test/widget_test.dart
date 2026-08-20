@@ -6,10 +6,12 @@ import 'package:chatgpt/src/app.dart';
 import 'package:chatgpt/src/app_controller.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
 import 'package:chatgpt/src/domain/codex_file_change.dart';
+import 'package:chatgpt/src/domain/codex_plugin.dart';
 import 'package:chatgpt/src/domain/relay_provider_configuration.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/presentation/codex_workspace.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
+import 'package:chatgpt/src/services/codex_plugin_store.dart';
 import 'package:chatgpt/src/services/conversation_history_store.dart';
 import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/relay_provider_store.dart';
@@ -133,6 +135,54 @@ class _MemoryLocalSessionThreadStore extends LocalSessionThreadStore {
   @override
   Future<List<CodexThread>> listThreads(String workspace) async {
     return threadsByWorkspace[workspace] ?? const [];
+  }
+}
+
+class _MemoryCodexPluginStore extends CodexPluginStore {
+  final plugins = <CodexPlugin>[];
+  final addedMarketplaces = <String>[];
+  final installedPluginIds = <String>[];
+  final enabledChanges = <String, bool>{};
+
+  /// 从测试内存列表返回已安装与可安装插件。
+  /// Returns installed and available plugins from the test memory list.
+  @override
+  Future<List<CodexPlugin>> listPlugins() async => List.of(plugins);
+
+  /// 记录添加的本地 marketplace，供控制器行为断言。
+  /// Records a local marketplace addition for controller behavior assertions.
+  @override
+  Future<void> addLocalMarketplace(String directory) async {
+    addedMarketplaces.add(directory);
+  }
+
+  /// 记录待安装插件，并将其状态改为已安装。
+  /// Records a plugin installation and changes its state to installed.
+  @override
+  Future<void> installPlugin(CodexPlugin plugin) async {
+    installedPluginIds.add(plugin.id);
+    final index = plugins.indexWhere((value) => value.id == plugin.id);
+    if (index >= 0) {
+      plugins[index] = CodexPlugin(
+        id: plugin.id,
+        name: plugin.name,
+        marketplaceName: plugin.marketplaceName,
+        installed: true,
+        enabled: true,
+        version: plugin.version,
+        installPolicy: plugin.installPolicy,
+        authPolicy: plugin.authPolicy,
+      );
+    }
+  }
+
+  /// 记录插件启用状态，并同步测试内存列表。
+  /// Records a plugin enabled state and synchronizes the test memory list.
+  @override
+  Future<void> setPluginEnabled(CodexPlugin plugin, bool enabled) async {
+    enabledChanges[plugin.id] = enabled;
+    final index = plugins.indexWhere((value) => value.id == plugin.id);
+    if (index >= 0) plugins[index] = plugins[index].copyWith(enabled: enabled);
   }
 }
 
@@ -602,6 +652,102 @@ void main() {
 
     expect(threads.single.id, 'local-thread');
     expect(threads.single.modelProvider, 'openai');
+  });
+
+  test('lists, installs, and toggles local Codex plugins', () async {
+    final pluginStore = _MemoryCodexPluginStore()
+      ..plugins.addAll([
+        const CodexPlugin(
+          id: 'installed@local',
+          name: 'installed',
+          marketplaceName: 'local',
+          installed: true,
+          enabled: true,
+        ),
+        const CodexPlugin(
+          id: 'available@local',
+          name: 'available',
+          marketplaceName: 'local',
+          installed: false,
+          enabled: false,
+        ),
+      ]);
+    final controller = CodexController(pluginStore: pluginStore);
+
+    await controller.refreshPlugins();
+    await controller.setPluginEnabled(controller.plugins.first, false);
+    await controller.installPlugin(controller.plugins.last);
+    await controller.addLocalPluginMarketplace('/plugins');
+
+    expect(pluginStore.enabledChanges, {'installed@local': false});
+    expect(pluginStore.installedPluginIds, ['available@local']);
+    expect(pluginStore.addedMarketplaces, ['/plugins']);
+    expect(
+      controller.plugins
+          .singleWhere((plugin) => plugin.id == 'available@local')
+          .installed,
+      true,
+    );
+    controller.dispose();
+  });
+
+  test(
+    'writes only the selected plugin enabled state to Codex config',
+    () async {
+      final codexHome = await Directory.systemTemp.createTemp('codex-config-');
+      addTearDown(() => codexHome.delete(recursive: true));
+      final config = File('${codexHome.path}/config.toml');
+      await config.writeAsString(
+        'model = "gpt-5"\n\n'
+        '[plugins."sample@local"]\n'
+        'enabled = true\n\n'
+        '[features]\n'
+        'web_search = true\n',
+      );
+      const plugin = CodexPlugin(
+        id: 'sample@local',
+        name: 'sample',
+        marketplaceName: 'local',
+        installed: true,
+        enabled: true,
+      );
+
+      await CodexPluginStore(
+        codexHome: codexHome,
+      ).setPluginEnabled(plugin, false);
+
+      expect(
+        await config.readAsString(),
+        'model = "gpt-5"\n\n'
+        '[plugins."sample@local"]\n'
+        'enabled = false\n\n'
+        '[features]\n'
+        'web_search = true\n',
+      );
+    },
+  );
+
+  testWidgets('opens the local Codex plugin manager', (tester) async {
+    final pluginStore = _MemoryCodexPluginStore()
+      ..plugins.add(
+        const CodexPlugin(
+          id: 'sample@local',
+          name: 'Sample plugin',
+          marketplaceName: 'local',
+          installed: true,
+          enabled: true,
+        ),
+      );
+    final controller = CodexController(pluginStore: pluginStore);
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('plugin-manager-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('plugin-manager-dialog')), findsOneWidget);
+    expect(find.text('Sample plugin'), findsOneWidget);
   });
 
   test('caches local session metadata during the refresh interval', () async {

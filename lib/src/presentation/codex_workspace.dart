@@ -8,6 +8,7 @@ import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 
 import '../app_controller.dart';
 import '../domain/codex_file_change.dart';
+import '../domain/codex_plugin.dart';
 import '../domain/codex_thread.dart';
 import '../domain/pending_approval.dart';
 import '../domain/timeline_entry.dart';
@@ -544,6 +545,96 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     );
   }
 
+  /// 刷新并显示插件管理器，支持本地 marketplace 与启用状态。
+  /// Refreshes and shows the plugin manager for local marketplaces and states.
+  Future<void> _showPlugins() async {
+    await widget.controller.refreshPlugins();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AnimatedBuilder(
+        animation: widget.controller,
+        builder: (context, _) {
+          final controller = widget.controller;
+          return AlertDialog(
+            key: const Key('plugin-manager-dialog'),
+            title: const Text('Codex 插件'),
+            content: SizedBox(
+              width: 640,
+              height: 480,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('插件由本机 Codex CLI 管理；安装或启停后，请重启运行时并新建任务。'),
+                  const SizedBox(height: 12),
+                  if (controller.pluginsLoading || controller.pluginSaving)
+                    const LinearProgressIndicator(),
+                  if (controller.pluginsError case final error?) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      error,
+                      style: TextStyle(color: YeknomPalette.of(context).fault),
+                    ),
+                  ],
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: controller.pluginsLoading
+                        ? const Center(child: CircularProgressIndicator())
+                        : controller.plugins.isEmpty
+                        ? const Center(child: Text('没有已安装或可用的插件。'))
+                        : ListView.separated(
+                            itemCount: controller.plugins.length,
+                            separatorBuilder: (_, _) =>
+                                const Divider(height: 1),
+                            itemBuilder: (context, index) {
+                              final plugin = controller.plugins[index];
+                              return _PluginTile(
+                                plugin: plugin,
+                                busy: controller.pluginSaving,
+                                onEnabledChanged: (enabled) => controller
+                                    .setPluginEnabled(plugin, enabled),
+                                onInstall: () =>
+                                    controller.installPlugin(plugin),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton.icon(
+                onPressed: controller.pluginSaving
+                    ? null
+                    : () async {
+                        final path = await getDirectoryPath(
+                          confirmButtonText: '添加本地 marketplace',
+                        );
+                        if (path != null && path.trim().isNotEmpty) {
+                          await controller.addLocalPluginMarketplace(path);
+                        }
+                      },
+                icon: const Icon(Icons.folder_open_outlined),
+                label: const Text('添加本地 marketplace'),
+              ),
+              TextButton.icon(
+                onPressed: controller.pluginsLoading || controller.pluginSaving
+                    ? null
+                    : controller.refreshPlugins,
+                icon: const Icon(Icons.refresh),
+                label: const Text('刷新'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('关闭'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   /// 构建响应控制器状态的工作区主布局。
   /// Builds the main workspace layout in response to controller state.
   @override
@@ -567,6 +658,7 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
                   onStop: controller.stopRuntime,
                   onAccount: _showAccount,
                   onRelay: _showRelayProvider,
+                  onPlugins: _showPlugins,
                   onSetReasoningEffort: controller.setReasoningEffort,
                 ),
                 const Divider(height: 1),
@@ -625,6 +717,7 @@ class _TopBar extends StatelessWidget {
     required this.onStop,
     required this.onAccount,
     required this.onRelay,
+    required this.onPlugins,
     required this.onSetReasoningEffort,
   });
 
@@ -638,6 +731,7 @@ class _TopBar extends StatelessWidget {
   final Future<void> Function() onStop;
   final Future<void> Function() onAccount;
   final Future<void> Function() onRelay;
+  final Future<void> Function() onPlugins;
   final Future<void> Function(ReasoningEffort) onSetReasoningEffort;
 
   /// 构建包含运行时、账户、Provider 和项目控制的顶部栏。
@@ -805,13 +899,29 @@ class _TopBar extends StatelessWidget {
                 ),
               ),
             const SizedBox(width: 8),
-            TextButton.icon(
-              onPressed: controller.canChooseWorkspace
-                  ? onChooseWorkspace
-                  : null,
-              icon: const Icon(Icons.folder_open_outlined),
-              label: const Text('项目'),
+            IconButton(
+              key: const Key('plugin-manager-button'),
+              tooltip: '插件管理',
+              onPressed: onPlugins,
+              icon: const Icon(Icons.extension_outlined),
             ),
+            const SizedBox(width: 4),
+            if (compact)
+              IconButton(
+                tooltip: '选择项目',
+                onPressed: controller.canChooseWorkspace
+                    ? onChooseWorkspace
+                    : null,
+                icon: const Icon(Icons.folder_open_outlined),
+              )
+            else
+              TextButton.icon(
+                onPressed: controller.canChooseWorkspace
+                    ? onChooseWorkspace
+                    : null,
+                icon: const Icon(Icons.folder_open_outlined),
+                label: const Text('项目'),
+              ),
             const SizedBox(width: 8),
             if (controller.canStopRuntime)
               FilledButton.tonalIcon(
@@ -832,6 +942,49 @@ class _TopBar extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// 展示一个插件的来源、安装状态和可用操作。
+/// Displays one plugin's source, install state, and available actions.
+class _PluginTile extends StatelessWidget {
+  const _PluginTile({
+    required this.plugin,
+    required this.busy,
+    required this.onEnabledChanged,
+    required this.onInstall,
+  });
+
+  final CodexPlugin plugin;
+  final bool busy;
+  final ValueChanged<bool> onEnabledChanged;
+  final VoidCallback onInstall;
+
+  /// 构建插件状态行，并只为已安装项显示启用开关。
+  /// Builds the plugin state row and shows a toggle only for installed items.
+  @override
+  Widget build(BuildContext context) {
+    final details = [
+      plugin.sourceLabel,
+      if (plugin.version?.isNotEmpty == true) 'v${plugin.version}',
+      if (plugin.authPolicy?.isNotEmpty == true) '认证：${plugin.authPolicy}',
+    ].join(' · ');
+    return ListTile(
+      leading: Icon(
+        plugin.installed ? Icons.extension : Icons.extension_outlined,
+      ),
+      title: Text(plugin.name),
+      subtitle: Text(details, maxLines: 2, overflow: TextOverflow.ellipsis),
+      trailing: plugin.installed
+          ? Switch(
+              value: plugin.enabled,
+              onChanged: busy ? null : onEnabledChanged,
+            )
+          : FilledButton.tonal(
+              onPressed: busy ? null : onInstall,
+              child: const Text('安装'),
+            ),
     );
   }
 }
