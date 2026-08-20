@@ -622,7 +622,7 @@ class _TopBar extends StatelessWidget {
                 tooltip: '推理强度：${controller.reasoningEffort.label}',
                 icon: const Icon(Icons.psychology_outlined),
                 onSelected: onSetReasoningEffort,
-                itemBuilder: (context) => ReasoningEffort.values
+                itemBuilder: (context) => controller.reasoningEffortOptions
                     .map(
                       (effort) => CheckedPopupMenuItem(
                         value: effort,
@@ -641,7 +641,7 @@ class _TopBar extends StatelessWidget {
                   onChanged: (value) {
                     if (value != null) onSetReasoningEffort(value);
                   },
-                  items: ReasoningEffort.values
+                  items: controller.reasoningEffortOptions
                       .map(
                         (effort) => DropdownMenuItem(
                           value: effort,

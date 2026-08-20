@@ -171,6 +171,34 @@ class CodexAppServer {
     notify('initialized');
   }
 
+  /// Returns every picker-visible model exposed by the connected App Server.
+  /// Model entries include their supported reasoning effort options.
+  Future<List<JsonMap>> listModels({bool includeHidden = false}) async {
+    final models = <JsonMap>[];
+    final seenCursors = <String>{};
+    String? cursor;
+    do {
+      final response = await request('model/list', {
+        'cursor': ?cursor,
+        'includeHidden': includeHidden,
+      });
+      _throwIfError(response);
+      final result = response['result'];
+      if (result is! Map || result['data'] is! Iterable) {
+        throw const FormatException('App Server did not return model options.');
+      }
+      models.addAll(
+        (result['data'] as Iterable).whereType<Map>().map(JsonMap.from),
+      );
+      final next = result['nextCursor']?.toString();
+      cursor = next == null || next.isEmpty ? null : next;
+      if (cursor != null && !seenCursors.add(cursor)) {
+        throw StateError('App Server repeated a model list pagination cursor.');
+      }
+    } while (cursor != null);
+    return models;
+  }
+
   Future<String> startThread({
     required String workingDirectory,
     String? modelProvider,

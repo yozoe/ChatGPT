@@ -20,11 +20,12 @@ enum ApprovalMode { manual, autoApprove }
 /// The value is passed to App Server as the Codex configuration key
 /// `model_reasoning_effort`. Leaving it at [defaultValue] lets the selected
 /// model use its own default.
-enum ReasoningEffort { defaultValue, low, medium, high, xhigh }
+enum ReasoningEffort { defaultValue, minimal, low, medium, high, xhigh }
 
 extension ReasoningEffortLabel on ReasoningEffort {
   String get label => switch (this) {
     ReasoningEffort.defaultValue => '默认',
+    ReasoningEffort.minimal => '最小',
     ReasoningEffort.low => '低',
     ReasoningEffort.medium => '中',
     ReasoningEffort.high => '高',
@@ -33,6 +34,7 @@ extension ReasoningEffortLabel on ReasoningEffort {
 
   String? get configValue => switch (this) {
     ReasoningEffort.defaultValue => null,
+    ReasoningEffort.minimal => 'minimal',
     ReasoningEffort.low => 'low',
     ReasoningEffort.medium => 'medium',
     ReasoningEffort.high => 'high',
@@ -41,6 +43,7 @@ extension ReasoningEffortLabel on ReasoningEffort {
 
   static ReasoningEffort fromConfigValue(String? value) => switch (value) {
     'low' => ReasoningEffort.low,
+    'minimal' => ReasoningEffort.minimal,
     'medium' => ReasoningEffort.medium,
     'high' => ReasoningEffort.high,
     'xhigh' => ReasoningEffort.xhigh,
@@ -89,6 +92,9 @@ class CodexController extends ChangeNotifier {
   int _threadRefreshRequest = 0;
   int _archivedThreadRefreshRequest = 0;
   final Set<String> _unarchivingThreadIds = {};
+  Future<void> _reasoningEffortSave = Future.value();
+  Map<String, Set<ReasoningEffort>> _reasoningEffortsByModel = const {};
+  String? _defaultModelId;
   late final Future<void> _relayLoad;
   late final Future<void> _runtimeLoad;
   late final Future<void> _workspaceLoad;
@@ -101,6 +107,9 @@ class CodexController extends ChangeNotifier {
   bool approvalResponding = false;
   ApprovalMode approvalMode = ApprovalMode.manual;
   ReasoningEffort reasoningEffort = ReasoningEffort.defaultValue;
+  List<ReasoningEffort> reasoningEffortOptions = const [
+    ReasoningEffort.defaultValue,
+  ];
   AuthStatus authStatus = AuthStatus.checking;
   String? accountEmail;
   String? accountPlan;
@@ -234,6 +243,7 @@ class CodexController extends ChangeNotifier {
       );
       await _server.initialize();
       await refreshAccount();
+      await _refreshReasoningEffortCapabilities();
       status = RuntimeStatus.ready;
       _add(TimelineKind.system, '运行时已连接', 'App Server 已通过本地 stdio 通道就绪。');
       await refreshThreads();
@@ -264,7 +274,11 @@ class CodexController extends ChangeNotifier {
             ? null
             : RelayProviderConfiguration.providerId,
         model: relayProvider?.model,
-        config: _threadConfig(usesRelay: relayProvider != null),
+        config: _threadConfig(
+          usesRelay: relayProvider != null,
+          model: relayProvider?.model,
+          useDefaultModelWhenMissing: relayProvider == null,
+        ),
       );
       await refreshThreads();
       final id = activeThreadId!;
@@ -388,6 +402,8 @@ class CodexController extends ChangeNotifier {
         config: _threadConfig(
           usesRelay:
               thread.modelProvider == RelayProviderConfiguration.providerId,
+          model: thread.model,
+          useDefaultModelWhenMissing: false,
         ),
       );
       activeThreadId = thread.id;
@@ -548,6 +564,8 @@ class CodexController extends ChangeNotifier {
   }
 
   Future<void> setReasoningEffort(ReasoningEffort value) async {
+    await _runtimeLoad;
+    if (!reasoningEffortOptions.contains(value)) return;
     if (reasoningEffort == value) return;
     reasoningEffort = value;
     _add(
@@ -559,7 +577,7 @@ class CodexController extends ChangeNotifier {
     );
     notifyListeners();
     try {
-      await _runtimeConfigurationStore.saveReasoningEffort(value.configValue);
+      await _saveReasoningEffort(value);
     } catch (error) {
       _add(TimelineKind.error, '无法保存推理强度', _messageOf(error));
       if (!_disposed) notifyListeners();
@@ -1115,17 +1133,118 @@ class CodexController extends ChangeNotifier {
         _server.setExecutable(executable);
       }
       reasoningEffort = ReasoningEffortLabel.fromConfigValue(values[1]);
+      if (reasoningEffort != ReasoningEffort.defaultValue) {
+        reasoningEffortOptions = [
+          ReasoningEffort.defaultValue,
+          reasoningEffort,
+        ];
+      }
     } catch (error) {
       runtimeError = '无法读取已保存的运行时配置：${_messageOf(error)}';
     }
   }
 
-  JsonMap? _threadConfig({required bool usesRelay}) {
+  JsonMap? _threadConfig({
+    required bool usesRelay,
+    required bool useDefaultModelWhenMissing,
+    String? model,
+  }) {
+    final effort = reasoningEffort.configValue;
     final config = <String, dynamic>{
       if (usesRelay && relayProvider != null) ...relayProvider!.threadConfig,
-      'model_reasoning_effort': ?reasoningEffort.configValue,
+      if (effort != null &&
+          _supportsReasoningEffort(
+            model,
+            reasoningEffort,
+            useDefaultModelWhenMissing: useDefaultModelWhenMissing,
+          ))
+        'model_reasoning_effort': effort,
     };
     return config.isEmpty ? null : config;
+  }
+
+  bool _supportsReasoningEffort(
+    String? model,
+    ReasoningEffort effort, {
+    required bool useDefaultModelWhenMissing,
+  }) {
+    final modelId =
+        model ?? (useDefaultModelWhenMissing ? _defaultModelId : null);
+    return modelId != null &&
+        (_reasoningEffortsByModel[modelId]?.contains(effort) ?? false);
+  }
+
+  Future<void> _refreshReasoningEffortCapabilities() async {
+    try {
+      final models = await _server.listModels();
+      final capabilities = <String, Set<ReasoningEffort>>{};
+      String? defaultModelId;
+      for (final model in models) {
+        final id = model['id']?.toString() ?? model['model']?.toString();
+        if (id == null || id.isEmpty) continue;
+        final options = <ReasoningEffort>{};
+        final supported = model['supportedReasoningEfforts'];
+        if (supported is Iterable) {
+          for (final rawOption in supported) {
+            if (rawOption is! Map) continue;
+            final effort = ReasoningEffortLabel.fromConfigValue(
+              rawOption['reasoningEffort']?.toString(),
+            );
+            if (effort != ReasoningEffort.defaultValue) options.add(effort);
+          }
+        }
+        capabilities[id] = options;
+        final modelName = model['model']?.toString();
+        if (modelName != null && modelName.isNotEmpty) {
+          capabilities[modelName] = options;
+        }
+        if (model['isDefault'] == true) defaultModelId ??= id;
+      }
+      _reasoningEffortsByModel = capabilities;
+      _defaultModelId =
+          defaultModelId ??
+          (models.isEmpty
+              ? null
+              : (models.first['id'] ?? models.first['model'])?.toString());
+      final activeModel = relayProvider?.model ?? _defaultModelId;
+      final availableEfforts = [...?_reasoningEffortsByModel[activeModel]]
+        ..sort((left, right) => left.index.compareTo(right.index));
+      reasoningEffortOptions = [
+        ReasoningEffort.defaultValue,
+        ...availableEfforts,
+      ];
+      if (!reasoningEffortOptions.contains(reasoningEffort)) {
+        reasoningEffort = ReasoningEffort.defaultValue;
+        _add(TimelineKind.system, '推理强度已恢复为默认', '当前模型不支持已保存的推理强度。');
+      }
+    } catch (error) {
+      _reasoningEffortsByModel = const {};
+      _defaultModelId = null;
+      reasoningEffortOptions = const [ReasoningEffort.defaultValue];
+      if (reasoningEffort != ReasoningEffort.defaultValue) {
+        reasoningEffort = ReasoningEffort.defaultValue;
+      }
+      _add(TimelineKind.system, '无法加载推理强度选项', '将使用模型默认值。');
+    }
+  }
+
+  Future<void> _saveReasoningEffort(ReasoningEffort value) {
+    final previousSave = _reasoningEffortSave;
+    final nextSave = () async {
+      try {
+        await previousSave;
+      } catch (_) {
+        // A previous write failure must not prevent a newer choice from saving.
+      }
+      await _runtimeConfigurationStore.saveReasoningEffort(value.configValue);
+    }();
+    _reasoningEffortSave = nextSave;
+    return nextSave;
+  }
+
+  @visibleForTesting
+  Future<void> refreshReasoningEffortCapabilitiesForTesting() {
+    return _refreshReasoningEffortCapabilities();
   }
 
   Future<void> _loadWorkspace() async {

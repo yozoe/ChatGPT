@@ -67,6 +67,7 @@ class _FakeCodexAppServer extends CodexAppServer {
   final listRequests = <Completer<List<JsonMap>>>[];
   List<JsonMap> listResponse = <JsonMap>[];
   List<JsonMap> archivedListResponse = <JsonMap>[];
+  List<JsonMap> modelListResponse = <JsonMap>[];
   bool queueListRequests = false;
   Object? resumeError;
   JsonMap resumeResult = {
@@ -104,6 +105,11 @@ class _FakeCodexAppServer extends CodexAppServer {
     final completer = Completer<List<JsonMap>>();
     listRequests.add(completer);
     return completer.future;
+  }
+
+  @override
+  Future<List<JsonMap>> listModels({bool includeHidden = false}) async {
+    return modelListResponse;
   }
 
   @override
@@ -487,16 +493,28 @@ void main() {
   });
 
   test(
-    'passes the selected reasoning effort to new and resumed threads',
+    'passes selected effort only to new and resumed compatible threads',
     () async {
       final store = _FakeRuntimeConfigurationStore();
-      final server = _FakeCodexAppServer();
+      final server = _FakeCodexAppServer()
+        ..modelListResponse = [
+          {
+            'id': 'gpt-5',
+            'model': 'gpt-5',
+            'isDefault': true,
+            'supportedReasoningEfforts': [
+              {'reasoningEffort': 'low'},
+              {'reasoningEffort': 'high'},
+            ],
+          },
+        ];
       final controller = CodexController(
         server: server,
         relayProviderStore: _EmptyRelayProviderStore(),
         runtimeConfigurationStore: store,
       );
       await controller.waitForInitialConfiguration();
+      await controller.refreshReasoningEffortCapabilitiesForTesting();
       controller
         ..workspacePath = '/workspace'
         ..status = RuntimeStatus.ready
@@ -523,8 +541,16 @@ void main() {
             'wire_api': 'responses',
           },
         },
-        'model_reasoning_effort': 'high',
       });
+
+      controller
+        ..activeThreadId = null
+        ..status = RuntimeStatus.ready
+        ..relayProvider = null;
+      await controller.sendPrompt('使用默认模型的新任务');
+
+      expect(server.startedModelProvider, isNull);
+      expect(server.startedConfig, {'model_reasoning_effort': 'high'});
 
       controller
         ..activeThreadId = null
@@ -534,6 +560,40 @@ void main() {
       );
 
       expect(server.resumedConfig, {'model_reasoning_effort': 'high'});
+      controller.dispose();
+    },
+  );
+
+  test(
+    'only exposes reasoning strengths supported by the default model',
+    () async {
+      final store = _FakeRuntimeConfigurationStore()..reasoningEffort = 'high';
+      final server = _FakeCodexAppServer()
+        ..modelListResponse = [
+          {
+            'id': 'gpt-5',
+            'model': 'gpt-5',
+            'isDefault': true,
+            'supportedReasoningEfforts': [
+              {'reasoningEffort': 'low'},
+            ],
+          },
+        ];
+      final controller = CodexController(
+        server: server,
+        relayProviderStore: _EmptyRelayProviderStore(),
+        runtimeConfigurationStore: store,
+      );
+
+      await controller.waitForInitialConfiguration();
+      expect(controller.reasoningEffort, ReasoningEffort.high);
+      await controller.refreshReasoningEffortCapabilitiesForTesting();
+
+      expect(controller.reasoningEffort, ReasoningEffort.defaultValue);
+      expect(controller.reasoningEffortOptions, [
+        ReasoningEffort.defaultValue,
+        ReasoningEffort.low,
+      ]);
       controller.dispose();
     },
   );
