@@ -253,6 +253,27 @@ class CodexAppServer {
     return JsonMap.from(result);
   }
 
+  Future<JsonMap> listThreadTurns({
+    required String threadId,
+    String? cursor,
+    int limit = 50,
+    String sortDirection = 'desc',
+  }) async {
+    final response = await request('thread/turns/list', {
+      'threadId': threadId,
+      'cursor': ?cursor,
+      'limit': limit,
+      'sortDirection': sortDirection,
+      'itemsView': 'full',
+    });
+    _throwIfError(response);
+    final result = response['result'];
+    if (result is! Map || result['data'] is! Iterable) {
+      throw const FormatException('App Server did not return thread turns.');
+    }
+    return JsonMap.from(result);
+  }
+
   Future<void> renameThread({
     required String threadId,
     required String name,

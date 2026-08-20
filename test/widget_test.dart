@@ -27,6 +27,8 @@ class _FakeCodexAppServer extends CodexAppServer {
   JsonMap resumeResult = {
     'thread': {'turns': <JsonMap>[]},
   };
+  JsonMap turnPage = {'data': <JsonMap>[]};
+  final turnPageCursors = <String?>[];
   String? resumedThreadId;
   String? resumedModelProvider;
   String? resumedModel;
@@ -57,6 +59,17 @@ class _FakeCodexAppServer extends CodexAppServer {
     final error = resumeError;
     if (error != null) throw error;
     return resumeResult;
+  }
+
+  @override
+  Future<JsonMap> listThreadTurns({
+    required String threadId,
+    String? cursor,
+    int limit = 50,
+    String sortDirection = 'desc',
+  }) async {
+    turnPageCursors.add(cursor);
+    return turnPage;
   }
 }
 
@@ -279,15 +292,18 @@ void main() {
           'thread': {
             'turns': [
               {
+                'id': 'turn-1',
                 'items': [
                   {
+                    'id': 'user-item',
                     'type': 'userMessage',
                     'content': [
                       {'type': 'text', 'text': '历史问题'},
                     ],
                   },
-                  {'type': 'agentMessage', 'text': '历史回答'},
+                  {'id': 'agent-item', 'type': 'agentMessage', 'text': '历史回答'},
                   {
+                    'id': 'command-item',
                     'type': 'commandExecution',
                     'command': 'dart test',
                     'aggregatedOutput': 'All tests passed',
@@ -329,6 +345,55 @@ void main() {
     expect(controller.lastError, 'offline');
     controller.dispose();
   });
+
+  test(
+    'hydrates older turns when resume returns a pagination cursor',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..resumeResult = {
+          'turnsBackwardsCursor': 'older-cursor',
+          'thread': {
+            'turns': [
+              {
+                'id': 'new-turn',
+                'startedAt': 2,
+                'items': [
+                  {'id': 'new-agent', 'type': 'agentMessage', 'text': '新回答'},
+                ],
+              },
+            ],
+          },
+        }
+        ..turnPage = {
+          'data': [
+            {
+              'id': 'old-turn',
+              'startedAt': 1,
+              'items': [
+                {
+                  'id': 'old-user',
+                  'type': 'userMessage',
+                  'content': [
+                    {'type': 'text', 'text': '旧问题'},
+                  ],
+                },
+              ],
+            },
+          ],
+          'nextCursor': null,
+        };
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+
+      await controller.resumeThread(_thread(id: 'paginated-thread'));
+
+      expect(server.turnPageCursors, ['older-cursor']);
+      final details = controller.entries.map((entry) => entry.detail).toList();
+      expect(details.indexOf('旧问题'), lessThan(details.indexOf('新回答')));
+      controller.dispose();
+    },
+  );
 
   test('ignores an older concurrent thread refresh result', () async {
     final server = _FakeCodexAppServer()..queueListRequests = true;

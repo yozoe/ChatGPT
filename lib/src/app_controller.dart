@@ -303,7 +303,11 @@ class CodexController extends ChangeNotifier {
       activeThreadId = thread.id;
       status = RuntimeStatus.ready;
       _resetConversationTimeline();
-      _appendThreadHistory(resumeResult);
+      final history = await _loadThreadHistory(
+        threadId: thread.id,
+        resumeResult: resumeResult,
+      );
+      _appendThreadHistory(history);
       _add(TimelineKind.system, '任务已恢复', '可以继续在此任务中追问。');
       await refreshThreads();
     } catch (error) {
@@ -689,9 +693,9 @@ class CodexController extends ChangeNotifier {
   }
 
   void _appendThreadHistory(JsonMap result) {
-    final thread = result['thread'];
-    if (thread is! Map || thread['turns'] is! Iterable) return;
-    for (final rawTurn in thread['turns'] as Iterable) {
+    final turns = result['turns'];
+    if (turns is! Iterable) return;
+    for (final rawTurn in turns) {
       if (rawTurn is! Map || rawTurn['items'] is! Iterable) continue;
       for (final rawItem in rawTurn['items'] as Iterable) {
         if (rawItem is! Map) continue;
@@ -713,9 +717,95 @@ class CodexController extends ChangeNotifier {
             if (detail.isNotEmpty) {
               _add(TimelineKind.command, '执行命令', detail);
             }
+          case 'plan':
+            final text = item['text']?.toString() ?? '';
+            if (text.isNotEmpty) _add(TimelineKind.system, '计划', text);
+          case 'reasoning':
+            final summary = _findText(item['summary']);
+            if (summary.isNotEmpty) {
+              _add(TimelineKind.system, '推理摘要', summary);
+            }
+          case 'fileChange':
+            final changes = item['changes'];
+            final detail = changes is Iterable
+                ? changes
+                      .map(_describeFileChange)
+                      .where((v) => v.isNotEmpty)
+                      .join('\n')
+                : '';
+            if (detail.isNotEmpty) {
+              _add(TimelineKind.command, '文件变更', detail);
+            }
+          case 'mcpToolCall' ||
+              'dynamicToolCall' ||
+              'webSearch' ||
+              'imageView' ||
+              'imageGeneration' ||
+              'sleep' ||
+              'enteredReviewMode' ||
+              'exitedReviewMode':
+            final detail = _findText(item);
+            if (detail.isNotEmpty) {
+              _add(TimelineKind.command, item['type']!.toString(), detail);
+            }
         }
       }
     }
+  }
+
+  Future<JsonMap> _loadThreadHistory({
+    required String threadId,
+    required JsonMap resumeResult,
+  }) async {
+    final thread = resumeResult['thread'];
+    final initialTurns = thread is Map && thread['turns'] is Iterable
+        ? (thread['turns'] as Iterable)
+              .whereType<Map>()
+              .map(JsonMap.from)
+              .toList()
+        : <JsonMap>[];
+    final turnsById = <String, JsonMap>{};
+    for (final turn in initialTurns) {
+      final id = turn['id']?.toString();
+      if (id != null && id.isNotEmpty) turnsById[id] = turn;
+    }
+    var cursor = resumeResult['turnsBackwardsCursor']?.toString();
+    var pageCount = 0;
+    while (cursor != null && cursor.isNotEmpty && pageCount++ < 20) {
+      final page = await _server.listThreadTurns(
+        threadId: threadId,
+        cursor: cursor,
+        sortDirection: 'desc',
+      );
+      final data = page['data'];
+      if (data is Iterable) {
+        for (final rawTurn in data) {
+          if (rawTurn is! Map) continue;
+          final turn = JsonMap.from(rawTurn);
+          final id = turn['id']?.toString();
+          if (id != null && id.isNotEmpty) turnsById[id] = turn;
+        }
+      }
+      final next = page['nextCursor']?.toString();
+      cursor = next == null || next.isEmpty ? null : next;
+    }
+    final turns = turnsById.values.toList()
+      ..sort((a, b) => _turnTimestamp(a).compareTo(_turnTimestamp(b)));
+    return {'turns': turns};
+  }
+
+  int _turnTimestamp(JsonMap turn) =>
+      (turn['startedAt'] as num?)?.toInt() ??
+      (turn['completedAt'] as num?)?.toInt() ??
+      0;
+
+  String _describeFileChange(Object? value) {
+    if (value is! Map) return '';
+    final path =
+        value['path']?.toString() ?? value['filePath']?.toString() ?? '';
+    final kind =
+        value['kind']?.toString() ?? value['type']?.toString() ?? 'changed';
+    return path.isEmpty ? kind : '$kind $path';
   }
 
   void _updateAccount(JsonMap result) {
