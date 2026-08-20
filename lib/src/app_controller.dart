@@ -9,6 +9,7 @@ import 'domain/pending_approval.dart';
 import 'domain/relay_provider_configuration.dart';
 import 'domain/timeline_entry.dart';
 import 'services/codex_app_server.dart';
+import 'services/conversation_history_store.dart';
 import 'services/relay_provider_store.dart';
 import 'services/runtime_configuration_store.dart';
 
@@ -64,10 +65,15 @@ class CodexController extends ChangeNotifier {
     CodexAppServer? server,
     RelayProviderStore? relayProviderStore,
     RuntimeConfigurationStore? runtimeConfigurationStore,
+    ConversationHistoryStore? conversationHistoryStore,
   }) : _server = server ?? CodexAppServer(),
        _relayProviderStore = relayProviderStore ?? RelayProviderStore(),
        _runtimeConfigurationStore =
-           runtimeConfigurationStore ?? RuntimeConfigurationStore() {
+           runtimeConfigurationStore ?? RuntimeConfigurationStore(),
+       _conversationHistoryStore =
+           conversationHistoryStore ??
+           testingConversationHistoryStore ??
+           ConversationHistoryStore() {
     _entries.add(
       _entry(
         TimelineKind.system,
@@ -78,16 +84,22 @@ class CodexController extends ChangeNotifier {
     _relayLoad = _loadRelayProvider();
     _runtimeLoad = _loadRuntimeConfiguration();
     _workspaceLoad = _loadWorkspace();
+    _historyLoad = _loadConversationHistory();
   }
 
   final CodexAppServer _server;
+
+  @visibleForTesting
+  static ConversationHistoryStore? testingConversationHistoryStore;
   final RelayProviderStore _relayProviderStore;
   final RuntimeConfigurationStore _runtimeConfigurationStore;
+  final ConversationHistoryStore _conversationHistoryStore;
   StreamSubscription<ServerEvent>? _eventSubscription;
   final List<TimelineEntry> _entries = [];
   final Map<String, CodexFileChange> _fileChangesByPath = {};
   final Map<String, int> _agentEntryIndexByItem = {};
   Timer? _deltaNotificationTimer;
+  Timer? _historySaveTimer;
   bool _disposed = false;
   bool _startingRuntime = false;
   int _threadRefreshEpoch = 0;
@@ -100,6 +112,7 @@ class CodexController extends ChangeNotifier {
   late final Future<void> _relayLoad;
   late final Future<void> _runtimeLoad;
   late final Future<void> _workspaceLoad;
+  late final Future<void> _historyLoad;
 
   RuntimeStatus status = RuntimeStatus.stopped;
   String? workspacePath;
@@ -185,6 +198,7 @@ class CodexController extends ChangeNotifier {
       return;
     }
     final canonicalPath = await directory.resolveSymbolicLinks();
+    await _saveConversationHistory();
     _invalidateThreadRefreshes();
     workspacePath = canonicalPath;
     activeThreadId = null;
@@ -192,6 +206,8 @@ class CodexController extends ChangeNotifier {
     archivedThreads = const [];
     _clearStreamingState();
     _clearFileChanges();
+    _resetConversationTimeline();
+    await _restoreConversationHistory(canonicalPath);
     _add(TimelineKind.system, '项目已选择', canonicalPath);
     notifyListeners();
     try {
@@ -211,6 +227,7 @@ class CodexController extends ChangeNotifier {
     activeThreadId = null;
     _clearStreamingState();
     _clearFileChanges();
+    _resetConversationTimeline();
     _add(TimelineKind.system, '已新建任务', '发送第一条消息后会创建新的 Thread。');
     notifyListeners();
   }
@@ -268,6 +285,10 @@ class CodexController extends ChangeNotifier {
     final text = prompt.trim();
     if (text.isEmpty || !canSend) return;
     final workspace = workspacePath!;
+    if (activeThreadId == null) {
+      _resetConversationTimeline();
+      _clearFileChanges();
+    }
     status = RuntimeStatus.running;
     lastError = null;
     _clearStreamingState();
@@ -323,12 +344,9 @@ class CodexController extends ChangeNotifier {
       _invalidateThreadRefreshes();
       status = RuntimeStatus.stopped;
       activeThreadId = null;
-      threads = const [];
-      archivedThreads = const [];
       pendingApproval = null;
       approvalResponding = false;
       _clearStreamingState();
-      _clearFileChanges();
       _add(TimelineKind.system, '运行时已停止', '现在可以切换项目或重新启动运行时。');
     } catch (error) {
       status = RuntimeStatus.failed;
@@ -351,7 +369,8 @@ class CodexController extends ChangeNotifier {
         workingDirectory: workspace,
       )).map(CodexThread.fromJson).toList(growable: false);
       if (_isCurrentThreadRefresh(request, epoch, workspace)) {
-        threads = nextThreads;
+        threads = _mergeThreads(nextThreads, threads);
+        _scheduleConversationHistorySave();
       }
     } catch (error) {
       if (_isCurrentThreadRefresh(request, epoch, workspace)) {
@@ -380,6 +399,7 @@ class CodexController extends ChangeNotifier {
       )).map(CodexThread.fromJson).toList(growable: false);
       if (_isCurrentArchivedThreadRefresh(request, epoch, workspace)) {
         archivedThreads = nextThreads;
+        _scheduleConversationHistorySave();
       }
     } catch (error) {
       if (_isCurrentArchivedThreadRefresh(request, epoch, workspace)) {
@@ -1302,9 +1322,61 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  Future<void> _loadConversationHistory() async {
+    await _workspaceLoad;
+    final workspace = workspacePath;
+    if (workspace != null) await _restoreConversationHistory(workspace);
+  }
+
+  Future<void> _restoreConversationHistory(String workspace) async {
+    try {
+      final snapshot = await _conversationHistoryStore.read(workspace);
+      if (_disposed || workspacePath != workspace || snapshot == null) return;
+      threads = snapshot.threads;
+      archivedThreads = snapshot.archivedThreads;
+      if (snapshot.entries.isNotEmpty) {
+        _entries
+          ..clear()
+          ..addAll(snapshot.entries);
+      }
+      _fileChangesByPath
+        ..clear()
+        ..addEntries(
+          snapshot.fileChanges.map((change) => MapEntry(change.path, change)),
+        );
+      turnDiff = snapshot.turnDiff;
+    } catch (error) {
+      _add(TimelineKind.error, '无法读取本地历史', _messageOf(error));
+    } finally {
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  List<CodexThread> _mergeThreads(
+    List<CodexThread> fresh,
+    List<CodexThread> cached,
+  ) {
+    final merged = <String, CodexThread>{
+      for (final thread in cached) thread.id: thread,
+      for (final thread in fresh) thread.id: thread,
+    };
+    return merged.values.toList(growable: false)
+      ..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
+  }
+
   @visibleForTesting
   Future<void> waitForInitialConfiguration() {
-    return Future.wait([_relayLoad, _runtimeLoad, _workspaceLoad]);
+    return Future.wait([
+      _relayLoad,
+      _runtimeLoad,
+      _workspaceLoad,
+      _historyLoad,
+    ]);
+  }
+
+  @visibleForTesting
+  Future<void> saveConversationHistoryForTesting() {
+    return _saveConversationHistory();
   }
 
   Future<CodexRuntimeProbe> _inspectRuntime({required bool notify}) async {
@@ -1322,6 +1394,38 @@ class CodexController extends ChangeNotifier {
     _agentEntryIndexByItem.clear();
     _deltaNotificationTimer?.cancel();
     _deltaNotificationTimer = null;
+  }
+
+  void _scheduleConversationHistorySave() {
+    if (workspacePath == null || _disposed || _historySaveTimer != null) return;
+    _historySaveTimer = Timer(const Duration(milliseconds: 500), () {
+      _historySaveTimer = null;
+      unawaited(_saveConversationHistory());
+    });
+  }
+
+  Future<void> _saveConversationHistory() async {
+    final workspace = workspacePath;
+    if (workspace == null || _disposed) return;
+    _historySaveTimer?.cancel();
+    _historySaveTimer = null;
+    try {
+      await _conversationHistoryStore.save(
+        workspace: workspace,
+        snapshot: ConversationHistorySnapshot(
+          threads: List.of(threads),
+          archivedThreads: List.of(archivedThreads),
+          entries: List.of(entries),
+          fileChanges: List.of(fileChanges),
+          turnDiff: turnDiff,
+        ),
+      );
+    } catch (error) {
+      if (!_disposed) {
+        _entries.add(_entry(TimelineKind.error, '无法保存本地历史', _messageOf(error)));
+        notifyListeners();
+      }
+    }
   }
 
   void _clearFileChanges() {
@@ -1390,10 +1494,13 @@ class CodexController extends ChangeNotifier {
 
   void _add(TimelineKind kind, String title, String detail) {
     _entries.add(_entry(kind, title, detail));
+    _scheduleConversationHistorySave();
   }
 
   @override
   void dispose() {
+    _historySaveTimer?.cancel();
+    unawaited(_saveConversationHistory());
     _disposed = true;
     _clearStreamingState();
     unawaited(_eventSubscription?.cancel());

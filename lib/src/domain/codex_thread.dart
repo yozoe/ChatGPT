@@ -36,7 +36,9 @@ class CodexThread {
       );
     }
     final statusValue = value['status'];
-    final status = statusValue is Map ? statusValue['type']?.toString() : null;
+    final status = statusValue is Map
+        ? statusValue['type']?.toString()
+        : statusValue?.toString();
     return CodexThread(
       id: id,
       preview: value['preview']?.toString() ?? '',
@@ -59,6 +61,17 @@ class CodexThread {
     updatedAt: updatedAt,
     status: status,
   );
+
+  JsonMap toJson() => {
+    'id': id,
+    'preview': preview,
+    'modelProvider': ?modelProvider,
+    'model': ?model,
+    'name': ?name,
+    'createdAt': createdAt,
+    'updatedAt': updatedAt,
+    'status': ?status,
+  };
 
   static int _toInt(Object? value) => value is num ? value.toInt() : 0;
 }

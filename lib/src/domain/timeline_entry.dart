@@ -21,4 +21,25 @@ class TimelineEntry {
       createdAt: createdAt,
     );
   }
+
+  Map<String, dynamic> toJson() => {
+    'kind': kind.name,
+    'title': title,
+    'detail': detail,
+    'createdAt': createdAt.toIso8601String(),
+  };
+
+  factory TimelineEntry.fromJson(Map<dynamic, dynamic> value) {
+    final kind = TimelineKind.values.where(
+      (candidate) => candidate.name == value['kind']?.toString(),
+    );
+    return TimelineEntry(
+      kind: kind.isEmpty ? TimelineKind.system : kind.first,
+      title: value['title']?.toString() ?? '',
+      detail: value['detail']?.toString() ?? '',
+      createdAt:
+          DateTime.tryParse(value['createdAt']?.toString() ?? '') ??
+          DateTime.now(),
+    );
+  }
 }

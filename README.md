@@ -13,6 +13,7 @@
 - OpenAI Responses API 兼容中转站：模型、Base URL 与 macOS Keychain 密钥管理
 - 已配置中转站 API Key 时，无需额外完成 OpenAI 账户登录即可发送任务
 - 当前工作区线程历史：列表、恢复、重命名、归档与归档视图恢复
+- 对话记录、线程列表与文件 Diff 会按本地项目缓存到 macOS Application Support；启动时先恢复缓存，连接 App Server 后再同步最新状态
 - 自动保存并恢复最近选择的本地项目路径，不向项目目录写入配置
 - 自动保存并恢复 macOS 主窗口的大小与位置；覆盖安装同一应用后仍会保留
 - 对话时间线采用扁平消息样式并自动滚至最新内容；Enter 发送消息，Shift+Enter 换行

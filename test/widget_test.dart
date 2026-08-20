@@ -9,6 +9,7 @@ import 'package:chatgpt/src/domain/relay_provider_configuration.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/presentation/codex_workspace.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
+import 'package:chatgpt/src/services/conversation_history_store.dart';
 import 'package:chatgpt/src/services/relay_provider_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'package:flutter/material.dart';
@@ -59,6 +60,23 @@ class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
   Future<void> saveReasoningEffort(String? value) async {
     savedReasoningEffort = value;
     reasoningEffort = value;
+  }
+}
+
+class _MemoryConversationHistoryStore extends ConversationHistoryStore {
+  final snapshots = <String, ConversationHistorySnapshot>{};
+
+  @override
+  Future<ConversationHistorySnapshot?> read(String workspace) async {
+    return snapshots[workspace];
+  }
+
+  @override
+  Future<void> save({
+    required String workspace,
+    required ConversationHistorySnapshot snapshot,
+  }) async {
+    snapshots[workspace] = snapshot;
   }
 }
 
@@ -201,6 +219,17 @@ CodexThread _thread({
 );
 
 void main() {
+  late _MemoryConversationHistoryStore historyStore;
+
+  setUp(() {
+    historyStore = _MemoryConversationHistoryStore();
+    CodexController.testingConversationHistoryStore = historyStore;
+  });
+
+  tearDown(() {
+    CodexController.testingConversationHistoryStore = null;
+  });
+
   testWidgets('shows the Codex Desk shell', (tester) async {
     await tester.pumpWidget(const CodexDeskApp());
 
@@ -366,6 +395,61 @@ void main() {
     expect(restoredController.workspacePath, store.savedWorkspace);
     restoredController.dispose();
   });
+
+  test(
+    'restores cached conversation history for the selected workspace',
+    () async {
+      final runtimeStore = _FakeRuntimeConfigurationStore();
+      final firstController = CodexController(
+        server: CodexAppServer(),
+        relayProviderStore: _EmptyRelayProviderStore(),
+        runtimeConfigurationStore: runtimeStore,
+        conversationHistoryStore: historyStore,
+      );
+      await firstController.selectWorkspace(Directory.systemTemp.path);
+      firstController
+        ..threads = [_thread(id: 'cached-thread')]
+        ..handleServerEventForTesting(
+          const ServerEvent(
+            method: 'item/completed',
+            params: {
+              'item': {
+                'type': 'fileChange',
+                'changes': [
+                  {
+                    'path': 'lib/main.dart',
+                    'kind': 'modified',
+                    'diff': '+cached',
+                  },
+                ],
+              },
+            },
+          ),
+        );
+      await firstController.saveConversationHistoryForTesting();
+      final workspace = firstController.workspacePath!;
+      firstController.dispose();
+
+      final restoredController = CodexController(
+        server: CodexAppServer(),
+        relayProviderStore: _EmptyRelayProviderStore(),
+        runtimeConfigurationStore: runtimeStore,
+        conversationHistoryStore: historyStore,
+      );
+      await restoredController.waitForInitialConfiguration();
+
+      expect(restoredController.workspacePath, workspace);
+      expect(restoredController.threads.map((thread) => thread.id), [
+        'cached-thread',
+      ]);
+      expect(restoredController.fileChanges.single.diff, '+cached');
+      expect(
+        restoredController.entries.map((entry) => entry.title),
+        contains('文件变更'),
+      );
+      restoredController.dispose();
+    },
+  );
 
   test('updates visible account state from App Server notifications', () {
     final controller = CodexController(server: CodexAppServer());

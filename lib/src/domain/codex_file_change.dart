@@ -25,6 +25,8 @@ class CodexFileChange {
     );
   }
 
+  Map<String, dynamic> toJson() => {'path': path, 'kind': kind, 'diff': diff};
+
   @override
   bool operator ==(Object other) =>
       other is CodexFileChange &&
