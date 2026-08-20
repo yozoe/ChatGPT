@@ -986,75 +986,99 @@ class _ComposerPanel extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 8),
-                Row(
-                  children: [
-                    IconButton(
-                      tooltip: '附加内容（即将支持）',
-                      onPressed: null,
-                      icon: const Icon(Icons.add, size: 20),
-                    ),
-                    PopupMenuButton<ApprovalMode>(
-                      tooltip: '审批模式：${controller.approvalMode.label}',
-                      onSelected: controller.setApprovalMode,
-                      itemBuilder: (context) => ApprovalMode.values
-                          .map(
-                            (mode) => CheckedPopupMenuItem(
-                              value: mode,
-                              checked: controller.approvalMode == mode,
-                              child: Text(mode.label),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final showAttachment = constraints.maxWidth >= 420;
+                    final showApproval = constraints.maxWidth >= 260;
+                    final showApprovalLabel = constraints.maxWidth >= 360;
+                    final showModel = constraints.maxWidth >= 190;
+                    return Row(
+                      children: [
+                        if (showAttachment)
+                          IconButton(
+                            tooltip: '附加内容（即将支持）',
+                            onPressed: null,
+                            icon: const Icon(Icons.add, size: 20),
+                          ),
+                        if (showApproval)
+                          PopupMenuButton<ApprovalMode>(
+                            tooltip: '审批模式：${controller.approvalMode.label}',
+                            onSelected: controller.setApprovalMode,
+                            itemBuilder: (context) => ApprovalMode.values
+                                .map(
+                                  (mode) => CheckedPopupMenuItem(
+                                    value: mode,
+                                    checked: controller.approvalMode == mode,
+                                    child: Text(mode.label),
+                                  ),
+                                )
+                                .toList(growable: false),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 8,
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(
+                                    Icons.verified_user_outlined,
+                                    size: 16,
+                                  ),
+                                  if (showApprovalLabel) ...[
+                                    const SizedBox(width: 5),
+                                    Text(
+                                      controller.approvalMode ==
+                                              ApprovalMode.autoApprove
+                                          ? '自动批准'
+                                          : '帮助批准',
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.bodySmall,
+                                    ),
+                                  ],
+                                ],
+                              ),
                             ),
+                          ),
+                        if (showModel) ...[
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              '$model · 推理$effort',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.end,
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(color: const Color(0xFFADB3BC)),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                        ] else
+                          const Spacer(),
+                        if (controller.canStop)
+                          IconButton.filled(
+                            tooltip: '停止当前任务',
+                            onPressed: controller.stopCurrentTurn,
+                            style: IconButton.styleFrom(
+                              backgroundColor: const Color(0xFFE4E5E7),
+                              foregroundColor: const Color(0xFF24262A),
+                            ),
+                            icon: const Icon(Icons.stop, size: 19),
                           )
-                          .toList(growable: false),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 8,
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.verified_user_outlined, size: 16),
-                            const SizedBox(width: 5),
-                            Text(
-                              controller.approvalMode ==
-                                      ApprovalMode.autoApprove
-                                  ? '自动批准'
-                                  : '帮助批准',
-                              style: Theme.of(context).textTheme.bodySmall,
+                        else
+                          IconButton.filled(
+                            tooltip: '发送任务',
+                            onPressed: controller.canSend ? onSend : null,
+                            style: IconButton.styleFrom(
+                              backgroundColor: const Color(0xFFE4E5E7),
+                              foregroundColor: const Color(0xFF24262A),
                             ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      '$model · 推理$effort',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: const Color(0xFFADB3BC),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    if (controller.canStop)
-                      IconButton.filled(
-                        tooltip: '停止当前任务',
-                        onPressed: controller.stopCurrentTurn,
-                        style: IconButton.styleFrom(
-                          backgroundColor: const Color(0xFFE4E5E7),
-                          foregroundColor: const Color(0xFF24262A),
-                        ),
-                        icon: const Icon(Icons.stop, size: 19),
-                      )
-                    else
-                      IconButton.filled(
-                        tooltip: '发送任务',
-                        onPressed: controller.canSend ? onSend : null,
-                        style: IconButton.styleFrom(
-                          backgroundColor: const Color(0xFFE4E5E7),
-                          foregroundColor: const Color(0xFF24262A),
-                        ),
-                        icon: const Icon(Icons.arrow_upward, size: 19),
-                      ),
-                  ],
+                            icon: const Icon(Icons.arrow_upward, size: 19),
+                          ),
+                      ],
+                    );
+                  },
                 ),
               ],
             ),
