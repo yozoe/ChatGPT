@@ -13,6 +13,8 @@ class TimelineEntry {
   final String detail;
   final DateTime createdAt;
 
+  /// 返回替换可选详情后的时间线条目副本。
+  /// Returns a timeline entry copy with an optional replacement detail.
   TimelineEntry copyWith({String? detail}) {
     return TimelineEntry(
       kind: kind,
@@ -22,6 +24,8 @@ class TimelineEntry {
     );
   }
 
+  /// 将时间线条目转换为本地历史缓存使用的 JSON。
+  /// Converts the timeline entry to JSON for the local history cache.
   Map<String, dynamic> toJson() => {
     'kind': kind.name,
     'title': title,
@@ -29,6 +33,8 @@ class TimelineEntry {
     'createdAt': createdAt.toIso8601String(),
   };
 
+  /// 从本地历史缓存 JSON 恢复时间线条目。
+  /// Restores a timeline entry from local history cache JSON.
   factory TimelineEntry.fromJson(Map<dynamic, dynamic> value) {
     final kind = TimelineKind.values.where(
       (candidate) => candidate.name == value['kind']?.toString(),

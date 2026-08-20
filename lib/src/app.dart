@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'app_controller.dart';
 import 'presentation/codex_workspace.dart';
 
+/// 挂载 Codex Desk 的根 Widget。
+/// Mounts the Codex Desk root widget.
 void runCodexDesk() {
   runApp(const CodexDeskApp());
 }
@@ -10,6 +12,8 @@ void runCodexDesk() {
 class CodexDeskApp extends StatelessWidget {
   const CodexDeskApp({super.key});
 
+  /// 构建应用主题和初始工作区。
+  /// Builds the application theme and initial workspace.
   @override
   Widget build(BuildContext context) {
     const background = Color(0xFF0B1017);

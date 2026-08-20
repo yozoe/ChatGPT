@@ -21,6 +21,8 @@ class CodexThread {
   final String? name;
   final String? status;
 
+  /// 返回优先采用名称、其次采用预览内容的显示标题。
+  /// Returns a display title, preferring the name over the preview.
   String get title {
     final value = name?.trim();
     if (value != null && value.isNotEmpty) return value;
@@ -28,6 +30,8 @@ class CodexThread {
     return summary.isEmpty ? '未命名任务' : summary;
   }
 
+  /// 从 App Server 线程 JSON 创建线程对象。
+  /// Creates a thread object from App Server thread JSON.
   factory CodexThread.fromJson(JsonMap value) {
     final id = value['id']?.toString();
     if (id == null || id.isEmpty) {
@@ -51,6 +55,8 @@ class CodexThread {
     );
   }
 
+  /// 返回替换可选名称后的线程副本。
+  /// Returns a thread copy with an optional replacement name.
   CodexThread copyWith({String? name}) => CodexThread(
     id: id,
     preview: preview,
@@ -62,6 +68,8 @@ class CodexThread {
     status: status,
   );
 
+  /// 将线程转换为本地历史缓存使用的 JSON。
+  /// Converts the thread to JSON for the local history cache.
   JsonMap toJson() => {
     'id': id,
     'preview': preview,
@@ -73,5 +81,7 @@ class CodexThread {
     'status': ?status,
   };
 
+  /// 将协议中的数值安全转换为整数，缺失或无效时返回零。
+  /// Safely converts a protocol number to an integer, returning zero when invalid.
   static int _toInt(Object? value) => value is num ? value.toInt() : 0;
 }

@@ -6,6 +6,8 @@ typedef JsonMap = Map<String, dynamic>;
 
 /// Verifies the real App Server history protocol without creating a thread,
 /// sending a turn, or changing files in the selected workspace.
+/// 验证真实 App Server 的历史协议，不创建任务或修改工作区文件。
+/// Verifies the real App Server history protocol without creating tasks or modifying workspace files.
 Future<void> main(List<String> arguments) async {
   final options = _Options.parse(arguments);
   final executable = _findCodexExecutable();
@@ -109,6 +111,8 @@ class _Options {
     );
   }
 
+  /// 读取紧随命令行选项后的参数值，缺失时抛出格式错误。
+  /// Reads the value following a command-line option or throws on absence.
   static String _argumentValue(List<String> arguments, int index) {
     if (index >= arguments.length || arguments[index].startsWith('--')) {
       throw ArgumentError(
@@ -131,6 +135,8 @@ class _AppServerProbe {
   final StreamIterator<String> _lines;
   var _requestId = 1;
 
+  /// 启动 app-server 子进程并完成 JSON-RPC 初始化握手。
+  /// Starts the app-server child process and completes the JSON-RPC handshake.
   Future<void> initialize() async {
     await request('initialize', {
       'clientInfo': {
@@ -142,6 +148,8 @@ class _AppServerProbe {
     _write({'method': 'initialized', 'params': {}});
   }
 
+  /// 发送一个 JSON-RPC 请求并等待带相同 ID 的响应。
+  /// Sends a JSON-RPC request and waits for the response with the same ID.
   Future<JsonMap> request(String method, JsonMap params) async {
     final id = _requestId++;
     _write({'id': id, 'method': method, 'params': params});
@@ -162,8 +170,12 @@ class _AppServerProbe {
     throw StateError('App Server closed before responding to $method.');
   }
 
+  /// 将一条 JSON-RPC 消息写入 app-server 的标准输入。
+  /// Writes one JSON-RPC message to app-server standard input.
   void _write(JsonMap message) => _process.stdin.writeln(jsonEncode(message));
 
+  /// 终止验证过程中启动的 app-server 子进程。
+  /// Terminates the app-server child process started for verification.
   Future<void> dispose() async {
     await _lines.cancel();
     _process.kill(ProcessSignal.sigterm);
@@ -175,6 +187,8 @@ class _AppServerProbe {
   }
 }
 
+/// 按环境变量、常见安装位置和 PATH 查找 Codex CLI。
+/// Finds Codex CLI by environment variable, common install locations, and PATH.
 String _findCodexExecutable() {
   final configured = Platform.environment['CODEX_EXECUTABLE'];
   if (configured != null && configured.trim().isNotEmpty) return configured;

@@ -19,11 +19,15 @@ import 'package:flutter_test/flutter_test.dart';
 class _DelayedRelayProviderStore extends RelayProviderStore {
   final completer = Completer<RelayProviderConfiguration?>();
 
+  /// 延迟返回配置，供启动期异步加载测试控制时序。
+  /// Delays configuration return so startup tests can control async timing.
   @override
   Future<RelayProviderConfiguration?> read() => completer.future;
 }
 
 class _EmptyRelayProviderStore extends RelayProviderStore {
+  /// 返回空配置，模拟没有已保存中转站设置的情形。
+  /// Returns no configuration, simulating absent saved relay settings.
   @override
   Future<RelayProviderConfiguration?> read() async => null;
 }
@@ -35,27 +39,39 @@ class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
   String? savedReasoningEffort;
   bool clearedWorkspace = false;
 
+  /// 模拟未保存自定义 CLI 路径。
+  /// Simulates no saved custom CLI path.
   @override
   Future<String?> readExecutable() async => null;
 
+  /// 返回测试预设的项目路径。
+  /// Returns the test-configured workspace path.
   @override
   Future<String?> readWorkspace() async => workspace;
 
+  /// 在内存中保存项目路径，便于断言持久化结果。
+  /// Saves the workspace path in memory for persistence assertions.
   @override
   Future<void> saveWorkspace(String value) async {
     savedWorkspace = value;
     workspace = value;
   }
 
+  /// 清空内存项目路径并标记清理操作。
+  /// Clears the in-memory workspace path and records the clear operation.
   @override
   Future<void> clearWorkspace() async {
     clearedWorkspace = true;
     workspace = null;
   }
 
+  /// 返回测试预设的推理强度。
+  /// Returns the test-configured reasoning effort.
   @override
   Future<String?> readReasoningEffort() async => reasoningEffort;
 
+  /// 在内存中保存推理强度，便于断言更新结果。
+  /// Saves reasoning effort in memory for update assertions.
   @override
   Future<void> saveReasoningEffort(String? value) async {
     savedReasoningEffort = value;
@@ -66,11 +82,15 @@ class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
 class _MemoryConversationHistoryStore extends ConversationHistoryStore {
   final snapshots = <String, ConversationHistorySnapshot>{};
 
+  /// 从内存快照表读取指定项目的历史。
+  /// Reads a workspace history from the in-memory snapshot map.
   @override
   Future<ConversationHistorySnapshot?> read(String workspace) async {
     return snapshots[workspace];
   }
 
+  /// 将指定项目的历史快照保存到内存。
+  /// Saves a workspace history snapshot in memory.
   @override
   Future<void> save({
     required String workspace,
@@ -86,6 +106,8 @@ class _BlockingConversationHistoryStore
   final allowFirstSave = Completer<void>();
   int saveCalls = 0;
 
+  /// 可选地阻塞第一次保存，以验证控制器的写入串行化。
+  /// Optionally blocks the first save to verify controller write serialization.
   @override
   Future<void> save({
     required String workspace,
@@ -131,9 +153,13 @@ class _FakeCodexAppServer extends CodexAppServer {
   int unarchiveCalls = 0;
   Completer<void>? unarchiveCompleter;
 
+  /// 始终报告运行中，模拟已连接的 App Server。
+  /// Always reports running, simulating a connected App Server.
   @override
   bool get isRunning => true;
 
+  /// 返回预设线程列表，或排队请求以控制刷新竞争测试。
+  /// Returns preset threads or queues requests to control refresh-race tests.
   @override
   Future<List<JsonMap>> listThreads({
     required String workingDirectory,
@@ -146,11 +172,15 @@ class _FakeCodexAppServer extends CodexAppServer {
     return completer.future;
   }
 
+  /// 返回预设模型能力列表。
+  /// Returns the preset model-capability list.
   @override
   Future<List<JsonMap>> listModels({bool includeHidden = false}) async {
     return modelListResponse;
   }
 
+  /// 记录恢复参数，并返回预设结果或抛出预设异常。
+  /// Records resume parameters and returns a preset result or error.
   @override
   Future<JsonMap> resumeThread({
     required String threadId,
@@ -167,6 +197,8 @@ class _FakeCodexAppServer extends CodexAppServer {
     return resumeResult;
   }
 
+  /// 记录新线程参数并返回稳定的测试线程 ID。
+  /// Records new-thread parameters and returns a stable test thread ID.
   @override
   Future<String> startThread({
     required String workingDirectory,
@@ -181,6 +213,8 @@ class _FakeCodexAppServer extends CodexAppServer {
     return 'new-thread';
   }
 
+  /// 接受模拟任务启动，不与真实运行时通信。
+  /// Accepts a simulated turn start without communicating with a runtime.
   @override
   Future<void> startTurn({
     required String threadId,
@@ -188,6 +222,8 @@ class _FakeCodexAppServer extends CodexAppServer {
     required String workingDirectory,
   }) async {}
 
+  /// 返回预设 turn 页面并记录使用的游标。
+  /// Returns a preset turn page and records the cursor used.
   @override
   Future<JsonMap> listThreadTurns({
     required String threadId,
@@ -199,6 +235,8 @@ class _FakeCodexAppServer extends CodexAppServer {
     return turnPage;
   }
 
+  /// 返回预设项目页面、记录 turn，并可模拟读取失败。
+  /// Returns preset item pages, records the turn, and can simulate a read failure.
   @override
   Future<JsonMap> listThreadItems({
     required String threadId,
@@ -216,6 +254,8 @@ class _FakeCodexAppServer extends CodexAppServer {
     return itemPage;
   }
 
+  /// 记录恢复归档请求，并可延迟完成以测试重复提交防护。
+  /// Records an unarchive request and can delay completion for duplicate-submit tests.
   @override
   Future<void> unarchiveThread({required String threadId}) async {
     unarchivedThreadId = threadId;
@@ -225,6 +265,8 @@ class _FakeCodexAppServer extends CodexAppServer {
   }
 }
 
+/// 创建具有可预测字段的测试线程。
+/// Creates a test thread with predictable fields.
 CodexThread _thread({
   required String id,
   String? modelProvider,
@@ -238,6 +280,8 @@ CodexThread _thread({
   model: model,
 );
 
+/// 注册 Codex Desk 的 Widget、控制器与协议回归测试。
+/// Registers Codex Desk widget, controller, and protocol regression tests.
 void main() {
   late _MemoryConversationHistoryStore historyStore;
 

@@ -30,17 +30,17 @@ class ServerEvent {
   final String method;
   final JsonMap params;
 
-  /// A non-null value means App Server initiated a JSON-RPC request that the
-  /// client must answer. Notifications never carry an id.
+  /// 非空值表示 App Server 发起了需要客户端答复的 JSON-RPC 请求；通知永远没有 id。
+  /// A non-null value means App Server initiated a JSON-RPC request that the client must answer; notifications never carry an id.
   final Object? requestId;
 
+  /// 判断事件是否为需要客户端回复的服务器请求。
+  /// Determines whether this event is a server request requiring a client reply.
   bool get isServerRequest => requestId != null;
 }
 
-/// Boundary around `codex app-server --listen stdio://`.
-///
-/// App Server speaks newline-delimited JSON-RPC. Keeping it here prevents raw
-/// protocol maps from leaking into Flutter widgets.
+/// `codex app-server --listen stdio://` 的协议边界，负责隔离逐行 JSON-RPC，避免原始协议 Map 泄漏到 Flutter Widget。
+/// Boundary around `codex app-server --listen stdio://`; it isolates newline-delimited JSON-RPC so raw protocol maps do not leak into Flutter widgets.
 class CodexAppServer {
   CodexAppServer({
     String? executable,
@@ -62,10 +62,20 @@ class CodexAppServer {
   bool _disposed = false;
   final Set<Process> _stoppedProcesses = {};
 
+  /// 返回 App Server 通知及请求组成的广播事件流。
+  /// Returns the broadcast stream of App Server notifications and requests.
   Stream<ServerEvent> get events => _events.stream;
+
+  /// 判断本地 App Server 子进程是否正在运行。
+  /// Determines whether the local App Server process is running.
   bool get isRunning => _process != null;
+
+  /// 返回当前将被启动或探测的 Codex CLI 路径。
+  /// Returns the Codex CLI path currently selected for launch or probing.
   String get executable => _executable;
 
+  /// 设置 CLI 路径；运行时启动后禁止修改以避免进程不一致。
+  /// Sets the CLI path; changes are prohibited while running to avoid process inconsistency.
   void setExecutable(String? executable) {
     if (isRunning) {
       throw StateError(
@@ -77,6 +87,8 @@ class CodexAppServer {
         : Platform.environment['CODEX_EXECUTABLE'] ?? 'codex';
   }
 
+  /// 定位 CLI 并执行版本命令，返回可用性诊断信息。
+  /// Locates the CLI and runs its version command, returning availability diagnostics.
   Future<CodexRuntimeProbe> probe() async {
     final resolvedExecutable = await _findExecutable();
     if (resolvedExecutable == null) {
@@ -110,6 +122,8 @@ class CodexAppServer {
     }
   }
 
+  /// 以指定项目目录启动本地 App Server 并订阅其标准输出和错误流。
+  /// Starts local App Server for a workspace and subscribes to its stdout and stderr.
   Future<void> start({
     required String workingDirectory,
     Map<String, String>? environment,
@@ -159,6 +173,8 @@ class CodexAppServer {
     );
   }
 
+  /// 完成 JSON-RPC 初始化握手并发送 `initialized` 通知。
+  /// Completes the JSON-RPC initialization handshake and sends `initialized`.
   Future<void> initialize() async {
     final response = await request('initialize', {
       'clientInfo': {
@@ -171,8 +187,8 @@ class CodexAppServer {
     notify('initialized');
   }
 
-  /// Returns every picker-visible model exposed by the connected App Server.
-  /// Model entries include their supported reasoning effort options.
+  /// 返回已连接 App Server 暴露给选择器的所有模型，条目包含支持的推理强度。
+  /// Returns every picker-visible model exposed by the connected App Server; entries include supported reasoning efforts.
   Future<List<JsonMap>> listModels({bool includeHidden = false}) async {
     final models = <JsonMap>[];
     final seenCursors = <String>{};
@@ -199,6 +215,8 @@ class CodexAppServer {
     return models;
   }
 
+  /// 在指定项目中创建线程，并返回服务器分配的线程 ID。
+  /// Creates a thread in a workspace and returns the server-assigned thread ID.
   Future<String> startThread({
     required String workingDirectory,
     String? modelProvider,
@@ -221,6 +239,8 @@ class CodexAppServer {
     return id;
   }
 
+  /// 在现有线程中开始一次文本任务。
+  /// Starts a text task in an existing thread.
   Future<void> startTurn({
     required String threadId,
     required String prompt,
@@ -236,11 +256,15 @@ class CodexAppServer {
     _throwIfError(response);
   }
 
+  /// 请求中断指定线程正在执行的任务。
+  /// Requests interruption of the executing task in a thread.
   Future<void> interruptTurn({required String threadId}) async {
     final response = await request('turn/interrupt', {'threadId': threadId});
     _throwIfError(response);
   }
 
+  /// 分页获取一个项目的活跃或归档线程，检测重复游标。
+  /// Paginates active or archived threads for a workspace and detects repeated cursors.
   Future<List<JsonMap>> listThreads({
     required String workingDirectory,
     bool archived = false,
@@ -278,6 +302,8 @@ class CodexAppServer {
     return threads;
   }
 
+  /// 恢复指定线程，并返回服务器提供的初始历史数据。
+  /// Resumes a thread and returns its server-provided initial history data.
   Future<JsonMap> resumeThread({
     required String threadId,
     String? modelProvider,
@@ -300,6 +326,8 @@ class CodexAppServer {
     return JsonMap.from(result);
   }
 
+  /// 获取线程历史 turn 的一页完整视图数据。
+  /// Fetches one full-view page of historic turns for a thread.
   Future<JsonMap> listThreadTurns({
     required String threadId,
     String? cursor,
@@ -321,6 +349,8 @@ class CodexAppServer {
     return JsonMap.from(result);
   }
 
+  /// 获取指定 turn 中历史项目的一页数据。
+  /// Fetches one page of historic items in a specified turn.
   Future<JsonMap> listThreadItems({
     required String threadId,
     required String turnId,
@@ -342,6 +372,8 @@ class CodexAppServer {
     return JsonMap.from(result);
   }
 
+  /// 在 App Server 中设置线程名称。
+  /// Sets a thread name in App Server.
   Future<void> renameThread({
     required String threadId,
     required String name,
@@ -353,16 +385,22 @@ class CodexAppServer {
     _throwIfError(response);
   }
 
+  /// 在 App Server 中归档线程。
+  /// Archives a thread in App Server.
   Future<void> archiveThread({required String threadId}) async {
     final response = await request('thread/archive', {'threadId': threadId});
     _throwIfError(response);
   }
 
+  /// 在 App Server 中恢复归档线程。
+  /// Unarchives a thread in App Server.
   Future<void> unarchiveThread({required String threadId}) async {
     final response = await request('thread/unarchive', {'threadId': threadId});
     _throwIfError(response);
   }
 
+  /// 读取当前 App Server 的账户认证与套餐信息。
+  /// Reads authentication and plan information from the current App Server.
   Future<JsonMap> readAccount() async {
     final response = await request('account/read', {'refreshToken': false});
     _throwIfError(response);
@@ -373,6 +411,8 @@ class CodexAppServer {
     return JsonMap.from(result);
   }
 
+  /// 请求由浏览器完成的 ChatGPT 登录流程。
+  /// Requests the browser-completed ChatGPT login flow.
   Future<JsonMap> startChatgptLogin() async {
     final response = await request('account/login/start', {
       'type': 'chatgpt',
@@ -387,6 +427,8 @@ class CodexAppServer {
     return JsonMap.from(result);
   }
 
+  /// 将 API Key 提交给当前本地 App Server 进行认证。
+  /// Submits an API key to the current local App Server for authentication.
   Future<void> loginWithApiKey(String apiKey) async {
     final response = await request('account/login/start', {
       'type': 'apiKey',
@@ -395,6 +437,8 @@ class CodexAppServer {
     _throwIfError(response);
   }
 
+  /// 发送带 ID 的 JSON-RPC 请求，并在超时前等待匹配响应。
+  /// Sends an ID-bearing JSON-RPC request and waits for its matching response before timeout.
   Future<JsonMap> request(String method, [JsonMap params = const {}]) {
     final process = _process;
     if (process == null) throw StateError('The Codex runtime is not running.');
@@ -412,16 +456,20 @@ class CodexAppServer {
     );
   }
 
+  /// 发送不期待响应的 JSON-RPC 通知。
+  /// Sends a JSON-RPC notification that does not expect a response.
   void notify(String method, [JsonMap params = const {}]) {
     _write({'method': method, 'params': params});
   }
 
-  /// Answer a request initiated by App Server, such as a permission approval.
+  /// 回答 App Server 主动发起的请求，例如权限审批。
+  /// Answers a request initiated by App Server, such as a permission approval.
   void respond(Object requestId, JsonMap result) {
     _write({'id': requestId, 'result': result});
   }
 
-  /// Tell App Server that this client does not support a server request.
+  /// 告知 App Server 此客户端不支持某个服务器请求。
+  /// Tells App Server that this client does not support a server request.
   void respondError(Object requestId, String message) {
     _write({
       'id': requestId,
@@ -429,6 +477,8 @@ class CodexAppServer {
     });
   }
 
+  /// 通过测试注入接收器或运行时标准输入写出一条协议消息。
+  /// Writes a protocol message through the test sink or runtime standard input.
   void _write(JsonMap message) {
     final messageSink = _messageSink;
     if (messageSink != null) {
@@ -440,6 +490,8 @@ class CodexAppServer {
     process.stdin.writeln(jsonEncode(message));
   }
 
+  /// 解析 App Server 输出的一行 JSON-RPC，分发事件或完成等待中的请求。
+  /// Parses one App Server JSON-RPC line, dispatching an event or completing a pending request.
   void _handleStdoutLine(String line) {
     try {
       final decoded = jsonDecode(line);
@@ -480,8 +532,12 @@ class CodexAppServer {
   }
 
   @visibleForTesting
+  /// 注入一行服务器输出，供协议解析测试使用。
+  /// Injects one server-output line for protocol parsing tests.
   void handleStdoutLineForTesting(String line) => _handleStdoutLine(line);
 
+  /// 将 JSON-RPC 错误响应转换为脱敏的 Dart 状态错误。
+  /// Converts a JSON-RPC error response into a redacted Dart state error.
   void _throwIfError(JsonMap response) {
     final error = response['error'];
     if (error is Map) {
@@ -491,6 +547,8 @@ class CodexAppServer {
     }
   }
 
+  /// 以相同错误完成所有尚未响应的客户端请求。
+  /// Completes every unresolved client request with the same error.
   void _failPending(Object error) {
     for (final completer in _pending.values) {
       if (!completer.isCompleted) completer.completeError(error);
@@ -498,6 +556,8 @@ class CodexAppServer {
     _pending.clear();
   }
 
+  /// 从诊断文本中隐藏 Bearer Token 和常见的 API Key 形式。
+  /// Redacts Bearer tokens and common API-key forms from diagnostic text.
   String _redact(String value) => value
       .replaceAll(
         RegExp(r'Bearer\s+[^\s]+', caseSensitive: false),
@@ -505,18 +565,24 @@ class CodexAppServer {
       )
       .replaceAll(RegExp(r'sk-[A-Za-z0-9_-]+'), 'sk-***');
 
+  /// 在未释放状态下向订阅者发布服务器事件。
+  /// Publishes a server event to subscribers while the client remains active.
   void _emit(ServerEvent event) {
     if (!_disposed && !_events.isClosed) {
       _events.add(event);
     }
   }
 
+  /// 解析 CLI 路径；找不到时抛出可展示的状态错误。
+  /// Resolves the CLI path or throws a displayable state error when absent.
   Future<String> _resolveExecutable() async {
     final executable = await _findExecutable();
     if (executable != null) return executable;
     throw StateError('未找到 Codex CLI。请安装 Codex 或手动选择可执行文件。');
   }
 
+  /// 按用户设置、常见安装路径和 PATH 顺序查找 Codex CLI。
+  /// Finds Codex CLI by user setting, common install paths, then PATH order.
   Future<String?> _findExecutable() async {
     final requested = executable;
     if (requested.contains('/')) {
@@ -547,6 +613,8 @@ class CodexAppServer {
     return null;
   }
 
+  /// 取消流订阅、失败化等待请求并终止本地 App Server 进程。
+  /// Cancels stream subscriptions, fails pending requests, and terminates local App Server.
   Future<void> stop() async {
     _failPending(StateError('Codex runtime stopped.'));
     await _stdoutSubscription?.cancel();
@@ -567,6 +635,8 @@ class CodexAppServer {
     }
   }
 
+  /// 释放 App Server 客户端及其所有进程和事件资源。
+  /// Disposes the App Server client and all process and event resources.
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;

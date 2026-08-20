@@ -19,12 +19,13 @@ enum AuthStatus { checking, signedOut, chatgpt, apiKey, external }
 
 enum ApprovalMode { manual, autoApprove }
 
-/// The value is passed to App Server as the Codex configuration key
-/// `model_reasoning_effort`. Leaving it at [defaultValue] lets the selected
-/// model use its own default.
+/// 推理强度会以 Codex 配置键 `model_reasoning_effort` 传递给 App Server；保留 [defaultValue] 则使用模型默认值。
+/// The value is passed to App Server as the Codex configuration key `model_reasoning_effort`; [defaultValue] lets the selected model use its own default.
 enum ReasoningEffort { defaultValue, minimal, low, medium, high, xhigh }
 
 extension ReasoningEffortLabel on ReasoningEffort {
+  /// 返回用于界面的本地化推理强度标签。
+  /// Returns the localized reasoning-effort label for the UI.
   String get label => switch (this) {
     ReasoningEffort.defaultValue => '默认',
     ReasoningEffort.minimal => '最小',
@@ -34,6 +35,8 @@ extension ReasoningEffortLabel on ReasoningEffort {
     ReasoningEffort.xhigh => '极高',
   };
 
+  /// 返回要发送给 App Server 的配置值，默认项为 `null`。
+  /// Returns the value sent to App Server; the default option is `null`.
   String? get configValue => switch (this) {
     ReasoningEffort.defaultValue => null,
     ReasoningEffort.minimal => 'minimal',
@@ -43,6 +46,8 @@ extension ReasoningEffortLabel on ReasoningEffort {
     ReasoningEffort.xhigh => 'xhigh',
   };
 
+  /// 将保存或服务器返回的配置值转换为枚举值。
+  /// Converts a persisted or server-provided configuration value to the enum.
   static ReasoningEffort fromConfigValue(String? value) => switch (value) {
     'low' => ReasoningEffort.low,
     'minimal' => ReasoningEffort.minimal,
@@ -54,6 +59,8 @@ extension ReasoningEffortLabel on ReasoningEffort {
 }
 
 extension ApprovalModeLabel on ApprovalMode {
+  /// 返回用于界面的本地化审批模式标签。
+  /// Returns the localized approval-mode label for the UI.
   String get label => switch (this) {
     ApprovalMode.manual => '逐次确认',
     ApprovalMode.autoApprove => '自动批准',
@@ -147,28 +154,54 @@ class CodexController extends ChangeNotifier {
   bool archivedThreadsLoading = false;
   String? archivedThreadsError;
 
+  /// 返回不可修改的当前时间线副本视图。
+  /// Returns an unmodifiable view of the current timeline.
   List<TimelineEntry> get entries => List.unmodifiable(_entries);
+
+  /// 返回不可修改的已记录文件变更视图。
+  /// Returns an unmodifiable view of recorded file changes.
   List<CodexFileChange> get fileChanges =>
       List.unmodifiable(_fileChangesByPath.values);
   String? turnDiff;
+
+  /// 指示当前状态是否允许发送新任务。
+  /// Indicates whether the current state permits sending a new task.
   bool get canSend =>
       status == RuntimeStatus.ready &&
       workspacePath != null &&
       (relayProvider != null ||
           !requiresOpenaiAuth ||
           authStatus != AuthStatus.signedOut);
+
+  /// 指示当前正在运行的任务是否可以中断。
+  /// Indicates whether the running task can be interrupted.
   bool get canStop => status == RuntimeStatus.running && activeThreadId != null;
+
+  /// 指示当前是否可以安全切换本地项目。
+  /// Indicates whether it is safe to switch the local workspace.
   bool get canChooseWorkspace =>
       status == RuntimeStatus.stopped ||
       (status == RuntimeStatus.failed && !_server.isRunning);
+
+  /// 指示本地 App Server 是否可以停止。
+  /// Indicates whether the local App Server can be stopped.
   bool get canStopRuntime =>
       _server.isRunning ||
       status == RuntimeStatus.ready ||
       status == RuntimeStatus.running;
+
+  /// 指示当前待处理审批是否可以提交答复。
+  /// Indicates whether the pending approval can be answered.
   bool get canRespondToApproval =>
       pendingApproval != null && !approvalResponding;
+
+  /// 返回线程是否正在恢复归档，供界面防止重复提交。
+  /// Returns whether a thread is being unarchived to prevent duplicate UI actions.
   bool isUnarchivingThread(String threadId) =>
       _unarchivingThreadIds.contains(threadId);
+
+  /// 返回当前认证状态的本地化展示文本。
+  /// Returns localized display text for the current authentication state.
   String get authLabel => switch (authStatus) {
     AuthStatus.checking => '检查账户',
     AuthStatus.signedOut => '未登录',
@@ -177,12 +210,20 @@ class CodexController extends ChangeNotifier {
     AuthStatus.apiKey => 'API Key',
     AuthStatus.external => '外部 Provider',
   };
+
+  /// 返回当前线程使用的 Provider 展示名称。
+  /// Returns the display name of the provider used by current threads.
   String get providerLabel => relayProvider == null ? 'OpenAI' : '中转站';
+
+  /// 指示运行时路径是否可以在不影响会话的情况下配置。
+  /// Indicates whether the runtime path can be configured without disrupting a session.
   bool get canConfigureRuntime =>
       !_startingRuntime &&
       status != RuntimeStatus.starting &&
       !_server.isRunning;
 
+  /// 验证、切换并持久化本地项目，同时恢复该项目的本地历史。
+  /// Validates, selects, and persists a local workspace, then restores its local history.
   Future<void> selectWorkspace(String path) async {
     if (!canChooseWorkspace) {
       lastError = '请先停止当前运行时，再切换项目。';
@@ -220,6 +261,8 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 清空当前任务状态，使下一条消息创建新的服务器线程。
+  /// Clears the current task state so the next message creates a server thread.
   void createThread() {
     if (status != RuntimeStatus.ready || workspacePath == null) {
       lastError = '运行时就绪后才能新建任务。';
@@ -234,6 +277,8 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 启动、初始化本地 App Server，并加载账户与线程状态。
+  /// Starts and initializes the local App Server, then loads account and thread state.
   Future<void> startRuntime() async {
     final workspace = workspacePath;
     if (workspace == null) {
@@ -283,6 +328,8 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 向当前或新建线程发送用户提示词。
+  /// Sends a user prompt to the current or a newly created thread.
   Future<void> sendPrompt(String prompt) async {
     final text = prompt.trim();
     if (text.isEmpty || !canSend) return;
@@ -327,6 +374,8 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 请求 App Server 中断当前正在执行的任务。
+  /// Requests that App Server interrupt the currently executing task.
   Future<void> stopCurrentTurn() async {
     final threadId = activeThreadId;
     if (threadId == null || status != RuntimeStatus.running) return;
@@ -339,6 +388,8 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 停止 App Server 并重置仅在运行期有效的状态。
+  /// Stops App Server and resets state that is only valid while it runs.
   Future<void> stopRuntime() async {
     if (status == RuntimeStatus.stopped && !_server.isRunning) return;
     try {
@@ -358,6 +409,8 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 从 App Server 分页刷新当前工作区的活跃线程列表。
+  /// Refreshes the current workspace's active thread list from App Server pages.
   Future<void> refreshThreads() async {
     final workspace = workspacePath;
     if (!_server.isRunning || workspace == null) return;
@@ -386,6 +439,8 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 从 App Server 分页刷新当前工作区的归档线程列表。
+  /// Refreshes the current workspace's archived thread list from App Server pages.
   Future<void> refreshArchivedThreads() async {
     final workspace = workspacePath;
     if (!_server.isRunning || workspace == null) return;
@@ -415,6 +470,8 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 恢复指定线程，并将其历史消息与工具记录写入时间线。
+  /// Resumes a thread and writes its historic messages and tool records to the timeline.
   Future<void> resumeThread(CodexThread thread) async {
     if (status != RuntimeStatus.ready || !_server.isRunning) return;
     if (activeThreadId == thread.id) return;
@@ -466,6 +523,8 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 在服务器上更新线程名称，并同步本地列表。
+  /// Updates a thread name on the server and synchronizes local lists.
   Future<void> renameThread(CodexThread thread, String name) async {
     final title = name.trim();
     if (title.isEmpty || !_server.isRunning) return;
@@ -485,6 +544,8 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 归档指定线程并刷新活跃线程状态。
+  /// Archives a thread and refreshes active thread state.
   Future<void> archiveThread(CodexThread thread) async {
     if (!_server.isRunning || status == RuntimeStatus.running) return;
     try {
@@ -505,6 +566,8 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 恢复归档线程，并防止对同一线程重复提交恢复请求。
+  /// Unarchives a thread while preventing duplicate requests for that thread.
   Future<void> unarchiveThread(CodexThread thread) async {
     if (!_server.isRunning ||
         status != RuntimeStatus.ready ||
@@ -528,6 +591,8 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 验证并保存中转站设置，然后将其应用于后续新线程。
+  /// Validates and saves relay settings, applying them to subsequent new threads.
   Future<void> saveRelayProvider({
     required String baseUrl,
     required String model,
@@ -572,6 +637,8 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 清除 Keychain 中的中转站设置，并恢复 OpenAI 默认 Provider。
+  /// Clears relay settings from Keychain and restores the default OpenAI provider.
   Future<void> clearRelayProvider() async {
     if (canStopRuntime) {
       relayError = '请先停止运行时，再移除中转站配置。';
@@ -593,6 +660,8 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 选择并异步保存后续任务要使用的推理强度。
+  /// Selects and asynchronously persists the reasoning effort for subsequent tasks.
   Future<void> setReasoningEffort(ReasoningEffort value) async {
     await _runtimeLoad;
     if (!reasoningEffortOptions.contains(value)) return;
@@ -614,11 +683,15 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 探测当前 Codex CLI 路径及其可用性。
+  /// Probes the current Codex CLI path and availability.
   Future<void> inspectRuntime() async {
     await _runtimeLoad;
     await _inspectRuntime(notify: true);
   }
 
+  /// 验证并保存用户指定的 Codex CLI 可执行文件路径。
+  /// Validates and saves a user-specified Codex CLI executable path.
   Future<void> setRuntimeExecutable(String path) async {
     if (!canConfigureRuntime) {
       runtimeError = '请先停止运行时，再修改 Codex CLI 路径。';
@@ -647,6 +720,8 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 清除自定义 CLI 路径，恢复自动发现。
+  /// Clears the custom CLI path and restores automatic discovery.
   Future<void> resetRuntimeExecutable() async {
     if (!canConfigureRuntime) {
       runtimeError = '请先停止运行时，再修改 Codex CLI 路径。';
@@ -668,6 +743,8 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 从 App Server 读取并同步账户认证状态。
+  /// Reads and synchronizes account authentication state from App Server.
   Future<void> refreshAccount() async {
     if (!_server.isRunning) return;
     authStatus = AuthStatus.checking;
@@ -681,6 +758,8 @@ class CodexController extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
+  /// 请求 ChatGPT 浏览器登录地址，并更新登录进行状态。
+  /// Requests a ChatGPT browser-login URL and updates login progress.
   Future<void> startChatgptLogin() async {
     if (!_server.isRunning || loginInProgress) return;
     loginInProgress = true;
@@ -703,6 +782,8 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 将 API Key 仅提交给本地运行时并刷新账户状态。
+  /// Submits an API key only to the local runtime and refreshes account state.
   Future<void> loginWithApiKey(String apiKey) async {
     final value = apiKey.trim();
     if (!_server.isRunning || value.isEmpty || loginInProgress) return;
@@ -723,6 +804,8 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 对当前服务器审批请求作出允许或拒绝的答复。
+  /// Answers the current server approval request by allowing or declining it.
   Future<void> respondToApproval({required bool accepted}) async {
     final approval = pendingApproval;
     if (approval == null || approvalResponding) return;
@@ -742,6 +825,8 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 更新审批策略；自动模式会立即处理之后收到的审批请求。
+  /// Updates the approval policy; auto mode immediately handles later approval requests.
   void setApprovalMode(ApprovalMode mode) {
     if (approvalMode == mode) return;
     approvalMode = mode;
@@ -758,6 +843,8 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 路由 App Server 事件，并更新时间线、审批和运行时状态。
+  /// Routes an App Server event and updates timeline, approval, and runtime state.
   void _handleServerEvent(ServerEvent event) {
     if (_disposed) return;
     if (event.isServerRequest) {
@@ -838,9 +925,13 @@ class CodexController extends ChangeNotifier {
   }
 
   @visibleForTesting
+  /// 将服务器事件注入控制器，供测试验证事件处理。
+  /// Injects a server event into the controller for event-handling tests.
   void handleServerEventForTesting(ServerEvent event) =>
       _handleServerEvent(event);
 
+  /// 构造符合不同审批协议的允许或拒绝 JSON-RPC 结果。
+  /// Builds an allow-or-deny JSON-RPC result for the relevant approval protocol.
   JsonMap _approvalResult(PendingApproval approval, bool accepted) {
     return switch (approval.kind) {
       ApprovalKind.command ||
@@ -854,6 +945,8 @@ class CodexController extends ChangeNotifier {
     };
   }
 
+  /// 从嵌套协议值中提取第一个可展示的文本内容。
+  /// Extracts the first displayable text content from a nested protocol value.
   String _findText(Object? value) {
     if (value is String) return value;
     if (value is Map) {
@@ -875,6 +968,8 @@ class CodexController extends ChangeNotifier {
     return '';
   }
 
+  /// 将流式 Agent 文本增量合并进对应的时间线条目。
+  /// Merges a streaming agent text delta into its matching timeline entry.
   void _appendAgentDelta(JsonMap params) {
     final text = params['delta'] is String
         ? params['delta'] as String
@@ -892,6 +987,8 @@ class CodexController extends ChangeNotifier {
     _entries[index] = previous.copyWith(detail: '${previous.detail}$text');
   }
 
+  /// 处理任务结束事件，并采集其中的文件变更与统一 Diff。
+  /// Handles a completed turn and captures its file changes and unified diff.
   void _handleTurnCompleted(JsonMap params) {
     final turn = params['turn'];
     final turnMap = turn is Map
@@ -919,6 +1016,8 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 将恢复的线程历史项目转换为时间线、工具和文件变更记录。
+  /// Converts resumed thread history items into timeline, tool, and file-change records.
   void _appendThreadHistory(JsonMap result) {
     final turns = result['turns'];
     if (turns is! Iterable) return;
@@ -968,6 +1067,8 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 将专用工具历史项转换为可读的时间线条目。
+  /// Converts a specialized tool-history item into a readable timeline entry.
   void _appendToolHistoryItem(JsonMap item) {
     final type = item['type']?.toString();
     final (title, detail) = switch (type) {
@@ -993,6 +1094,8 @@ class CodexController extends ChangeNotifier {
     if (detail.isNotEmpty) _add(TimelineKind.tool, title, detail);
   }
 
+  /// 组合工具项状态及可用的耗时信息。
+  /// Combines a tool item's status and available duration information.
   String _toolStatus(JsonMap item) {
     final status = _label(item['status']);
     final duration = item['durationMs'] is num
@@ -1003,6 +1106,8 @@ class CodexController extends ChangeNotifier {
         : '$status$duration';
   }
 
+  /// 组合网页搜索查询文本和结果数量。
+  /// Combines a web-search query with its result count.
   String _searchDetail(JsonMap item) {
     final query = _label(item['query']);
     final results = item['results'];
@@ -1010,8 +1115,12 @@ class CodexController extends ChangeNotifier {
     return '$query$count'.trim();
   }
 
+  /// 将任意协议值转换为去除首尾空白的显示文本。
+  /// Converts any protocol value to trimmed display text.
   String _label(Object? value) => value?.toString().trim() ?? '';
 
+  /// 分页加载并补齐恢复线程中尚未完整加载的历史内容。
+  /// Paginates and hydrates historic content not fully loaded with a resumed thread.
   Future<JsonMap> _loadThreadHistory({
     required String threadId,
     required JsonMap resumeResult,
@@ -1071,6 +1180,8 @@ class CodexController extends ChangeNotifier {
     };
   }
 
+  /// 分页获取单个 turn 的项目，并报告是否在安全页数内完成。
+  /// Paginates items for one turn and reports whether it completed within the page cap.
   Future<({List<JsonMap> items, bool isComplete})> _loadTurnItems({
     required String threadId,
     required String turnId,
@@ -1103,11 +1214,15 @@ class CodexController extends ChangeNotifier {
     return (items: items, isComplete: cursor == null);
   }
 
+  /// 读取用于排序的 turn 时间戳，缺失时返回零。
+  /// Reads the timestamp used for turn sorting, returning zero when absent.
   int _turnTimestamp(JsonMap turn) =>
       (turn['startedAt'] as num?)?.toInt() ??
       (turn['completedAt'] as num?)?.toInt() ??
       0;
 
+  /// 从原始文件变更协议值生成简短的可读描述。
+  /// Creates a short readable description from a raw file-change protocol value.
   String _describeFileChange(Object? value) {
     if (value is! Map) return '';
     final path =
@@ -1117,6 +1232,8 @@ class CodexController extends ChangeNotifier {
     return path.isEmpty ? kind : '$kind $path';
   }
 
+  /// 从任务完成项中提取并记录文件变更。
+  /// Extracts and records file changes from a completed-turn item.
   void _recordCompletedFileChange(Object? rawItem) {
     if (rawItem is! Map || rawItem['type']?.toString() != 'fileChange') {
       return;
@@ -1124,6 +1241,8 @@ class CodexController extends ChangeNotifier {
     _recordFileChanges(rawItem['changes']);
   }
 
+  /// 合并服务器文件变更，并向时间线写入变更摘要。
+  /// Merges server file changes and writes a change summary to the timeline.
   void _recordFileChanges(Object? rawChanges) {
     if (rawChanges is! Iterable) return;
     final details = <String>[];
@@ -1143,11 +1262,15 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 规范化并保存当前任务的统一 Diff。
+  /// Normalizes and stores the current turn's unified diff.
   void _updateTurnDiff(Object? rawDiff) {
     final diff = rawDiff?.toString() ?? '';
     turnDiff = diff.isEmpty ? null : diff;
   }
 
+  /// 根据账户读取结果更新认证方式与账户显示信息。
+  /// Updates authentication mode and account display data from an account response.
   void _updateAccount(JsonMap result) {
     final account = result['account'];
     final accountMap = account is Map ? JsonMap.from(account) : null;
@@ -1167,6 +1290,8 @@ class CodexController extends ChangeNotifier {
     };
   }
 
+  /// 从 Keychain 加载中转站配置，并将读取失败显示给界面。
+  /// Loads relay configuration from Keychain and surfaces read failures to the UI.
   Future<void> _loadRelayProvider() async {
     try {
       relayProvider = await _relayProviderStore.read();
@@ -1178,6 +1303,8 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 加载本地运行时路径和推理强度偏好。
+  /// Loads local runtime-path and reasoning-effort preferences.
   Future<void> _loadRuntimeConfiguration() async {
     try {
       final values = await Future.wait([
@@ -1200,6 +1327,8 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 构建新建或恢复线程时可选的 Provider 与推理配置。
+  /// Builds optional provider and reasoning configuration for a new or resumed thread.
   JsonMap? _threadConfig({
     required bool usesRelay,
     required bool useDefaultModelWhenMissing,
@@ -1219,6 +1348,8 @@ class CodexController extends ChangeNotifier {
     return config.isEmpty ? null : config;
   }
 
+  /// 判断指定或默认模型是否支持给定的推理强度。
+  /// Determines whether the specified or default model supports a reasoning effort.
   bool _supportsReasoningEffort(
     String? model,
     ReasoningEffort effort, {
@@ -1230,6 +1361,8 @@ class CodexController extends ChangeNotifier {
         (_reasoningEffortsByModel[modelId]?.contains(effort) ?? false);
   }
 
+  /// 从模型列表刷新可用推理强度，并降级失效的已保存选择。
+  /// Refreshes available reasoning efforts from models and downgrades an invalid saved choice.
   Future<void> _refreshReasoningEffortCapabilities() async {
     try {
       final models = await _server.listModels();
@@ -1284,6 +1417,8 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 串行保存推理强度，以确保较新的选择不会被旧写入覆盖。
+  /// Serializes reasoning-effort writes so an older write cannot overwrite a newer choice.
   Future<void> _saveReasoningEffort(ReasoningEffort value) {
     final previousSave = _reasoningEffortSave;
     final nextSave = () async {
@@ -1299,10 +1434,14 @@ class CodexController extends ChangeNotifier {
   }
 
   @visibleForTesting
+  /// 刷新模型能力，供测试验证推理强度选择。
+  /// Refreshes model capabilities for reasoning-effort tests.
   Future<void> refreshReasoningEffortCapabilitiesForTesting() {
     return _refreshReasoningEffortCapabilities();
   }
 
+  /// 恢复上次有效的本地项目路径，失效路径会被自动清除。
+  /// Restores the last valid local workspace path and clears an invalid one.
   Future<void> _loadWorkspace() async {
     try {
       final storedPath = await _runtimeConfigurationStore.readWorkspace();
@@ -1324,12 +1463,16 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 等待项目路径恢复后加载对应的本地对话历史。
+  /// Waits for workspace restoration, then loads its local conversation history.
   Future<void> _loadConversationHistory() async {
     await _workspaceLoad;
     final workspace = workspacePath;
     if (workspace != null) await _restoreConversationHistory(workspace);
   }
 
+  /// 将指定项目的已缓存线程、时间线和 Diff 恢复到界面状态。
+  /// Restores a workspace's cached threads, timeline, and diff into UI state.
   Future<void> _restoreConversationHistory(String workspace) async {
     try {
       final snapshot = await _conversationHistoryStore.read(workspace);
@@ -1355,6 +1498,8 @@ class CodexController extends ChangeNotifier {
   }
 
   @visibleForTesting
+  /// 等待所有启动阶段的本地配置与历史恢复完成。
+  /// Waits for all startup local configuration and history restoration to finish.
   Future<void> waitForInitialConfiguration() {
     return Future.wait([
       _relayLoad,
@@ -1365,10 +1510,14 @@ class CodexController extends ChangeNotifier {
   }
 
   @visibleForTesting
+  /// 立即保存当前历史，供测试验证持久化行为。
+  /// Immediately saves current history for persistence tests.
   Future<void> saveConversationHistoryForTesting() {
     return _saveConversationHistory();
   }
 
+  /// 探测 Codex CLI 并可选地在开始和结束时通知界面。
+  /// Probes the Codex CLI and optionally notifies the UI at start and finish.
   Future<CodexRuntimeProbe> _inspectRuntime({required bool notify}) async {
     runtimeChecking = true;
     if (notify && !_disposed) notifyListeners();
@@ -1380,12 +1529,16 @@ class CodexController extends ChangeNotifier {
     return probe;
   }
 
+  /// 取消流式更新计时器并清除 Agent 条目索引。
+  /// Cancels streaming timers and clears the Agent-entry index.
   void _clearStreamingState() {
     _agentEntryIndexByItem.clear();
     _deltaNotificationTimer?.cancel();
     _deltaNotificationTimer = null;
   }
 
+  /// 合并短时间内连续发生的历史变更，延迟执行一次保存。
+  /// Coalesces nearby history changes into one delayed save.
   void _scheduleConversationHistorySave() {
     if (workspacePath == null || _disposed || _historySaveTimer != null) return;
     _historySaveTimer = Timer(const Duration(milliseconds: 500), () {
@@ -1394,6 +1547,8 @@ class CodexController extends ChangeNotifier {
     });
   }
 
+  /// 快照当前工作区状态并串行加密写入本地历史缓存。
+  /// Snapshots workspace state and serially writes it to the encrypted local history cache.
   Future<void> _saveConversationHistory() async {
     final workspace = workspacePath;
     if (workspace == null || _disposed) return;
@@ -1431,11 +1586,15 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 清空当前任务的文件变更集合和统一 Diff。
+  /// Clears the current task's file-change collection and unified diff.
   void _clearFileChanges() {
     _fileChangesByPath.clear();
     turnDiff = null;
   }
 
+  /// 保留欢迎项并清空与当前线程相关的时间线内容。
+  /// Retains the welcome item while clearing timeline content for the current thread.
   void _resetConversationTimeline() {
     _clearFileChanges();
     if (_entries.isEmpty) return;
@@ -1445,6 +1604,8 @@ class CodexController extends ChangeNotifier {
       ..add(welcome);
   }
 
+  /// 使正在进行的线程刷新结果失效，并重置刷新状态。
+  /// Invalidates in-flight thread refreshes and resets refresh state.
   void _invalidateThreadRefreshes() {
     _threadRefreshEpoch++;
     _threadRefreshRequest++;
@@ -1455,6 +1616,8 @@ class CodexController extends ChangeNotifier {
     archivedThreadsError = null;
   }
 
+  /// 判断活跃线程刷新结果是否仍属于当前运行时与项目。
+  /// Determines whether an active-thread refresh still belongs to this runtime and workspace.
   bool _isCurrentThreadRefresh(int request, int epoch, String workspace) {
     return !_disposed &&
         request == _threadRefreshRequest &&
@@ -1463,6 +1626,8 @@ class CodexController extends ChangeNotifier {
         _server.isRunning;
   }
 
+  /// 判断归档线程刷新结果是否仍属于当前运行时与项目。
+  /// Determines whether an archived-thread refresh still belongs to this runtime and workspace.
   bool _isCurrentArchivedThreadRefresh(
     int request,
     int epoch,
@@ -1475,6 +1640,8 @@ class CodexController extends ChangeNotifier {
         _server.isRunning;
   }
 
+  /// 合并高频流式文本事件，避免每个增量都触发一次重建。
+  /// Coalesces high-frequency text events to avoid rebuilding for every delta.
   void _scheduleDeltaNotification() {
     if (_deltaNotificationTimer != null || _disposed) return;
     _deltaNotificationTimer = Timer(const Duration(milliseconds: 50), () {
@@ -1483,9 +1650,13 @@ class CodexController extends ChangeNotifier {
     });
   }
 
+  /// 去除 Dart 状态错误前缀，返回适合用户展示的错误文本。
+  /// Removes the Dart state-error prefix for user-displayable error text.
   String _messageOf(Object error) =>
       error.toString().replaceFirst('Bad state: ', '');
 
+  /// 创建带有当前时间戳的时间线条目。
+  /// Creates a timeline entry stamped with the current time.
   TimelineEntry _entry(TimelineKind kind, String title, String detail) {
     return TimelineEntry(
       kind: kind,
@@ -1495,11 +1666,15 @@ class CodexController extends ChangeNotifier {
     );
   }
 
+  /// 追加时间线条目并安排本地历史保存。
+  /// Appends a timeline entry and schedules local history persistence.
   void _add(TimelineKind kind, String title, String detail) {
     _entries.add(_entry(kind, title, detail));
     _scheduleConversationHistorySave();
   }
 
+  /// 释放计时器、事件订阅和 App Server 资源，并尝试保存最后的历史快照。
+  /// Releases timers, event subscriptions, and App Server resources, while attempting a final history save.
   @override
   void dispose() {
     _historySaveTimer?.cancel();

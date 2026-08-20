@@ -16,6 +16,8 @@ class CodexWorkspace extends StatefulWidget {
 
   final CodexController controller;
 
+  /// 创建承载工作区页面状态的 State 对象。
+  /// Creates the State object that owns workspace-page state.
   @override
   State<CodexWorkspace> createState() => _CodexWorkspaceState();
 }
@@ -25,12 +27,16 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
   final ScrollController _timelineScrollController = ScrollController();
   bool _timelineScrollScheduled = false;
 
+  /// 注册控制器监听器，使时间线在内容更新后自动滚动。
+  /// Registers the controller listener that scrolls the timeline after updates.
   @override
   void initState() {
     super.initState();
     widget.controller.addListener(_scheduleTimelineScroll);
   }
 
+  /// 移除监听器并释放编辑、滚动与控制器资源。
+  /// Removes listeners and releases composer, scrolling, and controller resources.
   @override
   void dispose() {
     widget.controller.removeListener(_scheduleTimelineScroll);
@@ -40,6 +46,8 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     super.dispose();
   }
 
+  /// 在下一帧将时间线平滑滚动到最新内容。
+  /// Smoothly scrolls the timeline to the latest content on the next frame.
   void _scheduleTimelineScroll() {
     if (!mounted || _timelineScrollScheduled) return;
     _timelineScrollScheduled = true;
@@ -55,6 +63,8 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     });
   }
 
+  /// 打开目录选择器并将有效选择交给控制器。
+  /// Opens the directory picker and passes a valid selection to the controller.
   Future<void> _chooseWorkspace() async {
     try {
       final path = await getDirectoryPath(confirmButtonText: '选择项目');
@@ -69,6 +79,8 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     }
   }
 
+  /// 读取输入框内容、清空编辑器并发送非空任务。
+  /// Reads composer content, clears the editor, and sends a nonempty task.
   Future<void> _send() async {
     final prompt = _composer.text;
     if (prompt.trim().isEmpty) return;
@@ -76,6 +88,8 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     await widget.controller.sendPrompt(prompt);
   }
 
+  /// 显示账户状态以及 ChatGPT 和 API Key 登录入口。
+  /// Shows account status plus ChatGPT and API-key login entry points.
   Future<void> _showAccount() async {
     final apiKey = TextEditingController();
     await showDialog<void>(
@@ -179,6 +193,8 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     apiKey.dispose();
   }
 
+  /// 显示中转站 Provider 配置对话框并安全提交设置。
+  /// Shows the relay-provider dialog and securely submits its settings.
   Future<void> _showRelayProvider() async {
     final current = widget.controller.relayProvider;
     final baseUrl = TextEditingController(text: current?.baseUrl ?? '');
@@ -288,6 +304,8 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     apiKey.dispose();
   }
 
+  /// 探测并显示 Codex CLI 状态，同时提供路径配置入口。
+  /// Probes and shows Codex CLI status while offering path configuration.
   Future<void> _showRuntime() async {
     await widget.controller.inspectRuntime();
     if (!mounted) return;
@@ -376,6 +394,8 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     );
   }
 
+  /// 请求新名称并重命名指定历史线程。
+  /// Requests a new name and renames a specified history thread.
   Future<void> _renameThread(CodexThread thread) async {
     final name = TextEditingController(text: thread.name ?? thread.preview);
     final nextName = await showDialog<String>(
@@ -407,6 +427,8 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     }
   }
 
+  /// 确认后归档指定历史线程。
+  /// Archives a specified history thread after confirmation.
   Future<void> _archiveThread(CodexThread thread) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -428,6 +450,8 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     if (confirmed == true) await widget.controller.archiveThread(thread);
   }
 
+  /// 刷新并显示归档线程，允许用户恢复线程。
+  /// Refreshes and shows archived threads, allowing the user to restore one.
   Future<void> _showArchivedThreads() async {
     await widget.controller.refreshArchivedThreads();
     if (!mounted) return;
@@ -482,6 +506,8 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     );
   }
 
+  /// 显示当前任务收集到的文件变更和统一 Diff。
+  /// Shows file changes and unified diff collected for the current task.
   Future<void> _showFileChanges() async {
     await showDialog<void>(
       context: context,
@@ -508,6 +534,8 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     );
   }
 
+  /// 构建响应控制器状态的工作区主布局。
+  /// Builds the main workspace layout in response to controller state.
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -590,6 +618,8 @@ class _TopBar extends StatelessWidget {
   final Future<void> Function() onRelay;
   final Future<void> Function(ReasoningEffort) onSetReasoningEffort;
 
+  /// 构建包含运行时、账户、Provider 和项目控制的顶部栏。
+  /// Builds the top bar with runtime, account, provider, and workspace controls.
   @override
   Widget build(BuildContext context) {
     final compact = MediaQuery.sizeOf(context).width < 1000;
@@ -728,6 +758,8 @@ class _Sidebar extends StatelessWidget {
   final Future<void> Function(CodexThread thread) onArchiveThread;
   final Future<void> Function() onShowArchivedThreads;
 
+  /// 构建工作区选择、线程历史和 CLI 配置侧栏。
+  /// Builds the sidebar for workspace selection, thread history, and CLI setup.
   @override
   Widget build(BuildContext context) {
     return SizedBox(
@@ -847,6 +879,8 @@ class _ConversationPane extends StatelessWidget {
   final Future<void> Function() onSend;
   final Future<void> Function() onShowFileChanges;
 
+  /// 构建时间线、审批提示和任务输入区域。
+  /// Builds the timeline, approval prompt, and task composer area.
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -954,6 +988,8 @@ class _ComposerPanel extends StatelessWidget {
     return controller.status == RuntimeStatus.ready ? '任务已就绪' : '等待运行时连接';
   }
 
+  /// 构建支持 Enter 发送、Shift+Enter 换行的任务输入面板。
+  /// Builds the task composer that sends with Enter and inserts lines with Shift+Enter.
   @override
   Widget build(BuildContext context) {
     final model = controller.relayProvider?.model ?? 'Codex';
@@ -1152,6 +1188,8 @@ class _ApprovalPanel extends StatelessWidget {
   final Future<void> Function() onAccept;
   final Future<void> Function() onDecline;
 
+  /// 构建当前服务器审批请求及其允许、拒绝操作。
+  /// Builds the current server approval request with allow and decline actions.
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -1202,6 +1240,8 @@ class _Inspector extends StatelessWidget {
 
   final CodexController controller;
 
+  /// 构建审批模式和文件变更的桌面检查器面板。
+  /// Builds the desktop inspector panel for approval mode and file changes.
   @override
   Widget build(BuildContext context) {
     return SizedBox(
@@ -1262,6 +1302,8 @@ class _FileChangesList extends StatelessWidget {
   final List<CodexFileChange> changes;
   final String? turnDiff;
 
+  /// 构建任务统一 Diff 与单文件变更的可展开列表。
+  /// Builds an expandable list for the task's unified diff and individual file changes.
   @override
   Widget build(BuildContext context) {
     if (changes.isEmpty && (turnDiff == null || turnDiff!.isEmpty)) {
@@ -1298,6 +1340,8 @@ class _DiffExpansionTile extends StatelessWidget {
   final String subtitle;
   final String diff;
 
+  /// 构建可展开的单个 Diff 展示项。
+  /// Builds one expandable diff presentation item.
   @override
   Widget build(BuildContext context) {
     return ExpansionTile(
@@ -1334,6 +1378,8 @@ class _DiffExpansionTile extends StatelessWidget {
     );
   }
 
+  /// 按 unified Diff 行类型为文本片段分配颜色。
+  /// Assigns colors to text spans according to unified-diff line types.
   List<TextSpan> _diffSpans(String value) {
     return value
         .split('\n')
@@ -1360,6 +1406,8 @@ class _TimelineEntry extends StatelessWidget {
 
   final TimelineEntry entry;
 
+  /// 按时间线条目类型构建消息或系统事件视图。
+  /// Builds a message or system-event view based on the timeline entry kind.
   @override
   Widget build(BuildContext context) {
     if (entry.kind == TimelineKind.user) {
@@ -1408,6 +1456,8 @@ class _StatusPill extends StatelessWidget {
   final String label;
   final Color color;
 
+  /// 构建表示运行时状态的紧凑彩色标签。
+  /// Builds a compact colored pill representing runtime status.
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -1433,6 +1483,8 @@ class _ProviderChip extends StatelessWidget {
 
   final String label;
 
+  /// 构建 Provider 或运行时边界的紧凑说明标签。
+  /// Builds a compact label for a provider or runtime boundary.
   @override
   Widget build(BuildContext context) {
     return Chip(
@@ -1459,6 +1511,8 @@ class _HistoryThreadTile extends StatelessWidget {
   final VoidCallback onRename;
   final VoidCallback onArchive;
 
+  /// 构建带有恢复、重命名和归档操作的历史线程项。
+  /// Builds a history-thread item with resume, rename, and archive actions.
   @override
   Widget build(BuildContext context) {
     return Material(
@@ -1543,6 +1597,8 @@ class _ArchivedThreadTile extends StatelessWidget {
   final bool restoring;
   final VoidCallback onRestore;
 
+  /// 构建带恢复操作与进行状态的归档线程项。
+  /// Builds an archived-thread item with restore action and progress state.
   @override
   Widget build(BuildContext context) {
     return ListTile(
@@ -1575,6 +1631,8 @@ class _InspectorCard extends StatelessWidget {
   final String title;
   final String detail;
 
+  /// 构建检查器中带图标、标题和说明的静态信息卡。
+  /// Builds a static inspector card with icon, title, and description.
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -1603,6 +1661,8 @@ class _MutedText extends StatelessWidget {
 
   final String data;
 
+  /// 构建使用低强调颜色的辅助说明文本。
+  /// Builds helper text using a low-emphasis color.
   @override
   Widget build(BuildContext context) {
     return Text(

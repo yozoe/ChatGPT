@@ -11,12 +11,16 @@ class RelayProviderConfiguration {
   final String baseUrl;
   final String model;
 
-  /// Kept in memory only long enough to launch the local App Server process.
-  /// Never include this value in logs, widgets, timeline entries, or config.
+  /// 仅在启动本地 App Server 所需的短时间内保存在内存中，绝不可写入日志、Widget、时间线或配置。
+  /// Kept in memory only long enough to launch the local App Server process; never include it in logs, widgets, timeline entries, or config.
   final String apiKey;
 
+  /// 返回仅供本地 App Server 子进程使用的密钥环境变量。
+  /// Returns the secret environment variable used only by the local App Server process.
   Map<String, String> get processEnvironment => {environmentVariable: apiKey};
 
+  /// 返回创建或恢复中转站线程时需要的 App Server 配置。
+  /// Returns App Server configuration required when creating or resuming relay threads.
   Map<String, dynamic> get threadConfig => {
     'model_providers': {
       providerId: {
@@ -28,6 +32,8 @@ class RelayProviderConfiguration {
     },
   };
 
+  /// 返回替换可选 Provider 字段后的配置副本。
+  /// Returns a configuration copy with optional provider fields replaced.
   RelayProviderConfiguration copyWith({
     String? baseUrl,
     String? model,
@@ -40,6 +46,8 @@ class RelayProviderConfiguration {
     );
   }
 
+  /// 验证并规范化中转站 Base URL，仅允许 HTTPS 或本机 HTTP。
+  /// Validates and normalizes a relay Base URL, allowing HTTPS or local HTTP only.
   static String normalizeBaseUrl(String value) {
     final trimmed = value.trim().replaceFirst(RegExp(r'/+$'), '');
     final uri = Uri.tryParse(trimmed);

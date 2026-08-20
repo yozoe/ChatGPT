@@ -4,8 +4,8 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../domain/relay_provider_configuration.dart';
 
-/// Persists relay settings in the OS secure store (macOS Keychain), never in
-/// project files, App Server config, or application logs.
+/// 将中转站设置保存在系统安全存储（macOS Keychain）而非项目文件、App Server 配置或应用日志中。
+/// Persists relay settings in the OS secure store (macOS Keychain), never in project files, App Server config, or application logs.
 class RelayProviderStore {
   RelayProviderStore({FlutterSecureStorage? storage})
     : _storage =
@@ -21,6 +21,8 @@ class RelayProviderStore {
 
   final FlutterSecureStorage _storage;
 
+  /// 读取中转站配置，并在需要时迁移旧版分散的 Keychain 键。
+  /// Reads relay configuration and migrates legacy split Keychain keys when needed.
   Future<RelayProviderConfiguration?> read() async {
     final encoded = await _storage.read(key: _configurationKey);
     if (encoded != null) return _decode(encoded);
@@ -45,6 +47,8 @@ class RelayProviderStore {
     return legacy;
   }
 
+  /// 将完整的中转站配置序列化后写入 Keychain。
+  /// Serializes and writes the complete relay configuration to Keychain.
   Future<void> save(RelayProviderConfiguration configuration) async {
     final encoded = jsonEncode({
       'baseUrl': configuration.baseUrl,
@@ -54,11 +58,15 @@ class RelayProviderStore {
     await _storage.write(key: _configurationKey, value: encoded);
   }
 
+  /// 清除当前与旧版的所有中转站凭据。
+  /// Clears both current and legacy relay credentials.
   Future<void> clear() async {
     await _deleteLegacyKeys();
     await _storage.delete(key: _configurationKey);
   }
 
+  /// 验证并解码 Keychain 中保存的中转站配置。
+  /// Validates and decodes a relay configuration stored in Keychain.
   RelayProviderConfiguration _decode(String encoded) {
     final decoded = jsonDecode(encoded);
     if (decoded is! Map) {
@@ -83,6 +91,8 @@ class RelayProviderStore {
     );
   }
 
+  /// 删除已迁移或已废弃的旧版中转站 Keychain 键。
+  /// Deletes migrated or obsolete legacy relay Keychain keys.
   Future<void> _deleteLegacyKeys() {
     return Future.wait([
       _storage.delete(key: _legacyBaseUrlKey),

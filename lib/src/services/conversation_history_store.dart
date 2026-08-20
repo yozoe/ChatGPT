@@ -25,6 +25,8 @@ class ConversationHistorySnapshot {
   final List<CodexFileChange> fileChanges;
   final String? turnDiff;
 
+  /// 将当前工作区快照转换为可持久化的 JSON。
+  /// Converts the current workspace snapshot to persistable JSON.
   Map<String, dynamic> toJson() => {
     'threads': threads.map((thread) => thread.toJson()).toList(),
     'archivedThreads': archivedThreads
@@ -35,7 +37,11 @@ class ConversationHistorySnapshot {
     'turnDiff': ?turnDiff,
   };
 
+  /// 从持久化 JSON 恢复当前工作区快照。
+  /// Restores a workspace snapshot from persisted JSON.
   factory ConversationHistorySnapshot.fromJson(Map<dynamic, dynamic> value) {
+    /// 过滤无效元素并按调用方指定的解析函数恢复列表。
+    /// Filters invalid elements and restores a list with the supplied parser.
     List<T> decodeList<T>(
       Object? raw,
       T Function(Map<dynamic, dynamic>) parse,
@@ -60,9 +66,8 @@ class ConversationHistorySnapshot {
   }
 }
 
-/// Stores a per-workspace conversation cache in the user's Application Support
-/// folder. This cache allows history to remain visible while App Server is
-/// stopped or temporarily unavailable.
+/// 将每个工作区的对话缓存加密保存到用户的 Application Support 目录，App Server 停止或暂时不可用时仍可显示历史。
+/// Stores each workspace's encrypted conversation cache in Application Support so history remains visible while App Server is stopped or unavailable.
 class ConversationHistoryStore {
   ConversationHistoryStore({
     Directory? directory,
@@ -78,6 +83,8 @@ class ConversationHistoryStore {
   final Directory? _directory;
   final FlutterSecureStorage _secureStorage;
 
+  /// 读取指定工作区的历史快照；没有缓存时返回 `null`。
+  /// Reads the history snapshot for a workspace and returns `null` when absent.
   Future<ConversationHistorySnapshot?> read(String workspace) async {
     final file = await _file();
     if (!await file.exists()) return null;
@@ -91,6 +98,8 @@ class ConversationHistoryStore {
         : null;
   }
 
+  /// 原子地保存指定工作区的历史快照，并保留其他工作区的缓存。
+  /// Atomically saves a workspace snapshot while retaining other workspace caches.
   Future<void> save({
     required String workspace,
     required ConversationHistorySnapshot snapshot,
@@ -122,6 +131,8 @@ class ConversationHistoryStore {
     await temporary.rename(file.path);
   }
 
+  /// 使用存储在 Keychain 中的密钥将明文封装为 AES-GCM JSON。
+  /// Encrypts plaintext into an AES-GCM JSON envelope using the Keychain key.
   Future<String> _encrypt(String value) async {
     final algorithm = AesGcm.with256bits();
     final secretKey = SecretKey(await _readOrCreateEncryptionKey());
@@ -137,6 +148,8 @@ class ConversationHistoryStore {
     });
   }
 
+  /// 解密 AES-GCM 缓存，并兼容读取首版的明文缓存。
+  /// Decrypts the AES-GCM cache and remains compatible with the first plaintext format.
   Future<String> _decrypt(String encoded) async {
     final envelope = jsonDecode(encoded);
     // The first cache release used plain JSON. Keep it readable so the next
@@ -160,6 +173,8 @@ class ConversationHistoryStore {
     return utf8.decode(clearText);
   }
 
+  /// 从 Keychain 读取 256 位密钥，不存在时安全生成并保存。
+  /// Reads the 256-bit key from Keychain, generating and storing it when absent.
   Future<List<int>> _readOrCreateEncryptionKey() async {
     final stored = await _secureStorage.read(key: _encryptionKey);
     if (stored != null && stored.isNotEmpty) return base64Decode(stored);
@@ -172,11 +187,15 @@ class ConversationHistoryStore {
     return generated;
   }
 
+  /// 返回历史缓存文件的绝对路径对象。
+  /// Returns the file object for the absolute history cache path.
   Future<File> _file() async {
     final directory = _directory ?? _defaultDirectory();
     return File('${directory.path}/conversation-history-v1.json');
   }
 
+  /// 解析 macOS Application Support 中的默认缓存目录。
+  /// Resolves the default cache directory in macOS Application Support.
   Directory _defaultDirectory() {
     final home = Platform.environment['HOME'];
     if (home == null || home.isEmpty) {
