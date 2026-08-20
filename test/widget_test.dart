@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:chatgpt/src/app.dart';
 import 'package:chatgpt/src/app_controller.dart';
+import 'package:chatgpt/src/domain/codex_thread.dart';
 import 'package:chatgpt/src/domain/relay_provider_configuration.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
@@ -15,6 +16,58 @@ class _DelayedRelayProviderStore extends RelayProviderStore {
   @override
   Future<RelayProviderConfiguration?> read() => completer.future;
 }
+
+class _FakeCodexAppServer extends CodexAppServer {
+  _FakeCodexAppServer() : super(executable: '/not/a/codex');
+
+  final listRequests = <Completer<List<JsonMap>>>[];
+  List<JsonMap> listResponse = <JsonMap>[];
+  bool queueListRequests = false;
+  Object? resumeError;
+  String? resumedThreadId;
+  String? resumedModelProvider;
+  String? resumedModel;
+  JsonMap? resumedConfig;
+
+  @override
+  bool get isRunning => true;
+
+  @override
+  Future<List<JsonMap>> listThreads({required String workingDirectory}) {
+    if (!queueListRequests) return Future.value(listResponse);
+    final completer = Completer<List<JsonMap>>();
+    listRequests.add(completer);
+    return completer.future;
+  }
+
+  @override
+  Future<void> resumeThread({
+    required String threadId,
+    String? modelProvider,
+    String? model,
+    JsonMap? config,
+  }) async {
+    resumedThreadId = threadId;
+    resumedModelProvider = modelProvider;
+    resumedModel = model;
+    resumedConfig = config;
+    final error = resumeError;
+    if (error != null) throw error;
+  }
+}
+
+CodexThread _thread({
+  required String id,
+  String? modelProvider,
+  String? model,
+}) => CodexThread(
+  id: id,
+  preview: 'preview-$id',
+  createdAt: 1,
+  updatedAt: 2,
+  modelProvider: modelProvider,
+  model: model,
+);
 
 void main() {
   testWidgets('shows the Codex Desk shell', (tester) async {
@@ -190,5 +243,65 @@ void main() {
     expect(probe.isAvailable, isFalse);
     expect(probe.error, contains('未找到 Codex CLI'));
     await server.dispose();
+  });
+
+  test('preserves the historical provider when resuming a thread', () async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..relayProvider = const RelayProviderConfiguration(
+        baseUrl: 'https://relay.example.com/v1',
+        model: 'relay-model',
+        apiKey: 'secret',
+      );
+
+    await controller.resumeThread(
+      _thread(id: 'openai-thread', modelProvider: 'openai', model: 'gpt-5'),
+    );
+
+    expect(server.resumedThreadId, 'openai-thread');
+    expect(server.resumedModelProvider, 'openai');
+    expect(server.resumedModel, 'gpt-5');
+    expect(server.resumedConfig, isNull);
+    controller.dispose();
+  });
+
+  test('restores the previous active thread when resume fails', () async {
+    final server = _FakeCodexAppServer()..resumeError = StateError('offline');
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..activeThreadId = 'old-thread';
+
+    await controller.resumeThread(_thread(id: 'new-thread'));
+
+    expect(controller.status, RuntimeStatus.ready);
+    expect(controller.activeThreadId, 'old-thread');
+    expect(controller.lastError, 'offline');
+    controller.dispose();
+  });
+
+  test('ignores an older concurrent thread refresh result', () async {
+    final server = _FakeCodexAppServer()..queueListRequests = true;
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace';
+
+    final first = controller.refreshThreads();
+    final second = controller.refreshThreads();
+    expect(server.listRequests, hasLength(2));
+
+    server.listRequests[1].complete([
+      {'id': 'newer', 'preview': 'newer'},
+    ]);
+    await second;
+    server.listRequests[0].complete([
+      {'id': 'older', 'preview': 'older'},
+    ]);
+    await first;
+
+    expect(controller.threads.single.id, 'newer');
+    expect(controller.threadsLoading, isFalse);
+    controller.dispose();
   });
 }

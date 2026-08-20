@@ -213,6 +213,55 @@ class CodexAppServer {
     _throwIfError(response);
   }
 
+  Future<List<JsonMap>> listThreads({required String workingDirectory}) async {
+    final response = await request('thread/list', {
+      'cwd': workingDirectory,
+      'limit': 50,
+      'sortKey': 'updated_at',
+      'sortDirection': 'desc',
+    });
+    _throwIfError(response);
+    final result = response['result'];
+    if (result is! Map || result['data'] is! Iterable) {
+      throw const FormatException('App Server did not return thread history.');
+    }
+    return (result['data'] as Iterable)
+        .whereType<Map>()
+        .map(JsonMap.from)
+        .toList(growable: false);
+  }
+
+  Future<void> resumeThread({
+    required String threadId,
+    String? modelProvider,
+    String? model,
+    JsonMap? config,
+  }) async {
+    final response = await request('thread/resume', {
+      'threadId': threadId,
+      'modelProvider': ?modelProvider,
+      'model': ?model,
+      'config': ?config,
+    });
+    _throwIfError(response);
+  }
+
+  Future<void> renameThread({
+    required String threadId,
+    required String name,
+  }) async {
+    final response = await request('thread/name/set', {
+      'threadId': threadId,
+      'name': name,
+    });
+    _throwIfError(response);
+  }
+
+  Future<void> archiveThread({required String threadId}) async {
+    final response = await request('thread/archive', {'threadId': threadId});
+    _throwIfError(response);
+  }
+
   Future<JsonMap> readAccount() async {
     final response = await request('account/read', {'refreshToken': false});
     _throwIfError(response);

@@ -11,6 +11,13 @@
 - ChatGPT 浏览器登录与 OpenAI API Key 登录入口
 - 命令、文件变更与额外权限的显式审批
 - OpenAI Responses API 兼容中转站：模型、Base URL 与 macOS Keychain 密钥管理
+- 当前工作区线程历史：列表、恢复、重命名与归档
+- 历史线程恢复会保留原 Provider，并防止过期刷新结果污染当前列表
+
+## 下一阶段
+
+- 恢复线程时加载并展示历史 turns/items，让时间线与当前 Thread 完整同步
+- 为历史消息加载、分页和恢复失败场景补充端到端验证
 
 ## 运行
 

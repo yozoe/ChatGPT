@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import 'domain/codex_thread.dart';
 import 'domain/pending_approval.dart';
 import 'domain/relay_provider_configuration.dart';
 import 'domain/timeline_entry.dart';
@@ -43,6 +44,8 @@ class CodexController extends ChangeNotifier {
   Timer? _deltaNotificationTimer;
   bool _disposed = false;
   bool _startingRuntime = false;
+  int _threadRefreshEpoch = 0;
+  int _threadRefreshRequest = 0;
   late final Future<void> _relayLoad;
   late final Future<void> _runtimeLoad;
 
@@ -65,6 +68,9 @@ class CodexController extends ChangeNotifier {
   CodexRuntimeProbe? runtimeProbe;
   String? runtimeError;
   bool runtimeChecking = false;
+  List<CodexThread> threads = const [];
+  bool threadsLoading = false;
+  String? threadsError;
 
   List<TimelineEntry> get entries => List.unmodifiable(_entries);
   bool get canSend =>
@@ -112,8 +118,10 @@ class CodexController extends ChangeNotifier {
       return;
     }
     final canonicalPath = await directory.resolveSymbolicLinks();
+    _invalidateThreadRefreshes();
     workspacePath = canonicalPath;
     activeThreadId = null;
+    threads = const [];
     _clearStreamingState();
     _add(TimelineKind.system, '项目已选择', canonicalPath);
     notifyListeners();
@@ -146,6 +154,7 @@ class CodexController extends ChangeNotifier {
     }
 
     _startingRuntime = true;
+    _invalidateThreadRefreshes();
     status = RuntimeStatus.starting;
     lastError = null;
     _add(TimelineKind.system, '正在启动本地运行时', 'codex app-server · $workspace');
@@ -167,6 +176,7 @@ class CodexController extends ChangeNotifier {
       await refreshAccount();
       status = RuntimeStatus.ready;
       _add(TimelineKind.system, '运行时已连接', 'App Server 已通过本地 stdio 通道就绪。');
+      await refreshThreads();
     } catch (error) {
       status = RuntimeStatus.failed;
       lastError = _messageOf(error);
@@ -196,6 +206,7 @@ class CodexController extends ChangeNotifier {
         model: relayProvider?.model,
         config: relayProvider?.threadConfig,
       );
+      await refreshThreads();
       final id = activeThreadId!;
       final shortId = id.length > 12 ? id.substring(0, 12) : id;
       _add(TimelineKind.system, '任务已创建', 'Thread $shortId');
@@ -228,8 +239,10 @@ class CodexController extends ChangeNotifier {
     if (status == RuntimeStatus.stopped && !_server.isRunning) return;
     try {
       await _server.stop();
+      _invalidateThreadRefreshes();
       status = RuntimeStatus.stopped;
       activeThreadId = null;
+      threads = const [];
       pendingApproval = null;
       approvalResponding = false;
       _clearStreamingState();
@@ -238,6 +251,104 @@ class CodexController extends ChangeNotifier {
       status = RuntimeStatus.failed;
       lastError = _messageOf(error);
       _add(TimelineKind.error, '停止运行时失败', lastError!);
+    }
+    notifyListeners();
+  }
+
+  Future<void> refreshThreads() async {
+    final workspace = workspacePath;
+    if (!_server.isRunning || workspace == null) return;
+    final epoch = _threadRefreshEpoch;
+    final request = ++_threadRefreshRequest;
+    threadsLoading = true;
+    threadsError = null;
+    if (!_disposed) notifyListeners();
+    try {
+      final nextThreads = (await _server.listThreads(
+        workingDirectory: workspace,
+      )).map(CodexThread.fromJson).toList(growable: false);
+      if (_isCurrentThreadRefresh(request, epoch, workspace)) {
+        threads = nextThreads;
+      }
+    } catch (error) {
+      if (_isCurrentThreadRefresh(request, epoch, workspace)) {
+        threadsError = _messageOf(error);
+      }
+    } finally {
+      if (_isCurrentThreadRefresh(request, epoch, workspace)) {
+        threadsLoading = false;
+        if (!_disposed) notifyListeners();
+      }
+    }
+  }
+
+  Future<void> resumeThread(CodexThread thread) async {
+    if (status != RuntimeStatus.ready || !_server.isRunning) return;
+    if (activeThreadId == thread.id) return;
+    status = RuntimeStatus.starting;
+    final previousThreadId = activeThreadId;
+    lastError = null;
+    _clearStreamingState();
+    _add(TimelineKind.system, '正在恢复任务', thread.title);
+    notifyListeners();
+    try {
+      await _server.resumeThread(
+        threadId: thread.id,
+        modelProvider: thread.modelProvider,
+        model: thread.model,
+        config: thread.modelProvider == RelayProviderConfiguration.providerId
+            ? relayProvider?.threadConfig
+            : null,
+      );
+      activeThreadId = thread.id;
+      status = RuntimeStatus.ready;
+      _resetConversationTimeline();
+      _add(TimelineKind.system, '任务已恢复', '可以继续在此任务中追问。');
+      await refreshThreads();
+    } catch (error) {
+      activeThreadId = previousThreadId;
+      status = RuntimeStatus.ready;
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '无法恢复任务', lastError!);
+    }
+    notifyListeners();
+  }
+
+  Future<void> renameThread(CodexThread thread, String name) async {
+    final title = name.trim();
+    if (title.isEmpty || !_server.isRunning) return;
+    try {
+      await _server.renameThread(threadId: thread.id, name: title);
+      threads = threads
+          .map(
+            (value) =>
+                value.id == thread.id ? value.copyWith(name: title) : value,
+          )
+          .toList(growable: false);
+      _add(TimelineKind.system, '任务已重命名', title);
+    } catch (error) {
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '重命名失败', lastError!);
+    }
+    notifyListeners();
+  }
+
+  Future<void> archiveThread(CodexThread thread) async {
+    if (!_server.isRunning || status == RuntimeStatus.running) return;
+    try {
+      await _server.archiveThread(threadId: thread.id);
+      if (activeThreadId == thread.id) {
+        activeThreadId = null;
+        _resetConversationTimeline();
+        _clearStreamingState();
+      }
+      threads = threads
+          .where((value) => value.id != thread.id)
+          .toList(growable: false);
+      _add(TimelineKind.system, '任务已归档', thread.title);
+    } catch (error) {
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '归档失败', lastError!);
     }
     notifyListeners();
   }
@@ -479,6 +590,11 @@ class CodexController extends ChangeNotifier {
         return;
       case 'turn/completed':
         _handleTurnCompleted(event.params);
+        unawaited(refreshThreads());
+      case 'thread/archived':
+      case 'thread/unarchived':
+      case 'thread/name/updated':
+        unawaited(refreshThreads());
       case 'runtime/stderr':
         _add(
           TimelineKind.system,
@@ -627,6 +743,29 @@ class CodexController extends ChangeNotifier {
     _agentEntryIndexByItem.clear();
     _deltaNotificationTimer?.cancel();
     _deltaNotificationTimer = null;
+  }
+
+  void _resetConversationTimeline() {
+    if (_entries.isEmpty) return;
+    final welcome = _entries.first;
+    _entries
+      ..clear()
+      ..add(welcome);
+  }
+
+  void _invalidateThreadRefreshes() {
+    _threadRefreshEpoch++;
+    _threadRefreshRequest++;
+    threadsLoading = false;
+    threadsError = null;
+  }
+
+  bool _isCurrentThreadRefresh(int request, int epoch, String workspace) {
+    return !_disposed &&
+        request == _threadRefreshRequest &&
+        epoch == _threadRefreshEpoch &&
+        workspacePath == workspace &&
+        _server.isRunning;
   }
 
   void _scheduleDeltaNotification() {

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app_controller.dart';
+import '../domain/codex_thread.dart';
 import '../domain/pending_approval.dart';
 import '../domain/timeline_entry.dart';
 
@@ -346,6 +347,58 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     );
   }
 
+  Future<void> _renameThread(CodexThread thread) async {
+    final name = TextEditingController(text: thread.name ?? thread.preview);
+    final nextName = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('重命名任务'),
+        content: TextField(
+          controller: name,
+          autofocus: true,
+          maxLength: 120,
+          decoration: const InputDecoration(labelText: '任务名称'),
+          onSubmitted: (value) => Navigator.of(context).pop(value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(name.text),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    name.dispose();
+    if (nextName != null && nextName.trim().isNotEmpty) {
+      await widget.controller.renameThread(thread, nextName);
+    }
+  }
+
+  Future<void> _archiveThread(CodexThread thread) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('归档任务？'),
+        content: Text('“${thread.title}”将从当前列表隐藏，但可以在后续归档视图中恢复。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.tonal(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('归档'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await widget.controller.archiveThread(thread);
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -375,6 +428,8 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
                             controller: controller,
                             onChooseWorkspace: _chooseWorkspace,
                             onConfigureRuntime: _showRuntime,
+                            onRenameThread: _renameThread,
+                            onArchiveThread: _archiveThread,
                           ),
                           const VerticalDivider(width: 1),
                           Expanded(
@@ -510,11 +565,15 @@ class _Sidebar extends StatelessWidget {
     required this.controller,
     required this.onChooseWorkspace,
     required this.onConfigureRuntime,
+    required this.onRenameThread,
+    required this.onArchiveThread,
   });
 
   final CodexController controller;
   final VoidCallback onChooseWorkspace;
   final Future<void> Function() onConfigureRuntime;
+  final Future<void> Function(CodexThread thread) onRenameThread;
+  final Future<void> Function(CodexThread thread) onArchiveThread;
 
   @override
   Widget build(BuildContext context) {
@@ -566,14 +625,41 @@ class _Sidebar extends StatelessWidget {
                       : null,
                   icon: const Icon(Icons.add, size: 20),
                 ),
+                IconButton(
+                  tooltip: '刷新任务列表',
+                  onPressed: controller.canSend && !controller.threadsLoading
+                      ? controller.refreshThreads
+                      : null,
+                  icon: const Icon(Icons.refresh, size: 20),
+                ),
               ],
             ),
             const SizedBox(height: 8),
-            if (controller.activeThreadId == null)
-              const _MutedText('新任务会在发送第一条消息时创建。')
+            if (controller.threadsLoading)
+              const LinearProgressIndicator(minHeight: 2)
+            else if (controller.threadsError case final error?)
+              _MutedText(error)
+            else if (controller.threads.isEmpty)
+              const _MutedText('暂无历史任务；发送第一条消息后会创建。')
             else
-              _ThreadTile(threadId: controller.activeThreadId!),
-            const Spacer(),
+              Expanded(
+                child: ListView.separated(
+                  itemCount: controller.threads.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 6),
+                  itemBuilder: (context, index) {
+                    final thread = controller.threads[index];
+                    return _HistoryThreadTile(
+                      thread: thread,
+                      selected: controller.activeThreadId == thread.id,
+                      enabled: controller.status == RuntimeStatus.ready,
+                      onTap: () => controller.resumeThread(thread),
+                      onRename: () => onRenameThread(thread),
+                      onArchive: () => onArchiveThread(thread),
+                    );
+                  },
+                ),
+              ),
+            const SizedBox(height: 12),
             OutlinedButton.icon(
               onPressed: onConfigureRuntime,
               icon: const Icon(Icons.memory_outlined, size: 18),
@@ -874,35 +960,93 @@ class _ProviderChip extends StatelessWidget {
   }
 }
 
-class _ThreadTile extends StatelessWidget {
-  const _ThreadTile({required this.threadId});
+class _HistoryThreadTile extends StatelessWidget {
+  const _HistoryThreadTile({
+    required this.thread,
+    required this.selected,
+    required this.enabled,
+    required this.onTap,
+    required this.onRename,
+    required this.onArchive,
+  });
 
-  final String threadId;
+  final CodexThread thread;
+  final bool selected;
+  final bool enabled;
+  final VoidCallback onTap;
+  final VoidCallback onRename;
+  final VoidCallback onArchive;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
+    return Material(
+      color: selected ? const Color(0xFF1D3343) : const Color(0xFF162131),
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: enabled ? onTap : null,
         borderRadius: BorderRadius.circular(10),
-        color: const Color(0xFF162131),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.forum_outlined, size: 18),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              '当前任务\n$threadId',
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 10, 4, 10),
+          child: Row(
+            children: [
+              Icon(
+                selected ? Icons.forum : Icons.forum_outlined,
+                size: 17,
+                color: selected ? const Color(0xFF68E0B8) : null,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      thread.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (thread.status case final status?)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 3),
+                        child: _MutedText(status),
+                      ),
+                  ],
+                ),
+              ),
+              PopupMenuButton<_ThreadAction>(
+                tooltip: '任务选项',
+                enabled: enabled,
+                onSelected: (action) {
+                  switch (action) {
+                    case _ThreadAction.rename:
+                      onRename();
+                    case _ThreadAction.archive:
+                      onArchive();
+                  }
+                },
+                itemBuilder: (context) => const [
+                  PopupMenuItem(
+                    value: _ThreadAction.rename,
+                    child: Text('重命名'),
+                  ),
+                  PopupMenuItem(
+                    value: _ThreadAction.archive,
+                    child: Text('归档'),
+                  ),
+                ],
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
 }
+
+enum _ThreadAction { rename, archive }
 
 class _InspectorCard extends StatelessWidget {
   const _InspectorCard({
