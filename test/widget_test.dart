@@ -22,6 +22,7 @@ class _FakeCodexAppServer extends CodexAppServer {
 
   final listRequests = <Completer<List<JsonMap>>>[];
   List<JsonMap> listResponse = <JsonMap>[];
+  List<JsonMap> archivedListResponse = <JsonMap>[];
   bool queueListRequests = false;
   Object? resumeError;
   JsonMap resumeResult = {
@@ -33,12 +34,17 @@ class _FakeCodexAppServer extends CodexAppServer {
   String? resumedModelProvider;
   String? resumedModel;
   JsonMap? resumedConfig;
+  String? unarchivedThreadId;
 
   @override
   bool get isRunning => true;
 
   @override
-  Future<List<JsonMap>> listThreads({required String workingDirectory}) {
+  Future<List<JsonMap>> listThreads({
+    required String workingDirectory,
+    bool archived = false,
+  }) {
+    if (archived) return Future.value(archivedListResponse);
     if (!queueListRequests) return Future.value(listResponse);
     final completer = Completer<List<JsonMap>>();
     listRequests.add(completer);
@@ -70,6 +76,12 @@ class _FakeCodexAppServer extends CodexAppServer {
   }) async {
     turnPageCursors.add(cursor);
     return turnPage;
+  }
+
+  @override
+  Future<void> unarchiveThread({required String threadId}) async {
+    unarchivedThreadId = threadId;
+    archivedListResponse = <JsonMap>[];
   }
 }
 
@@ -415,6 +427,29 @@ void main() {
 
     expect(controller.threads.single.id, 'newer');
     expect(controller.threadsLoading, isFalse);
+    controller.dispose();
+  });
+
+  test('restores archived threads to the active thread list', () async {
+    final server = _FakeCodexAppServer()
+      ..listResponse = [
+        {'id': 'restored-thread', 'preview': '已恢复任务'},
+      ]
+      ..archivedListResponse = [
+        {'id': 'restored-thread', 'preview': '已恢复任务'},
+      ];
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+
+    await controller.refreshArchivedThreads();
+    expect(controller.archivedThreads.single.id, 'restored-thread');
+
+    await controller.unarchiveThread(controller.archivedThreads.single);
+
+    expect(server.unarchivedThreadId, 'restored-thread');
+    expect(controller.archivedThreads, isEmpty);
+    expect(controller.threads.single.id, 'restored-thread');
     controller.dispose();
   });
 }

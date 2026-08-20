@@ -46,6 +46,7 @@ class CodexController extends ChangeNotifier {
   bool _startingRuntime = false;
   int _threadRefreshEpoch = 0;
   int _threadRefreshRequest = 0;
+  int _archivedThreadRefreshRequest = 0;
   late final Future<void> _relayLoad;
   late final Future<void> _runtimeLoad;
 
@@ -71,6 +72,9 @@ class CodexController extends ChangeNotifier {
   List<CodexThread> threads = const [];
   bool threadsLoading = false;
   String? threadsError;
+  List<CodexThread> archivedThreads = const [];
+  bool archivedThreadsLoading = false;
+  String? archivedThreadsError;
 
   List<TimelineEntry> get entries => List.unmodifiable(_entries);
   bool get canSend =>
@@ -122,6 +126,7 @@ class CodexController extends ChangeNotifier {
     workspacePath = canonicalPath;
     activeThreadId = null;
     threads = const [];
+    archivedThreads = const [];
     _clearStreamingState();
     _add(TimelineKind.system, '项目已选择', canonicalPath);
     notifyListeners();
@@ -243,6 +248,7 @@ class CodexController extends ChangeNotifier {
       status = RuntimeStatus.stopped;
       activeThreadId = null;
       threads = const [];
+      archivedThreads = const [];
       pendingApproval = null;
       approvalResponding = false;
       _clearStreamingState();
@@ -277,6 +283,34 @@ class CodexController extends ChangeNotifier {
     } finally {
       if (_isCurrentThreadRefresh(request, epoch, workspace)) {
         threadsLoading = false;
+        if (!_disposed) notifyListeners();
+      }
+    }
+  }
+
+  Future<void> refreshArchivedThreads() async {
+    final workspace = workspacePath;
+    if (!_server.isRunning || workspace == null) return;
+    final epoch = _threadRefreshEpoch;
+    final request = ++_archivedThreadRefreshRequest;
+    archivedThreadsLoading = true;
+    archivedThreadsError = null;
+    if (!_disposed) notifyListeners();
+    try {
+      final nextThreads = (await _server.listThreads(
+        workingDirectory: workspace,
+        archived: true,
+      )).map(CodexThread.fromJson).toList(growable: false);
+      if (_isCurrentArchivedThreadRefresh(request, epoch, workspace)) {
+        archivedThreads = nextThreads;
+      }
+    } catch (error) {
+      if (_isCurrentArchivedThreadRefresh(request, epoch, workspace)) {
+        archivedThreadsError = _messageOf(error);
+      }
+    } finally {
+      if (_isCurrentArchivedThreadRefresh(request, epoch, workspace)) {
+        archivedThreadsLoading = false;
         if (!_disposed) notifyListeners();
       }
     }
@@ -354,6 +388,22 @@ class CodexController extends ChangeNotifier {
     } catch (error) {
       lastError = _messageOf(error);
       _add(TimelineKind.error, '归档失败', lastError!);
+    }
+    notifyListeners();
+  }
+
+  Future<void> unarchiveThread(CodexThread thread) async {
+    if (!_server.isRunning || status == RuntimeStatus.running) return;
+    try {
+      await _server.unarchiveThread(threadId: thread.id);
+      archivedThreads = archivedThreads
+          .where((value) => value.id != thread.id)
+          .toList(growable: false);
+      _add(TimelineKind.system, '任务已恢复到列表', thread.title);
+      await Future.wait([refreshThreads(), refreshArchivedThreads()]);
+    } catch (error) {
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '恢复归档任务失败', lastError!);
     }
     notifyListeners();
   }
@@ -877,13 +927,28 @@ class CodexController extends ChangeNotifier {
   void _invalidateThreadRefreshes() {
     _threadRefreshEpoch++;
     _threadRefreshRequest++;
+    _archivedThreadRefreshRequest++;
     threadsLoading = false;
     threadsError = null;
+    archivedThreadsLoading = false;
+    archivedThreadsError = null;
   }
 
   bool _isCurrentThreadRefresh(int request, int epoch, String workspace) {
     return !_disposed &&
         request == _threadRefreshRequest &&
+        epoch == _threadRefreshEpoch &&
+        workspacePath == workspace &&
+        _server.isRunning;
+  }
+
+  bool _isCurrentArchivedThreadRefresh(
+    int request,
+    int epoch,
+    String workspace,
+  ) {
+    return !_disposed &&
+        request == _archivedThreadRefreshRequest &&
         epoch == _threadRefreshEpoch &&
         workspacePath == workspace &&
         _server.isRunning;

@@ -213,12 +213,16 @@ class CodexAppServer {
     _throwIfError(response);
   }
 
-  Future<List<JsonMap>> listThreads({required String workingDirectory}) async {
+  Future<List<JsonMap>> listThreads({
+    required String workingDirectory,
+    bool archived = false,
+  }) async {
     final response = await request('thread/list', {
       'cwd': workingDirectory,
       'limit': 50,
       'sortKey': 'updated_at',
       'sortDirection': 'desc',
+      if (archived) 'archived': true,
     });
     _throwIfError(response);
     final result = response['result'];
@@ -287,6 +291,11 @@ class CodexAppServer {
 
   Future<void> archiveThread({required String threadId}) async {
     final response = await request('thread/archive', {'threadId': threadId});
+    _throwIfError(response);
+  }
+
+  Future<void> unarchiveThread({required String threadId}) async {
+    final response = await request('thread/unarchive', {'threadId': threadId});
     _throwIfError(response);
   }
 

@@ -399,6 +399,57 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     if (confirmed == true) await widget.controller.archiveThread(thread);
   }
 
+  Future<void> _showArchivedThreads() async {
+    await widget.controller.refreshArchivedThreads();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AnimatedBuilder(
+        animation: widget.controller,
+        builder: (context, _) {
+          final controller = widget.controller;
+          return AlertDialog(
+            title: const Text('已归档任务'),
+            content: SizedBox(
+              width: 480,
+              height: 420,
+              child: switch ((
+                controller.archivedThreadsLoading,
+                controller.archivedThreadsError,
+                controller.archivedThreads,
+              )) {
+                (true, _, _) => const Center(
+                  child: CircularProgressIndicator(),
+                ),
+                (_, final String error, _) => Center(child: Text(error)),
+                (_, _, final List<CodexThread> threads) when threads.isEmpty =>
+                  const Center(child: Text('暂无归档任务。')),
+                (_, _, final List<CodexThread> threads) => ListView.separated(
+                  itemCount: threads.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final thread = threads[index];
+                    return _ArchivedThreadTile(
+                      thread: thread,
+                      enabled: controller.status == RuntimeStatus.ready,
+                      onRestore: () => controller.unarchiveThread(thread),
+                    );
+                  },
+                ),
+              },
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('关闭'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -430,6 +481,7 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
                             onConfigureRuntime: _showRuntime,
                             onRenameThread: _renameThread,
                             onArchiveThread: _archiveThread,
+                            onShowArchivedThreads: _showArchivedThreads,
                           ),
                           const VerticalDivider(width: 1),
                           Expanded(
@@ -567,6 +619,7 @@ class _Sidebar extends StatelessWidget {
     required this.onConfigureRuntime,
     required this.onRenameThread,
     required this.onArchiveThread,
+    required this.onShowArchivedThreads,
   });
 
   final CodexController controller;
@@ -574,6 +627,7 @@ class _Sidebar extends StatelessWidget {
   final Future<void> Function() onConfigureRuntime;
   final Future<void> Function(CodexThread thread) onRenameThread;
   final Future<void> Function(CodexThread thread) onArchiveThread;
+  final Future<void> Function() onShowArchivedThreads;
 
   @override
   Widget build(BuildContext context) {
@@ -631,6 +685,11 @@ class _Sidebar extends StatelessWidget {
                       ? controller.refreshThreads
                       : null,
                   icon: const Icon(Icons.refresh, size: 20),
+                ),
+                IconButton(
+                  tooltip: '已归档任务',
+                  onPressed: controller.canSend ? onShowArchivedThreads : null,
+                  icon: const Icon(Icons.inventory_2_outlined, size: 20),
                 ),
               ],
             ),
@@ -1047,6 +1106,33 @@ class _HistoryThreadTile extends StatelessWidget {
 }
 
 enum _ThreadAction { rename, archive }
+
+class _ArchivedThreadTile extends StatelessWidget {
+  const _ArchivedThreadTile({
+    required this.thread,
+    required this.enabled,
+    required this.onRestore,
+  });
+
+  final CodexThread thread;
+  final bool enabled;
+  final VoidCallback onRestore;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+      leading: const Icon(Icons.inventory_2_outlined),
+      title: Text(thread.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: thread.status == null ? null : Text(thread.status!),
+      trailing: TextButton.icon(
+        onPressed: enabled ? onRestore : null,
+        icon: const Icon(Icons.unarchive_outlined, size: 18),
+        label: const Text('恢复'),
+      ),
+    );
+  }
+}
 
 class _InspectorCard extends StatelessWidget {
   const _InspectorCard({
