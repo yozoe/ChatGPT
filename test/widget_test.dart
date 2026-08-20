@@ -302,6 +302,22 @@ void main() {
     expect(find.text('任务控制台'), findsOneWidget);
   });
 
+  testWidgets('switches the UI Kit display mode from the theme menu', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const CodexDeskApp());
+
+    await tester.tap(find.byTooltip('主题：深色 · 午夜'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('theme-mode-light')));
+    await tester.pumpAndSettle();
+
+    expect(
+      Theme.of(tester.element(find.text('Codex Desk'))).brightness,
+      Brightness.light,
+    );
+  });
+
   testWidgets('sends a composer message when Enter is pressed', (tester) async {
     final controller = CodexController(server: _FakeCodexAppServer())
       ..workspacePath = '/workspace'

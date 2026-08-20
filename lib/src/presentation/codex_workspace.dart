@@ -4,6 +4,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 
 import '../app_controller.dart';
 import '../domain/codex_file_change.dart';
@@ -12,9 +13,20 @@ import '../domain/pending_approval.dart';
 import '../domain/timeline_entry.dart';
 
 class CodexWorkspace extends StatefulWidget {
-  const CodexWorkspace({required this.controller, super.key});
+  const CodexWorkspace({
+    required this.controller,
+    this.themeMode = ThemeMode.dark,
+    this.themePreset = YeknomColorPreset.midnight,
+    this.onThemeModeChanged,
+    this.onThemePresetChanged,
+    super.key,
+  });
 
   final CodexController controller;
+  final ThemeMode themeMode;
+  final YeknomColorPreset themePreset;
+  final ValueChanged<ThemeMode>? onThemeModeChanged;
+  final ValueChanged<YeknomColorPreset>? onThemePresetChanged;
 
   /// 创建承载工作区页面状态的 State 对象。
   /// Creates the State object that owns workspace-page state.
@@ -548,6 +560,10 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
               children: [
                 _TopBar(
                   controller: controller,
+                  themeMode: widget.themeMode,
+                  themePreset: widget.themePreset,
+                  onThemeModeChanged: widget.onThemeModeChanged,
+                  onThemePresetChanged: widget.onThemePresetChanged,
                   onChooseWorkspace: _chooseWorkspace,
                   onStart: controller.startRuntime,
                   onStop: controller.stopRuntime,
@@ -602,6 +618,10 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
 class _TopBar extends StatelessWidget {
   const _TopBar({
     required this.controller,
+    required this.themeMode,
+    required this.themePreset,
+    required this.onThemeModeChanged,
+    required this.onThemePresetChanged,
     required this.onChooseWorkspace,
     required this.onStart,
     required this.onStop,
@@ -611,6 +631,10 @@ class _TopBar extends StatelessWidget {
   });
 
   final CodexController controller;
+  final ThemeMode themeMode;
+  final YeknomColorPreset themePreset;
+  final ValueChanged<ThemeMode>? onThemeModeChanged;
+  final ValueChanged<YeknomColorPreset>? onThemePresetChanged;
   final VoidCallback onChooseWorkspace;
   final Future<void> Function() onStart;
   final Future<void> Function() onStop;
@@ -649,6 +673,78 @@ class _TopBar extends StatelessWidget {
             const SizedBox(width: 16),
             _StatusPill(label: label, color: color),
             const Spacer(),
+            PopupMenuButton<_ThemeAction>(
+              tooltip:
+                  '主题：${_themeModeLabel(themeMode)} · ${_themePresetLabel(themePreset)}',
+              enabled:
+                  onThemeModeChanged != null || onThemePresetChanged != null,
+              icon: Icon(_themeModeIcon(themeMode)),
+              onSelected: (action) {
+                switch (action) {
+                  case _ThemeAction.system:
+                    onThemeModeChanged?.call(ThemeMode.system);
+                  case _ThemeAction.light:
+                    onThemeModeChanged?.call(ThemeMode.light);
+                  case _ThemeAction.dark:
+                    onThemeModeChanged?.call(ThemeMode.dark);
+                  case _ThemeAction.workbench:
+                    onThemePresetChanged?.call(YeknomColorPreset.workbench);
+                  case _ThemeAction.cobalt:
+                    onThemePresetChanged?.call(YeknomColorPreset.cobalt);
+                  case _ThemeAction.orchid:
+                    onThemePresetChanged?.call(YeknomColorPreset.orchid);
+                  case _ThemeAction.graphite:
+                    onThemePresetChanged?.call(YeknomColorPreset.graphite);
+                  case _ThemeAction.obsidian:
+                    onThemePresetChanged?.call(YeknomColorPreset.obsidian);
+                  case _ThemeAction.midnight:
+                    onThemePresetChanged?.call(YeknomColorPreset.midnight);
+                  case _ThemeAction.blackberry:
+                    onThemePresetChanged?.call(YeknomColorPreset.blackberry);
+                  case _ThemeAction.sage:
+                    onThemePresetChanged?.call(YeknomColorPreset.sage);
+                }
+              },
+              itemBuilder: (context) => [
+                const PopupMenuItem<_ThemeAction>(
+                  enabled: false,
+                  child: Text('显示模式'),
+                ),
+                CheckedPopupMenuItem(
+                  key: const Key('theme-mode-system'),
+                  value: _ThemeAction.system,
+                  checked: themeMode == ThemeMode.system,
+                  child: const Text('跟随系统'),
+                ),
+                CheckedPopupMenuItem(
+                  key: const Key('theme-mode-light'),
+                  value: _ThemeAction.light,
+                  checked: themeMode == ThemeMode.light,
+                  child: const Text('浅色'),
+                ),
+                CheckedPopupMenuItem(
+                  key: const Key('theme-mode-dark'),
+                  value: _ThemeAction.dark,
+                  checked: themeMode == ThemeMode.dark,
+                  child: const Text('深色'),
+                ),
+                const PopupMenuDivider(),
+                const PopupMenuItem<_ThemeAction>(
+                  enabled: false,
+                  child: Text('配色'),
+                ),
+                ..._ThemeAction.values
+                    .where((action) => action.preset != null)
+                    .map(
+                      (action) => CheckedPopupMenuItem(
+                        value: action,
+                        checked: action.preset == themePreset,
+                        child: Text(_themePresetLabel(action.preset!)),
+                      ),
+                    ),
+              ],
+            ),
+            const SizedBox(width: 4),
             if (compact)
               IconButton(
                 tooltip: '账户：${controller.authLabel}',
@@ -1583,6 +1679,63 @@ class _HistoryThreadTile extends StatelessWidget {
 }
 
 enum _ThreadAction { rename, archive }
+
+enum _ThemeAction {
+  system,
+  light,
+  dark,
+  workbench,
+  cobalt,
+  orchid,
+  graphite,
+  obsidian,
+  midnight,
+  blackberry,
+  sage;
+
+  /// 返回对应配色预设；显示模式操作没有预设。
+  /// Returns the corresponding color preset; display-mode actions have none.
+  YeknomColorPreset? get preset => switch (this) {
+    _ThemeAction.workbench => YeknomColorPreset.workbench,
+    _ThemeAction.cobalt => YeknomColorPreset.cobalt,
+    _ThemeAction.orchid => YeknomColorPreset.orchid,
+    _ThemeAction.graphite => YeknomColorPreset.graphite,
+    _ThemeAction.obsidian => YeknomColorPreset.obsidian,
+    _ThemeAction.midnight => YeknomColorPreset.midnight,
+    _ThemeAction.blackberry => YeknomColorPreset.blackberry,
+    _ThemeAction.sage => YeknomColorPreset.sage,
+    _ => null,
+  };
+}
+
+/// 返回显示模式的本地化名称。
+/// Returns the localized name for a display mode.
+String _themeModeLabel(ThemeMode mode) => switch (mode) {
+  ThemeMode.system => '跟随系统',
+  ThemeMode.light => '浅色',
+  ThemeMode.dark => '深色',
+};
+
+/// 返回显示模式在顶部栏中使用的图标。
+/// Returns the icon used for a display mode in the top bar.
+IconData _themeModeIcon(ThemeMode mode) => switch (mode) {
+  ThemeMode.system => Icons.brightness_auto_outlined,
+  ThemeMode.light => Icons.light_mode_outlined,
+  ThemeMode.dark => Icons.dark_mode_outlined,
+};
+
+/// 返回 UI Kit 配色预设的本地化名称。
+/// Returns the localized name for a UI Kit color preset.
+String _themePresetLabel(YeknomColorPreset preset) => switch (preset) {
+  YeknomColorPreset.workbench => '工作台',
+  YeknomColorPreset.cobalt => '钴蓝',
+  YeknomColorPreset.orchid => '兰紫',
+  YeknomColorPreset.graphite => '石墨',
+  YeknomColorPreset.obsidian => '黑曜',
+  YeknomColorPreset.midnight => '午夜',
+  YeknomColorPreset.blackberry => '黑莓',
+  YeknomColorPreset.sage => '鼠尾草',
+};
 
 class _ArchivedThreadTile extends StatelessWidget {
   const _ArchivedThreadTile({
