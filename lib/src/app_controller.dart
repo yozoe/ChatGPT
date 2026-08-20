@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import 'domain/codex_thread.dart';
+import 'domain/codex_file_change.dart';
 import 'domain/pending_approval.dart';
 import 'domain/relay_provider_configuration.dart';
 import 'domain/timeline_entry.dart';
@@ -84,6 +85,7 @@ class CodexController extends ChangeNotifier {
   final RuntimeConfigurationStore _runtimeConfigurationStore;
   StreamSubscription<ServerEvent>? _eventSubscription;
   final List<TimelineEntry> _entries = [];
+  final Map<String, CodexFileChange> _fileChangesByPath = {};
   final Map<String, int> _agentEntryIndexByItem = {};
   Timer? _deltaNotificationTimer;
   bool _disposed = false;
@@ -131,6 +133,9 @@ class CodexController extends ChangeNotifier {
   String? archivedThreadsError;
 
   List<TimelineEntry> get entries => List.unmodifiable(_entries);
+  List<CodexFileChange> get fileChanges =>
+      List.unmodifiable(_fileChangesByPath.values);
+  String? turnDiff;
   bool get canSend =>
       status == RuntimeStatus.ready &&
       workspacePath != null &&
@@ -186,6 +191,7 @@ class CodexController extends ChangeNotifier {
     threads = const [];
     archivedThreads = const [];
     _clearStreamingState();
+    _clearFileChanges();
     _add(TimelineKind.system, '项目已选择', canonicalPath);
     notifyListeners();
     try {
@@ -204,6 +210,7 @@ class CodexController extends ChangeNotifier {
     }
     activeThreadId = null;
     _clearStreamingState();
+    _clearFileChanges();
     _add(TimelineKind.system, '已新建任务', '发送第一条消息后会创建新的 Thread。');
     notifyListeners();
   }
@@ -321,6 +328,7 @@ class CodexController extends ChangeNotifier {
       pendingApproval = null;
       approvalResponding = false;
       _clearStreamingState();
+      _clearFileChanges();
       _add(TimelineKind.system, '运行时已停止', '现在可以切换项目或重新启动运行时。');
     } catch (error) {
       status = RuntimeStatus.failed;
@@ -772,6 +780,10 @@ class CodexController extends ChangeNotifier {
         _appendAgentDelta(event.params);
         _scheduleDeltaNotification();
         return;
+      case 'item/completed':
+        _recordCompletedFileChange(event.params['item']);
+      case 'turn/diff/updated':
+        _updateTurnDiff(event.params['diff']);
       case 'turn/completed':
         _handleTurnCompleted(event.params);
         unawaited(refreshThreads());
@@ -919,16 +931,7 @@ class CodexController extends ChangeNotifier {
               _add(TimelineKind.system, '推理摘要', summary);
             }
           case 'fileChange':
-            final changes = item['changes'];
-            final detail = changes is Iterable
-                ? changes
-                      .map(_describeFileChange)
-                      .where((v) => v.isNotEmpty)
-                      .join('\n')
-                : '';
-            if (detail.isNotEmpty) {
-              _add(TimelineKind.command, '文件变更', detail);
-            }
+            _recordFileChanges(item['changes']);
           case 'mcpToolCall' ||
               'dynamicToolCall' ||
               'webSearch' ||
@@ -1090,6 +1093,37 @@ class CodexController extends ChangeNotifier {
     final kind =
         value['kind']?.toString() ?? value['type']?.toString() ?? 'changed';
     return path.isEmpty ? kind : '$kind $path';
+  }
+
+  void _recordCompletedFileChange(Object? rawItem) {
+    if (rawItem is! Map || rawItem['type']?.toString() != 'fileChange') {
+      return;
+    }
+    _recordFileChanges(rawItem['changes']);
+  }
+
+  void _recordFileChanges(Object? rawChanges) {
+    if (rawChanges is! Iterable) return;
+    final details = <String>[];
+    for (final rawChange in rawChanges) {
+      if (rawChange is! Map) continue;
+      final change = CodexFileChange.fromJson(rawChange);
+      if (change.path.isEmpty) continue;
+      final previous = _fileChangesByPath[change.path];
+      _fileChangesByPath[change.path] = change.diff.isEmpty && previous != null
+          ? previous.copyWith(kind: change.kind)
+          : change;
+      final detail = _describeFileChange(rawChange);
+      if (detail.isNotEmpty) details.add(detail);
+    }
+    if (details.isNotEmpty) {
+      _add(TimelineKind.command, '文件变更', details.join('\n'));
+    }
+  }
+
+  void _updateTurnDiff(Object? rawDiff) {
+    final diff = rawDiff?.toString() ?? '';
+    turnDiff = diff.isEmpty ? null : diff;
   }
 
   void _updateAccount(JsonMap result) {
@@ -1290,7 +1324,13 @@ class CodexController extends ChangeNotifier {
     _deltaNotificationTimer = null;
   }
 
+  void _clearFileChanges() {
+    _fileChangesByPath.clear();
+    turnDiff = null;
+  }
+
   void _resetConversationTimeline() {
+    _clearFileChanges();
     if (_entries.isEmpty) return;
     final welcome = _entries.first;
     _entries

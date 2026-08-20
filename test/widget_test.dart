@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:chatgpt/src/app.dart';
 import 'package:chatgpt/src/app_controller.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
+import 'package:chatgpt/src/domain/codex_file_change.dart';
 import 'package:chatgpt/src/domain/relay_provider_configuration.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/presentation/codex_workspace.dart';
@@ -378,6 +379,48 @@ void main() {
 
     expect(controller.authStatus, AuthStatus.chatgpt);
     expect(controller.authLabel, 'ChatGPT plus');
+    controller.dispose();
+  });
+
+  test('records App Server file changes and unified diffs for display', () {
+    final controller = CodexController(server: CodexAppServer());
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {
+                'path': 'lib/main.dart',
+                'kind': 'modified',
+                'diff': '@@ -1 +1 @@\n-old\n+new',
+              },
+            ],
+          },
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/diff/updated',
+        params: {'diff': 'diff --git a/lib/main.dart b/lib/main.dart'},
+      ),
+    );
+
+    expect(controller.fileChanges, [
+      const CodexFileChange(
+        path: 'lib/main.dart',
+        kind: 'modified',
+        diff: '@@ -1 +1 @@\n-old\n+new',
+      ),
+    ]);
+    expect(controller.turnDiff, 'diff --git a/lib/main.dart b/lib/main.dart');
+    expect(
+      controller.entries.map((entry) => '${entry.title}:${entry.detail}'),
+      contains('文件变更:modified lib/main.dart'),
+    );
     controller.dispose();
   });
 

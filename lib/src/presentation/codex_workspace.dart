@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app_controller.dart';
+import '../domain/codex_file_change.dart';
 import '../domain/codex_thread.dart';
 import '../domain/pending_approval.dart';
 import '../domain/timeline_entry.dart';
@@ -481,6 +482,32 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     );
   }
 
+  Future<void> _showFileChanges() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AnimatedBuilder(
+        animation: widget.controller,
+        builder: (context, _) => AlertDialog(
+          title: const Text('文件变更'),
+          content: SizedBox(
+            width: 760,
+            height: 520,
+            child: _FileChangesList(
+              changes: widget.controller.fileChanges,
+              turnDiff: widget.controller.turnDiff,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('关闭'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -523,6 +550,7 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
                               timelineScrollController:
                                   _timelineScrollController,
                               onSend: _send,
+                              onShowFileChanges: _showFileChanges,
                             ),
                           ),
                           if (!compact) ...[
@@ -810,12 +838,14 @@ class _ConversationPane extends StatelessWidget {
     required this.composer,
     required this.timelineScrollController,
     required this.onSend,
+    required this.onShowFileChanges,
   });
 
   final CodexController controller;
   final TextEditingController composer;
   final ScrollController timelineScrollController;
   final Future<void> Function() onSend;
+  final Future<void> Function() onShowFileChanges;
 
   @override
   Widget build(BuildContext context) {
@@ -823,18 +853,38 @@ class _ConversationPane extends StatelessWidget {
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(24, 20, 24, 12),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  '任务控制台',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-              ),
-              _ProviderChip(label: '${controller.providerLabel} / App Server'),
-              const SizedBox(width: 8),
-              const _ProviderChip(label: 'workspace-write'),
-            ],
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final showProvider = constraints.maxWidth >= 360;
+              final showSandbox = constraints.maxWidth >= 560;
+              return Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '任务控制台',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                  ),
+                  if (showProvider) ...[
+                    _ProviderChip(
+                      label: '${controller.providerLabel} / App Server',
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  if (showSandbox) ...[
+                    const _ProviderChip(label: 'workspace-write'),
+                    const SizedBox(width: 4),
+                  ],
+                  IconButton(
+                    tooltip: '查看文件变更',
+                    onPressed: onShowFileChanges,
+                    icon: const Icon(Icons.difference_outlined, size: 19),
+                  ),
+                ],
+              );
+            },
           ),
         ),
         if (controller.lastError case final error?)
@@ -1184,22 +1234,124 @@ class _Inspector extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             const _InspectorCard(
-              icon: Icons.description_outlined,
-              title: '文件变更',
-              detail: '连接真实任务后，这里会显示 App Server 事件中的文件 Diff。',
-            ),
-            const SizedBox(height: 10),
-            const _InspectorCard(
               icon: Icons.verified_user_outlined,
               title: '权限审批',
               detail: '审批请求会集中展示；自动模式会直接响应并记录到时间线。',
             ),
-            const Spacer(),
+            const SizedBox(height: 16),
+            Text('文件变更', style: Theme.of(context).textTheme.labelLarge),
+            const SizedBox(height: 8),
+            Expanded(
+              child: _FileChangesList(
+                changes: controller.fileChanges,
+                turnDiff: controller.turnDiff,
+              ),
+            ),
+            const SizedBox(height: 12),
             _MutedText('当前线程：${controller.activeThreadId ?? '尚未创建'}'),
           ],
         ),
       ),
     );
+  }
+}
+
+class _FileChangesList extends StatelessWidget {
+  const _FileChangesList({required this.changes, required this.turnDiff});
+
+  final List<CodexFileChange> changes;
+  final String? turnDiff;
+
+  @override
+  Widget build(BuildContext context) {
+    if (changes.isEmpty && (turnDiff == null || turnDiff!.isEmpty)) {
+      return const _MutedText('任务执行后，AI 修改的文件和逐行 Diff 会显示在这里。');
+    }
+    return ListView(
+      children: [
+        if (turnDiff case final diff?)
+          _DiffExpansionTile(
+            title: '本次任务完整 Diff',
+            subtitle: '来自 Codex App Server',
+            diff: diff,
+          ),
+        ...changes.map(
+          (change) => _DiffExpansionTile(
+            title: change.path,
+            subtitle: change.kind,
+            diff: change.diff,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _DiffExpansionTile extends StatelessWidget {
+  const _DiffExpansionTile({
+    required this.title,
+    required this.subtitle,
+    required this.diff,
+  });
+
+  final String title;
+  final String subtitle;
+  final String diff;
+
+  @override
+  Widget build(BuildContext context) {
+    return ExpansionTile(
+      tilePadding: const EdgeInsets.symmetric(horizontal: 4),
+      childrenPadding: const EdgeInsets.only(bottom: 10),
+      leading: const Icon(Icons.description_outlined, size: 18),
+      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+      children: [
+        Container(
+          width: double.infinity,
+          margin: const EdgeInsets.symmetric(horizontal: 4),
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: const Color(0xFF10151D),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: const Color(0xFF2A3A50)),
+          ),
+          child: diff.isEmpty
+              ? const _MutedText('App Server 未提供可显示的 Diff。')
+              : SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: SelectableText.rich(
+                    TextSpan(children: _diffSpans(diff)),
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                      height: 1.45,
+                    ),
+                  ),
+                ),
+        ),
+      ],
+    );
+  }
+
+  List<TextSpan> _diffSpans(String value) {
+    return value
+        .split('\n')
+        .map((line) {
+          final color = switch (line) {
+            _ when line.startsWith('+++') || line.startsWith('---') =>
+              const Color(0xFF9AA4B2),
+            _ when line.startsWith('+') => const Color(0xFF6CE0A8),
+            _ when line.startsWith('-') => const Color(0xFFFFA4A4),
+            _ when line.startsWith('@@') => const Color(0xFF82B1FF),
+            _ => const Color(0xFFD9DEE7),
+          };
+          return TextSpan(
+            text: '$line\n',
+            style: TextStyle(color: color),
+          );
+        })
+        .toList(growable: false);
   }
 }
 
