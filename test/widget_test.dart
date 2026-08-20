@@ -15,6 +15,7 @@ import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 
 class _DelayedRelayProviderStore extends RelayProviderStore {
   final completer = Completer<RelayProviderConfiguration?>();
@@ -315,6 +316,13 @@ void main() {
     expect(
       Theme.of(tester.element(find.text('Codex Desk'))).brightness,
       Brightness.light,
+    );
+    final picker = tester.widget<Ink>(
+      find.byKey(const Key('workspace-picker-surface')),
+    );
+    expect(
+      (picker.decoration! as BoxDecoration).color,
+      YeknomPalette.of(tester.element(find.text('选择一个本地项目'))).raised,
     );
   });
 

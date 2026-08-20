@@ -218,6 +218,7 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
         animation: widget.controller,
         builder: (context, _) {
           final controller = widget.controller;
+          final palette = YeknomPalette.of(context);
           return AlertDialog(
             title: const Text('中转站 Provider'),
             content: SizedBox(
@@ -270,10 +271,7 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
                   ),
                   if (controller.relayError case final error?) ...[
                     const SizedBox(height: 10),
-                    Text(
-                      error,
-                      style: const TextStyle(color: Color(0xFFFFB4AB)),
-                    ),
+                    Text(error, style: TextStyle(color: palette.fault)),
                   ],
                 ],
               ),
@@ -647,11 +645,12 @@ class _TopBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final compact = MediaQuery.sizeOf(context).width < 1000;
+    final palette = YeknomPalette.of(context);
     final color = switch (controller.status) {
-      RuntimeStatus.ready => const Color(0xFF68E0B8),
-      RuntimeStatus.running => const Color(0xFF82B1FF),
-      RuntimeStatus.failed => const Color(0xFFFF8A80),
-      _ => const Color(0xFF94A3B8),
+      RuntimeStatus.ready => palette.ack,
+      RuntimeStatus.running => palette.active,
+      RuntimeStatus.failed => palette.fault,
+      _ => palette.muted,
     };
     final label = switch (controller.status) {
       RuntimeStatus.stopped => '未启动',
@@ -667,7 +666,7 @@ class _TopBar extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 20),
         child: Row(
           children: [
-            const Icon(Icons.auto_awesome, color: Color(0xFF68E0B8)),
+            Icon(Icons.auto_awesome, color: palette.ack),
             const SizedBox(width: 10),
             Text('Codex Desk', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(width: 16),
@@ -858,6 +857,7 @@ class _Sidebar extends StatelessWidget {
   /// Builds the sidebar for workspace selection, thread history, and CLI setup.
   @override
   Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
     return SizedBox(
       width: 250,
       child: Padding(
@@ -871,11 +871,12 @@ class _Sidebar extends StatelessWidget {
               onTap: controller.canChooseWorkspace ? onChooseWorkspace : null,
               borderRadius: BorderRadius.circular(12),
               child: Ink(
+                key: const Key('workspace-picker-surface'),
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF162131),
+                  color: palette.raised,
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFF2A3A50)),
+                  border: Border.all(color: palette.border),
                 ),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -979,6 +980,7 @@ class _ConversationPane extends StatelessWidget {
   /// Builds the timeline, approval prompt, and task composer area.
   @override
   Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
     return Column(
       children: [
         Padding(
@@ -1023,13 +1025,10 @@ class _ConversationPane extends StatelessWidget {
             margin: const EdgeInsets.fromLTRB(24, 0, 24, 12),
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: const Color(0xFF3A1F28),
+              color: palette.fault.withValues(alpha: 0.14),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Text(
-              error,
-              style: const TextStyle(color: Color(0xFFFFB4AB)),
-            ),
+            child: Text(error, style: TextStyle(color: palette.fault)),
           ),
         if (controller.pendingApproval case final approval?)
           _ApprovalPanel(
@@ -1090,6 +1089,8 @@ class _ComposerPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final model = controller.relayProvider?.model ?? 'Codex';
     final effort = controller.reasoningEffort.label;
+    final palette = YeknomPalette.of(context);
+    final scheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 8, 24, 18),
       child: Column(
@@ -1101,9 +1102,9 @@ class _ComposerPanel extends StatelessWidget {
               margin: const EdgeInsets.only(bottom: 10),
               padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
               decoration: BoxDecoration(
-                color: const Color(0xFF20242A),
+                color: palette.raised,
                 borderRadius: BorderRadius.circular(18),
-                border: Border.all(color: const Color(0xFF343A42)),
+                border: Border.all(color: palette.border),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
@@ -1115,8 +1116,8 @@ class _ComposerPanel extends StatelessWidget {
                       shape: BoxShape.circle,
                       border: Border.all(
                         color: controller.status == RuntimeStatus.running
-                            ? const Color(0xFF4A90E2)
-                            : const Color(0xFF8B98A9),
+                            ? palette.active
+                            : palette.muted,
                         width: 2,
                       ),
                     ),
@@ -1124,9 +1125,9 @@ class _ComposerPanel extends StatelessWidget {
                   const SizedBox(width: 8),
                   Text(
                     _activityLabel,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: const Color(0xFFB7BEC8),
-                    ),
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.copyWith(color: palette.muted),
                   ),
                 ],
               ),
@@ -1136,9 +1137,9 @@ class _ComposerPanel extends StatelessWidget {
             constraints: const BoxConstraints(minHeight: 126),
             padding: const EdgeInsets.fromLTRB(16, 13, 12, 10),
             decoration: BoxDecoration(
-              color: const Color(0xFF252525),
+              color: palette.field,
               borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: const Color(0xFF363636)),
+              border: Border.all(color: palette.controlBorder),
             ),
             child: Column(
               children: [
@@ -1159,10 +1160,10 @@ class _ComposerPanel extends StatelessWidget {
                       minLines: 2,
                       maxLines: 5,
                       textInputAction: TextInputAction.newline,
-                      style: const TextStyle(color: Color(0xFFF0F2F5)),
-                      decoration: const InputDecoration.collapsed(
+                      style: TextStyle(color: palette.trace),
+                      decoration: InputDecoration.collapsed(
                         hintText: '随心输入',
-                        hintStyle: TextStyle(color: Color(0xFF8F949C)),
+                        hintStyle: TextStyle(color: palette.muted),
                       ),
                     ),
                   ),
@@ -1232,7 +1233,7 @@ class _ComposerPanel extends StatelessWidget {
                               overflow: TextOverflow.ellipsis,
                               textAlign: TextAlign.end,
                               style: Theme.of(context).textTheme.bodySmall
-                                  ?.copyWith(color: const Color(0xFFADB3BC)),
+                                  ?.copyWith(color: palette.muted),
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -1243,8 +1244,8 @@ class _ComposerPanel extends StatelessWidget {
                             tooltip: '停止当前任务',
                             onPressed: controller.stopCurrentTurn,
                             style: IconButton.styleFrom(
-                              backgroundColor: const Color(0xFFE4E5E7),
-                              foregroundColor: const Color(0xFF24262A),
+                              backgroundColor: scheme.primary,
+                              foregroundColor: scheme.onPrimary,
                             ),
                             icon: const Icon(Icons.stop, size: 19),
                           )
@@ -1253,8 +1254,8 @@ class _ComposerPanel extends StatelessWidget {
                             tooltip: '发送任务',
                             onPressed: controller.canSend ? onSend : null,
                             style: IconButton.styleFrom(
-                              backgroundColor: const Color(0xFFE4E5E7),
-                              foregroundColor: const Color(0xFF24262A),
+                              backgroundColor: scheme.primary,
+                              foregroundColor: scheme.onPrimary,
                             ),
                             icon: const Icon(Icons.arrow_upward, size: 19),
                           ),
@@ -1288,22 +1289,23 @@ class _ApprovalPanel extends StatelessWidget {
   /// Builds the current server approval request with allow and decline actions.
   @override
   Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.fromLTRB(24, 0, 24, 12),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFF302617),
+        color: palette.signalSelected,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFFFFB86C)),
+        border: Border.all(color: palette.warning),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             approval.title,
-            style: const TextStyle(
-              color: Color(0xFFFFD29A),
+            style: TextStyle(
+              color: palette.signal,
               fontWeight: FontWeight.w700,
             ),
           ),
@@ -1440,6 +1442,7 @@ class _DiffExpansionTile extends StatelessWidget {
   /// Builds one expandable diff presentation item.
   @override
   Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
     return ExpansionTile(
       tilePadding: const EdgeInsets.symmetric(horizontal: 4),
       childrenPadding: const EdgeInsets.only(bottom: 10),
@@ -1452,16 +1455,16 @@ class _DiffExpansionTile extends StatelessWidget {
           margin: const EdgeInsets.symmetric(horizontal: 4),
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
-            color: const Color(0xFF10151D),
+            color: palette.field,
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: const Color(0xFF2A3A50)),
+            border: Border.all(color: palette.border),
           ),
           child: diff.isEmpty
               ? const _MutedText('App Server 未提供可显示的 Diff。')
               : SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: SelectableText.rich(
-                    TextSpan(children: _diffSpans(diff)),
+                    TextSpan(children: _diffSpans(palette, diff)),
                     style: const TextStyle(
                       fontFamily: 'monospace',
                       fontSize: 12,
@@ -1474,19 +1477,19 @@ class _DiffExpansionTile extends StatelessWidget {
     );
   }
 
-  /// 按 unified Diff 行类型为文本片段分配颜色。
-  /// Assigns colors to text spans according to unified-diff line types.
-  List<TextSpan> _diffSpans(String value) {
+  /// 按 unified Diff 行类型与当前主题语义色为文本片段分配颜色。
+  /// Assigns colors to text spans using unified-diff line types and theme semantics.
+  List<TextSpan> _diffSpans(YeknomPalette palette, String value) {
     return value
         .split('\n')
         .map((line) {
           final color = switch (line) {
             _ when line.startsWith('+++') || line.startsWith('---') =>
-              const Color(0xFF9AA4B2),
-            _ when line.startsWith('+') => const Color(0xFF6CE0A8),
-            _ when line.startsWith('-') => const Color(0xFFFFA4A4),
-            _ when line.startsWith('@@') => const Color(0xFF82B1FF),
-            _ => const Color(0xFFD9DEE7),
+              palette.muted,
+            _ when line.startsWith('+') => palette.ack,
+            _ when line.startsWith('-') => palette.fault,
+            _ when line.startsWith('@@') => palette.active,
+            _ => palette.trace,
           };
           return TextSpan(
             text: '$line\n',
@@ -1506,6 +1509,7 @@ class _TimelineEntry extends StatelessWidget {
   /// Builds a message or system-event view based on the timeline entry kind.
   @override
   Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
     if (entry.kind == TimelineKind.user) {
       return Align(
         alignment: Alignment.centerRight,
@@ -1513,7 +1517,7 @@ class _TimelineEntry extends StatelessWidget {
           constraints: const BoxConstraints(maxWidth: 560),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
-            color: const Color(0xFF20242B),
+            color: palette.raised,
             borderRadius: BorderRadius.circular(16),
           ),
           child: SelectableText(entry.detail),
@@ -1522,12 +1526,12 @@ class _TimelineEntry extends StatelessWidget {
     }
 
     final color = switch (entry.kind) {
-      TimelineKind.agent => const Color(0xFF68E0B8),
-      TimelineKind.command => const Color(0xFFF9C74F),
-      TimelineKind.tool => const Color(0xFFC4A7FF),
-      TimelineKind.approval => const Color(0xFFFFB86C),
-      TimelineKind.error => const Color(0xFFFF8A80),
-      TimelineKind.system => const Color(0xFF94A3B8),
+      TimelineKind.agent => palette.ack,
+      TimelineKind.command => palette.warning,
+      TimelineKind.tool => palette.active,
+      TimelineKind.approval => palette.signal,
+      TimelineKind.error => palette.fault,
+      TimelineKind.system => palette.muted,
       TimelineKind.user => throw StateError('Handled above.'),
     };
     return Column(
@@ -1611,8 +1615,9 @@ class _HistoryThreadTile extends StatelessWidget {
   /// Builds a history-thread item with resume, rename, and archive actions.
   @override
   Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
     return Material(
-      color: selected ? const Color(0xFF1D3343) : const Color(0xFF162131),
+      color: selected ? palette.selected : palette.raised,
       borderRadius: BorderRadius.circular(10),
       child: InkWell(
         onTap: enabled ? onTap : null,
@@ -1624,7 +1629,7 @@ class _HistoryThreadTile extends StatelessWidget {
               Icon(
                 selected ? Icons.forum : Icons.forum_outlined,
                 size: 17,
-                color: selected ? const Color(0xFF68E0B8) : null,
+                color: selected ? palette.ack : null,
               ),
               const SizedBox(width: 8),
               Expanded(
@@ -1788,17 +1793,18 @@ class _InspectorCard extends StatelessWidget {
   /// Builds a static inspector card with icon, title, and description.
   @override
   Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFF111925),
+        color: palette.module,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF263448)),
+        border: Border.all(color: palette.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 20, color: const Color(0xFF94A3B8)),
+          Icon(icon, size: 20, color: palette.muted),
           const SizedBox(height: 10),
           Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
           const SizedBox(height: 4),
@@ -1818,9 +1824,7 @@ class _MutedText extends StatelessWidget {
   /// Builds helper text using a low-emphasis color.
   @override
   Widget build(BuildContext context) {
-    return Text(
-      data,
-      style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
-    );
+    final palette = YeknomPalette.of(context);
+    return Text(data, style: TextStyle(color: palette.muted, fontSize: 12));
   }
 }
