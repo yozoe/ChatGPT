@@ -604,6 +604,24 @@ void main() {
     expect(threads.single.modelProvider, 'openai');
   });
 
+  test('caches local session metadata during the refresh interval', () async {
+    final directory = await Directory.systemTemp.createTemp('codex-sessions-');
+    addTearDown(() => directory.delete(recursive: true));
+    final sessionFile = File('${directory.path}/rollout.jsonl');
+    await sessionFile.writeAsString(
+      '${jsonEncode({
+        'type': 'session_meta',
+        'payload': {'session_id': 'cached-thread', 'timestamp': '2026-08-20T00:00:00.000Z', 'cwd': '/workspace'},
+      })}\n',
+    );
+    final store = LocalSessionThreadStore(directory: directory);
+
+    expect((await store.listThreads('/workspace')).single.id, 'cached-thread');
+    await sessionFile.delete();
+
+    expect((await store.listThreads('/workspace')).single.id, 'cached-thread');
+  });
+
   test('serializes consecutive local history writes', () async {
     final store = _BlockingConversationHistoryStore();
     final controller =
