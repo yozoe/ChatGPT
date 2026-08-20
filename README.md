@@ -11,6 +11,7 @@
 - ChatGPT 浏览器登录与 OpenAI API Key 登录入口
 - 命令、文件变更与额外权限的显式审批
 - OpenAI Responses API 兼容中转站：模型、Base URL 与 macOS Keychain 密钥管理
+- 已配置中转站 API Key 时，无需额外完成 OpenAI 账户登录即可发送任务
 - 当前工作区线程历史：列表、恢复、重命名、归档与归档视图恢复
 - 活跃与归档线程列表会跟随 App Server 分页加载，不限于首 50 条
 - 归档恢复操作具备重复提交防护，线程状态通知会同步刷新活跃与归档列表

@@ -269,6 +269,28 @@ void main() {
     );
   });
 
+  test(
+    'permits sending with a configured relay when OpenAI auth is required',
+    () {
+      final controller = CodexController(server: CodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready
+        ..requiresOpenaiAuth = true
+        ..authStatus = AuthStatus.signedOut;
+
+      expect(controller.canSend, isFalse);
+
+      controller.relayProvider = const RelayProviderConfiguration(
+        baseUrl: 'https://relay.example.com/v1',
+        model: 'relay-model',
+        apiKey: 'relay-secret',
+      );
+
+      expect(controller.canSend, isTrue);
+      controller.dispose();
+    },
+  );
+
   test('locks runtime startup before waiting for Keychain', () async {
     final store = _DelayedRelayProviderStore();
     final controller = CodexController(

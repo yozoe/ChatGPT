@@ -81,7 +81,9 @@ class CodexController extends ChangeNotifier {
   bool get canSend =>
       status == RuntimeStatus.ready &&
       workspacePath != null &&
-      (!requiresOpenaiAuth || authStatus != AuthStatus.signedOut);
+      (relayProvider != null ||
+          !requiresOpenaiAuth ||
+          authStatus != AuthStatus.signedOut);
   bool get canStop => status == RuntimeStatus.running && activeThreadId != null;
   bool get canChooseWorkspace =>
       status == RuntimeStatus.stopped ||
