@@ -871,49 +871,196 @@ class _ConversationPane extends StatelessWidget {
                 _TimelineEntry(controller.entries[index]),
           ),
         ),
-        const Divider(height: 1),
-        Padding(
-          padding: const EdgeInsets.all(20),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Expanded(
-                child: CallbackShortcuts(
-                  bindings: {
-                    const SingleActivator(LogicalKeyboardKey.enter): () {
-                      unawaited(onSend());
+        _ComposerPanel(
+          controller: controller,
+          composer: composer,
+          onSend: onSend,
+        ),
+      ],
+    );
+  }
+}
+
+class _ComposerPanel extends StatelessWidget {
+  const _ComposerPanel({
+    required this.controller,
+    required this.composer,
+    required this.onSend,
+  });
+
+  final CodexController controller;
+  final TextEditingController composer;
+  final Future<void> Function() onSend;
+
+  int get _fileChangeCount => controller.entries
+      .where((entry) => entry.title == '文件变更')
+      .fold(0, (total, entry) => total + entry.detail.split('\n').length);
+
+  String get _activityLabel {
+    if (controller.status == RuntimeStatus.running) {
+      final count = _fileChangeCount;
+      return count == 0 ? '正在处理任务' : '正在处理 · $count 个文件已变更';
+    }
+    return controller.status == RuntimeStatus.ready ? '任务已就绪' : '等待运行时连接';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final model = controller.relayProvider?.model ?? 'Codex';
+    final effort = controller.reasoningEffort.label;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 8, 24, 18),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (controller.activeThreadId != null ||
+              controller.status == RuntimeStatus.running) ...[
+            Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFF20242A),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: const Color(0xFF343A42)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 11,
+                    height: 11,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: controller.status == RuntimeStatus.running
+                            ? const Color(0xFF4A90E2)
+                            : const Color(0xFF8B98A9),
+                        width: 2,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    _activityLabel,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: const Color(0xFFB7BEC8),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          Container(
+            constraints: const BoxConstraints(minHeight: 126),
+            padding: const EdgeInsets.fromLTRB(16, 13, 12, 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF252525),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: const Color(0xFF363636)),
+            ),
+            child: Column(
+              children: [
+                ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    minHeight: 64,
+                    maxHeight: 124,
+                  ),
+                  child: CallbackShortcuts(
+                    bindings: {
+                      const SingleActivator(LogicalKeyboardKey.enter): () {
+                        unawaited(onSend());
+                      },
                     },
-                  },
-                  child: TextField(
-                    controller: composer,
-                    enabled: controller.canSend,
-                    minLines: 2,
-                    maxLines: 5,
-                    textInputAction: TextInputAction.newline,
-                    decoration: const InputDecoration(
-                      hintText: '描述你希望 Codex 在这个项目中完成的工作…',
-                      border: OutlineInputBorder(),
+                    child: TextField(
+                      controller: composer,
+                      enabled: controller.canSend,
+                      minLines: 2,
+                      maxLines: 5,
+                      textInputAction: TextInputAction.newline,
+                      style: const TextStyle(color: Color(0xFFF0F2F5)),
+                      decoration: const InputDecoration.collapsed(
+                        hintText: '随心输入',
+                        hintStyle: TextStyle(color: Color(0xFF8F949C)),
+                      ),
                     ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 12),
-              if (controller.canStop)
-                IconButton.filledTonal(
-                  tooltip: '停止当前任务',
-                  onPressed: controller.stopCurrentTurn,
-                  icon: const Icon(Icons.stop_circle_outlined),
-                )
-              else
-                IconButton.filled(
-                  tooltip: '发送任务',
-                  onPressed: controller.canSend ? onSend : null,
-                  icon: const Icon(Icons.arrow_upward),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    IconButton(
+                      tooltip: '附加内容（即将支持）',
+                      onPressed: null,
+                      icon: const Icon(Icons.add, size: 20),
+                    ),
+                    PopupMenuButton<ApprovalMode>(
+                      tooltip: '审批模式：${controller.approvalMode.label}',
+                      onSelected: controller.setApprovalMode,
+                      itemBuilder: (context) => ApprovalMode.values
+                          .map(
+                            (mode) => CheckedPopupMenuItem(
+                              value: mode,
+                              checked: controller.approvalMode == mode,
+                              child: Text(mode.label),
+                            ),
+                          )
+                          .toList(growable: false),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 8,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.verified_user_outlined, size: 16),
+                            const SizedBox(width: 5),
+                            Text(
+                              controller.approvalMode ==
+                                      ApprovalMode.autoApprove
+                                  ? '自动批准'
+                                  : '帮助批准',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const Spacer(),
+                    Text(
+                      '$model · 推理$effort',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: const Color(0xFFADB3BC),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    if (controller.canStop)
+                      IconButton.filled(
+                        tooltip: '停止当前任务',
+                        onPressed: controller.stopCurrentTurn,
+                        style: IconButton.styleFrom(
+                          backgroundColor: const Color(0xFFE4E5E7),
+                          foregroundColor: const Color(0xFF24262A),
+                        ),
+                        icon: const Icon(Icons.stop, size: 19),
+                      )
+                    else
+                      IconButton.filled(
+                        tooltip: '发送任务',
+                        onPressed: controller.canSend ? onSend : null,
+                        style: IconButton.styleFrom(
+                          backgroundColor: const Color(0xFFE4E5E7),
+                          foregroundColor: const Color(0xFF24262A),
+                        ),
+                        icon: const Icon(Icons.arrow_upward, size: 19),
+                      ),
+                  ],
                 ),
-            ],
+              ],
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
