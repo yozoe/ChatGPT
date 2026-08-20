@@ -29,6 +29,14 @@ flutter run -d macos
 
 应用使用已安装的 `codex` 命令。选择本地项目、点击“启动运行时”，完成 Codex 登录后即可发起任务。
 
+### 安装到 Applications
+
+在项目根目录运行以下脚本会构建 Release 版本、替换 `/Applications/Codex Desk.app` 并启动应用。写入 `/Applications` 时 macOS 会要求输入管理员密码。
+
+```bash
+./install_macos.sh
+```
+
 ## App Server 历史验证
 
 在有历史线程的工作区执行以下命令，可验证真实 App Server 的初始化、线程列表、恢复和全部 turns 分页协议；脚本不会创建任务、发送消息或修改工作区文件。
