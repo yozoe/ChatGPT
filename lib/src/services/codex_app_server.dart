@@ -217,22 +217,37 @@ class CodexAppServer {
     required String workingDirectory,
     bool archived = false,
   }) async {
-    final response = await request('thread/list', {
-      'cwd': workingDirectory,
-      'limit': 50,
-      'sortKey': 'updated_at',
-      'sortDirection': 'desc',
-      if (archived) 'archived': true,
-    });
-    _throwIfError(response);
-    final result = response['result'];
-    if (result is! Map || result['data'] is! Iterable) {
-      throw const FormatException('App Server did not return thread history.');
-    }
-    return (result['data'] as Iterable)
-        .whereType<Map>()
-        .map(JsonMap.from)
-        .toList(growable: false);
+    final threads = <JsonMap>[];
+    final seenCursors = <String>{};
+    String? cursor;
+    do {
+      final response = await request('thread/list', {
+        'cwd': workingDirectory,
+        'cursor': ?cursor,
+        'limit': 50,
+        'sortKey': 'updated_at',
+        'sortDirection': 'desc',
+        if (archived) 'archived': true,
+      });
+      _throwIfError(response);
+      final result = response['result'];
+      if (result is! Map || result['data'] is! Iterable) {
+        throw const FormatException(
+          'App Server did not return thread history.',
+        );
+      }
+      threads.addAll(
+        (result['data'] as Iterable).whereType<Map>().map(JsonMap.from),
+      );
+      final next = result['nextCursor']?.toString();
+      cursor = next == null || next.isEmpty ? null : next;
+      if (cursor != null && !seenCursors.add(cursor)) {
+        throw StateError(
+          'App Server repeated a thread list pagination cursor.',
+        );
+      }
+    } while (cursor != null);
+    return threads;
   }
 
   Future<JsonMap> resumeThread({
