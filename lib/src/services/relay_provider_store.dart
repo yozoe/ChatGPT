@@ -8,7 +8,11 @@ import '../domain/relay_provider_configuration.dart';
 /// project files, App Server config, or application logs.
 class RelayProviderStore {
   RelayProviderStore({FlutterSecureStorage? storage})
-    : _storage = storage ?? const FlutterSecureStorage();
+    : _storage =
+          storage ??
+          const FlutterSecureStorage(
+            mOptions: MacOsOptions(usesDataProtectionKeychain: false),
+          );
 
   static const _configurationKey = 'codex_desk.relay.configuration.v1';
   static const _legacyBaseUrlKey = 'codex_desk.relay.base_url';

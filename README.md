@@ -45,7 +45,7 @@ dart run tool/verify_app_server_history.dart --cwd /path/to/workspace
 - 运行时只通过本机 `stdio` JSON-RPC 通信；不会启用远程 WebSocket。
 - 审批默认逐次确认；不会在后台自动批准命令、文件变更或额外权限。
 - 中转站仅接受 HTTPS（localhost 可用 HTTP），并要求 Responses API 与 SSE 流式协议兼容。密钥存入 macOS Keychain，Provider 定义仅注入本应用创建的 Thread，不修改 `~/.codex/config.toml`。
-- macOS 桌面构建不启用 App Sandbox：客户端需要启动本机 `codex` 进程，且本地 ad-hoc 签名无法声明 Keychain Sharing。中转站凭据与运行时路径仍存储在 macOS Keychain。
+- macOS 构建保留 App Sandbox，并使用标准 macOS Keychain 保存中转站凭据与运行时路径；不依赖本地 ad-hoc 签名无法提供的 Data Protection Keychain entitlement。
 
 ## 参考
 

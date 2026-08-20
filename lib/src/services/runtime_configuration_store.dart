@@ -4,7 +4,11 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 /// opening a workspace never writes setup metadata into that repository.
 class RuntimeConfigurationStore {
   RuntimeConfigurationStore({FlutterSecureStorage? storage})
-    : _storage = storage ?? const FlutterSecureStorage();
+    : _storage =
+          storage ??
+          const FlutterSecureStorage(
+            mOptions: MacOsOptions(usesDataProtectionKeychain: false),
+          );
 
   static const _executableKey = 'codex_desk.runtime.executable.v1';
 
