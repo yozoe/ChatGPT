@@ -7,6 +7,7 @@ import 'package:chatgpt/src/app_controller.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
 import 'package:chatgpt/src/domain/codex_file_change.dart';
 import 'package:chatgpt/src/domain/codex_plugin.dart';
+import 'package:chatgpt/src/domain/codex_marketplace.dart';
 import 'package:chatgpt/src/domain/relay_provider_configuration.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/presentation/codex_workspace.dart';
@@ -141,7 +142,11 @@ class _MemoryLocalSessionThreadStore extends LocalSessionThreadStore {
 class _MemoryCodexPluginStore extends CodexPluginStore {
   final plugins = <CodexPlugin>[];
   final addedMarketplaces = <String>[];
+  final marketplaces = <CodexMarketplace>[];
   final installedPluginIds = <String>[];
+  final removedPluginIds = <String>[];
+  final upgradedMarketplaceNames = <String?>[];
+  final removedMarketplaceNames = <String>[];
   final enabledChanges = <String, bool>{};
 
   /// 从测试内存列表返回已安装与可安装插件。
@@ -154,6 +159,33 @@ class _MemoryCodexPluginStore extends CodexPluginStore {
   @override
   Future<void> addLocalMarketplace(String directory) async {
     addedMarketplaces.add(directory);
+  }
+
+  /// 记录本地或远程 marketplace 来源，供控制器行为断言。
+  /// Records a local or remote marketplace source for controller behavior assertions.
+  @override
+  Future<void> addMarketplace(String source) async {
+    addedMarketplaces.add(source);
+  }
+
+  /// 从测试内存列表返回 marketplace 来源。
+  /// Returns marketplace sources from the test memory list.
+  @override
+  Future<List<CodexMarketplace>> listMarketplaces() async =>
+      List.of(marketplaces);
+
+  /// 记录 marketplace 更新请求。
+  /// Records a marketplace upgrade request.
+  @override
+  Future<void> upgradeMarketplace(String? name) async {
+    upgradedMarketplaceNames.add(name);
+  }
+
+  /// 记录被移除的 marketplace 名称。
+  /// Records the name of a removed marketplace.
+  @override
+  Future<void> removeMarketplace(CodexMarketplace marketplace) async {
+    removedMarketplaceNames.add(marketplace.name);
   }
 
   /// 记录待安装插件，并将其状态改为已安装。
@@ -174,6 +206,14 @@ class _MemoryCodexPluginStore extends CodexPluginStore {
         authPolicy: plugin.authPolicy,
       );
     }
+  }
+
+  /// 记录待卸载插件，并从测试内存列表中移除它。
+  /// Records a plugin removal and removes it from the test memory list.
+  @override
+  Future<void> removePlugin(CodexPlugin plugin) async {
+    removedPluginIds.add(plugin.id);
+    plugins.removeWhere((value) => value.id == plugin.id);
   }
 
   /// 记录插件启用状态，并同步测试内存列表。
@@ -688,6 +728,40 @@ void main() {
           .installed,
       true,
     );
+    controller.dispose();
+  });
+
+  test('manages Codex marketplaces and uninstalls plugins', () async {
+    const marketplace = CodexMarketplace(
+      name: 'team-tools',
+      root: '/plugins/team-tools',
+      sourceType: 'git',
+      source: 'example-org/team-tools',
+    );
+    final pluginStore = _MemoryCodexPluginStore()
+      ..plugins.add(
+        const CodexPlugin(
+          id: 'sample@team-tools',
+          name: 'sample',
+          marketplaceName: 'team-tools',
+          installed: true,
+          enabled: true,
+        ),
+      )
+      ..marketplaces.add(marketplace);
+    final controller = CodexController(pluginStore: pluginStore);
+
+    await controller.refreshPlugins();
+    await controller.refreshMarketplaces();
+    await controller.addPluginMarketplace('example-org/new-tools');
+    await controller.upgradePluginMarketplace('team-tools');
+    await controller.removePlugin(controller.plugins.single);
+    await controller.removePluginMarketplace(marketplace);
+
+    expect(pluginStore.addedMarketplaces, ['example-org/new-tools']);
+    expect(pluginStore.upgradedMarketplaceNames, ['team-tools']);
+    expect(pluginStore.removedPluginIds, ['sample@team-tools']);
+    expect(pluginStore.removedMarketplaceNames, ['team-tools']);
     controller.dispose();
   });
 

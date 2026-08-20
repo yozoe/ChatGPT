@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import 'domain/codex_thread.dart';
 import 'domain/codex_plugin.dart';
+import 'domain/codex_marketplace.dart';
 import 'domain/codex_file_change.dart';
 import 'domain/pending_approval.dart';
 import 'domain/relay_provider_configuration.dart';
@@ -169,6 +170,9 @@ class CodexController extends ChangeNotifier {
   bool pluginsLoading = false;
   bool pluginSaving = false;
   String? pluginsError;
+  List<CodexMarketplace> marketplaces = const [];
+  bool marketplacesLoading = false;
+  String? marketplacesError;
 
   /// 返回不可修改的当前时间线副本视图。
   /// Returns an unmodifiable view of the current timeline.
@@ -475,6 +479,23 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 从本机 Codex CLI 刷新 marketplace 来源列表。
+  /// Refreshes marketplace sources from the local Codex CLI.
+  Future<void> refreshMarketplaces() async {
+    if (pluginSaving) return;
+    marketplacesLoading = true;
+    marketplacesError = null;
+    if (!_disposed) notifyListeners();
+    try {
+      marketplaces = await _pluginStore.listMarketplaces();
+    } catch (error) {
+      marketplacesError = _messageOf(error);
+    } finally {
+      marketplacesLoading = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
   /// 注册一个本地 marketplace，并刷新可安装插件。
   /// Registers a local marketplace and refreshes installable plugins.
   Future<void> addLocalPluginMarketplace(String directory) async {
@@ -484,12 +505,48 @@ class CodexController extends ChangeNotifier {
     );
   }
 
+  /// 注册本地或远程 marketplace，并刷新插件和来源列表。
+  /// Registers a local or remote marketplace and refreshes plugins and sources.
+  Future<void> addPluginMarketplace(String source) async {
+    await _runPluginAction(
+      () => _pluginStore.addMarketplace(source),
+      '已添加插件市场',
+    );
+  }
+
+  /// 刷新一个 Git marketplace；名称为空时刷新所有 Git marketplace。
+  /// Refreshes one Git marketplace, or all Git marketplaces when name is null.
+  Future<void> upgradePluginMarketplace(String? name) async {
+    await _runPluginAction(
+      () => _pluginStore.upgradeMarketplace(name),
+      name == null ? '已刷新所有 Git 插件市场' : '已刷新插件市场：$name',
+    );
+  }
+
+  /// 移除一个 marketplace，并重新读取插件与来源。
+  /// Removes a marketplace and reloads plugins and sources.
+  Future<void> removePluginMarketplace(CodexMarketplace marketplace) async {
+    await _runPluginAction(
+      () => _pluginStore.removeMarketplace(marketplace),
+      '已移除插件市场：${marketplace.name}',
+    );
+  }
+
   /// 安装所选 marketplace 插件，并刷新插件列表。
   /// Installs the selected marketplace plugin and refreshes the plugin list.
   Future<void> installPlugin(CodexPlugin plugin) async {
     await _runPluginAction(
       () => _pluginStore.installPlugin(plugin),
       '已安装插件：${plugin.name}',
+    );
+  }
+
+  /// 卸载已安装插件，并刷新当前插件列表。
+  /// Uninstalls an installed plugin and refreshes the current plugin list.
+  Future<void> removePlugin(CodexPlugin plugin) async {
+    await _runPluginAction(
+      () => _pluginStore.removePlugin(plugin),
+      '已卸载插件：${plugin.name}',
     );
   }
 
@@ -1611,6 +1668,7 @@ class CodexController extends ChangeNotifier {
       await action();
       _add(TimelineKind.system, successMessage, '请在新建任务前重启本地运行时，以加载最新插件。');
       plugins = await _pluginStore.listPlugins();
+      marketplaces = await _pluginStore.listMarketplaces();
     } catch (error) {
       pluginsError = _messageOf(error);
     } finally {

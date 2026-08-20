@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../domain/codex_plugin.dart';
+import '../domain/codex_marketplace.dart';
 
 /// 通过本机 Codex CLI 管理 marketplace 插件与启用状态。
 /// Manages marketplace plugins and enabled states through the local Codex CLI.
@@ -46,8 +47,8 @@ class CodexPluginStore {
     });
   }
 
-  /// 将一个本地插件 marketplace 目录交给 Codex CLI 注册。
-  /// Registers a local plugin marketplace directory through the Codex CLI.
+  /// 注册一个本地插件 marketplace 目录，供兼容现有调用方使用。
+  /// Registers a local plugin marketplace directory for existing callers.
   Future<void> addLocalMarketplace(String directory) async {
     final source = directory.trim();
     if (source.isEmpty) throw const FormatException('请选择本地 marketplace 目录。');
@@ -55,7 +56,53 @@ class CodexPluginStore {
     if (!await location.exists()) {
       throw StateError('本地 marketplace 目录不存在：$source');
     }
-    await _run(['plugin', 'marketplace', 'add', source, '--json']);
+    await addMarketplace(source);
+  }
+
+  /// 注册本地目录、Git URL 或 `owner/repo` 形式的 marketplace 来源。
+  /// Registers a local directory, Git URL, or `owner/repo` marketplace source.
+  Future<void> addMarketplace(String source) async {
+    final value = source.trim();
+    if (value.isEmpty) throw const FormatException('请输入 marketplace 来源。');
+    await _run(['plugin', 'marketplace', 'add', value, '--json']);
+  }
+
+  /// 返回当前 Codex CLI 正在使用的 marketplace 列表。
+  /// Returns the marketplaces currently considered by the Codex CLI.
+  Future<List<CodexMarketplace>> listMarketplaces() async {
+    final output = await _run(const [
+      'plugin',
+      'marketplace',
+      'list',
+      '--json',
+    ]);
+    final decoded = jsonDecode(output);
+    if (decoded is! Map || decoded['marketplaces'] is! Iterable) {
+      throw const FormatException('Codex CLI 返回了无效的 marketplace 列表。');
+    }
+    return (decoded['marketplaces'] as Iterable)
+        .whereType<Map>()
+        .map(
+          (value) =>
+              CodexMarketplace.fromJson(Map<String, dynamic>.from(value)),
+        )
+        .whereType<CodexMarketplace>()
+        .toList(growable: false);
+  }
+
+  /// 刷新一个 Git marketplace；名称为空时刷新所有 Git marketplace。
+  /// Refreshes one Git marketplace, or every Git marketplace when name is null.
+  Future<void> upgradeMarketplace(String? name) async {
+    final arguments = ['plugin', 'marketplace', 'upgrade'];
+    if (name?.trim().isNotEmpty == true) arguments.add(name!.trim());
+    arguments.add('--json');
+    await _run(arguments);
+  }
+
+  /// 移除指定 marketplace 配置；Codex CLI 会决定是否允许该操作。
+  /// Removes a marketplace configuration; the Codex CLI decides whether it is allowed.
+  Future<void> removeMarketplace(CodexMarketplace marketplace) async {
+    await _run(['plugin', 'marketplace', 'remove', marketplace.name, '--json']);
   }
 
   /// 从已注册 marketplace 安装一个插件。
@@ -63,6 +110,13 @@ class CodexPluginStore {
   Future<void> installPlugin(CodexPlugin plugin) async {
     if (plugin.installed) return;
     await _run(['plugin', 'add', plugin.id, '--json']);
+  }
+
+  /// 卸载指定插件；Codex CLI 会保留受管理或受保护插件的限制。
+  /// Uninstalls a plugin while retaining Codex CLI restrictions for managed plugins.
+  Future<void> removePlugin(CodexPlugin plugin) async {
+    if (!plugin.installed) return;
+    await _run(['plugin', 'remove', plugin.id, '--json']);
   }
 
   /// 更新 `config.toml` 中某个已安装插件的启用状态。

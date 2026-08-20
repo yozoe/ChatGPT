@@ -9,6 +9,7 @@ import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 import '../app_controller.dart';
 import '../domain/codex_file_change.dart';
 import '../domain/codex_plugin.dart';
+import '../domain/codex_marketplace.dart';
 import '../domain/codex_thread.dart';
 import '../domain/pending_approval.dart';
 import '../domain/timeline_entry.dart';
@@ -595,6 +596,7 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
                                     .setPluginEnabled(plugin, enabled),
                                 onInstall: () =>
                                     controller.installPlugin(plugin),
+                                onRemove: () => _removePlugin(plugin),
                               );
                             },
                           ),
@@ -604,18 +606,14 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
             ),
             actions: [
               TextButton.icon(
-                onPressed: controller.pluginSaving
-                    ? null
-                    : () async {
-                        final path = await getDirectoryPath(
-                          confirmButtonText: '添加本地 marketplace',
-                        );
-                        if (path != null && path.trim().isNotEmpty) {
-                          await controller.addLocalPluginMarketplace(path);
-                        }
-                      },
-                icon: const Icon(Icons.folder_open_outlined),
-                label: const Text('添加本地 marketplace'),
+                onPressed: controller.pluginSaving ? null : _showAddMarketplace,
+                icon: const Icon(Icons.add_link_outlined),
+                label: const Text('添加来源'),
+              ),
+              TextButton.icon(
+                onPressed: controller.pluginSaving ? null : _showMarketplaces,
+                icon: const Icon(Icons.storefront_outlined),
+                label: const Text('管理市场'),
               ),
               TextButton.icon(
                 onPressed: controller.pluginsLoading || controller.pluginSaving
@@ -633,6 +631,170 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
         },
       ),
     );
+  }
+
+  /// 输入或选择一个本地/远程 marketplace 来源并交给控制器注册。
+  /// Enters or chooses a local/remote marketplace source and registers it.
+  Future<void> _showAddMarketplace() async {
+    final source = TextEditingController();
+    final selected = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('添加插件市场'),
+        content: SizedBox(
+          width: 460,
+          child: TextField(
+            controller: source,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: '本地目录、Git URL 或 owner/repo',
+              hintText: 'example-org/codex-plugins',
+              border: OutlineInputBorder(),
+            ),
+            onSubmitted: (value) => Navigator.of(context).pop(value),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              final path = await getDirectoryPath(
+                confirmButtonText: '选择本地 marketplace',
+              );
+              if (path != null && context.mounted) {
+                Navigator.of(context).pop(path);
+              }
+            },
+            child: const Text('选择本地目录'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(source.text),
+            child: const Text('添加'),
+          ),
+        ],
+      ),
+    );
+    source.dispose();
+    if (selected?.trim().isNotEmpty == true) {
+      await widget.controller.addPluginMarketplace(selected!);
+    }
+  }
+
+  /// 刷新并显示已配置 marketplace，支持 Git 更新与移除。
+  /// Refreshes and shows configured marketplaces with Git updates and removal.
+  Future<void> _showMarketplaces() async {
+    await widget.controller.refreshMarketplaces();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AnimatedBuilder(
+        animation: widget.controller,
+        builder: (context, _) {
+          final controller = widget.controller;
+          final error = controller.marketplacesError;
+          return AlertDialog(
+            title: const Text('插件市场'),
+            content: SizedBox(
+              width: 640,
+              height: 420,
+              child: controller.marketplacesLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : error != null
+                  ? Center(child: Text(error))
+                  : controller.marketplaces.isEmpty
+                  ? const Center(child: Text('尚未配置插件市场。'))
+                  : ListView.separated(
+                      itemCount: controller.marketplaces.length,
+                      separatorBuilder: (_, _) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final marketplace = controller.marketplaces[index];
+                        return _MarketplaceTile(
+                          marketplace: marketplace,
+                          busy: controller.pluginSaving,
+                          onUpgrade: () => controller.upgradePluginMarketplace(
+                            marketplace.name,
+                          ),
+                          onRemove: () => _removeMarketplace(marketplace),
+                        );
+                      },
+                    ),
+            ),
+            actions: [
+              TextButton.icon(
+                onPressed: controller.pluginSaving
+                    ? null
+                    : () => controller.upgradePluginMarketplace(null),
+                icon: const Icon(Icons.system_update_outlined),
+                label: const Text('刷新所有 Git 市场'),
+              ),
+              TextButton.icon(
+                onPressed:
+                    controller.marketplacesLoading || controller.pluginSaving
+                    ? null
+                    : controller.refreshMarketplaces,
+                icon: const Icon(Icons.refresh),
+                label: const Text('刷新'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('关闭'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  /// 二次确认后移除 marketplace，避免误删已配置来源。
+  /// Removes a marketplace after confirmation to avoid accidental source deletion.
+  Future<void> _removeMarketplace(CodexMarketplace marketplace) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('移除插件市场？'),
+        content: Text('“${marketplace.name}”将不再提供可安装插件。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.tonal(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('移除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await widget.controller.removePluginMarketplace(marketplace);
+    }
+  }
+
+  /// 二次确认后卸载插件，连接器授权仍需在 Codex 中单独管理。
+  /// Uninstalls a plugin after confirmation; connector authorization remains managed by Codex.
+  Future<void> _removePlugin(CodexPlugin plugin) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('卸载插件？'),
+        content: Text('“${plugin.name}”的连接器授权不会随卸载自动移除。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.tonal(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('卸载'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await widget.controller.removePlugin(plugin);
   }
 
   /// 构建响应控制器状态的工作区主布局。
@@ -954,12 +1116,14 @@ class _PluginTile extends StatelessWidget {
     required this.busy,
     required this.onEnabledChanged,
     required this.onInstall,
+    required this.onRemove,
   });
 
   final CodexPlugin plugin;
   final bool busy;
   final ValueChanged<bool> onEnabledChanged;
   final VoidCallback onInstall;
+  final VoidCallback onRemove;
 
   /// 构建插件状态行，并只为已安装项显示启用开关。
   /// Builds the plugin state row and shows a toggle only for installed items.
@@ -968,7 +1132,8 @@ class _PluginTile extends StatelessWidget {
     final details = [
       plugin.sourceLabel,
       if (plugin.version?.isNotEmpty == true) 'v${plugin.version}',
-      if (plugin.authPolicy?.isNotEmpty == true) '认证：${plugin.authPolicy}',
+      plugin.installPolicyLabel,
+      plugin.authPolicyLabel,
     ].join(' · ');
     return ListTile(
       leading: Icon(
@@ -977,14 +1142,74 @@ class _PluginTile extends StatelessWidget {
       title: Text(plugin.name),
       subtitle: Text(details, maxLines: 2, overflow: TextOverflow.ellipsis),
       trailing: plugin.installed
-          ? Switch(
-              value: plugin.enabled,
-              onChanged: busy ? null : onEnabledChanged,
+          ? Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Switch(
+                  value: plugin.enabled,
+                  onChanged: busy ? null : onEnabledChanged,
+                ),
+                IconButton(
+                  tooltip: '卸载插件',
+                  onPressed: busy ? null : onRemove,
+                  icon: const Icon(Icons.delete_outline),
+                ),
+              ],
             )
           : FilledButton.tonal(
               onPressed: busy ? null : onInstall,
               child: const Text('安装'),
             ),
+    );
+  }
+}
+
+/// 展示 marketplace 来源、类型以及其允许的维护操作。
+/// Displays a marketplace source, type, and available maintenance actions.
+class _MarketplaceTile extends StatelessWidget {
+  const _MarketplaceTile({
+    required this.marketplace,
+    required this.busy,
+    required this.onUpgrade,
+    required this.onRemove,
+  });
+
+  final CodexMarketplace marketplace;
+  final bool busy;
+  final VoidCallback onUpgrade;
+  final VoidCallback onRemove;
+
+  /// 构建 marketplace 行；只为 Git 来源提供刷新操作。
+  /// Builds the marketplace row and exposes refresh only for Git sources.
+  @override
+  Widget build(BuildContext context) {
+    final source = marketplace.source?.isNotEmpty == true
+        ? marketplace.source!
+        : marketplace.root;
+    return ListTile(
+      leading: const Icon(Icons.storefront_outlined),
+      title: Text(marketplace.name),
+      subtitle: Text(
+        '${marketplace.sourceTypeLabel} · $source',
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (marketplace.sourceType == 'git')
+            IconButton(
+              tooltip: '刷新 Git 市场',
+              onPressed: busy ? null : onUpgrade,
+              icon: const Icon(Icons.system_update_outlined),
+            ),
+          IconButton(
+            tooltip: '移除插件市场',
+            onPressed: busy ? null : onRemove,
+            icon: const Icon(Icons.delete_outline),
+          ),
+        ],
+      ),
     );
   }
 }

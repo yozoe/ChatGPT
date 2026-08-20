@@ -28,6 +28,21 @@ class CodexPlugin {
   String get sourceLabel =>
       marketplaceName.isEmpty ? '本地 marketplace' : marketplaceName;
 
+  /// 返回插件连接器认证时机的本地化展示文本。
+  /// Returns a localized label for the plugin connector authentication timing.
+  String get authPolicyLabel => switch (authPolicy) {
+    'ON_INSTALL' => '安装时可能请求连接',
+    'ON_USE' => '首次使用时可能请求连接',
+    _ => '无连接器认证信息',
+  };
+
+  /// 返回插件可否由当前用户安装的本地化展示文本。
+  /// Returns a localized label for whether the current user may install the plugin.
+  String get installPolicyLabel => switch (installPolicy) {
+    'AVAILABLE' => '可安装',
+    _ => '由 Codex 管理',
+  };
+
   /// 使用新启用状态复制插件，保留其余 CLI 元数据。
   /// Copies the plugin with a new enabled state while retaining CLI metadata.
   CodexPlugin copyWith({bool? enabled}) => CodexPlugin(
