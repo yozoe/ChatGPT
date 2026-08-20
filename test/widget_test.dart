@@ -32,6 +32,9 @@ class _FakeCodexAppServer extends CodexAppServer {
   final turnPageCursors = <String?>[];
   JsonMap itemPage = {'data': <JsonMap>[]};
   final itemPageTurnIds = <String>[];
+  Object? itemPageError;
+  List<JsonMap>? itemPages;
+  var itemPageIndex = 0;
   String? resumedThreadId;
   String? resumedModelProvider;
   String? resumedModel;
@@ -90,6 +93,12 @@ class _FakeCodexAppServer extends CodexAppServer {
     int limit = 50,
   }) async {
     itemPageTurnIds.add(turnId);
+    final error = itemPageError;
+    if (error != null) throw error;
+    final pages = itemPages;
+    if (pages != null && itemPageIndex < pages.length) {
+      return pages[itemPageIndex++];
+    }
     return itemPage;
   }
 
@@ -462,6 +471,86 @@ void main() {
       expect(
         controller.entries.map((entry) => entry.detail),
         contains('按项分页恢复的回答'),
+      );
+      controller.dispose();
+    },
+  );
+
+  test('keeps the prior timeline when item history hydration fails', () async {
+    final server = _FakeCodexAppServer()
+      ..resumeResult = {
+        'thread': {
+          'turns': [
+            {
+              'id': 'unavailable-turn',
+              'itemsView': 'notLoaded',
+              'items': <JsonMap>[],
+            },
+          ],
+        },
+      }
+      ..itemPageError = StateError('items unavailable');
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..activeThreadId = 'old-thread';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/agentMessage/delta',
+        params: {'itemId': 'old-message', 'delta': '旧线程回答'},
+      ),
+    );
+
+    await controller.resumeThread(_thread(id: 'target-thread'));
+
+    expect(controller.activeThreadId, 'old-thread');
+    expect(controller.entries.map((entry) => entry.detail), contains('旧线程回答'));
+    controller.dispose();
+  });
+
+  test(
+    'keeps partial item history when a turn exceeds the page limit',
+    () async {
+      final pages = List<JsonMap>.generate(
+        20,
+        (index) => {
+          'data': [
+            {
+              'turnId': 'long-turn',
+              'item': {
+                'id': 'item-$index',
+                'type': 'agentMessage',
+                'text': '第 $index 项',
+              },
+            },
+          ],
+          'nextCursor': 'cursor-$index',
+        },
+      );
+      final server = _FakeCodexAppServer()
+        ..resumeResult = {
+          'thread': {
+            'turns': [
+              {
+                'id': 'long-turn',
+                'itemsView': 'notLoaded',
+                'items': <JsonMap>[],
+              },
+            ],
+          },
+        }
+        ..itemPages = pages;
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+
+      await controller.resumeThread(_thread(id: 'long-history-thread'));
+
+      expect(controller.activeThreadId, 'long-history-thread');
+      expect(server.itemPageTurnIds, hasLength(20));
+      expect(
+        controller.entries.map((entry) => entry.title),
+        contains('历史内容未完全加载'),
       );
       controller.dispose();
     },

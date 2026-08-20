@@ -339,12 +339,23 @@ class CodexController extends ChangeNotifier {
       );
       activeThreadId = thread.id;
       status = RuntimeStatus.ready;
-      _resetConversationTimeline();
       final history = await _loadThreadHistory(
         threadId: thread.id,
         resumeResult: resumeResult,
       );
+      _resetConversationTimeline();
       _appendThreadHistory(history);
+      final incompleteItemTurnCount =
+          history['incompleteItemTurnCount'] as int? ?? 0;
+      final incompleteTurnHistory = history['incompleteTurnHistory'] == true;
+      if (incompleteTurnHistory || incompleteItemTurnCount > 0) {
+        final detail = [
+          if (incompleteTurnHistory) '部分历史 turns',
+          if (incompleteItemTurnCount > 0)
+            '$incompleteItemTurnCount 个 turn 的 items',
+        ].join('和');
+        _add(TimelineKind.system, '历史内容未完全加载', '$detail 超出安全页数限制。');
+      }
       _add(TimelineKind.system, '任务已恢复', '可以继续在此任务中追问。');
       await refreshThreads();
     } catch (error) {
@@ -852,6 +863,7 @@ class CodexController extends ChangeNotifier {
     }
     final turns = turnsById.values.toList()
       ..sort((a, b) => _turnTimestamp(a).compareTo(_turnTimestamp(b)));
+    var incompleteItemTurnCount = 0;
     for (final turn in turns) {
       final turnId = turn['id']?.toString();
       final itemsView = turn['itemsView'];
@@ -860,13 +872,19 @@ class CodexController extends ChangeNotifier {
           (itemsView != 'notLoaded' && itemsView != 'summary')) {
         continue;
       }
-      turn['items'] = await _loadTurnItems(threadId: threadId, turnId: turnId);
+      final hydrated = await _loadTurnItems(threadId: threadId, turnId: turnId);
+      turn['items'] = hydrated.items;
       turn['itemsView'] = 'full';
+      if (!hydrated.isComplete) incompleteItemTurnCount++;
     }
-    return {'turns': turns};
+    return {
+      'turns': turns,
+      'incompleteTurnHistory': cursor != null,
+      'incompleteItemTurnCount': incompleteItemTurnCount,
+    };
   }
 
-  Future<List<JsonMap>> _loadTurnItems({
+  Future<({List<JsonMap> items, bool isComplete})> _loadTurnItems({
     required String threadId,
     required String turnId,
   }) async {
@@ -895,10 +913,7 @@ class CodexController extends ChangeNotifier {
         );
       }
     } while (cursor != null && ++pageCount < 20);
-    if (cursor != null) {
-      throw StateError('Thread item history exceeds the 20-page safety limit.');
-    }
-    return items;
+    return (items: items, isComplete: cursor == null);
   }
 
   int _turnTimestamp(JsonMap turn) =>
