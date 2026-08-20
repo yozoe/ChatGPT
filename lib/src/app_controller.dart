@@ -100,6 +100,8 @@ class CodexController extends ChangeNotifier {
   final Map<String, int> _agentEntryIndexByItem = {};
   Timer? _deltaNotificationTimer;
   Timer? _historySaveTimer;
+  Future<void> _historySave = Future.value();
+  bool _historySaveFailed = false;
   bool _disposed = false;
   bool _startingRuntime = false;
   int _threadRefreshEpoch = 0;
@@ -369,7 +371,7 @@ class CodexController extends ChangeNotifier {
         workingDirectory: workspace,
       )).map(CodexThread.fromJson).toList(growable: false);
       if (_isCurrentThreadRefresh(request, epoch, workspace)) {
-        threads = _mergeThreads(nextThreads, threads);
+        threads = nextThreads;
         _scheduleConversationHistorySave();
       }
     } catch (error) {
@@ -1352,18 +1354,6 @@ class CodexController extends ChangeNotifier {
     }
   }
 
-  List<CodexThread> _mergeThreads(
-    List<CodexThread> fresh,
-    List<CodexThread> cached,
-  ) {
-    final merged = <String, CodexThread>{
-      for (final thread in cached) thread.id: thread,
-      for (final thread in fresh) thread.id: thread,
-    };
-    return merged.values.toList(growable: false)
-      ..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
-  }
-
   @visibleForTesting
   Future<void> waitForInitialConfiguration() {
     return Future.wait([
@@ -1409,19 +1399,32 @@ class CodexController extends ChangeNotifier {
     if (workspace == null || _disposed) return;
     _historySaveTimer?.cancel();
     _historySaveTimer = null;
-    try {
+    final snapshot = ConversationHistorySnapshot(
+      threads: List.of(threads),
+      archivedThreads: List.of(archivedThreads),
+      entries: List.of(entries),
+      fileChanges: List.of(fileChanges),
+      turnDiff: turnDiff,
+    );
+    final previousSave = _historySave;
+    final nextSave = () async {
+      try {
+        await previousSave;
+      } catch (_) {
+        // A failed older save must not prevent a newer snapshot from writing.
+      }
       await _conversationHistoryStore.save(
         workspace: workspace,
-        snapshot: ConversationHistorySnapshot(
-          threads: List.of(threads),
-          archivedThreads: List.of(archivedThreads),
-          entries: List.of(entries),
-          fileChanges: List.of(fileChanges),
-          turnDiff: turnDiff,
-        ),
+        snapshot: snapshot,
       );
+    }();
+    _historySave = nextSave;
+    try {
+      await nextSave;
+      _historySaveFailed = false;
     } catch (error) {
-      if (!_disposed) {
+      if (!_disposed && !_historySaveFailed) {
+        _historySaveFailed = true;
         _entries.add(_entry(TimelineKind.error, '无法保存本地历史', _messageOf(error)));
         notifyListeners();
       }

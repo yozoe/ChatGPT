@@ -80,6 +80,26 @@ class _MemoryConversationHistoryStore extends ConversationHistoryStore {
   }
 }
 
+class _BlockingConversationHistoryStore
+    extends _MemoryConversationHistoryStore {
+  final firstSaveStarted = Completer<void>();
+  final allowFirstSave = Completer<void>();
+  int saveCalls = 0;
+
+  @override
+  Future<void> save({
+    required String workspace,
+    required ConversationHistorySnapshot snapshot,
+  }) async {
+    saveCalls++;
+    if (saveCalls == 1) {
+      firstSaveStarted.complete();
+      await allowFirstSave.future;
+    }
+    await super.save(workspace: workspace, snapshot: snapshot);
+  }
+}
+
 class _FakeCodexAppServer extends CodexAppServer {
   _FakeCodexAppServer() : super(executable: '/not/a/codex');
 
@@ -450,6 +470,44 @@ void main() {
       restoredController.dispose();
     },
   );
+
+  test(
+    'uses the authoritative App Server thread list after reconnecting',
+    () async {
+      final server = _FakeCodexAppServer()..listResponse = [];
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..threads = [_thread(id: 'cached-thread')];
+
+      await controller.refreshThreads();
+
+      expect(controller.threads, isEmpty);
+      controller.dispose();
+    },
+  );
+
+  test('serializes consecutive local history writes', () async {
+    final store = _BlockingConversationHistoryStore();
+    final controller =
+        CodexController(
+            server: CodexAppServer(),
+            conversationHistoryStore: store,
+          )
+          ..workspacePath = '/workspace'
+          ..threads = [_thread(id: 'first-thread')];
+
+    final firstSave = controller.saveConversationHistoryForTesting();
+    await store.firstSaveStarted.future;
+    controller.threads = [_thread(id: 'second-thread')];
+    final secondSave = controller.saveConversationHistoryForTesting();
+
+    expect(store.saveCalls, 1);
+    store.allowFirstSave.complete();
+    await Future.wait([firstSave, secondSave]);
+
+    expect(store.snapshots['/workspace']!.threads.single.id, 'second-thread');
+    controller.dispose();
+  });
 
   test('updates visible account state from App Server notifications', () {
     final controller = CodexController(server: CodexAppServer());
