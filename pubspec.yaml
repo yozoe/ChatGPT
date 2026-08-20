@@ -38,6 +38,8 @@ dependencies:
   flutter_secure_storage: ^10.0.0
   cryptography: ^2.7.0
   url_launcher: ^6.3.2
+  yeknom_ui_kit:
+    path: ../private/yeknom-ui-kit
 
 dev_dependencies:
   flutter_test:

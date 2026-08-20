@@ -18,6 +18,7 @@
 - 自动保存并恢复 macOS 主窗口的大小与位置；覆盖安装同一应用后仍会保留
 - 对话时间线采用扁平消息样式并自动滚至最新内容；Enter 发送消息，Shift+Enter 换行
 - 底部输入区采用深色圆角工作台样式，集中展示任务状态、审批模式、模型与推理强度，并会随窗口宽度折叠次要工具项
+- 已接入本地 `yeknom_ui_kit` 的 Workbench 主题入口，使用 Midnight 深色配色统一桌面工具的主题、控件和语义色
 - 右侧“文件变更”及对话区顶部入口会按 App Server 事件列出 AI 修改的文件；可展开查看每个文件与本次任务的统一 Diff，不扫描本地项目文件
 - 推理强度选项由当前 Codex 模型能力动态提供；选择会保存，并用于后续新建或恢复的任务
 - 活跃与归档线程列表会跟随 App Server 分页加载，不限于首 50 条
@@ -68,6 +69,10 @@ dart run tool/verify_app_server_history.dart --cwd /path/to/workspace
 - 项目中的 Dart 方法均使用 Dartdoc 双语注释：先说明中文职责，再给出对应英文说明；公开方法还会说明重要的参数、返回值或副作用。
 - 注释描述当前行为与边界，不记录实现过程；修改方法行为时，必须同步更新其双语注释与本 README。
 - 提交前依次运行 `dart format`、`flutter analyze` 与 `flutter test`；涉及 macOS 集成时，再运行 `flutter build macos --debug`。
+
+### 本地 UI Kit
+
+开发环境通过 path dependency 使用 `/Volumes/External HD/Code/private/yeknom-ui-kit`；桌面工具应从 `package:yeknom_ui_kit/yeknom_workbench.dart` 导入，并使用 `YeknomWorkbenchTheme`，避免复制主题 Token 或硬编码新的全局主题配置。
 
 ## 参考
 
