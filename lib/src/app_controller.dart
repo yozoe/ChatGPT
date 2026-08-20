@@ -42,6 +42,7 @@ class CodexController extends ChangeNotifier {
     );
     _relayLoad = _loadRelayProvider();
     _runtimeLoad = _loadRuntimeConfiguration();
+    _workspaceLoad = _loadWorkspace();
   }
 
   final CodexAppServer _server;
@@ -59,6 +60,7 @@ class CodexController extends ChangeNotifier {
   final Set<String> _unarchivingThreadIds = {};
   late final Future<void> _relayLoad;
   late final Future<void> _runtimeLoad;
+  late final Future<void> _workspaceLoad;
 
   RuntimeStatus status = RuntimeStatus.stopped;
   String? workspacePath;
@@ -145,6 +147,12 @@ class CodexController extends ChangeNotifier {
     _clearStreamingState();
     _add(TimelineKind.system, '项目已选择', canonicalPath);
     notifyListeners();
+    try {
+      await _runtimeConfigurationStore.saveWorkspace(canonicalPath);
+    } catch (error) {
+      _add(TimelineKind.error, '无法保存项目选择', _messageOf(error));
+      if (!_disposed) notifyListeners();
+    }
   }
 
   void createThread() {
@@ -181,7 +189,7 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      await Future.wait([_relayLoad, _runtimeLoad]);
+      await Future.wait([_relayLoad, _runtimeLoad, _workspaceLoad]);
       final probe = await _inspectRuntime(notify: false);
       if (!probe.isAvailable) {
         throw StateError(probe.error ?? 'Codex CLI 不可用。');
@@ -1053,6 +1061,32 @@ class CodexController extends ChangeNotifier {
     } catch (error) {
       runtimeError = '无法读取已保存的 Codex CLI 路径：${_messageOf(error)}';
     }
+  }
+
+  Future<void> _loadWorkspace() async {
+    try {
+      final storedPath = await _runtimeConfigurationStore.readWorkspace();
+      if (storedPath == null || storedPath.trim().isEmpty) return;
+      final directory = Directory(storedPath.trim());
+      if (!await directory.exists()) {
+        await _runtimeConfigurationStore.clearWorkspace();
+        _add(TimelineKind.system, '已清除无效项目记录', storedPath.trim());
+        return;
+      }
+      final canonicalPath = await directory.resolveSymbolicLinks();
+      if (workspacePath != null) return;
+      workspacePath = canonicalPath;
+      _add(TimelineKind.system, '已恢复上次项目', canonicalPath);
+    } catch (error) {
+      lastError = '无法恢复上次项目：${_messageOf(error)}';
+    } finally {
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  @visibleForTesting
+  Future<void> waitForInitialConfiguration() {
+    return Future.wait([_relayLoad, _runtimeLoad, _workspaceLoad]);
   }
 
   Future<CodexRuntimeProbe> _inspectRuntime({required bool notify}) async {

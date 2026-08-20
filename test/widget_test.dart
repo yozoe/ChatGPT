@@ -8,6 +8,7 @@ import 'package:chatgpt/src/domain/relay_provider_configuration.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/services/relay_provider_store.dart';
+import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class _DelayedRelayProviderStore extends RelayProviderStore {
@@ -15,6 +16,35 @@ class _DelayedRelayProviderStore extends RelayProviderStore {
 
   @override
   Future<RelayProviderConfiguration?> read() => completer.future;
+}
+
+class _EmptyRelayProviderStore extends RelayProviderStore {
+  @override
+  Future<RelayProviderConfiguration?> read() async => null;
+}
+
+class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
+  String? workspace;
+  String? savedWorkspace;
+  bool clearedWorkspace = false;
+
+  @override
+  Future<String?> readExecutable() async => null;
+
+  @override
+  Future<String?> readWorkspace() async => workspace;
+
+  @override
+  Future<void> saveWorkspace(String value) async {
+    savedWorkspace = value;
+    workspace = value;
+  }
+
+  @override
+  Future<void> clearWorkspace() async {
+    clearedWorkspace = true;
+    workspace = null;
+  }
 }
 
 class _FakeCodexAppServer extends CodexAppServer {
@@ -245,6 +275,30 @@ void main() {
     expect(controller.workspacePath, '/original/workspace');
     expect(controller.lastError, contains('先停止当前运行时'));
     controller.dispose();
+  });
+
+  test('persists and restores the most recently selected workspace', () async {
+    final store = _FakeRuntimeConfigurationStore();
+    final firstController = CodexController(
+      server: CodexAppServer(),
+      relayProviderStore: _EmptyRelayProviderStore(),
+      runtimeConfigurationStore: store,
+    );
+
+    await firstController.selectWorkspace(Directory.systemTemp.path);
+
+    expect(store.savedWorkspace, firstController.workspacePath);
+    firstController.dispose();
+
+    final restoredController = CodexController(
+      server: CodexAppServer(),
+      relayProviderStore: _EmptyRelayProviderStore(),
+      runtimeConfigurationStore: store,
+    );
+    await restoredController.waitForInitialConfiguration();
+
+    expect(restoredController.workspacePath, store.savedWorkspace);
+    restoredController.dispose();
   });
 
   test('updates visible account state from App Server notifications', () {

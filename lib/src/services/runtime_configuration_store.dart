@@ -1,7 +1,6 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-/// Stores a user-selected Codex CLI path. The path is kept outside projects so
-/// opening a workspace never writes setup metadata into that repository.
+/// Stores local Codex Desk preferences outside user projects.
 class RuntimeConfigurationStore {
   RuntimeConfigurationStore({FlutterSecureStorage? storage})
     : _storage =
@@ -11,6 +10,7 @@ class RuntimeConfigurationStore {
           );
 
   static const _executableKey = 'codex_desk.runtime.executable.v1';
+  static const _workspaceKey = 'codex_desk.workspace.last_path.v1';
 
   final FlutterSecureStorage _storage;
 
@@ -21,4 +21,12 @@ class RuntimeConfigurationStore {
   }
 
   Future<void> clear() => _storage.delete(key: _executableKey);
+
+  Future<String?> readWorkspace() => _storage.read(key: _workspaceKey);
+
+  Future<void> saveWorkspace(String workspace) {
+    return _storage.write(key: _workspaceKey, value: workspace);
+  }
+
+  Future<void> clearWorkspace() => _storage.delete(key: _workspaceKey);
 }
