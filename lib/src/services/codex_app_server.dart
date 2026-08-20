@@ -231,7 +231,7 @@ class CodexAppServer {
         .toList(growable: false);
   }
 
-  Future<void> resumeThread({
+  Future<JsonMap> resumeThread({
     required String threadId,
     String? modelProvider,
     String? model,
@@ -244,6 +244,13 @@ class CodexAppServer {
       'config': ?config,
     });
     _throwIfError(response);
+    final result = response['result'];
+    if (result is! Map) {
+      throw const FormatException(
+        'App Server did not return resumed thread history.',
+      );
+    }
+    return JsonMap.from(result);
   }
 
   Future<void> renameThread({

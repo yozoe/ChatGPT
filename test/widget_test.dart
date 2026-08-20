@@ -24,6 +24,9 @@ class _FakeCodexAppServer extends CodexAppServer {
   List<JsonMap> listResponse = <JsonMap>[];
   bool queueListRequests = false;
   Object? resumeError;
+  JsonMap resumeResult = {
+    'thread': {'turns': <JsonMap>[]},
+  };
   String? resumedThreadId;
   String? resumedModelProvider;
   String? resumedModel;
@@ -41,7 +44,7 @@ class _FakeCodexAppServer extends CodexAppServer {
   }
 
   @override
-  Future<void> resumeThread({
+  Future<JsonMap> resumeThread({
     required String threadId,
     String? modelProvider,
     String? model,
@@ -53,6 +56,7 @@ class _FakeCodexAppServer extends CodexAppServer {
     resumedConfig = config;
     final error = resumeError;
     if (error != null) throw error;
+    return resumeResult;
   }
 }
 
@@ -266,6 +270,50 @@ void main() {
     expect(server.resumedConfig, isNull);
     controller.dispose();
   });
+
+  test(
+    'loads user, agent, and command history when resuming a thread',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..resumeResult = {
+          'thread': {
+            'turns': [
+              {
+                'items': [
+                  {
+                    'type': 'userMessage',
+                    'content': [
+                      {'type': 'text', 'text': '历史问题'},
+                    ],
+                  },
+                  {'type': 'agentMessage', 'text': '历史回答'},
+                  {
+                    'type': 'commandExecution',
+                    'command': 'dart test',
+                    'aggregatedOutput': 'All tests passed',
+                  },
+                ],
+              },
+            ],
+          },
+        };
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+
+      await controller.resumeThread(_thread(id: 'history-thread'));
+
+      expect(
+        controller.entries.map((entry) => '${entry.title}:${entry.detail}'),
+        containsAll([
+          '你:历史问题',
+          'Codex:历史回答',
+          '执行命令:dart test\nAll tests passed',
+        ]),
+      );
+      controller.dispose();
+    },
+  );
 
   test('restores the previous active thread when resume fails', () async {
     final server = _FakeCodexAppServer()..resumeError = StateError('offline');

@@ -292,7 +292,7 @@ class CodexController extends ChangeNotifier {
     _add(TimelineKind.system, '正在恢复任务', thread.title);
     notifyListeners();
     try {
-      await _server.resumeThread(
+      final resumeResult = await _server.resumeThread(
         threadId: thread.id,
         modelProvider: thread.modelProvider,
         model: thread.model,
@@ -303,6 +303,7 @@ class CodexController extends ChangeNotifier {
       activeThreadId = thread.id;
       status = RuntimeStatus.ready;
       _resetConversationTimeline();
+      _appendThreadHistory(resumeResult);
       _add(TimelineKind.system, '任务已恢复', '可以继续在此任务中追问。');
       await refreshThreads();
     } catch (error) {
@@ -684,6 +685,36 @@ class CodexController extends ChangeNotifier {
       default:
         status = RuntimeStatus.ready;
         _add(TimelineKind.system, '任务完成', '你可以继续在同一线程追问。');
+    }
+  }
+
+  void _appendThreadHistory(JsonMap result) {
+    final thread = result['thread'];
+    if (thread is! Map || thread['turns'] is! Iterable) return;
+    for (final rawTurn in thread['turns'] as Iterable) {
+      if (rawTurn is! Map || rawTurn['items'] is! Iterable) continue;
+      for (final rawItem in rawTurn['items'] as Iterable) {
+        if (rawItem is! Map) continue;
+        final item = JsonMap.from(rawItem);
+        switch (item['type']) {
+          case 'userMessage':
+            final text = _findText(item['content']);
+            if (text.isNotEmpty) _add(TimelineKind.user, '你', text);
+          case 'agentMessage':
+            final text = item['text']?.toString() ?? _findText(item);
+            if (text.isNotEmpty) _add(TimelineKind.agent, 'Codex', text);
+          case 'commandExecution':
+            final command = item['command']?.toString() ?? '';
+            final output = item['aggregatedOutput']?.toString() ?? '';
+            final detail = [
+              command,
+              output,
+            ].where((value) => value.isNotEmpty).join('\n');
+            if (detail.isNotEmpty) {
+              _add(TimelineKind.command, '执行命令', detail);
+            }
+        }
+      }
     }
   }
 
