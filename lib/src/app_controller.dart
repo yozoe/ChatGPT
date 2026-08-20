@@ -10,6 +10,7 @@ import 'domain/relay_provider_configuration.dart';
 import 'domain/timeline_entry.dart';
 import 'services/codex_app_server.dart';
 import 'services/conversation_history_store.dart';
+import 'services/local_session_thread_store.dart';
 import 'services/relay_provider_store.dart';
 import 'services/runtime_configuration_store.dart';
 
@@ -73,6 +74,7 @@ class CodexController extends ChangeNotifier {
     RelayProviderStore? relayProviderStore,
     RuntimeConfigurationStore? runtimeConfigurationStore,
     ConversationHistoryStore? conversationHistoryStore,
+    LocalSessionThreadStore? localSessionThreadStore,
   }) : _server = server ?? CodexAppServer(),
        _relayProviderStore = relayProviderStore ?? RelayProviderStore(),
        _runtimeConfigurationStore =
@@ -80,7 +82,9 @@ class CodexController extends ChangeNotifier {
        _conversationHistoryStore =
            conversationHistoryStore ??
            testingConversationHistoryStore ??
-           ConversationHistoryStore() {
+           ConversationHistoryStore(),
+       _localSessionThreadStore =
+           localSessionThreadStore ?? LocalSessionThreadStore() {
     _entries.add(
       _entry(
         TimelineKind.system,
@@ -101,6 +105,7 @@ class CodexController extends ChangeNotifier {
   final RelayProviderStore _relayProviderStore;
   final RuntimeConfigurationStore _runtimeConfigurationStore;
   final ConversationHistoryStore _conversationHistoryStore;
+  final LocalSessionThreadStore _localSessionThreadStore;
   StreamSubscription<ServerEvent>? _eventSubscription;
   final List<TimelineEntry> _entries = [];
   final Map<String, CodexFileChange> _fileChangesByPath = {};
@@ -420,9 +425,12 @@ class CodexController extends ChangeNotifier {
     threadsError = null;
     if (!_disposed) notifyListeners();
     try {
-      final nextThreads = (await _server.listThreads(
+      final serverThreads = (await _server.listThreads(
         workingDirectory: workspace,
       )).map(CodexThread.fromJson).toList(growable: false);
+      final nextThreads = serverThreads.isEmpty
+          ? await _localSessionThreadStore.listThreads(workspace)
+          : serverThreads;
       if (_isCurrentThreadRefresh(request, epoch, workspace)) {
         threads = nextThreads;
         _scheduleConversationHistorySave();

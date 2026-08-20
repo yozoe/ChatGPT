@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:chatgpt/src/app.dart';
@@ -10,6 +11,7 @@ import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/presentation/codex_workspace.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/services/conversation_history_store.dart';
+import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/relay_provider_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'package:flutter/material.dart';
@@ -120,6 +122,17 @@ class _BlockingConversationHistoryStore
       await allowFirstSave.future;
     }
     await super.save(workspace: workspace, snapshot: snapshot);
+  }
+}
+
+class _MemoryLocalSessionThreadStore extends LocalSessionThreadStore {
+  final threadsByWorkspace = <String, List<CodexThread>>{};
+
+  /// 从测试内存映射返回指定工作区的本地 session 线程。
+  /// Returns local session threads for a workspace from a test memory map.
+  @override
+  Future<List<CodexThread>> listThreads(String workspace) async {
+    return threadsByWorkspace[workspace] ?? const [];
   }
 }
 
@@ -553,6 +566,43 @@ void main() {
       controller.dispose();
     },
   );
+
+  test(
+    'falls back to local Codex sessions when App Server lists none',
+    () async {
+      final localSessions = _MemoryLocalSessionThreadStore()
+        ..threadsByWorkspace['/workspace'] = [_thread(id: 'local-thread')];
+      final controller = CodexController(
+        server: _FakeCodexAppServer()..listResponse = [],
+        localSessionThreadStore: localSessions,
+      )..workspacePath = '/workspace';
+
+      await controller.refreshThreads();
+
+      expect(controller.threads.single.id, 'local-thread');
+      controller.dispose();
+    },
+  );
+
+  test('reads a workspace thread from local Codex session metadata', () async {
+    final directory = await Directory.systemTemp.createTemp('codex-sessions-');
+    addTearDown(() => directory.delete(recursive: true));
+    final sessionDirectory = Directory('${directory.path}/2026/08/20');
+    await sessionDirectory.create(recursive: true);
+    await File('${sessionDirectory.path}/rollout.jsonl').writeAsString(
+      '${jsonEncode({
+        'type': 'session_meta',
+        'payload': {'session_id': 'local-thread', 'timestamp': '2026-08-20T00:00:00.000Z', 'cwd': '/workspace', 'model_provider': 'openai'},
+      })}\n',
+    );
+
+    final threads = await LocalSessionThreadStore(
+      directory: directory,
+    ).listThreads('/workspace');
+
+    expect(threads.single.id, 'local-thread');
+    expect(threads.single.modelProvider, 'openai');
+  });
 
   test('serializes consecutive local history writes', () async {
     final store = _BlockingConversationHistoryStore();
