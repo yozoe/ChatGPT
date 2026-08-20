@@ -52,7 +52,7 @@ dart run tool/verify_app_server_history.dart --cwd /path/to/workspace
 
 - 不会在项目文件、应用日志或界面中保存 API Key；密钥仅提交给本地 Codex 运行时。
 - 运行时只通过本机 `stdio` JSON-RPC 通信；不会启用远程 WebSocket。
-- 审批默认逐次确认；不会在后台自动批准命令、文件变更或额外权限。
+- 审批默认逐次确认；可在“变更与审批”切换为自动批准。自动模式会直接允许命令、文件变更与额外权限请求，并在时间线留下记录。
 - 中转站仅接受 HTTPS（localhost 可用 HTTP），并要求 Responses API 与 SSE 流式协议兼容。密钥存入 macOS Keychain，Provider 定义仅注入本应用创建的 Thread，不修改 `~/.codex/config.toml`。
 - macOS 构建保留 App Sandbox，并使用标准 macOS Keychain 保存中转站凭据与运行时路径；不依赖本地 ad-hoc 签名无法提供的 Data Protection Keychain entitlement。
 

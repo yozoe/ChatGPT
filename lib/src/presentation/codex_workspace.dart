@@ -911,6 +911,26 @@ class _Inspector extends StatelessWidget {
           children: [
             Text('变更与审批', style: Theme.of(context).textTheme.titleSmall),
             const SizedBox(height: 12),
+            Text('审批模式', style: Theme.of(context).textTheme.labelLarge),
+            DropdownButton<ApprovalMode>(
+              value: controller.approvalMode,
+              isExpanded: true,
+              items: ApprovalMode.values
+                  .map(
+                    (mode) =>
+                        DropdownMenuItem(value: mode, child: Text(mode.label)),
+                  )
+                  .toList(growable: false),
+              onChanged: (mode) {
+                if (mode != null) controller.setApprovalMode(mode);
+              },
+            ),
+            _MutedText(
+              controller.approvalMode == ApprovalMode.autoApprove
+                  ? '自动批准命令、文件变更和额外权限请求。'
+                  : '每次请求都会显示批准与拒绝按钮。',
+            ),
+            const SizedBox(height: 12),
             const _InspectorCard(
               icon: Icons.description_outlined,
               title: '文件变更',
@@ -920,7 +940,7 @@ class _Inspector extends StatelessWidget {
             const _InspectorCard(
               icon: Icons.verified_user_outlined,
               title: '权限审批',
-              detail: 'MVP 会把命令和文件权限请求集中展示，不在后台自动批准。',
+              detail: '审批请求会集中展示；自动模式会直接响应并记录到时间线。',
             ),
             const Spacer(),
             _MutedText('当前线程：${controller.activeThreadId ?? '尚未创建'}'),

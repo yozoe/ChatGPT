@@ -15,6 +15,15 @@ enum RuntimeStatus { stopped, starting, ready, running, failed }
 
 enum AuthStatus { checking, signedOut, chatgpt, apiKey, external }
 
+enum ApprovalMode { manual, autoApprove }
+
+extension ApprovalModeLabel on ApprovalMode {
+  String get label => switch (this) {
+    ApprovalMode.manual => '逐次确认',
+    ApprovalMode.autoApprove => '自动批准',
+  };
+}
+
 class CodexController extends ChangeNotifier {
   CodexController({
     CodexAppServer? server,
@@ -57,6 +66,7 @@ class CodexController extends ChangeNotifier {
   String? lastError;
   PendingApproval? pendingApproval;
   bool approvalResponding = false;
+  ApprovalMode approvalMode = ApprovalMode.manual;
   AuthStatus authStatus = AuthStatus.checking;
   String? accountEmail;
   String? accountPlan;
@@ -612,18 +622,7 @@ class CodexController extends ChangeNotifier {
     approvalResponding = true;
     notifyListeners();
     try {
-      final result = switch (approval.kind) {
-        ApprovalKind.command || ApprovalKind.fileChange => {
-          'decision': accepted ? 'accept' : 'decline',
-        },
-        ApprovalKind.permissions => {
-          'permissions': accepted && approval.params['permissions'] is Map
-              ? JsonMap.from(approval.params['permissions'] as Map)
-              : <String, dynamic>{},
-          if (accepted) 'scope': 'turn',
-        },
-      };
-      _server.respond(approval.requestId, result);
+      _server.respond(approval.requestId, _approvalResult(approval, accepted));
       _add(TimelineKind.system, accepted ? '已允许本次操作' : '已拒绝操作', approval.title);
       pendingApproval = null;
     } catch (error) {
@@ -635,6 +634,22 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  void setApprovalMode(ApprovalMode mode) {
+    if (approvalMode == mode) return;
+    approvalMode = mode;
+    _add(
+      TimelineKind.system,
+      '审批模式已更新',
+      mode == ApprovalMode.autoApprove
+          ? '后续命令、文件变更和额外权限请求将自动批准。'
+          : '后续请求需要逐次确认。',
+    );
+    if (mode == ApprovalMode.autoApprove && pendingApproval != null) {
+      unawaited(respondToApproval(accepted: true));
+    }
+    notifyListeners();
+  }
+
   void _handleServerEvent(ServerEvent event) {
     if (_disposed) return;
     if (event.isServerRequest) {
@@ -643,9 +658,22 @@ class CodexController extends ChangeNotifier {
         _server.respondError(event.requestId!, '此客户端暂不支持 ${event.method}。');
         _add(TimelineKind.error, '未支持的运行时请求', event.method);
       } else {
-        pendingApproval = approval;
-        approvalResponding = false;
-        _add(TimelineKind.approval, approval.title, approval.detail);
+        if (approvalMode == ApprovalMode.autoApprove) {
+          try {
+            _server.respond(
+              approval.requestId,
+              _approvalResult(approval, true),
+            );
+            _add(TimelineKind.system, '已自动批准本次操作', approval.title);
+          } catch (error) {
+            lastError = _messageOf(error);
+            _add(TimelineKind.error, '自动审批响应失败', lastError!);
+          }
+        } else {
+          pendingApproval = approval;
+          approvalResponding = false;
+          _add(TimelineKind.approval, approval.title, approval.detail);
+        }
       }
       notifyListeners();
       return;
@@ -700,6 +728,19 @@ class CodexController extends ChangeNotifier {
   @visibleForTesting
   void handleServerEventForTesting(ServerEvent event) =>
       _handleServerEvent(event);
+
+  JsonMap _approvalResult(PendingApproval approval, bool accepted) {
+    return switch (approval.kind) {
+      ApprovalKind.command ||
+      ApprovalKind.fileChange => {'decision': accepted ? 'accept' : 'decline'},
+      ApprovalKind.permissions => {
+        'permissions': accepted && approval.params['permissions'] is Map
+            ? JsonMap.from(approval.params['permissions'] as Map)
+            : <String, dynamic>{},
+        if (accepted) 'scope': 'turn',
+      },
+    };
+  }
 
   String _findText(Object? value) {
     if (value is String) return value;

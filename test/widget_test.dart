@@ -180,6 +180,35 @@ void main() {
     controller.dispose();
   });
 
+  test('automatically approves supported requests in auto approval mode', () {
+    final writes = <JsonMap>[];
+    final controller = CodexController(
+      server: CodexAppServer(messageSink: writes.add),
+    );
+
+    controller.setApprovalMode(ApprovalMode.autoApprove);
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/fileChange/requestApproval',
+        requestId: 'approval-2',
+        params: {'reason': 'Update a project file'},
+      ),
+    );
+
+    expect(writes, [
+      {
+        'id': 'approval-2',
+        'result': {'decision': 'accept'},
+      },
+    ]);
+    expect(controller.pendingApproval, isNull);
+    expect(
+      controller.entries.map((entry) => entry.title),
+      contains('已自动批准本次操作'),
+    );
+    controller.dispose();
+  });
+
   test('coalesces agent deltas into one timeline entry', () async {
     final controller = CodexController(server: CodexAppServer());
 
