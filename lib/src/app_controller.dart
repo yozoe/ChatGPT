@@ -852,7 +852,53 @@ class CodexController extends ChangeNotifier {
     }
     final turns = turnsById.values.toList()
       ..sort((a, b) => _turnTimestamp(a).compareTo(_turnTimestamp(b)));
+    for (final turn in turns) {
+      final turnId = turn['id']?.toString();
+      final itemsView = turn['itemsView'];
+      if (turnId == null ||
+          turnId.isEmpty ||
+          (itemsView != 'notLoaded' && itemsView != 'summary')) {
+        continue;
+      }
+      turn['items'] = await _loadTurnItems(threadId: threadId, turnId: turnId);
+      turn['itemsView'] = 'full';
+    }
     return {'turns': turns};
+  }
+
+  Future<List<JsonMap>> _loadTurnItems({
+    required String threadId,
+    required String turnId,
+  }) async {
+    final items = <JsonMap>[];
+    final seenCursors = <String>{};
+    String? cursor;
+    var pageCount = 0;
+    do {
+      final page = await _server.listThreadItems(
+        threadId: threadId,
+        turnId: turnId,
+        cursor: cursor,
+      );
+      final data = page['data'];
+      if (data is Iterable) {
+        for (final rawEntry in data) {
+          if (rawEntry is! Map || rawEntry['item'] is! Map) continue;
+          items.add(JsonMap.from(rawEntry['item'] as Map));
+        }
+      }
+      final next = page['nextCursor']?.toString();
+      cursor = next == null || next.isEmpty ? null : next;
+      if (cursor != null && !seenCursors.add(cursor)) {
+        throw StateError(
+          'App Server repeated a thread item pagination cursor.',
+        );
+      }
+    } while (cursor != null && ++pageCount < 20);
+    if (cursor != null) {
+      throw StateError('Thread item history exceeds the 20-page safety limit.');
+    }
+    return items;
   }
 
   int _turnTimestamp(JsonMap turn) =>

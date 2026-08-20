@@ -278,6 +278,27 @@ class CodexAppServer {
     return JsonMap.from(result);
   }
 
+  Future<JsonMap> listThreadItems({
+    required String threadId,
+    required String turnId,
+    String? cursor,
+    int limit = 50,
+  }) async {
+    final response = await request('thread/items/list', {
+      'threadId': threadId,
+      'turnId': turnId,
+      'cursor': ?cursor,
+      'limit': limit,
+      'sortDirection': 'asc',
+    });
+    _throwIfError(response);
+    final result = response['result'];
+    if (result is! Map || result['data'] is! Iterable) {
+      throw const FormatException('App Server did not return thread items.');
+    }
+    return JsonMap.from(result);
+  }
+
   Future<void> renameThread({
     required String threadId,
     required String name,

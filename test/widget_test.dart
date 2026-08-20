@@ -30,6 +30,8 @@ class _FakeCodexAppServer extends CodexAppServer {
   };
   JsonMap turnPage = {'data': <JsonMap>[]};
   final turnPageCursors = <String?>[];
+  JsonMap itemPage = {'data': <JsonMap>[]};
+  final itemPageTurnIds = <String>[];
   String? resumedThreadId;
   String? resumedModelProvider;
   String? resumedModel;
@@ -78,6 +80,17 @@ class _FakeCodexAppServer extends CodexAppServer {
   }) async {
     turnPageCursors.add(cursor);
     return turnPage;
+  }
+
+  @override
+  Future<JsonMap> listThreadItems({
+    required String threadId,
+    required String turnId,
+    String? cursor,
+    int limit = 50,
+  }) async {
+    itemPageTurnIds.add(turnId);
+    return itemPage;
   }
 
   @override
@@ -407,6 +420,49 @@ void main() {
       expect(server.turnPageCursors, ['older-cursor']);
       final details = controller.entries.map((entry) => entry.detail).toList();
       expect(details.indexOf('旧问题'), lessThan(details.indexOf('新回答')));
+      controller.dispose();
+    },
+  );
+
+  test(
+    'hydrates unloaded turn items through thread items pagination',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..resumeResult = {
+          'thread': {
+            'turns': [
+              {
+                'id': 'summary-turn',
+                'itemsView': 'notLoaded',
+                'items': <JsonMap>[],
+              },
+            ],
+          },
+        }
+        ..itemPage = {
+          'data': [
+            {
+              'turnId': 'summary-turn',
+              'item': {
+                'id': 'hydrated-agent',
+                'type': 'agentMessage',
+                'text': '按项分页恢复的回答',
+              },
+            },
+          ],
+          'nextCursor': null,
+        };
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+
+      await controller.resumeThread(_thread(id: 'item-history-thread'));
+
+      expect(server.itemPageTurnIds, ['summary-turn']);
+      expect(
+        controller.entries.map((entry) => entry.detail),
+        contains('按项分页恢复的回答'),
+      );
       controller.dispose();
     },
   );
