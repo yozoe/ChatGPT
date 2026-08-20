@@ -16,6 +16,7 @@ class ConversationHistorySnapshot {
     required this.archivedThreads,
     required this.entries,
     required this.fileChanges,
+    this.pinnedThreadIds = const {},
     this.turnDiff,
   });
 
@@ -23,6 +24,7 @@ class ConversationHistorySnapshot {
   final List<CodexThread> archivedThreads;
   final List<TimelineEntry> entries;
   final List<CodexFileChange> fileChanges;
+  final Set<String> pinnedThreadIds;
   final String? turnDiff;
 
   /// 将当前工作区快照转换为可持久化的 JSON。
@@ -34,6 +36,7 @@ class ConversationHistorySnapshot {
         .toList(),
     'entries': entries.map((entry) => entry.toJson()).toList(),
     'fileChanges': fileChanges.map((change) => change.toJson()).toList(),
+    'pinnedThreadIds': pinnedThreadIds.toList(growable: false),
     'turnDiff': ?turnDiff,
   };
 
@@ -61,7 +64,56 @@ class ConversationHistorySnapshot {
       ),
       entries: decodeList(value['entries'], TimelineEntry.fromJson),
       fileChanges: decodeList(value['fileChanges'], CodexFileChange.fromJson),
+      pinnedThreadIds: value['pinnedThreadIds'] is Iterable
+          ? (value['pinnedThreadIds'] as Iterable)
+                .map((id) => id.toString())
+                .where((id) => id.isNotEmpty)
+                .toSet()
+          : const {},
       turnDiff: value['turnDiff']?.toString(),
+    );
+  }
+}
+
+/// 可移植的本地历史导出格式；只包含本应用的缓存，不代表可恢复 App Server 的原始 session。
+/// A portable local-history export format; it includes only this app's cache and cannot restore an App Server session.
+class PortableConversationHistory {
+  const PortableConversationHistory({
+    required this.workspace,
+    required this.exportedAt,
+    required this.snapshot,
+  });
+
+  static const schemaVersion = 1;
+
+  final String workspace;
+  final DateTime exportedAt;
+  final ConversationHistorySnapshot snapshot;
+
+  /// 将可移植历史转换为包含版本和来源项目的 JSON。
+  /// Converts portable history to JSON containing its version and source workspace.
+  Map<String, dynamic> toJson() => {
+    'format': 'codex-desk-history',
+    'version': schemaVersion,
+    'workspace': workspace,
+    'exportedAt': exportedAt.toIso8601String(),
+    'snapshot': snapshot.toJson(),
+  };
+
+  /// 验证并解析由 Codex Desk 导出的可移植历史 JSON。
+  /// Validates and parses portable-history JSON exported by Codex Desk.
+  factory PortableConversationHistory.fromJson(Map<dynamic, dynamic> value) {
+    if (value['format'] != 'codex-desk-history' ||
+        value['version'] != schemaVersion ||
+        value['snapshot'] is! Map) {
+      throw const FormatException('不是受支持的 Codex Desk 历史导出文件。');
+    }
+    return PortableConversationHistory(
+      workspace: value['workspace']?.toString() ?? '',
+      exportedAt:
+          DateTime.tryParse(value['exportedAt']?.toString() ?? '') ??
+          DateTime.now(),
+      snapshot: ConversationHistorySnapshot.fromJson(value['snapshot'] as Map),
     );
   }
 }

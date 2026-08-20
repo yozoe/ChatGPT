@@ -14,6 +14,8 @@
 - 已配置中转站 API Key 时，无需额外完成 OpenAI 账户登录即可发送任务
 - 当前工作区线程历史：列表、恢复、重命名、归档与归档视图恢复
 - 对话记录、线程列表与文件 Diff 会按本地项目加密缓存到 macOS Application Support；加密密钥仅保存在 macOS Keychain，启动时先恢复缓存，连接 App Server 后再同步最新状态
+- 线程列表支持按标题或预览内容搜索；可将常用任务置顶，置顶状态按本地项目保存并在重启后恢复
+- 可从线程区的“本地历史”菜单导出或导入可移植 JSON：导入只替换当前项目的 Codex Desk 缓存，不会伪造或恢复 App Server 原始 session，也不会修改项目文件
 - 自动保存并恢复最近选择的本地项目路径，不向项目目录写入配置
 - 自动保存并恢复 macOS 主窗口的大小与位置；覆盖安装同一应用后仍会保留
 - 对话时间线采用扁平消息样式并自动滚至最新内容；Enter 发送消息，Shift+Enter 换行
@@ -58,9 +60,19 @@ dart run tool/verify_app_server_history.dart --cwd /path/to/workspace
 
 也可以用 `--thread-id <id>` 明确指定待验证的历史线程。若工作区暂无历史，脚本仅验证初始化与线程列表。
 
+## 本地历史导入与导出
+
+在线程区点击归档图标打开“本地历史”菜单，可执行以下操作：
+
+- “导出本地历史”：将当前项目的线程列表、置顶状态、已缓存对话和文件 Diff 写入 JSON 文件。
+- “导入到当前项目”：读取此前导出的 JSON，并替换当前项目在 Codex Desk 中的本地缓存。
+
+导出文件不含 API Key、Keychain 内容或 Codex App Server 原始 session；但它包含对话文本和 Diff，文件本身为了可移植性未加密，请仅存放在可信位置。导入不会发送请求、恢复远端任务或修改项目文件；连接 App Server 后，服务端线程列表仍是权威来源。
+
 ## 安全边界
 
 - 不会在项目文件、应用日志或界面中保存 API Key；密钥仅提交给本地 Codex 运行时。
+- macOS Application Support 内的本地历史缓存会用 Keychain 密钥加密；手动导出的历史 JSON 为便于跨设备或备份恢复而保持明文，因此可能包含敏感对话和 Diff。
 - 运行时只通过本机 `stdio` JSON-RPC 通信；不会启用远程 WebSocket。
 - 审批默认逐次确认；可在“变更与审批”切换为自动批准。自动模式会直接允许命令、文件变更与额外权限请求，并在时间线留下记录。
 - 中转站仅接受 HTTPS（localhost 可用 HTTP），并要求 Responses API 与 SSE 流式协议兼容。密钥存入 macOS Keychain，Provider 定义仅注入本应用创建的 Thread，不修改 `~/.codex/config.toml`。

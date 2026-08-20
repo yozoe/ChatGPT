@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -117,6 +118,7 @@ class CodexController extends ChangeNotifier {
   StreamSubscription<ServerEvent>? _eventSubscription;
   final List<TimelineEntry> _entries = [];
   final Map<String, CodexFileChange> _fileChangesByPath = {};
+  final Set<String> _pinnedThreadIds = {};
   final Map<String, int> _agentEntryIndexByItem = {};
   Timer? _deltaNotificationTimer;
   Timer? _historySaveTimer;
@@ -183,6 +185,14 @@ class CodexController extends ChangeNotifier {
   List<CodexFileChange> get fileChanges =>
       List.unmodifiable(_fileChangesByPath.values);
   String? turnDiff;
+
+  /// 返回当前项目中被置顶的任务 ID，不允许外部修改集合。
+  /// Returns pinned task IDs for the current workspace as an immutable set.
+  Set<String> get pinnedThreadIds => Set.unmodifiable(_pinnedThreadIds);
+
+  /// 判断指定任务是否已在当前项目中置顶。
+  /// Returns whether a task is pinned in the current workspace.
+  bool isThreadPinned(String threadId) => _pinnedThreadIds.contains(threadId);
 
   /// 指示当前状态是否允许发送新任务。
   /// Indicates whether the current state permits sending a new task.
@@ -267,6 +277,7 @@ class CodexController extends ChangeNotifier {
     activeThreadId = null;
     threads = const [];
     archivedThreads = const [];
+    _pinnedThreadIds.clear();
     _clearStreamingState();
     _clearFileChanges();
     _resetConversationTimeline();
@@ -460,6 +471,70 @@ class CodexController extends ChangeNotifier {
         if (!_disposed) notifyListeners();
       }
     }
+  }
+
+  /// 切换指定任务在当前项目列表中的置顶状态，并保存到本地历史缓存。
+  /// Toggles a task's pinned state in the current workspace list and persists it in local history.
+  void toggleThreadPinned(CodexThread thread) {
+    if (!threads.any((value) => value.id == thread.id)) return;
+    if (!_pinnedThreadIds.add(thread.id)) _pinnedThreadIds.remove(thread.id);
+    _scheduleConversationHistorySave();
+    if (!_disposed) notifyListeners();
+  }
+
+  /// 导出当前项目的本地缓存为可移植 JSON；不会导出密钥，也不会导出 App Server 原始 session。
+  /// Exports the current workspace cache as portable JSON without keys or original App Server sessions.
+  String exportConversationHistory() {
+    final workspace = workspacePath;
+    if (workspace == null) {
+      throw StateError('请先选择一个本地项目，再导出历史记录。');
+    }
+    return jsonEncode(
+      PortableConversationHistory(
+        workspace: workspace,
+        exportedAt: DateTime.now(),
+        snapshot: _conversationHistorySnapshot(),
+      ).toJson(),
+    );
+  }
+
+  /// 将可移植 JSON 导入到当前项目的本地缓存；导入不会恢复远端或 App Server 的原始 session。
+  /// Imports portable JSON into the current workspace cache without restoring remote or App Server sessions.
+  Future<void> importConversationHistory(String encoded) async {
+    final workspace = workspacePath;
+    if (workspace == null) {
+      throw StateError('请先选择一个本地项目，再导入历史记录。');
+    }
+    final decoded = jsonDecode(encoded);
+    if (decoded is! Map) {
+      throw const FormatException('历史导出文件的根节点必须是 JSON 对象。');
+    }
+    final imported = PortableConversationHistory.fromJson(decoded);
+    final snapshot = imported.snapshot;
+    _invalidateThreadRefreshes();
+    activeThreadId = null;
+    threads = List.of(snapshot.threads);
+    archivedThreads = List.of(snapshot.archivedThreads);
+    _pinnedThreadIds
+      ..clear()
+      ..addAll(snapshot.pinnedThreadIds);
+    _clearStreamingState();
+    _entries
+      ..clear()
+      ..addAll(snapshot.entries);
+    _fileChangesByPath
+      ..clear()
+      ..addEntries(
+        snapshot.fileChanges.map((change) => MapEntry(change.path, change)),
+      );
+    turnDiff = snapshot.turnDiff;
+    _add(
+      TimelineKind.system,
+      '已导入本地历史',
+      '导出来源：${imported.workspace.isEmpty ? '未知项目' : imported.workspace}。仅恢复本应用缓存，不恢复 App Server 原始任务。',
+    );
+    await _saveConversationHistory();
+    if (!_disposed) notifyListeners();
   }
 
   /// 从本机 Codex CLI 刷新已安装和可安装插件。
@@ -678,6 +753,7 @@ class CodexController extends ChangeNotifier {
       threads = threads
           .where((value) => value.id != thread.id)
           .toList(growable: false);
+      _pinnedThreadIds.remove(thread.id);
       _add(TimelineKind.system, '任务已归档', thread.title);
     } catch (error) {
       lastError = _messageOf(error);
@@ -1599,6 +1675,9 @@ class CodexController extends ChangeNotifier {
       if (_disposed || workspacePath != workspace || snapshot == null) return;
       threads = snapshot.threads;
       archivedThreads = snapshot.archivedThreads;
+      _pinnedThreadIds
+        ..clear()
+        ..addAll(snapshot.pinnedThreadIds);
       if (snapshot.entries.isNotEmpty) {
         _entries
           ..clear()
@@ -1702,13 +1781,7 @@ class CodexController extends ChangeNotifier {
     if (workspace == null || _disposed) return;
     _historySaveTimer?.cancel();
     _historySaveTimer = null;
-    final snapshot = ConversationHistorySnapshot(
-      threads: List.of(threads),
-      archivedThreads: List.of(archivedThreads),
-      entries: List.of(entries),
-      fileChanges: List.of(fileChanges),
-      turnDiff: turnDiff,
-    );
+    final snapshot = _conversationHistorySnapshot();
     final previousSave = _historySave;
     final nextSave = () async {
       try {
@@ -1732,6 +1805,19 @@ class CodexController extends ChangeNotifier {
         notifyListeners();
       }
     }
+  }
+
+  /// 捕获当前项目的线程、置顶状态、时间线和文件变更，用于持久化或导出。
+  /// Captures current workspace tasks, pins, timeline, and file changes for persistence or export.
+  ConversationHistorySnapshot _conversationHistorySnapshot() {
+    return ConversationHistorySnapshot(
+      threads: List.of(threads),
+      archivedThreads: List.of(archivedThreads),
+      entries: List.of(entries),
+      fileChanges: List.of(fileChanges),
+      pinnedThreadIds: Set.of(_pinnedThreadIds),
+      turnDiff: turnDiff,
+    );
   }
 
   /// 清空当前任务的文件变更集合和统一 Diff。

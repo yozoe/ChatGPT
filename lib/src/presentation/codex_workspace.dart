@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
@@ -100,6 +101,86 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     if (prompt.trim().isEmpty) return;
     _composer.clear();
     await widget.controller.sendPrompt(prompt);
+  }
+
+  /// 将当前项目的本地历史导出到用户选择的 JSON 文件；文件不包含 API Key。
+  /// Exports the current workspace's local history to a user-selected JSON file without API keys.
+  Future<void> _exportConversationHistory() async {
+    try {
+      final location = await getSaveLocation(
+        acceptedTypeGroups: const [
+          XTypeGroup(label: 'Codex Desk 历史', extensions: ['json']),
+        ],
+        suggestedName: 'codex-desk-history.json',
+        confirmButtonText: '导出历史',
+      );
+      if (location == null) return;
+      final content = widget.controller.exportConversationHistory();
+      await XFile.fromData(
+        Uint8List.fromList(utf8.encode(content)),
+        mimeType: 'application/json',
+        name: 'codex-desk-history.json',
+      ).saveTo(location.path);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('本地历史已导出。文件可能包含对话和 Diff，请妥善保管。')),
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('导出历史失败：$error')));
+      }
+    }
+  }
+
+  /// 选择并确认导入历史 JSON 到当前项目的本地缓存。
+  /// Selects and confirms importing history JSON into the current workspace cache.
+  Future<void> _importConversationHistory() async {
+    try {
+      final selected = await openFile(
+        acceptedTypeGroups: const [
+          XTypeGroup(label: 'Codex Desk 历史', extensions: ['json']),
+        ],
+        confirmButtonText: '导入历史',
+      );
+      if (selected == null || !mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('导入本地历史？'),
+          content: const Text(
+            '导入会替换当前项目在 Codex Desk 中缓存的任务列表、置顶状态、对话和 Diff。不会恢复 App Server 原始任务，也不会修改项目文件。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('导入'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+      await widget.controller.importConversationHistory(
+        await selected.readAsString(),
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('本地历史已导入到当前项目。')));
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('导入历史失败：$error')));
+      }
+    }
   }
 
   /// 显示账户状态以及 ChatGPT 和 API Key 登录入口。
@@ -837,6 +918,8 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
                             onRenameThread: _renameThread,
                             onArchiveThread: _archiveThread,
                             onShowArchivedThreads: _showArchivedThreads,
+                            onExportHistory: _exportConversationHistory,
+                            onImportHistory: _importConversationHistory,
                           ),
                           const VerticalDivider(width: 1),
                           Expanded(
@@ -1214,7 +1297,7 @@ class _MarketplaceTile extends StatelessWidget {
   }
 }
 
-class _Sidebar extends StatelessWidget {
+class _Sidebar extends StatefulWidget {
   const _Sidebar({
     required this.controller,
     required this.onChooseWorkspace,
@@ -1222,6 +1305,8 @@ class _Sidebar extends StatelessWidget {
     required this.onRenameThread,
     required this.onArchiveThread,
     required this.onShowArchivedThreads,
+    required this.onExportHistory,
+    required this.onImportHistory,
   });
 
   final CodexController controller;
@@ -1230,12 +1315,50 @@ class _Sidebar extends StatelessWidget {
   final Future<void> Function(CodexThread thread) onRenameThread;
   final Future<void> Function(CodexThread thread) onArchiveThread;
   final Future<void> Function() onShowArchivedThreads;
+  final Future<void> Function() onExportHistory;
+  final Future<void> Function() onImportHistory;
+
+  /// 创建管理侧栏搜索状态的 State 对象。
+  /// Creates the State object that manages sidebar search state.
+  @override
+  State<_Sidebar> createState() => _SidebarState();
+}
+
+class _SidebarState extends State<_Sidebar> {
+  final TextEditingController _threadSearch = TextEditingController();
+  String _query = '';
+
+  /// 释放任务搜索输入控制器。
+  /// Disposes the task-search text controller.
+  @override
+  void dispose() {
+    _threadSearch.dispose();
+    super.dispose();
+  }
 
   /// 构建工作区选择、线程历史和 CLI 配置侧栏。
   /// Builds the sidebar for workspace selection, thread history, and CLI setup.
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
+    final controller = widget.controller;
+    final query = _query.trim().toLowerCase();
+    final filteredThreads = controller.threads
+        .where(
+          (thread) =>
+              query.isEmpty ||
+              thread.title.toLowerCase().contains(query) ||
+              thread.preview.toLowerCase().contains(query),
+        )
+        .toList(growable: false);
+    final visibleThreads = [
+      ...filteredThreads.where(
+        (thread) => controller.isThreadPinned(thread.id),
+      ),
+      ...filteredThreads.where(
+        (thread) => !controller.isThreadPinned(thread.id),
+      ),
+    ];
     return SizedBox(
       width: 250,
       child: Padding(
@@ -1246,7 +1369,9 @@ class _Sidebar extends StatelessWidget {
             Text('工作区', style: Theme.of(context).textTheme.labelLarge),
             const SizedBox(height: 10),
             InkWell(
-              onTap: controller.canChooseWorkspace ? onChooseWorkspace : null,
+              onTap: controller.canChooseWorkspace
+                  ? widget.onChooseWorkspace
+                  : null,
               borderRadius: BorderRadius.circular(12),
               child: Ink(
                 key: const Key('workspace-picker-surface'),
@@ -1292,12 +1417,67 @@ class _Sidebar extends StatelessWidget {
                       : null,
                   icon: const Icon(Icons.refresh, size: 20),
                 ),
-                IconButton(
-                  tooltip: '已归档任务',
-                  onPressed: controller.canSend ? onShowArchivedThreads : null,
+                PopupMenuButton<_HistoryAction>(
+                  tooltip: '本地历史',
+                  enabled: controller.workspacePath != null,
                   icon: const Icon(Icons.inventory_2_outlined, size: 20),
+                  onSelected: (action) async {
+                    switch (action) {
+                      case _HistoryAction.archived:
+                        await widget.onShowArchivedThreads();
+                      case _HistoryAction.export:
+                        await widget.onExportHistory();
+                      case _HistoryAction.import:
+                        await widget.onImportHistory();
+                    }
+                  },
+                  itemBuilder: (context) => const [
+                    PopupMenuItem(
+                      value: _HistoryAction.archived,
+                      child: ListTile(
+                        leading: Icon(Icons.inventory_2_outlined),
+                        title: Text('已归档任务'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: _HistoryAction.export,
+                      child: ListTile(
+                        leading: Icon(Icons.file_upload_outlined),
+                        title: Text('导出本地历史'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: _HistoryAction.import,
+                      child: ListTile(
+                        leading: Icon(Icons.file_download_outlined),
+                        title: Text('导入到当前项目'),
+                      ),
+                    ),
+                  ],
                 ),
               ],
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              key: const Key('thread-search-field'),
+              controller: _threadSearch,
+              onChanged: (value) => setState(() => _query = value),
+              decoration: InputDecoration(
+                isDense: true,
+                hintText: '搜索任务',
+                prefixIcon: const Icon(Icons.search, size: 18),
+                suffixIcon: _query.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: '清除搜索',
+                        icon: const Icon(Icons.close, size: 16),
+                        onPressed: () {
+                          _threadSearch.clear();
+                          setState(() => _query = '');
+                        },
+                      ),
+                border: const OutlineInputBorder(),
+              ),
             ),
             const SizedBox(height: 8),
             if (controller.threadsLoading)
@@ -1306,27 +1486,31 @@ class _Sidebar extends StatelessWidget {
               _MutedText(error)
             else if (controller.threads.isEmpty)
               const _MutedText('暂无历史任务；发送第一条消息后会创建。')
+            else if (visibleThreads.isEmpty)
+              const _MutedText('没有匹配的任务。')
             else
               Expanded(
                 child: ListView.separated(
-                  itemCount: controller.threads.length,
+                  itemCount: visibleThreads.length,
                   separatorBuilder: (_, _) => const SizedBox(height: 6),
                   itemBuilder: (context, index) {
-                    final thread = controller.threads[index];
+                    final thread = visibleThreads[index];
                     return _HistoryThreadTile(
                       thread: thread,
                       selected: controller.activeThreadId == thread.id,
+                      pinned: controller.isThreadPinned(thread.id),
                       enabled: controller.status == RuntimeStatus.ready,
                       onTap: () => controller.resumeThread(thread),
-                      onRename: () => onRenameThread(thread),
-                      onArchive: () => onArchiveThread(thread),
+                      onRename: () => widget.onRenameThread(thread),
+                      onArchive: () => widget.onArchiveThread(thread),
+                      onTogglePin: () => controller.toggleThreadPinned(thread),
                     );
                   },
                 ),
               ),
             const SizedBox(height: 12),
             OutlinedButton.icon(
-              onPressed: onConfigureRuntime,
+              onPressed: widget.onConfigureRuntime,
               icon: const Icon(Icons.memory_outlined, size: 18),
               label: const Text('Codex CLI'),
             ),
@@ -1533,6 +1717,7 @@ class _ComposerPanel extends StatelessWidget {
                       },
                     },
                     child: TextField(
+                      key: const Key('composer-field'),
                       controller: composer,
                       enabled: controller.canSend,
                       minLines: 2,
@@ -1976,18 +2161,22 @@ class _HistoryThreadTile extends StatelessWidget {
   const _HistoryThreadTile({
     required this.thread,
     required this.selected,
+    required this.pinned,
     required this.enabled,
     required this.onTap,
     required this.onRename,
     required this.onArchive,
+    required this.onTogglePin,
   });
 
   final CodexThread thread;
   final bool selected;
+  final bool pinned;
   final bool enabled;
   final VoidCallback onTap;
   final VoidCallback onRename;
   final VoidCallback onArchive;
+  final VoidCallback onTogglePin;
 
   /// 构建带有恢复、重命名和归档操作的历史线程项。
   /// Builds a history-thread item with resume, rename, and archive actions.
@@ -2005,7 +2194,11 @@ class _HistoryThreadTile extends StatelessWidget {
           child: Row(
             children: [
               Icon(
-                selected ? Icons.forum : Icons.forum_outlined,
+                pinned
+                    ? Icons.push_pin
+                    : selected
+                    ? Icons.forum
+                    : Icons.forum_outlined,
                 size: 17,
                 color: selected ? palette.ack : null,
               ),
@@ -2040,14 +2233,20 @@ class _HistoryThreadTile extends StatelessWidget {
                       onRename();
                     case _ThreadAction.archive:
                       onArchive();
+                    case _ThreadAction.pin:
+                      onTogglePin();
                   }
                 },
-                itemBuilder: (context) => const [
+                itemBuilder: (context) => [
                   PopupMenuItem(
+                    value: _ThreadAction.pin,
+                    child: Text(pinned ? '取消置顶' : '置顶'),
+                  ),
+                  const PopupMenuItem(
                     value: _ThreadAction.rename,
                     child: Text('重命名'),
                   ),
-                  PopupMenuItem(
+                  const PopupMenuItem(
                     value: _ThreadAction.archive,
                     child: Text('归档'),
                   ),
@@ -2061,7 +2260,9 @@ class _HistoryThreadTile extends StatelessWidget {
   }
 }
 
-enum _ThreadAction { rename, archive }
+enum _ThreadAction { pin, rename, archive }
+
+enum _HistoryAction { archived, export, import }
 
 enum _ThemeAction {
   system,

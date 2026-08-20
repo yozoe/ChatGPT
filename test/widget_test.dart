@@ -437,7 +437,10 @@ void main() {
       MaterialApp(home: CodexWorkspace(controller: controller)),
     );
 
-    await tester.enterText(find.byType(TextField), '用 Enter 发送');
+    await tester.enterText(
+      find.byKey(const Key('composer-field')),
+      '用 Enter 发送',
+    );
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
 
@@ -641,6 +644,110 @@ void main() {
       restoredController.dispose();
     },
   );
+
+  test(
+    'persists pinned task IDs with each workspace history snapshot',
+    () async {
+      final controller =
+          CodexController(
+              server: CodexAppServer(),
+              conversationHistoryStore: historyStore,
+            )
+            ..workspacePath = '/workspace'
+            ..threads = [_thread(id: 'first'), _thread(id: 'second')];
+
+      controller.toggleThreadPinned(controller.threads.last);
+      await controller.saveConversationHistoryForTesting();
+
+      expect(historyStore.snapshots['/workspace']!.pinnedThreadIds, {'second'});
+      controller.dispose();
+    },
+  );
+
+  test(
+    'does not retain pinned tasks when switching to a fresh workspace',
+    () async {
+      final firstWorkspace = await Directory.systemTemp.createTemp(
+        'codex-history-first-',
+      );
+      final secondWorkspace = await Directory.systemTemp.createTemp(
+        'codex-history-second-',
+      );
+      addTearDown(() => firstWorkspace.delete(recursive: true));
+      addTearDown(() => secondWorkspace.delete(recursive: true));
+      final controller = CodexController(
+        server: CodexAppServer(),
+        runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+        conversationHistoryStore: historyStore,
+      );
+
+      await controller.selectWorkspace(firstWorkspace.path);
+      controller.threads = [_thread(id: 'first-thread')];
+      controller.toggleThreadPinned(controller.threads.single);
+      await controller.selectWorkspace(secondWorkspace.path);
+
+      expect(controller.pinnedThreadIds, isEmpty);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'exports and imports portable local history without changing workspace',
+    () async {
+      final source =
+          CodexController(
+              server: CodexAppServer(),
+              conversationHistoryStore: historyStore,
+            )
+            ..workspacePath = '/source'
+            ..threads = [
+              _thread(id: 'pinned-thread'),
+              _thread(id: 'plain-thread'),
+            ];
+      source.toggleThreadPinned(source.threads.first);
+      final exported = source.exportConversationHistory();
+
+      final target = CodexController(
+        server: CodexAppServer(),
+        conversationHistoryStore: historyStore,
+      )..workspacePath = '/target';
+      await target.importConversationHistory(exported);
+
+      expect(target.workspacePath, '/target');
+      expect(target.threads.map((thread) => thread.id), [
+        'pinned-thread',
+        'plain-thread',
+      ]);
+      expect(target.isThreadPinned('pinned-thread'), isTrue);
+      expect(jsonDecode(exported)['format'], 'codex-desk-history');
+      expect(historyStore.snapshots['/target']!.pinnedThreadIds, {
+        'pinned-thread',
+      });
+      source.dispose();
+      target.dispose();
+    },
+  );
+
+  testWidgets('filters the task list with the sidebar search field', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..threads = [_thread(id: 'alpha'), _thread(id: 'bravo')];
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.enterText(
+      find.byKey(const Key('thread-search-field')),
+      'bravo',
+    );
+    await tester.pump();
+
+    expect(find.text('preview-bravo'), findsOneWidget);
+    expect(find.text('preview-alpha'), findsNothing);
+  });
 
   test(
     'uses the authoritative App Server thread list after reconnecting',
