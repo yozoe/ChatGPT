@@ -816,14 +816,55 @@ class CodexController extends ChangeNotifier {
               'sleep' ||
               'enteredReviewMode' ||
               'exitedReviewMode':
-            final detail = _findText(item);
-            if (detail.isNotEmpty) {
-              _add(TimelineKind.command, item['type']!.toString(), detail);
-            }
+            _appendToolHistoryItem(item);
         }
       }
     }
   }
+
+  void _appendToolHistoryItem(JsonMap item) {
+    final type = item['type']?.toString();
+    final (title, detail) = switch (type) {
+      'mcpToolCall' => (
+        'MCP 工具：${_label(item['server'])}/${_label(item['tool'])}',
+        _toolStatus(item),
+      ),
+      'dynamicToolCall' => (
+        '动态工具：${_label(item['namespace'])}/${_label(item['tool'])}',
+        _toolStatus(item),
+      ),
+      'webSearch' => ('网页搜索', _searchDetail(item)),
+      'imageView' => ('查看图片', _label(item['path'])),
+      'imageGeneration' => (
+        '生成图片',
+        _label(item['savedPath'] ?? item['status']),
+      ),
+      'sleep' => ('等待', '${_label(item['durationMs'])} ms'),
+      'enteredReviewMode' => ('进入审查模式', _label(item['review'])),
+      'exitedReviewMode' => ('退出审查模式', _label(item['review'])),
+      _ => ('工具事件', ''),
+    };
+    if (detail.isNotEmpty) _add(TimelineKind.tool, title, detail);
+  }
+
+  String _toolStatus(JsonMap item) {
+    final status = _label(item['status']);
+    final duration = item['durationMs'] is num
+        ? ' · ${item['durationMs']} ms'
+        : '';
+    return status.isEmpty
+        ? duration.replaceFirst(' · ', '')
+        : '$status$duration';
+  }
+
+  String _searchDetail(JsonMap item) {
+    final query = _label(item['query']);
+    final results = item['results'];
+    final count = results is Iterable ? ' · ${results.length} 条结果' : '';
+    return '$query$count'.trim();
+  }
+
+  String _label(Object? value) => value?.toString().trim() ?? '';
 
   Future<JsonMap> _loadThreadHistory({
     required String threadId,

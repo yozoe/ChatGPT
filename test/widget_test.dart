@@ -346,6 +346,19 @@ void main() {
                     'command': 'dart test',
                     'aggregatedOutput': 'All tests passed',
                   },
+                  {
+                    'id': 'search-item',
+                    'type': 'webSearch',
+                    'query': 'Codex App Server',
+                    'results': [{}, {}],
+                  },
+                  {
+                    'id': 'mcp-item',
+                    'type': 'mcpToolCall',
+                    'server': 'docs',
+                    'tool': 'search',
+                    'status': 'completed',
+                  },
                 ],
               },
             ],
@@ -363,6 +376,8 @@ void main() {
           '你:历史问题',
           'Codex:历史回答',
           '执行命令:dart test\nAll tests passed',
+          '网页搜索:Codex App Server · 2 条结果',
+          'MCP 工具：docs/search:completed',
         ]),
       );
       controller.dispose();

@@ -942,6 +942,7 @@ class _TimelineCard extends StatelessWidget {
       TimelineKind.user => const Color(0xFF82B1FF),
       TimelineKind.agent => const Color(0xFF68E0B8),
       TimelineKind.command => const Color(0xFFF9C74F),
+      TimelineKind.tool => const Color(0xFFC4A7FF),
       TimelineKind.approval => const Color(0xFFFFB86C),
       TimelineKind.error => const Color(0xFFFF8A80),
       TimelineKind.system => const Color(0xFF94A3B8),

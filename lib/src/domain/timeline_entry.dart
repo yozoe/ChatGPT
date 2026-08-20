@@ -1,4 +1,4 @@
-enum TimelineKind { system, user, agent, command, approval, error }
+enum TimelineKind { system, user, agent, command, tool, approval, error }
 
 class TimelineEntry {
   const TimelineEntry({
