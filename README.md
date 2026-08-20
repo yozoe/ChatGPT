@@ -16,11 +16,11 @@
 - 历史线程恢复会保留原 Provider，并防止过期刷新结果污染当前列表
 - 恢复线程时加载用户消息、Codex 回复与命令输出到当前时间线
 - 历史 turns 支持通过 `thread/turns/list` 分页补齐，并展示计划、推理摘要、文件变更及工具事件
+- 提供真实 App Server 历史协议验证脚本，不创建任务或修改所选工作区文件
 
 ## 下一阶段
 
 - 为剩余实验性 item 类型增加专用交互控件
-- 增加真实 App Server 进程下的历史恢复端到端验证
 
 ## 运行
 
@@ -29,6 +29,16 @@ flutter run -d macos
 ```
 
 应用使用已安装的 `codex` 命令。选择本地项目、点击“启动运行时”，完成 Codex 登录后即可发起任务。
+
+## App Server 历史验证
+
+在有历史线程的工作区执行以下命令，可验证真实 App Server 的初始化、线程列表、恢复和 turns 分页协议；脚本不会创建任务、发送消息或修改工作区文件。
+
+```bash
+dart run tool/verify_app_server_history.dart --cwd /path/to/workspace
+```
+
+也可以用 `--thread-id <id>` 明确指定待验证的历史线程。若工作区暂无历史，脚本仅验证初始化与线程列表。
 
 ## 安全边界
 
