@@ -17,6 +17,37 @@ enum AuthStatus { checking, signedOut, chatgpt, apiKey, external }
 
 enum ApprovalMode { manual, autoApprove }
 
+/// The value is passed to App Server as the Codex configuration key
+/// `model_reasoning_effort`. Leaving it at [defaultValue] lets the selected
+/// model use its own default.
+enum ReasoningEffort { defaultValue, low, medium, high, xhigh }
+
+extension ReasoningEffortLabel on ReasoningEffort {
+  String get label => switch (this) {
+    ReasoningEffort.defaultValue => '默认',
+    ReasoningEffort.low => '低',
+    ReasoningEffort.medium => '中',
+    ReasoningEffort.high => '高',
+    ReasoningEffort.xhigh => '极高',
+  };
+
+  String? get configValue => switch (this) {
+    ReasoningEffort.defaultValue => null,
+    ReasoningEffort.low => 'low',
+    ReasoningEffort.medium => 'medium',
+    ReasoningEffort.high => 'high',
+    ReasoningEffort.xhigh => 'xhigh',
+  };
+
+  static ReasoningEffort fromConfigValue(String? value) => switch (value) {
+    'low' => ReasoningEffort.low,
+    'medium' => ReasoningEffort.medium,
+    'high' => ReasoningEffort.high,
+    'xhigh' => ReasoningEffort.xhigh,
+    _ => ReasoningEffort.defaultValue,
+  };
+}
+
 extension ApprovalModeLabel on ApprovalMode {
   String get label => switch (this) {
     ApprovalMode.manual => '逐次确认',
@@ -69,6 +100,7 @@ class CodexController extends ChangeNotifier {
   PendingApproval? pendingApproval;
   bool approvalResponding = false;
   ApprovalMode approvalMode = ApprovalMode.manual;
+  ReasoningEffort reasoningEffort = ReasoningEffort.defaultValue;
   AuthStatus authStatus = AuthStatus.checking;
   String? accountEmail;
   String? accountPlan;
@@ -232,7 +264,7 @@ class CodexController extends ChangeNotifier {
             ? null
             : RelayProviderConfiguration.providerId,
         model: relayProvider?.model,
-        config: relayProvider?.threadConfig,
+        config: _threadConfig(usesRelay: relayProvider != null),
       );
       await refreshThreads();
       final id = activeThreadId!;
@@ -353,9 +385,10 @@ class CodexController extends ChangeNotifier {
         threadId: thread.id,
         modelProvider: thread.modelProvider,
         model: thread.model,
-        config: thread.modelProvider == RelayProviderConfiguration.providerId
-            ? relayProvider?.threadConfig
-            : null,
+        config: _threadConfig(
+          usesRelay:
+              thread.modelProvider == RelayProviderConfiguration.providerId,
+        ),
       );
       activeThreadId = thread.id;
       status = RuntimeStatus.ready;
@@ -510,6 +543,25 @@ class CodexController extends ChangeNotifier {
       relayError = _messageOf(error);
     } finally {
       relaySaving = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  Future<void> setReasoningEffort(ReasoningEffort value) async {
+    if (reasoningEffort == value) return;
+    reasoningEffort = value;
+    _add(
+      TimelineKind.system,
+      '推理强度已更新',
+      value == ReasoningEffort.defaultValue
+          ? '将使用模型默认推理强度。'
+          : '将用于后续新建或恢复的任务：${value.label}。',
+    );
+    notifyListeners();
+    try {
+      await _runtimeConfigurationStore.saveReasoningEffort(value.configValue);
+    } catch (error) {
+      _add(TimelineKind.error, '无法保存推理强度', _messageOf(error));
       if (!_disposed) notifyListeners();
     }
   }
@@ -1054,13 +1106,26 @@ class CodexController extends ChangeNotifier {
 
   Future<void> _loadRuntimeConfiguration() async {
     try {
-      final executable = await _runtimeConfigurationStore.readExecutable();
+      final values = await Future.wait([
+        _runtimeConfigurationStore.readExecutable(),
+        _runtimeConfigurationStore.readReasoningEffort(),
+      ]);
+      final executable = values[0];
       if (executable != null && executable.trim().isNotEmpty) {
         _server.setExecutable(executable);
       }
+      reasoningEffort = ReasoningEffortLabel.fromConfigValue(values[1]);
     } catch (error) {
-      runtimeError = '无法读取已保存的 Codex CLI 路径：${_messageOf(error)}';
+      runtimeError = '无法读取已保存的运行时配置：${_messageOf(error)}';
     }
+  }
+
+  JsonMap? _threadConfig({required bool usesRelay}) {
+    final config = <String, dynamic>{
+      if (usesRelay && relayProvider != null) ...relayProvider!.threadConfig,
+      'model_reasoning_effort': ?reasoningEffort.configValue,
+    };
+    return config.isEmpty ? null : config;
   }
 
   Future<void> _loadWorkspace() async {

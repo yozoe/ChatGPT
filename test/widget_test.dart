@@ -29,6 +29,8 @@ class _EmptyRelayProviderStore extends RelayProviderStore {
 class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
   String? workspace;
   String? savedWorkspace;
+  String? reasoningEffort;
+  String? savedReasoningEffort;
   bool clearedWorkspace = false;
 
   @override
@@ -47,6 +49,15 @@ class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
   Future<void> clearWorkspace() async {
     clearedWorkspace = true;
     workspace = null;
+  }
+
+  @override
+  Future<String?> readReasoningEffort() async => reasoningEffort;
+
+  @override
+  Future<void> saveReasoningEffort(String? value) async {
+    savedReasoningEffort = value;
+    reasoningEffort = value;
   }
 }
 
@@ -72,6 +83,10 @@ class _FakeCodexAppServer extends CodexAppServer {
   String? resumedModelProvider;
   String? resumedModel;
   JsonMap? resumedConfig;
+  String? startedThreadDirectory;
+  String? startedModelProvider;
+  String? startedModel;
+  JsonMap? startedConfig;
   String? unarchivedThreadId;
   int unarchiveCalls = 0;
   Completer<void>? unarchiveCompleter;
@@ -106,6 +121,27 @@ class _FakeCodexAppServer extends CodexAppServer {
     if (error != null) throw error;
     return resumeResult;
   }
+
+  @override
+  Future<String> startThread({
+    required String workingDirectory,
+    String? modelProvider,
+    String? model,
+    JsonMap? config,
+  }) async {
+    startedThreadDirectory = workingDirectory;
+    startedModelProvider = modelProvider;
+    startedModel = model;
+    startedConfig = config;
+    return 'new-thread';
+  }
+
+  @override
+  Future<void> startTurn({
+    required String threadId,
+    required String prompt,
+    required String workingDirectory,
+  }) async {}
 
   @override
   Future<JsonMap> listThreadTurns({
@@ -449,6 +485,58 @@ void main() {
     expect(server.resumedConfig, isNull);
     controller.dispose();
   });
+
+  test(
+    'passes the selected reasoning effort to new and resumed threads',
+    () async {
+      final store = _FakeRuntimeConfigurationStore();
+      final server = _FakeCodexAppServer();
+      final controller = CodexController(
+        server: server,
+        relayProviderStore: _EmptyRelayProviderStore(),
+        runtimeConfigurationStore: store,
+      );
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready
+        ..relayProvider = const RelayProviderConfiguration(
+          baseUrl: 'https://relay.example.com/v1',
+          model: 'relay-model',
+          apiKey: 'secret',
+        );
+
+      await controller.setReasoningEffort(ReasoningEffort.high);
+      await controller.sendPrompt('开始新任务');
+
+      expect(store.savedReasoningEffort, 'high');
+      expect(
+        server.startedModelProvider,
+        RelayProviderConfiguration.providerId,
+      );
+      expect(server.startedConfig, {
+        'model_providers': {
+          RelayProviderConfiguration.providerId: {
+            'name': 'Codex Desk Relay',
+            'base_url': 'https://relay.example.com/v1',
+            'env_key': RelayProviderConfiguration.environmentVariable,
+            'wire_api': 'responses',
+          },
+        },
+        'model_reasoning_effort': 'high',
+      });
+
+      controller
+        ..activeThreadId = null
+        ..status = RuntimeStatus.ready;
+      await controller.resumeThread(
+        _thread(id: 'openai-thread', model: 'gpt-5'),
+      );
+
+      expect(server.resumedConfig, {'model_reasoning_effort': 'high'});
+      controller.dispose();
+    },
+  );
 
   test(
     'loads user, agent, and command history when resuming a thread',

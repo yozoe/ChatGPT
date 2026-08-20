@@ -498,6 +498,7 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
                   onStop: controller.stopRuntime,
                   onAccount: _showAccount,
                   onRelay: _showRelayProvider,
+                  onSetReasoningEffort: controller.setReasoningEffort,
                 ),
                 const Divider(height: 1),
                 Expanded(
@@ -550,6 +551,7 @@ class _TopBar extends StatelessWidget {
     required this.onStop,
     required this.onAccount,
     required this.onRelay,
+    required this.onSetReasoningEffort,
   });
 
   final CodexController controller;
@@ -558,6 +560,7 @@ class _TopBar extends StatelessWidget {
   final Future<void> Function() onStop;
   final Future<void> Function() onAccount;
   final Future<void> Function() onRelay;
+  final Future<void> Function(ReasoningEffort) onSetReasoningEffort;
 
   @override
   Widget build(BuildContext context) {
@@ -612,6 +615,41 @@ class _TopBar extends StatelessWidget {
                 onPressed: onRelay,
                 icon: const Icon(Icons.route_outlined),
                 label: Text(controller.providerLabel),
+              ),
+            const SizedBox(width: 8),
+            if (compact)
+              PopupMenuButton<ReasoningEffort>(
+                tooltip: '推理强度：${controller.reasoningEffort.label}',
+                icon: const Icon(Icons.psychology_outlined),
+                onSelected: onSetReasoningEffort,
+                itemBuilder: (context) => ReasoningEffort.values
+                    .map(
+                      (effort) => CheckedPopupMenuItem(
+                        value: effort,
+                        checked: controller.reasoningEffort == effort,
+                        child: Text('推理强度：${effort.label}'),
+                      ),
+                    )
+                    .toList(growable: false),
+              )
+            else
+              DropdownButtonHideUnderline(
+                child: DropdownButton<ReasoningEffort>(
+                  value: controller.reasoningEffort,
+                  borderRadius: BorderRadius.circular(10),
+                  icon: const Icon(Icons.psychology_outlined, size: 18),
+                  onChanged: (value) {
+                    if (value != null) onSetReasoningEffort(value);
+                  },
+                  items: ReasoningEffort.values
+                      .map(
+                        (effort) => DropdownMenuItem(
+                          value: effort,
+                          child: Text('推理：${effort.label}'),
+                        ),
+                      )
+                      .toList(growable: false),
+                ),
               ),
             const SizedBox(width: 8),
             TextButton.icon(
