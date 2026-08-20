@@ -47,6 +47,7 @@ class CodexController extends ChangeNotifier {
   int _threadRefreshEpoch = 0;
   int _threadRefreshRequest = 0;
   int _archivedThreadRefreshRequest = 0;
+  final Set<String> _unarchivingThreadIds = {};
   late final Future<void> _relayLoad;
   late final Future<void> _runtimeLoad;
 
@@ -91,6 +92,8 @@ class CodexController extends ChangeNotifier {
       status == RuntimeStatus.running;
   bool get canRespondToApproval =>
       pendingApproval != null && !approvalResponding;
+  bool isUnarchivingThread(String threadId) =>
+      _unarchivingThreadIds.contains(threadId);
   String get authLabel => switch (authStatus) {
     AuthStatus.checking => '检查账户',
     AuthStatus.signedOut => '未登录',
@@ -393,7 +396,12 @@ class CodexController extends ChangeNotifier {
   }
 
   Future<void> unarchiveThread(CodexThread thread) async {
-    if (!_server.isRunning || status == RuntimeStatus.running) return;
+    if (!_server.isRunning ||
+        status != RuntimeStatus.ready ||
+        !_unarchivingThreadIds.add(thread.id)) {
+      return;
+    }
+    notifyListeners();
     try {
       await _server.unarchiveThread(threadId: thread.id);
       archivedThreads = archivedThreads
@@ -404,8 +412,10 @@ class CodexController extends ChangeNotifier {
     } catch (error) {
       lastError = _messageOf(error);
       _add(TimelineKind.error, '恢复归档任务失败', lastError!);
+    } finally {
+      _unarchivingThreadIds.remove(thread.id);
+      if (!_disposed) notifyListeners();
     }
-    notifyListeners();
   }
 
   Future<void> saveRelayProvider({
@@ -650,6 +660,7 @@ class CodexController extends ChangeNotifier {
       case 'thread/unarchived':
       case 'thread/name/updated':
         unawaited(refreshThreads());
+        unawaited(refreshArchivedThreads());
       case 'runtime/stderr':
         _add(
           TimelineKind.system,

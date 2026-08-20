@@ -431,7 +431,10 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
                     final thread = threads[index];
                     return _ArchivedThreadTile(
                       thread: thread,
-                      enabled: controller.status == RuntimeStatus.ready,
+                      enabled:
+                          controller.status == RuntimeStatus.ready &&
+                          !controller.isUnarchivingThread(thread.id),
+                      restoring: controller.isUnarchivingThread(thread.id),
                       onRestore: () => controller.unarchiveThread(thread),
                     );
                   },
@@ -1111,11 +1114,13 @@ class _ArchivedThreadTile extends StatelessWidget {
   const _ArchivedThreadTile({
     required this.thread,
     required this.enabled,
+    required this.restoring,
     required this.onRestore,
   });
 
   final CodexThread thread;
   final bool enabled;
+  final bool restoring;
   final VoidCallback onRestore;
 
   @override
@@ -1127,8 +1132,13 @@ class _ArchivedThreadTile extends StatelessWidget {
       subtitle: thread.status == null ? null : Text(thread.status!),
       trailing: TextButton.icon(
         onPressed: enabled ? onRestore : null,
-        icon: const Icon(Icons.unarchive_outlined, size: 18),
-        label: const Text('恢复'),
+        icon: restoring
+            ? const SizedBox.square(
+                dimension: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.unarchive_outlined, size: 18),
+        label: Text(restoring ? '恢复中' : '恢复'),
       ),
     );
   }

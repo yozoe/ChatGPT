@@ -35,6 +35,8 @@ class _FakeCodexAppServer extends CodexAppServer {
   String? resumedModel;
   JsonMap? resumedConfig;
   String? unarchivedThreadId;
+  int unarchiveCalls = 0;
+  Completer<void>? unarchiveCompleter;
 
   @override
   bool get isRunning => true;
@@ -81,6 +83,8 @@ class _FakeCodexAppServer extends CodexAppServer {
   @override
   Future<void> unarchiveThread({required String threadId}) async {
     unarchivedThreadId = threadId;
+    unarchiveCalls++;
+    await unarchiveCompleter?.future;
     archivedListResponse = <JsonMap>[];
   }
 }
@@ -450,6 +454,53 @@ void main() {
     expect(server.unarchivedThreadId, 'restored-thread');
     expect(controller.archivedThreads, isEmpty);
     expect(controller.threads.single.id, 'restored-thread');
+    controller.dispose();
+  });
+
+  test('prevents duplicate archived thread restore requests', () async {
+    final server = _FakeCodexAppServer()
+      ..archivedListResponse = [
+        {'id': 'restore-once', 'preview': '只恢复一次'},
+      ]
+      ..unarchiveCompleter = Completer<void>();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+
+    await controller.refreshArchivedThreads();
+    final thread = controller.archivedThreads.single;
+    final first = controller.unarchiveThread(thread);
+    await Future<void>.delayed(Duration.zero);
+    await controller.unarchiveThread(thread);
+
+    expect(server.unarchiveCalls, 1);
+    expect(controller.isUnarchivingThread(thread.id), isTrue);
+    server.unarchiveCompleter!.complete();
+    await first;
+    expect(controller.isUnarchivingThread(thread.id), isFalse);
+    controller.dispose();
+  });
+
+  test('refreshes archived threads after archive notifications', () async {
+    final server = _FakeCodexAppServer()
+      ..archivedListResponse = [
+        {'id': 'archived-now', 'preview': '已归档'},
+      ];
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+
+    await controller.refreshArchivedThreads();
+    server.archivedListResponse = <JsonMap>[];
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'thread/archived',
+        params: {'threadId': 'archived-now'},
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(controller.archivedThreads, isEmpty);
     controller.dispose();
   });
 }
