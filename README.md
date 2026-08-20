@@ -65,7 +65,7 @@ dart run tool/verify_app_server_history.dart --cwd /path/to/workspace
 - 审批默认逐次确认；可在“变更与审批”切换为自动批准。自动模式会直接允许命令、文件变更与额外权限请求，并在时间线留下记录。
 - 中转站仅接受 HTTPS（localhost 可用 HTTP），并要求 Responses API 与 SSE 流式协议兼容。密钥存入 macOS Keychain，Provider 定义仅注入本应用创建的 Thread，不修改 `~/.codex/config.toml`。
 - macOS 桌面构建不启用 App Sandbox：客户端需要启动本机 `codex` 并读取其 `~/.codex` 配置。中转站凭据与运行时路径仍使用标准 macOS Keychain 保存，不依赖本地 ad-hoc 签名无法提供的 Data Protection Keychain entitlement。
-- 插件管理会调用本机 `codex plugin` 子命令，并仅修改 `~/.codex/config.toml` 中相应插件的 `enabled` 状态；请只添加和安装可信来源的 marketplace 与插件。
+- 插件管理会调用本机 `codex plugin` 子命令，并仅修改当前 Codex Home（优先 `CODEX_HOME`，否则 `~/.codex`）配置中相应插件的 `enabled` 状态；会保留 TOML 行尾注释，请只添加和安装可信来源的 marketplace 与插件。
 
 ## 开发约定
 

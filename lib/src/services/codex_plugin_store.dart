@@ -99,7 +99,7 @@ class CodexPluginStore {
     final header = '[plugins."$escapedId"]';
     final headerMatch = RegExp(
       '^${RegExp.escape(header)}'
-      r'[ \t]*$',
+      r'[ \t]*(?:#.*)?$',
       multiLine: true,
     ).firstMatch(config);
     final line = 'enabled = $enabled';
@@ -116,11 +116,13 @@ class CodexPluginStore {
         : nextHeaders.first.start;
     final table = config.substring(headerMatch.end, tableEnd);
     final enabledMatch = RegExp(
-      r'^enabled[ \t]*=[ \t]*(?:true|false)[ \t]*$',
+      r'^([ \t]*enabled[ \t]*=[ \t]*)(?:true|false)([ \t]*(?:#.*)?)$',
       multiLine: true,
     ).firstMatch(table);
     if (enabledMatch != null) {
-      return '${config.substring(0, headerMatch.end + enabledMatch.start)}$line${config.substring(headerMatch.end + enabledMatch.end)}';
+      final replacement =
+          '${enabledMatch.group(1)}$enabled${enabledMatch.group(2)}';
+      return '${config.substring(0, headerMatch.end + enabledMatch.start)}$replacement${config.substring(headerMatch.end + enabledMatch.end)}';
     }
     return '${config.substring(0, headerMatch.end)}\n$line${config.substring(headerMatch.end)}';
   }
@@ -130,9 +132,13 @@ class CodexPluginStore {
   static String _defaultExecutable() =>
       Platform.environment['CODEX_EXECUTABLE'] ?? 'codex';
 
-  /// 返回默认 Codex 用户配置目录。
-  /// Returns the default Codex user configuration directory.
+  /// 返回当前 Codex 用户配置目录，优先使用 `CODEX_HOME`。
+  /// Returns the current Codex user configuration directory, preferring `CODEX_HOME`.
   static Directory _defaultCodexHome() {
+    final codexHome = Platform.environment['CODEX_HOME'];
+    if (codexHome != null && codexHome.isNotEmpty) {
+      return Directory(codexHome);
+    }
     final home = Platform.environment['HOME'];
     if (home == null || home.isEmpty) throw StateError('无法确定 macOS 用户目录。');
     return Directory('$home/.codex');

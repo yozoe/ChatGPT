@@ -699,8 +699,8 @@ void main() {
       final config = File('${codexHome.path}/config.toml');
       await config.writeAsString(
         'model = "gpt-5"\n\n'
-        '[plugins."sample@local"]\n'
-        'enabled = true\n\n'
+        '[plugins."sample@local"] # 本地测试插件\n'
+        'enabled = true # 需要保留的说明\n\n'
         '[features]\n'
         'web_search = true\n',
       );
@@ -719,8 +719,8 @@ void main() {
       expect(
         await config.readAsString(),
         'model = "gpt-5"\n\n'
-        '[plugins."sample@local"]\n'
-        'enabled = false\n\n'
+        '[plugins."sample@local"] # 本地测试插件\n'
+        'enabled = false # 需要保留的说明\n\n'
         '[features]\n'
         'web_search = true\n',
       );
