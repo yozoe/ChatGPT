@@ -6,9 +6,12 @@ import 'package:chatgpt/src/app_controller.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
 import 'package:chatgpt/src/domain/relay_provider_configuration.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
+import 'package:chatgpt/src/presentation/codex_workspace.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/services/relay_provider_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class _DelayedRelayProviderStore extends RelayProviderStore {
@@ -161,6 +164,26 @@ void main() {
     expect(find.text('Codex Desk'), findsOneWidget);
     expect(find.text('选择一个本地项目'), findsOneWidget);
     expect(find.text('任务控制台'), findsOneWidget);
+  });
+
+  testWidgets('sends a composer message when Enter is pressed', (tester) async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.enterText(find.byType(TextField), '用 Enter 发送');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+
+    expect(
+      controller.entries.map((entry) => entry.detail),
+      contains('用 Enter 发送'),
+    );
+
+    await tester.pumpWidget(const SizedBox());
   });
 
   test(

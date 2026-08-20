@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app_controller.dart';
@@ -18,12 +21,37 @@ class CodexWorkspace extends StatefulWidget {
 
 class _CodexWorkspaceState extends State<CodexWorkspace> {
   final TextEditingController _composer = TextEditingController();
+  final ScrollController _timelineScrollController = ScrollController();
+  bool _timelineScrollScheduled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_scheduleTimelineScroll);
+  }
 
   @override
   void dispose() {
+    widget.controller.removeListener(_scheduleTimelineScroll);
     _composer.dispose();
+    _timelineScrollController.dispose();
     widget.controller.dispose();
     super.dispose();
+  }
+
+  void _scheduleTimelineScroll() {
+    if (!mounted || _timelineScrollScheduled) return;
+    _timelineScrollScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _timelineScrollScheduled = false;
+      if (!mounted || !_timelineScrollController.hasClients) return;
+      final position = _timelineScrollController.position;
+      position.animateTo(
+        position.maxScrollExtent,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+      );
+    });
   }
 
   Future<void> _chooseWorkspace() async {
@@ -491,6 +519,8 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
                             child: _ConversationPane(
                               controller: controller,
                               composer: _composer,
+                              timelineScrollController:
+                                  _timelineScrollController,
                               onSend: _send,
                             ),
                           ),
@@ -740,11 +770,13 @@ class _ConversationPane extends StatelessWidget {
   const _ConversationPane({
     required this.controller,
     required this.composer,
+    required this.timelineScrollController,
     required this.onSend,
   });
 
   final CodexController controller;
   final TextEditingController composer;
+  final ScrollController timelineScrollController;
   final Future<void> Function() onSend;
 
   @override
@@ -790,11 +822,15 @@ class _ConversationPane extends StatelessWidget {
           ),
         Expanded(
           child: ListView.separated(
+            controller: timelineScrollController,
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
             itemCount: controller.entries.length,
-            separatorBuilder: (_, _) => const SizedBox(height: 10),
+            separatorBuilder: (_, _) => const Padding(
+              padding: EdgeInsets.symmetric(vertical: 14),
+              child: Divider(height: 1),
+            ),
             itemBuilder: (context, index) =>
-                _TimelineCard(controller.entries[index]),
+                _TimelineEntry(controller.entries[index]),
           ),
         ),
         const Divider(height: 1),
@@ -804,15 +840,22 @@ class _ConversationPane extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Expanded(
-                child: TextField(
-                  controller: composer,
-                  enabled: controller.canSend,
-                  minLines: 2,
-                  maxLines: 5,
-                  textInputAction: TextInputAction.newline,
-                  decoration: const InputDecoration(
-                    hintText: '描述你希望 Codex 在这个项目中完成的工作…',
-                    border: OutlineInputBorder(),
+                child: CallbackShortcuts(
+                  bindings: {
+                    const SingleActivator(LogicalKeyboardKey.enter): () {
+                      unawaited(onSend());
+                    },
+                  },
+                  child: TextField(
+                    controller: composer,
+                    enabled: controller.canSend,
+                    minLines: 2,
+                    maxLines: 5,
+                    textInputAction: TextInputAction.newline,
+                    decoration: const InputDecoration(
+                      hintText: '描述你希望 Codex 在这个项目中完成的工作…',
+                      border: OutlineInputBorder(),
+                    ),
                   ),
                 ),
               ),
@@ -951,54 +994,49 @@ class _Inspector extends StatelessWidget {
   }
 }
 
-class _TimelineCard extends StatelessWidget {
-  const _TimelineCard(this.entry);
+class _TimelineEntry extends StatelessWidget {
+  const _TimelineEntry(this.entry);
 
   final TimelineEntry entry;
 
   @override
   Widget build(BuildContext context) {
+    if (entry.kind == TimelineKind.user) {
+      return Align(
+        alignment: Alignment.centerRight,
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 560),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: const Color(0xFF20242B),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: SelectableText(entry.detail),
+        ),
+      );
+    }
+
     final color = switch (entry.kind) {
-      TimelineKind.user => const Color(0xFF82B1FF),
       TimelineKind.agent => const Color(0xFF68E0B8),
       TimelineKind.command => const Color(0xFFF9C74F),
       TimelineKind.tool => const Color(0xFFC4A7FF),
       TimelineKind.approval => const Color(0xFFFFB86C),
       TimelineKind.error => const Color(0xFFFF8A80),
       TimelineKind.system => const Color(0xFF94A3B8),
+      TimelineKind.user => throw StateError('Handled above.'),
     };
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFF111925),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF263448)),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 8,
-            height: 8,
-            margin: const EdgeInsets.only(top: 6),
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  entry.title,
-                  style: TextStyle(color: color, fontWeight: FontWeight.w700),
-                ),
-                const SizedBox(height: 5),
-                SelectableText(entry.detail),
-              ],
-            ),
-          ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          entry.title,
+          style: TextStyle(color: color, fontWeight: FontWeight.w700),
+        ),
+        if (entry.detail.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          SelectableText(entry.detail),
         ],
-      ),
+      ],
     );
   }
 }
