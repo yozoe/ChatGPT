@@ -45,16 +45,35 @@ Future<void> main(List<String> arguments) async {
       'threadId': threadId,
       'excludeTurns': true,
     });
-    final page = await probe.request('thread/turns/list', {
-      'threadId': threadId,
-      'limit': 1,
-      'sortDirection': 'desc',
-      'itemsView': 'full',
-    });
-    final turns = page['data'] as Iterable?;
+    var cursor = <String?>[null];
+    final seenCursors = <String>{};
+    var pageCount = 0;
+    var turnCount = 0;
+    while (cursor.isNotEmpty) {
+      final page = await probe.request('thread/turns/list', {
+        'threadId': threadId,
+        'cursor': ?cursor.single,
+        'limit': 50,
+        'sortDirection': 'desc',
+        'itemsView': 'full',
+      });
+      final turns = page['data'] as Iterable?;
+      turnCount += turns?.length ?? 0;
+      pageCount++;
+      final nextCursor = page['nextCursor']?.toString();
+      if (nextCursor == null || nextCursor.isEmpty) {
+        cursor = const [];
+      } else if (!seenCursors.add(nextCursor)) {
+        throw StateError(
+          'App Server repeated a thread turns pagination cursor.',
+        );
+      } else {
+        cursor = [nextCursor];
+      }
+    }
     stdout.writeln(
       'Verified thread $threadId: resumed successfully; '
-      'turn page contains ${turns?.length ?? 0} item(s). '
+      '$pageCount turn page(s) contain $turnCount turn(s). '
       'Model provider: ${resumed['modelProvider'] ?? 'unknown'}.',
     );
   } finally {
@@ -74,9 +93,9 @@ class _Options {
     for (var index = 0; index < arguments.length; index++) {
       switch (arguments[index]) {
         case '--cwd':
-          cwd = arguments[++index];
+          cwd = _argumentValue(arguments, ++index);
         case '--thread-id':
-          threadId = arguments[++index];
+          threadId = _argumentValue(arguments, ++index);
         default:
           throw ArgumentError(
             'Usage: dart run tool/verify_app_server_history.dart '
@@ -88,6 +107,16 @@ class _Options {
       workingDirectory: cwd ?? Directory.current.path,
       threadId: threadId,
     );
+  }
+
+  static String _argumentValue(List<String> arguments, int index) {
+    if (index >= arguments.length || arguments[index].startsWith('--')) {
+      throw ArgumentError(
+        'Usage: dart run tool/verify_app_server_history.dart '
+        '[--cwd <directory>] [--thread-id <id>]',
+      );
+    }
+    return arguments[index];
   }
 }
 

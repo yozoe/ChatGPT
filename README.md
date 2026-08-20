@@ -32,7 +32,7 @@ flutter run -d macos
 
 ## App Server 历史验证
 
-在有历史线程的工作区执行以下命令，可验证真实 App Server 的初始化、线程列表、恢复和 turns 分页协议；脚本不会创建任务、发送消息或修改工作区文件。
+在有历史线程的工作区执行以下命令，可验证真实 App Server 的初始化、线程列表、恢复和全部 turns 分页协议；脚本不会创建任务、发送消息或修改工作区文件。
 
 ```bash
 dart run tool/verify_app_server_history.dart --cwd /path/to/workspace
