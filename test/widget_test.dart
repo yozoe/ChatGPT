@@ -8,12 +8,14 @@ import 'package:chatgpt/src/domain/codex_thread.dart';
 import 'package:chatgpt/src/domain/codex_file_change.dart';
 import 'package:chatgpt/src/domain/codex_plugin.dart';
 import 'package:chatgpt/src/domain/codex_marketplace.dart';
+import 'package:chatgpt/src/domain/git_project_status.dart';
 import 'package:chatgpt/src/domain/relay_provider_configuration.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/presentation/codex_workspace.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/services/codex_plugin_store.dart';
 import 'package:chatgpt/src/services/conversation_history_store.dart';
+import 'package:chatgpt/src/services/git_project_service.dart';
 import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/relay_provider_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
@@ -223,6 +225,32 @@ class _MemoryCodexPluginStore extends CodexPluginStore {
     enabledChanges[plugin.id] = enabled;
     final index = plugins.indexWhere((value) => value.id == plugin.id);
     if (index >= 0) plugins[index] = plugins[index].copyWith(enabled: enabled);
+  }
+}
+
+class _FakeGitProjectService extends GitProjectService {
+  GitProjectStatus status = const GitProjectStatus(isRepository: false);
+  String diff = '';
+  GitProjectChange? requestedChange;
+  int inspectCalls = 0;
+
+  /// 返回预设的只读 Git 项目状态，并记录调用次数。
+  /// Returns the preset read-only Git project status and records the call count.
+  @override
+  Future<GitProjectStatus> inspect(String workspace) async {
+    inspectCalls++;
+    return status;
+  }
+
+  /// 返回预设 Diff，并记录界面请求的文件变更。
+  /// Returns the preset diff and records the change requested by the interface.
+  @override
+  Future<String> readDiff({
+    required String workspace,
+    required GitProjectChange change,
+  }) async {
+    requestedChange = change;
+    return diff;
   }
 }
 
@@ -1116,6 +1144,88 @@ void main() {
     expect(probe.isAvailable, isFalse);
     expect(probe.error, contains('未找到 Codex CLI'));
     await server.dispose();
+  });
+
+  test(
+    'reads an untracked file and diff from a real temporary Git repository',
+    () async {
+      final directory = await Directory.systemTemp.createTemp('codex-git-');
+      addTearDown(() => directory.delete(recursive: true));
+      final initialized = await Process.run('git', [
+        'init',
+        '-q',
+      ], workingDirectory: directory.path);
+      expect(initialized.exitCode, 0);
+      await File(
+        '${directory.path}/new_file.txt',
+      ).writeAsString('new content\n');
+      final service = GitProjectService();
+
+      final status = await service.inspect(directory.path);
+
+      expect(status.isRepository, isTrue);
+      final change = status.changes.singleWhere(
+        (candidate) => candidate.path == 'new_file.txt',
+      );
+      expect(change.isUntracked, isTrue);
+      final diff = await service.readDiff(
+        workspace: directory.path,
+        change: change,
+      );
+      expect(diff, contains('+new content'));
+    },
+  );
+
+  test(
+    'loads only read-only Git status and selected diff through controller',
+    () async {
+      const change = GitProjectChange(code: ' M', path: 'lib/main.dart');
+      final git = _FakeGitProjectService()
+        ..status = const GitProjectStatus(
+          isRepository: true,
+          branch: 'main',
+          changes: [change],
+        )
+        ..diff =
+            'diff --git a/lib/main.dart b/lib/main.dart\n+@@ -1 +1 @@\n-old\n+new';
+      final controller = CodexController(
+        server: CodexAppServer(),
+        gitProjectService: git,
+      )..workspacePath = '/workspace';
+
+      await controller.refreshGitProject();
+      await controller.showGitDiff(change);
+
+      expect(git.inspectCalls, 1);
+      expect(controller.gitProjectStatus!.branch, 'main');
+      expect(git.requestedChange, change);
+      expect(controller.gitDiff, contains('+new'));
+      controller.dispose();
+    },
+  );
+
+  testWidgets('opens the read-only Git project view', (tester) async {
+    const change = GitProjectChange(code: '??', path: 'new_file.txt');
+    final git = _FakeGitProjectService()
+      ..status = const GitProjectStatus(
+        isRepository: true,
+        branch: 'main',
+        changes: [change],
+      );
+    final controller = CodexController(
+      server: CodexAppServer(),
+      gitProjectService: git,
+    )..workspacePath = '/workspace';
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.text('Git 项目'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('git-project-dialog')), findsOneWidget);
+    expect(find.text('分支：main'), findsOneWidget);
+    expect(find.text('只读视图：不会执行暂存、还原、提交、切分支、拉取或推送。'), findsOneWidget);
   });
 
   test('redacts credentials from runtime diagnostics', () {

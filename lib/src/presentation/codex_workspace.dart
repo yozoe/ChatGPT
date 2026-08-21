@@ -9,6 +9,7 @@ import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 
 import '../app_controller.dart';
 import '../domain/codex_file_change.dart';
+import '../domain/git_project_status.dart';
 import '../domain/codex_plugin.dart';
 import '../domain/codex_marketplace.dart';
 import '../domain/codex_thread.dart';
@@ -694,6 +695,126 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     );
   }
 
+  /// 刷新并展示当前项目的只读 Git 状态和文件 Diff，不提供仓库写操作。
+  /// Refreshes and shows the current project's read-only Git status and file diffs without repository write actions.
+  Future<void> _showGitProject() async {
+    await widget.controller.refreshGitProject();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AnimatedBuilder(
+        animation: widget.controller,
+        builder: (context, _) {
+          final controller = widget.controller;
+          final status = controller.gitProjectStatus;
+          final palette = YeknomPalette.of(context);
+          final counts = status?.changeCounts;
+          return AlertDialog(
+            key: const Key('git-project-dialog'),
+            title: const Text('Git 项目'),
+            content: SizedBox(
+              width: 880,
+              height: 560,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('只读视图：不会执行暂存、还原、提交、切分支、拉取或推送。'),
+                  const SizedBox(height: 12),
+                  if (controller.gitProjectLoading)
+                    const LinearProgressIndicator()
+                  else if (controller.gitProjectError case final error?)
+                    Text(error, style: TextStyle(color: palette.fault))
+                  else if (status == null || !status.isRepository)
+                    const Expanded(child: Center(child: Text('当前项目不是 Git 仓库。')))
+                  else ...[
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        Chip(label: Text('分支：${status.branch ?? 'DETACHED'}')),
+                        Chip(label: Text('暂存：${counts!.staged}')),
+                        Chip(label: Text('未暂存：${counts.unstaged}')),
+                        Chip(label: Text('未跟踪：${counts.untracked}')),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 300,
+                            child: status.changes.isEmpty
+                                ? const Center(child: Text('工作区没有未提交改动。'))
+                                : ListView.separated(
+                                    itemCount: status.changes.length,
+                                    separatorBuilder: (_, _) =>
+                                        const Divider(height: 1),
+                                    itemBuilder: (context, index) {
+                                      final change = status.changes[index];
+                                      final selected =
+                                          controller.gitDiffChange == change;
+                                      return ListTile(
+                                        selected: selected,
+                                        selectedTileColor: palette.selected,
+                                        dense: true,
+                                        leading: Icon(
+                                          change.isUntracked
+                                              ? Icons.note_add_outlined
+                                              : Icons.description_outlined,
+                                          size: 18,
+                                        ),
+                                        title: Text(
+                                          change.path,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        subtitle: Text(
+                                          change.previousPath == null
+                                              ? '${change.label} · ${change.code}'
+                                              : '${change.label}：${change.previousPath} → ${change.path}',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        onTap: () =>
+                                            controller.showGitDiff(change),
+                                      );
+                                    },
+                                  ),
+                          ),
+                          const VerticalDivider(width: 24),
+                          Expanded(
+                            child: _GitDiffViewer(
+                              change: controller.gitDiffChange,
+                              diff: controller.gitDiff,
+                              loading: controller.gitDiffLoading,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton.icon(
+                onPressed: controller.gitProjectLoading
+                    ? null
+                    : controller.refreshGitProject,
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('刷新'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('关闭'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   /// 刷新并显示插件管理器，支持本地 marketplace 与启用状态。
   /// Refreshes and shows the plugin manager for local marketplaces and states.
   Future<void> _showPlugins() async {
@@ -987,6 +1108,7 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
                             onShowArchivedThreads: _showArchivedThreads,
                             onExportHistory: _exportConversationHistory,
                             onImportHistory: _importConversationHistory,
+                            onShowGitProject: _showGitProject,
                           ),
                           const VerticalDivider(width: 1),
                           Expanded(
@@ -1374,6 +1496,7 @@ class _Sidebar extends StatefulWidget {
     required this.onShowArchivedThreads,
     required this.onExportHistory,
     required this.onImportHistory,
+    required this.onShowGitProject,
   });
 
   final CodexController controller;
@@ -1384,6 +1507,7 @@ class _Sidebar extends StatefulWidget {
   final Future<void> Function() onShowArchivedThreads;
   final Future<void> Function() onExportHistory;
   final Future<void> Function() onImportHistory;
+  final Future<void> Function() onShowGitProject;
 
   /// 创建管理侧栏搜索状态的 State 对象。
   /// Creates the State object that manages sidebar search state.
@@ -1580,6 +1704,14 @@ class _SidebarState extends State<_Sidebar> {
               onPressed: widget.onConfigureRuntime,
               icon: const Icon(Icons.memory_outlined, size: 18),
               label: const Text('Codex CLI'),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: controller.workspacePath == null
+                  ? null
+                  : widget.onShowGitProject,
+              icon: const Icon(Icons.account_tree_outlined, size: 18),
+              label: const Text('Git 项目'),
             ),
             const SizedBox(height: 10),
             const _MutedText('本地优先 · stdio JSON-RPC'),
@@ -2127,6 +2259,67 @@ class _DiffExpansionTile extends StatelessWidget {
           );
         })
         .toList(growable: false);
+  }
+}
+
+/// 展示只读 Git Diff 的详情面板，不包含暂存、恢复或写入仓库的操作。
+/// Displays a read-only Git diff detail panel without staging, restoring, or repository write actions.
+class _GitDiffViewer extends StatelessWidget {
+  const _GitDiffViewer({
+    required this.change,
+    required this.diff,
+    required this.loading,
+  });
+
+  final GitProjectChange? change;
+  final String? diff;
+  final bool loading;
+
+  /// 构建所选 Git 文件的加载、空状态或可复制 Diff 内容。
+  /// Builds loading, empty, or copyable diff content for the selected Git file.
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    if (loading) return const Center(child: CircularProgressIndicator());
+    if (change == null) return const Center(child: Text('从左侧选择一个文件查看 Diff。'));
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          change!.path,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.titleSmall,
+        ),
+        const SizedBox(height: 8),
+        Expanded(
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: palette.field,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: palette.border),
+            ),
+            child: diff == null
+                ? const Center(child: Text('正在准备 Diff。'))
+                : diff!.isEmpty
+                ? const Center(child: Text('Git 未返回可显示的 Diff。'))
+                : SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: SelectableText(
+                      diff!,
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        height: 1.45,
+                      ),
+                    ),
+                  ),
+          ),
+        ),
+      ],
+    );
   }
 }
 

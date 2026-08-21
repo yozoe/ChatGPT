@@ -8,6 +8,7 @@ import 'domain/codex_thread.dart';
 import 'domain/codex_plugin.dart';
 import 'domain/codex_marketplace.dart';
 import 'domain/codex_file_change.dart';
+import 'domain/git_project_status.dart';
 import 'domain/pending_approval.dart';
 import 'domain/relay_provider_configuration.dart';
 import 'domain/runtime_log_entry.dart';
@@ -15,6 +16,7 @@ import 'domain/timeline_entry.dart';
 import 'services/codex_app_server.dart';
 import 'services/codex_plugin_store.dart';
 import 'services/conversation_history_store.dart';
+import 'services/git_project_service.dart';
 import 'services/local_session_thread_store.dart';
 import 'services/relay_provider_store.dart';
 import 'services/runtime_configuration_store.dart';
@@ -81,6 +83,7 @@ class CodexController extends ChangeNotifier {
     ConversationHistoryStore? conversationHistoryStore,
     LocalSessionThreadStore? localSessionThreadStore,
     CodexPluginStore? pluginStore,
+    GitProjectService? gitProjectService,
   }) : _server = server ?? CodexAppServer(),
        _relayProviderStore = relayProviderStore ?? RelayProviderStore(),
        _runtimeConfigurationStore =
@@ -90,7 +93,8 @@ class CodexController extends ChangeNotifier {
            testingConversationHistoryStore ??
            ConversationHistoryStore(),
        _localSessionThreadStore =
-           localSessionThreadStore ?? LocalSessionThreadStore() {
+           localSessionThreadStore ?? LocalSessionThreadStore(),
+       _gitProjectService = gitProjectService ?? GitProjectService() {
     _pluginStore =
         pluginStore ??
         CodexPluginStore(executableProvider: () => _server.executable);
@@ -115,6 +119,7 @@ class CodexController extends ChangeNotifier {
   final RuntimeConfigurationStore _runtimeConfigurationStore;
   final ConversationHistoryStore _conversationHistoryStore;
   final LocalSessionThreadStore _localSessionThreadStore;
+  final GitProjectService _gitProjectService;
   late final CodexPluginStore _pluginStore;
   StreamSubscription<ServerEvent>? _eventSubscription;
   final List<TimelineEntry> _entries = [];
@@ -178,6 +183,12 @@ class CodexController extends ChangeNotifier {
   List<CodexMarketplace> marketplaces = const [];
   bool marketplacesLoading = false;
   String? marketplacesError;
+  GitProjectStatus? gitProjectStatus;
+  bool gitProjectLoading = false;
+  String? gitProjectError;
+  GitProjectChange? gitDiffChange;
+  String? gitDiff;
+  bool gitDiffLoading = false;
 
   /// 返回不可修改的当前时间线副本视图。
   /// Returns an unmodifiable view of the current timeline.
@@ -200,6 +211,61 @@ class CodexController extends ChangeNotifier {
   /// 判断指定任务是否已在当前项目中置顶。
   /// Returns whether a task is pinned in the current workspace.
   bool isThreadPinned(String threadId) => _pinnedThreadIds.contains(threadId);
+
+  /// 从当前项目读取只读 Git 工作区摘要；不会执行任何改变 Git 状态的命令。
+  /// Reads a read-only Git working-tree summary for the current project without executing state-changing Git commands.
+  Future<void> refreshGitProject() async {
+    final workspace = workspacePath;
+    if (workspace == null) return;
+    gitProjectLoading = true;
+    gitProjectError = null;
+    if (!_disposed) notifyListeners();
+    try {
+      final next = await _gitProjectService.inspect(workspace);
+      if (_disposed || workspacePath != workspace) return;
+      gitProjectStatus = next;
+      gitProjectError = next.error;
+    } catch (error) {
+      if (_disposed || workspacePath != workspace) return;
+      gitProjectError = _messageOf(error);
+    } finally {
+      if (!_disposed && workspacePath == workspace) {
+        gitProjectLoading = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  /// 读取当前项目中指定 Git 改动的只读 Diff；不会暂存、还原或修改文件。
+  /// Reads a read-only diff for a selected Git change without staging, restoring, or modifying files.
+  Future<void> showGitDiff(GitProjectChange change) async {
+    final workspace = workspacePath;
+    if (workspace == null) return;
+    gitDiffLoading = true;
+    gitDiffChange = change;
+    gitDiff = null;
+    if (!_disposed) notifyListeners();
+    try {
+      final next = await _gitProjectService.readDiff(
+        workspace: workspace,
+        change: change,
+      );
+      if (_disposed || workspacePath != workspace || gitDiffChange != change) {
+        return;
+      }
+      gitDiff = next;
+    } catch (error) {
+      if (_disposed || workspacePath != workspace || gitDiffChange != change) {
+        return;
+      }
+      gitDiff = '无法读取 Git Diff：${_messageOf(error)}';
+    } finally {
+      if (!_disposed && workspacePath == workspace && gitDiffChange == change) {
+        gitDiffLoading = false;
+        notifyListeners();
+      }
+    }
+  }
 
   /// 清除当前内存中的运行时诊断日志，不影响历史对话、项目文件或 Codex 配置。
   /// Clears in-memory runtime diagnostic logs without affecting history, project files, or Codex configuration.
@@ -326,10 +392,16 @@ class CodexController extends ChangeNotifier {
     threads = const [];
     archivedThreads = const [];
     _pinnedThreadIds.clear();
+    gitProjectStatus = null;
+    gitProjectError = null;
+    gitDiffChange = null;
+    gitDiff = null;
+    gitDiffLoading = false;
     _clearStreamingState();
     _clearFileChanges();
     _resetConversationTimeline();
     await _restoreConversationHistory(canonicalPath);
+    unawaited(refreshGitProject());
     _add(TimelineKind.system, '项目已选择', canonicalPath);
     notifyListeners();
     try {
