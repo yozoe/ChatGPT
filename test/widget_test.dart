@@ -10,6 +10,7 @@ import 'package:chatgpt/src/domain/codex_plugin.dart';
 import 'package:chatgpt/src/domain/codex_marketplace.dart';
 import 'package:chatgpt/src/domain/git_project_status.dart';
 import 'package:chatgpt/src/domain/relay_provider_configuration.dart';
+import 'package:chatgpt/src/domain/task_plan.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/presentation/codex_workspace.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
@@ -585,6 +586,166 @@ void main() {
       await server.dispose();
     },
   );
+
+  test('tracks structured plan updates for the active turn', () {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running;
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/started',
+        params: {
+          'turn': {'id': 'turn-1'},
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/plan/updated',
+        params: {
+          'turnId': 'turn-1',
+          'explanation': '先核对协议，再实现界面。',
+          'plan': [
+            {'step': '核对协议', 'status': 'completed'},
+            {'step': '实现界面', 'status': 'inProgress'},
+            {'step': '运行验证', 'status': 'pending'},
+          ],
+        },
+      ),
+    );
+
+    expect(controller.activeTurnId, 'turn-1');
+    expect(controller.activeTaskPlan?.explanation, '先核对协议，再实现界面。');
+    expect(controller.activeTaskPlan?.focusedStepIndex, 1);
+    expect(controller.activeTaskPlan?.completedStepCount, 1);
+    expect(
+      controller.activeTaskPlan?.steps[1].status,
+      TaskPlanStepStatus.inProgress,
+    );
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/plan/updated',
+        params: {
+          'turnId': 'older-turn',
+          'plan': [
+            {'step': '迟到的旧计划', 'status': 'inProgress'},
+          ],
+        },
+      ),
+    );
+    expect(controller.activeTaskPlan?.steps.first.step, '核对协议');
+    controller.dispose();
+  });
+
+  testWidgets('shows live task steps in a floating progress panel', (
+    tester,
+  ) async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running;
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/plan/updated',
+        params: {
+          'turnId': 'turn-1',
+          'explanation': '正在按计划实现分步展示',
+          'plan': [
+            {'step': '更新文档', 'status': 'completed'},
+            {'step': '实现进度面板', 'status': 'inProgress'},
+            {'step': '运行测试', 'status': 'pending'},
+          ],
+        },
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(find.byKey(const Key('task-plan-progress')), findsOneWidget);
+    expect(find.text('正在按计划实现分步展示'), findsOneWidget);
+    expect(find.text('更新文档'), findsOneWidget);
+    expect(find.text('实现进度面板'), findsOneWidget);
+    expect(find.text('运行测试'), findsOneWidget);
+    expect(find.text('1/3'), findsOneWidget);
+    expect(find.text('第 2 / 3 步'), findsOneWidget);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'turn': {'id': 'turn-1', 'status': 'completed'},
+        },
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const Key('task-plan-progress')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('scrolls a long task plan to the newly focused step', (
+    tester,
+  ) async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running;
+    controller.handleServerEventForTesting(
+      ServerEvent(
+        method: 'turn/plan/updated',
+        params: {
+          'turnId': 'turn-long',
+          'plan': List.generate(
+            12,
+            (index) => {
+              'step': '计划步骤 ${index + 1}',
+              'status': index == 0 ? 'inProgress' : 'pending',
+            },
+          ),
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.pumpAndSettle();
+
+    final planScrollable = find.descendant(
+      of: find.byKey(const Key('task-plan-progress')),
+      matching: find.byType(Scrollable),
+    );
+    expect(planScrollable, findsOneWidget);
+    expect(tester.state<ScrollableState>(planScrollable).position.pixels, 0);
+
+    controller.handleServerEventForTesting(
+      ServerEvent(
+        method: 'turn/plan/updated',
+        params: {
+          'turnId': 'turn-long',
+          'plan': List.generate(
+            12,
+            (index) => {
+              'step': '计划步骤 ${index + 1}',
+              'status': index < 9
+                  ? 'completed'
+                  : index == 9
+                  ? 'inProgress'
+                  : 'pending',
+            },
+          ),
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('第 10 / 12 步'), findsOneWidget);
+    expect(
+      tester.state<ScrollableState>(planScrollable).position.pixels,
+      greaterThan(0),
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
 
   test('returns a scoped approval decision to App Server', () async {
     final writes = <JsonMap>[];

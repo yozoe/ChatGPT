@@ -16,6 +16,7 @@ import '../domain/codex_plugin.dart';
 import '../domain/codex_marketplace.dart';
 import '../domain/codex_thread.dart';
 import '../domain/pending_approval.dart';
+import '../domain/task_plan.dart';
 import '../domain/timeline_entry.dart';
 
 class CodexWorkspace extends ConsumerStatefulWidget {
@@ -1965,16 +1966,52 @@ class _ConversationPane extends StatelessWidget {
             onDecline: () => controller.respondToApproval(accepted: false),
           ),
         Expanded(
-          child: ListView.separated(
-            controller: timelineScrollController,
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-            itemCount: controller.entries.length,
-            separatorBuilder: (_, _) => const Padding(
-              padding: EdgeInsets.symmetric(vertical: 14),
-              child: Divider(height: 1),
-            ),
-            itemBuilder: (context, index) =>
-                _TimelineEntry(controller.entries[index]),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final plan = controller.status == RuntimeStatus.running
+                  ? controller.activeTaskPlan
+                  : null;
+              final planHeight = (constraints.maxHeight - 16).clamp(
+                100.0,
+                340.0,
+              );
+              return Stack(
+                children: [
+                  ListView.separated(
+                    controller: timelineScrollController,
+                    padding: EdgeInsets.fromLTRB(
+                      24,
+                      12,
+                      24,
+                      plan == null ? 12 : planHeight + 28,
+                    ),
+                    itemCount: controller.entries.length,
+                    separatorBuilder: (_, _) => const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 14),
+                      child: Divider(height: 1),
+                    ),
+                    itemBuilder: (context, index) =>
+                        _TimelineEntry(controller.entries[index]),
+                  ),
+                  if (plan != null)
+                    Positioned(
+                      left: 16,
+                      right: 16,
+                      bottom: 12,
+                      child: Align(
+                        alignment: Alignment.bottomCenter,
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: 620,
+                            maxHeight: planHeight,
+                          ),
+                          child: _TaskPlanPanel(plan: plan),
+                        ),
+                      ),
+                    ),
+                ],
+              );
+            },
           ),
         ),
         _ComposerPanel(
@@ -1983,6 +2020,277 @@ class _ConversationPane extends StatelessWidget {
           onSend: onSend,
         ),
       ],
+    );
+  }
+}
+
+class _TaskPlanPanel extends StatefulWidget {
+  const _TaskPlanPanel({required this.plan});
+
+  final TaskPlan plan;
+
+  /// 创建负责当前步骤自动聚焦的面板状态。
+  /// Creates panel state that automatically focuses the current step.
+  @override
+  State<_TaskPlanPanel> createState() => _TaskPlanPanelState();
+}
+
+class _TaskPlanPanelState extends State<_TaskPlanPanel> {
+  late List<GlobalKey> _stepKeys;
+
+  TaskPlan get plan => widget.plan;
+
+  /// 初始化步骤锚点，并在首帧把当前步骤滚入可见区域。
+  /// Initializes step anchors and scrolls the current step into view after the first frame.
+  @override
+  void initState() {
+    super.initState();
+    _stepKeys = List.generate(plan.steps.length, (_) => GlobalKey());
+    _scheduleFocusedStepVisibility();
+  }
+
+  /// 在计划长度或当前步骤变化后同步锚点并重新聚焦。
+  /// Synchronizes anchors and refocuses after the plan length or current step changes.
+  @override
+  void didUpdateWidget(covariant _TaskPlanPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_stepKeys.length != plan.steps.length) {
+      _stepKeys = List.generate(plan.steps.length, (_) => GlobalKey());
+    }
+    if (oldWidget.plan.focusedStepIndex != plan.focusedStepIndex ||
+        oldWidget.plan.steps.length != plan.steps.length) {
+      _scheduleFocusedStepVisibility();
+    }
+  }
+
+  /// 等待布局完成后，将当前步骤平滑滚动到步骤列表的中央可见区域。
+  /// Waits for layout, then smoothly scrolls the current step into the center of the visible list.
+  void _scheduleFocusedStepVisibility() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final index = plan.focusedStepIndex;
+      if (index < 0 || index >= _stepKeys.length) return;
+      final stepContext = _stepKeys[index].currentContext;
+      if (stepContext == null) return;
+      unawaited(
+        Scrollable.ensureVisible(
+          stepContext,
+          alignment: 0.5,
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+        ),
+      );
+    });
+  }
+
+  /// 构建运行中任务的悬浮分步进度面板与当前步骤指示。
+  /// Builds the floating step-progress panel and current-step indicator for a running task.
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final focusedIndex = plan.focusedStepIndex;
+    final currentStep = focusedIndex < 0 ? 0 : focusedIndex + 1;
+    return Semantics(
+      container: true,
+      label: '执行计划，共 ${plan.steps.length} 步，当前第 $currentStep 步',
+      child: Column(
+        key: const Key('task-plan-progress'),
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(
+            child: Container(
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: palette.raised,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: palette.border),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.18),
+                    blurRadius: 18,
+                    offset: const Offset(0, 7),
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 13, 16, 10),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.route_outlined,
+                          size: 17,
+                          color: palette.active,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            plan.explanation ?? '执行计划',
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(
+                                  color: palette.muted,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          '${plan.completedStepCount}/${plan.steps.length}',
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(color: palette.muted),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Divider(height: 1, color: palette.border),
+                  Flexible(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.symmetric(vertical: 7),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: List.generate(
+                          plan.steps.length,
+                          (index) => KeyedSubtree(
+                            key: _stepKeys[index],
+                            child: _TaskPlanStepRow(
+                              key: Key('task-plan-step-$index'),
+                              step: plan.steps[index],
+                              focused: index == focusedIndex,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Container(
+            key: const Key('task-plan-current-step'),
+            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+            decoration: BoxDecoration(
+              color: palette.raised,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: palette.border),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _TaskPlanStatusMark(
+                  status: focusedIndex < 0
+                      ? TaskPlanStepStatus.pending
+                      : plan.steps[focusedIndex].status,
+                  active: true,
+                ),
+                const SizedBox(width: 7),
+                Text(
+                  '第 $currentStep / ${plan.steps.length} 步',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodySmall?.copyWith(color: palette.muted),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TaskPlanStepRow extends StatelessWidget {
+  const _TaskPlanStepRow({
+    required this.step,
+    required this.focused,
+    super.key,
+  });
+
+  final TaskPlanStep step;
+  final bool focused;
+
+  /// 构建单条计划步骤，并以文字语义和图形共同表达状态。
+  /// Builds one plan step, expressing status through both semantics and visuals.
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final statusLabel = switch (step.status) {
+      TaskPlanStepStatus.pending => '待执行',
+      TaskPlanStepStatus.inProgress => '进行中',
+      TaskPlanStepStatus.completed => '已完成',
+    };
+    return Semantics(
+      label: '$statusLabel：${step.step}',
+      child: Container(
+        color: focused
+            ? palette.active.withValues(alpha: 0.08)
+            : Colors.transparent,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: _TaskPlanStatusMark(status: step.status, active: focused),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                step.step,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: step.status == TaskPlanStepStatus.completed
+                      ? palette.muted
+                      : palette.trace,
+                  fontWeight: focused ? FontWeight.w600 : FontWeight.w400,
+                  decoration: step.status == TaskPlanStepStatus.completed
+                      ? TextDecoration.lineThrough
+                      : null,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TaskPlanStatusMark extends StatelessWidget {
+  const _TaskPlanStatusMark({required this.status, required this.active});
+
+  final TaskPlanStepStatus status;
+  final bool active;
+
+  /// 构建静态状态标记，避免持续动画干扰阅读和 Widget 测试稳定性。
+  /// Builds a static status mark to avoid perpetual motion and unstable widget tests.
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    if (status == TaskPlanStepStatus.completed) {
+      return Icon(Icons.check_circle, size: 16, color: palette.ack);
+    }
+    final color = active ? palette.active : palette.muted;
+    return Container(
+      width: 16,
+      height: 16,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: color, width: active ? 2 : 1.5),
+      ),
+      alignment: Alignment.center,
+      child: status == TaskPlanStepStatus.inProgress
+          ? Container(
+              width: 6,
+              height: 6,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            )
+          : null,
     );
   }
 }

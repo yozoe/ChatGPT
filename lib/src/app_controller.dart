@@ -13,6 +13,7 @@ import 'domain/git_project_status.dart';
 import 'domain/pending_approval.dart';
 import 'domain/relay_provider_configuration.dart';
 import 'domain/runtime_log_entry.dart';
+import 'domain/task_plan.dart';
 import 'domain/timeline_entry.dart';
 import 'services/codex_app_server.dart';
 import 'services/codex_plugin_store.dart';
@@ -182,6 +183,8 @@ class CodexController extends ChangeNotifier {
   RuntimeStatus status = RuntimeStatus.stopped;
   String? workspacePath;
   String? activeThreadId;
+  String? activeTurnId;
+  TaskPlan? activeTaskPlan;
   String? lastError;
   PendingApproval? pendingApproval;
   bool approvalResponding = false;
@@ -1334,6 +1337,11 @@ class CodexController extends ChangeNotifier {
         _appendAgentDelta(event.params);
         _scheduleDeltaNotification();
         return;
+      case 'turn/started':
+        final turn = event.params['turn'];
+        if (turn is Map) activeTurnId = turn['id']?.toString();
+      case 'turn/plan/updated':
+        _updateTaskPlan(event.params);
       case 'item/completed':
         _recordCompletedFileChange(event.params['item']);
       case 'turn/diff/updated':
@@ -1431,6 +1439,17 @@ class CodexController extends ChangeNotifier {
     }
     final previous = _entries[index];
     _entries[index] = previous.copyWith(detail: '${previous.detail}$text');
+  }
+
+  /// 应用当前 turn 的结构化计划更新，并忽略已知属于其他 turn 的迟到通知。
+  /// Applies a structured plan update for the current turn and ignores known late notifications from another turn.
+  void _updateTaskPlan(JsonMap params) {
+    final turnId = params['turnId']?.toString() ?? '';
+    if (activeTurnId != null && turnId.isNotEmpty && turnId != activeTurnId) {
+      return;
+    }
+    activeTurnId ??= turnId.isEmpty ? null : turnId;
+    activeTaskPlan = TaskPlan.fromNotification(params);
   }
 
   /// 处理任务结束事件，并采集其中的文件变更与统一 Diff。
@@ -2032,6 +2051,8 @@ class CodexController extends ChangeNotifier {
   /// Cancels streaming timers and clears the Agent-entry index.
   void _clearStreamingState() {
     _agentEntryIndexByItem.clear();
+    activeTurnId = null;
+    activeTaskPlan = null;
     _deltaNotificationTimer?.cancel();
     _deltaNotificationTimer = null;
   }

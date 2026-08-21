@@ -29,6 +29,7 @@ esac
 script_dir="${0:A:h}"
 source_app="$script_dir/build/macos/Build/Products/Release/chatgpt.app"
 target_app="/Applications/Codex Desk.app"
+target_parent="${target_app:h}"
 install_state_dir="$HOME/Library/Application Support/Codex Desk"
 install_fingerprint_file="$install_state_dir/install-fingerprint"
 bundle_identifier="com.yozoe.chatgpt"
@@ -64,7 +65,26 @@ stop_running_app() {
   fi
 
   print "Closing the currently running Codex Desk..."
-  /usr/bin/osascript -e "tell application id \"$bundle_identifier\" to quit" || true
+  # AppleScript can return userCanceled (-128) when Automation permission is
+  # declined or the app rejects the quit request. Keep that recoverable detail
+  # out of normal installer output and fall back to a scoped SIGTERM below.
+  /usr/bin/osascript \
+    -e "tell application id \"$bundle_identifier\" to quit" \
+    >/dev/null 2>&1 || true
+  for _ in {1..50}; do
+    if ! /usr/bin/pgrep -f "$target_app/Contents/MacOS/" >/dev/null; then
+      return
+    fi
+    sleep 0.1
+  done
+
+  local running_app_pids running_app_pid_output
+  running_app_pid_output="$(/usr/bin/pgrep -f "$target_app/Contents/MacOS/" || true)"
+  if [[ -n "$running_app_pid_output" ]]; then
+    running_app_pids=("${(@f)running_app_pid_output}")
+    print "Normal quit was unavailable; terminating the installed app process..."
+    /bin/kill -TERM "${running_app_pids[@]}" 2>/dev/null || true
+  fi
   for _ in {1..50}; do
     if ! /usr/bin/pgrep -f "$target_app/Contents/MacOS/" >/dev/null; then
       return
@@ -74,6 +94,14 @@ stop_running_app() {
 
   print -u2 "Codex Desk is still running. Close it manually, then rerun this script."
   exit 1
+}
+
+run_install_command() {
+  if [[ -w "$target_parent" ]]; then
+    "$@"
+  else
+    sudo "$@"
+  fi
 }
 
 if [[ "$mode" == "install" && -d "$target_app" && -f "$install_fingerprint_file" ]]; then
@@ -105,9 +133,9 @@ fi
 
 stop_running_app
 if [[ -e "$target_app" ]]; then
-  sudo /bin/rm -rf "$target_app"
+  run_install_command /bin/rm -rf "$target_app"
 fi
-sudo /usr/bin/ditto "$source_app" "$target_app"
+run_install_command /usr/bin/ditto "$source_app" "$target_app"
 if [[ "$built_current_source" == true ]]; then
   mkdir -p "$install_state_dir"
   print -r -- "$project_fingerprint" > "$install_fingerprint_file"
@@ -115,7 +143,7 @@ fi
 
 # The app keeps its bundle identifier across upgrades, so Finder and the Dock
 # can otherwise retain the previous icon after the application bundle changes.
-sudo /usr/bin/touch "$target_app"
+run_install_command /usr/bin/touch "$target_app"
 /usr/bin/killall Dock || true
 /usr/bin/killall Finder || true
 

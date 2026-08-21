@@ -12,6 +12,7 @@
 - 通过 `stdio` 启动 `codex app-server`
 - JSON-RPC 初始化、创建线程、发起任务与中断任务的最小客户端
 - 任务时间线与运行时状态界面
+- 应用共享状态由 Riverpod 管理：`ProviderScope` 持有 `CodexController` 生命周期，工作区通过 Provider 订阅状态；页面临时交互状态仍保留在局部 `StatefulWidget`
 - ChatGPT 浏览器登录与 OpenAI API Key 登录入口
 - 命令、文件变更与额外权限的显式审批
 - OpenAI Responses API 兼容中转站：模型、Base URL 与 macOS Keychain 密钥管理
@@ -23,6 +24,7 @@
 - 自动保存并恢复最近选择的本地项目路径，不向项目目录写入配置
 - 自动保存并恢复 macOS 主窗口的大小与位置；覆盖安装同一应用后仍会保留
 - 对话时间线采用扁平消息样式并自动滚至最新内容；Enter 发送消息，Shift+Enter 换行
+- 运行中任务会根据 App Server 的 `turn/plan/updated` 通知悬浮展示结构化步骤，区分待执行、进行中与已完成状态，并显示当前“第 N / M 步”；任务结束后自动收起
 - 底部输入区采用深色圆角工作台样式，集中展示任务状态、审批模式、模型与推理强度，并会随窗口宽度折叠次要工具项
 - 已接入本地 `yeknom_ui_kit` 的 Workbench 主题入口；顶部“主题”按钮可切换跟随系统、浅色或深色模式，以及八套 UI Kit 配色预设，工作区表面与状态颜色会随主题语义色同步切换
 - 右侧“文件变更”及对话区顶部入口会按 App Server 事件列出 AI 修改的文件；可展开查看每个文件与本次任务的统一 Diff，不扫描本地项目文件
@@ -33,7 +35,7 @@
 - 侧栏“Git 项目”提供只读的当前分支、暂存/未暂存/未跟踪改动摘要、文件列表与 Diff；不会执行暂存、还原、提交、切分支、拉取或推送
 - 线程列表支持批量归档；单个活跃或归档线程可在二次确认后永久删除，删除会同时移除 App Server 定义的派生线程，且无法恢复
 - 如果 App Server 暂时返回空线程列表，活跃列表会回退读取当前项目的本地 Codex session 元数据；回退读取只解析每个文件开头的有限元数据，并按工作区合并并缓存 10 秒，服务端有结果时始终以服务端为准，归档列表不使用此回退
-- 归档恢复操作具备重复提交防护，线程状态通知会同步刷新活跃与归档列表
+- 归档、恢复和永久删除操作具备重复提交防护，线程状态通知会同步刷新活跃与归档列表
 - 历史线程恢复会保留原 Provider，并防止过期刷新结果污染当前列表
 - 恢复线程时加载用户消息、Codex 回复与命令输出到当前时间线
 - 历史 turns 支持通过 `thread/turns/list` 分页补齐；未加载的 items 会按 turn 通过 `thread/items/list` 继续恢复，并展示计划、推理摘要、文件变更及工具事件
@@ -51,7 +53,7 @@ flutter run -d macos
 
 ### 安装到 Applications
 
-在项目根目录运行以下脚本会在应用源码发生变化时构建 Release 版本；随后会先正常关闭正在运行的 Codex Desk、替换 `/Applications/Codex Desk.app`，再启动新版本。若源码未变，则会重启已安装版本，避免临时签名重新覆盖后重复触发 macOS Keychain 授权。写入 `/Applications` 时 macOS 会要求输入管理员密码。
+在项目根目录运行以下脚本会在应用源码发生变化时构建 Release 版本；随后会先正常关闭正在运行的 Codex Desk、替换 `/Applications/Codex Desk.app`，再启动新版本。如果 macOS Automation 权限或应用状态导致正常退出请求被取消，脚本会静默回退，仅终止该安装包的进程后继续安装。若源码未变，则会重启已安装版本，避免临时签名重新覆盖后重复触发 macOS Keychain 授权。仅当当前账户对 `/Applications` 没有写权限时，macOS 才会要求输入管理员密码。
 
 ```bash
 ./install_macos.sh
@@ -116,6 +118,7 @@ dart run tool/verify_app_server_history.dart --cwd /path/to/workspace
 
 - 项目中的 Dart 方法均使用 Dartdoc 双语注释：先说明中文职责，再给出对应英文说明；公开方法还会说明重要的参数、返回值或副作用。
 - 注释描述当前行为与边界，不记录实现过程；修改方法行为时，必须同步更新其双语注释与本 README。
+- 应用范围状态从 `codexControllerProvider` 读取；新页面应优先使用 Riverpod 的 `ref.watch` / `ref.read`。`CodexController` 目前保留 `ChangeNotifier` 以桥接既有业务状态与异步服务，显式注入控制器仅用于测试或嵌入式场景。
 - 提交前依次运行 `dart format`、`flutter analyze` 与 `flutter test`；涉及 macOS 集成时，再运行 `flutter build macos --debug`。
 
 ### 本地 UI Kit
