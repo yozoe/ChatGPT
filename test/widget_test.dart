@@ -19,6 +19,7 @@ import 'package:chatgpt/src/services/git_project_service.dart';
 import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/relay_provider_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
+import 'package:chatgpt/src/services/theme_preferences_store.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -284,6 +285,11 @@ class _FakeCodexAppServer extends CodexAppServer {
   String? unarchivedThreadId;
   int unarchiveCalls = 0;
   Completer<void>? unarchiveCompleter;
+  final archivedThreadIds = <String>[];
+  int archiveCalls = 0;
+  Completer<void>? archiveCompleter;
+  final deletedThreadIds = <String>[];
+  final archiveFailureIds = <String>{};
 
   /// 始终报告运行中，模拟已连接的 App Server。
   /// Always reports running, simulating a connected App Server.
@@ -395,6 +401,34 @@ class _FakeCodexAppServer extends CodexAppServer {
     await unarchiveCompleter?.future;
     archivedListResponse = <JsonMap>[];
   }
+
+  /// 记录归档请求，并从活跃测试列表中移除相应任务。
+  /// Records archive requests and removes corresponding tasks from the active test list.
+  @override
+  Future<void> archiveThread({required String threadId}) async {
+    archiveCalls++;
+    await archiveCompleter?.future;
+    if (archiveFailureIds.contains(threadId)) {
+      throw StateError('无法归档 $threadId');
+    }
+    archivedThreadIds.add(threadId);
+    listResponse = listResponse
+        .where((value) => value['id']?.toString() != threadId)
+        .toList(growable: false);
+  }
+
+  /// 记录永久删除请求，并从活跃和归档测试列表中移除相应任务。
+  /// Records permanent deletion requests and removes matching tasks from both test lists.
+  @override
+  Future<void> deleteThread({required String threadId}) async {
+    deletedThreadIds.add(threadId);
+    listResponse = listResponse
+        .where((value) => value['id']?.toString() != threadId)
+        .toList(growable: false);
+    archivedListResponse = archivedListResponse
+        .where((value) => value['id']?.toString() != threadId)
+        .toList(growable: false);
+  }
 }
 
 /// 创建具有可预测字段的测试线程。
@@ -414,6 +448,18 @@ CodexThread _thread({
 
 /// 注册 Codex Desk 的 Widget、控制器与协议回归测试。
 /// Registers Codex Desk widget, controller, and protocol regression tests.
+final class _MemoryThemePreferencesStore implements CodexThemePreferencesStore {
+  final List<CodexThemePreferences> saved = [];
+
+  @override
+  Future<CodexThemePreferences> load() async => CodexThemePreferences.defaults;
+
+  @override
+  Future<void> save(CodexThemePreferences preferences) async {
+    saved.add(preferences);
+  }
+}
+
 void main() {
   late _MemoryConversationHistoryStore historyStore;
 
@@ -457,6 +503,30 @@ void main() {
     );
   });
 
+  testWidgets('persists display mode and color preset selections', (
+    tester,
+  ) async {
+    final store = _MemoryThemePreferencesStore();
+    await tester.pumpWidget(CodexDeskApp(themePreferencesStore: store));
+
+    await tester.tap(find.byTooltip('主题：深色 · 午夜'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('theme-mode-light')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('主题：浅色 · 午夜'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('theme-preset-obsidian')));
+    await tester.pumpAndSettle();
+
+    expect(
+      store.saved.last,
+      const CodexThemePreferences(
+        mode: ThemeMode.light,
+        preset: YeknomColorPreset.obsidian,
+      ),
+    );
+  });
+
   testWidgets('sends a composer message when Enter is pressed', (tester) async {
     final controller = CodexController(server: _FakeCodexAppServer())
       ..workspacePath = '/workspace'
@@ -477,6 +547,23 @@ void main() {
       contains('用 Enter 发送'),
     );
 
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('rebuilds when an explicitly injected controller changes', (
+    tester,
+  ) async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    controller.createThread();
+    await tester.pump();
+
+    expect(find.text('已新建任务'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -777,6 +864,35 @@ void main() {
     expect(find.text('preview-alpha'), findsNothing);
   });
 
+  testWidgets('keeps the task list visible while a selected task refreshes', (
+    tester,
+  ) async {
+    final server = _FakeCodexAppServer()
+      ..queueListRequests = true
+      ..listResponse = [
+        {'id': 'alpha', 'preview': 'preview-alpha'},
+        {'id': 'bravo', 'preview': 'preview-bravo'},
+      ];
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..threads = [_thread(id: 'alpha'), _thread(id: 'bravo')];
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.text('preview-alpha'));
+    await tester.pump();
+
+    expect(controller.threadsLoading, isTrue);
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    expect(find.text('preview-alpha'), findsOneWidget);
+    expect(find.text('preview-bravo'), findsOneWidget);
+
+    server.listRequests.single.complete(server.listResponse);
+    await tester.pumpAndSettle();
+  });
+
   test(
     'uses the authoritative App Server thread list after reconnecting',
     () async {
@@ -935,6 +1051,66 @@ void main() {
       );
     },
   );
+
+  test(
+    'creates a missing Codex config directory with an atomic plugin update',
+    () async {
+      final root = await Directory.systemTemp.createTemp('codex-config-root-');
+      addTearDown(() => root.delete(recursive: true));
+      final codexHome = Directory('${root.path}/missing/.codex');
+      const plugin = CodexPlugin(
+        id: 'sample@local',
+        name: 'sample',
+        marketplaceName: 'local',
+        installed: true,
+        enabled: false,
+      );
+
+      await CodexPluginStore(
+        codexHome: codexHome,
+      ).setPluginEnabled(plugin, true);
+
+      final config = File('${codexHome.path}/config.toml');
+      expect(
+        await config.readAsString(),
+        '[plugins."sample@local"]\nenabled = true\n',
+      );
+      expect(
+        await codexHome
+            .list()
+            .where((entry) => entry.path.contains('.tmp-'))
+            .isEmpty,
+        isTrue,
+      );
+    },
+  );
+
+  test('preserves a symlinked Codex config when updating a plugin', () async {
+    final root = await Directory.systemTemp.createTemp('codex-config-link-');
+    addTearDown(() => root.delete(recursive: true));
+    final target = File('${root.path}/managed/config.toml');
+    await target.parent.create(recursive: true);
+    await target.writeAsString('[plugins."sample@local"]\nenabled = false\n');
+    final codexHome = Directory('${root.path}/.codex');
+    await codexHome.create();
+    final configLink = Link('${codexHome.path}/config.toml');
+    await configLink.create(target.path);
+    const plugin = CodexPlugin(
+      id: 'sample@local',
+      name: 'sample',
+      marketplaceName: 'local',
+      installed: true,
+      enabled: false,
+    );
+
+    await CodexPluginStore(codexHome: codexHome).setPluginEnabled(plugin, true);
+
+    expect(
+      await FileSystemEntity.type(configLink.path, followLinks: false),
+      FileSystemEntityType.link,
+    );
+    expect(await target.readAsString(), contains('enabled = true'));
+  });
 
   testWidgets('opens the local Codex plugin manager', (tester) async {
     final pluginStore = _MemoryCodexPluginStore()
@@ -1147,6 +1323,33 @@ void main() {
   });
 
   test(
+    'keeps missing CLI failures recoverable with redacted diagnostics on retry',
+    () async {
+      final controller = CodexController(
+        server: CodexAppServer(executable: '/not/a/codex?token=private-token'),
+      )..workspacePath = Directory.systemTemp.path;
+
+      await controller.startRuntime();
+
+      expect(controller.status, RuntimeStatus.failed);
+      expect(controller.lastError, contains('未找到 Codex CLI'));
+      final firstReport = controller.buildRuntimeDiagnosticReport();
+      expect(firstReport, contains('Runtime status: failed'));
+      expect(firstReport, contains('CLI available: no'));
+      expect(firstReport, isNot(contains('private-token')));
+
+      await controller.startRuntime();
+
+      expect(controller.status, RuntimeStatus.failed);
+      expect(
+        controller.entries.where((entry) => entry.title == '无法启动运行时'),
+        hasLength(2),
+      );
+      controller.dispose();
+    },
+  );
+
+  test(
     'reads an untracked file and diff from a real temporary Git repository',
     () async {
       final directory = await Directory.systemTemp.createTemp('codex-git-');
@@ -1160,6 +1363,13 @@ void main() {
         '${directory.path}/new_file.txt',
       ).writeAsString('new content\n');
       final service = GitProjectService();
+
+      final configured = await Process.run('git', [
+        'config',
+        'status.showUntrackedFiles',
+        'no',
+      ], workingDirectory: directory.path);
+      expect(configured.exitCode, 0);
 
       final status = await service.inspect(directory.path);
 
@@ -1231,7 +1441,8 @@ void main() {
   test('redacts credentials from runtime diagnostics', () {
     final value = CodexAppServer.redactDiagnosticText(
       'api_key=private-key token: token-value '
-      '{"secret":"json-secret"} authorization: Bearer bearer-value sk-private',
+      '{"secret":"json-secret"} authorization: Bearer bearer-value '
+      'Authorization: Basic YWxpY2U6c2VjcmV0 sk-private',
     );
 
     expect(value, contains('api_key=***'));
@@ -1240,6 +1451,8 @@ void main() {
     expect(value, isNot(contains('token-value')));
     expect(value, isNot(contains('json-secret')));
     expect(value, isNot(contains('bearer-value')));
+    expect(value, contains('Authorization: ***'));
+    expect(value, isNot(contains('YWxpY2U6c2VjcmV0')));
     expect(value, isNot(contains('sk-private')));
   });
 
@@ -1681,9 +1894,13 @@ void main() {
       ..archivedListResponse = [
         {'id': 'restored-thread', 'preview': '已恢复任务'},
       ];
-    final controller = CodexController(server: server)
-      ..workspacePath = '/workspace'
-      ..status = RuntimeStatus.ready;
+    final controller =
+        CodexController(
+            server: server,
+            localSessionThreadStore: _MemoryLocalSessionThreadStore(),
+          )
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready;
 
     await controller.refreshArchivedThreads();
     expect(controller.archivedThreads.single.id, 'restored-thread');
@@ -1695,6 +1912,134 @@ void main() {
     expect(controller.threads.single.id, 'restored-thread');
     controller.dispose();
   });
+
+  test(
+    'archives selected tasks in sequence and clears their local pins',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..listResponse = [
+          {'id': 'first', 'preview': 'first'},
+          {'id': 'second', 'preview': 'second'},
+        ];
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await controller.refreshThreads();
+      controller.toggleThreadPinned(controller.threads.first);
+
+      await controller.archiveThreads(controller.threads);
+
+      expect(server.archivedThreadIds, ['first', 'second']);
+      expect(controller.threads, isEmpty);
+      expect(controller.isThreadPinned('first'), isFalse);
+      expect(
+        controller.entries
+            .lastWhere((entry) => entry.title == '任务已批量归档')
+            .detail,
+        '已归档 2 个任务。',
+      );
+      controller.dispose();
+    },
+  );
+
+  test(
+    'prevents duplicate archive requests for a task already updating',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..listResponse = [
+          {'id': 'archive-once', 'preview': '只归档一次'},
+        ]
+        ..archiveCompleter = Completer<void>();
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await controller.refreshThreads();
+      final thread = controller.threads.single;
+
+      final first = controller.archiveThreads([thread]);
+      await Future<void>.delayed(Duration.zero);
+      final second = await controller.archiveThreads([thread]);
+
+      expect(server.archiveCalls, 1);
+      expect(second, isEmpty);
+      server.archiveCompleter!.complete();
+      expect(await first, {thread.id});
+      controller.dispose();
+    },
+  );
+
+  test(
+    'permanently deletes an archived task and removes it from local lists',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..archivedListResponse = [
+          {'id': 'remove-me', 'preview': 'remove-me'},
+        ];
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await controller.refreshArchivedThreads();
+
+      await controller.deleteThread(controller.archivedThreads.single);
+
+      expect(server.deletedThreadIds, ['remove-me']);
+      expect(controller.archivedThreads, isEmpty);
+      expect(
+        controller.entries
+            .lastWhere((entry) => entry.title == '任务已永久删除')
+            .detail,
+        'remove-me',
+      );
+      controller.dispose();
+    },
+  );
+
+  test('does not restore a deleted task from local session fallback', () async {
+    final localSessions = _MemoryLocalSessionThreadStore()
+      ..threadsByWorkspace['/workspace'] = [_thread(id: 'remove-me')];
+    final server = _FakeCodexAppServer()
+      ..listResponse = [
+        {'id': 'remove-me', 'preview': 'remove-me'},
+      ];
+    final controller =
+        CodexController(server: server, localSessionThreadStore: localSessions)
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready;
+    await controller.refreshThreads();
+
+    await controller.deleteThread(controller.threads.single);
+
+    expect(controller.threads, isEmpty);
+    controller.dispose();
+  });
+
+  test(
+    'persists completed batch archive state when a later task fails',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..listResponse = [
+          {'id': 'first', 'preview': 'first'},
+          {'id': 'second', 'preview': 'second'},
+        ]
+        ..archiveFailureIds.add('second');
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await controller.refreshThreads();
+
+      final archivedIds = await controller.archiveThreads(controller.threads);
+
+      expect(archivedIds, {'first'});
+      expect(controller.threads.single.id, 'second');
+      expect(
+        controller.entries
+            .lastWhere((entry) => entry.title == '部分任务归档失败')
+            .detail,
+        contains('无法归档 second'),
+      );
+      controller.dispose();
+    },
+  );
 
   test('prevents duplicate archived thread restore requests', () async {
     final server = _FakeCodexAppServer()
@@ -1742,4 +2087,43 @@ void main() {
     expect(controller.archivedThreads, isEmpty);
     controller.dispose();
   });
+
+  test(
+    'refreshes both task lists after thread deletion notifications',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..listResponse = [
+          {'id': 'deleted', 'preview': 'deleted'},
+        ]
+        ..archivedListResponse = [
+          {'id': 'deleted-archived', 'preview': 'deleted archived'},
+        ];
+      final controller =
+          CodexController(
+              server: server,
+              localSessionThreadStore: _MemoryLocalSessionThreadStore(),
+            )
+            ..workspacePath = '/workspace'
+            ..status = RuntimeStatus.ready;
+      await Future.wait([
+        controller.refreshThreads(),
+        controller.refreshArchivedThreads(),
+      ]);
+      server
+        ..listResponse = <JsonMap>[]
+        ..archivedListResponse = <JsonMap>[];
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'thread/deleted',
+          params: {'threadId': 'deleted'},
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(controller.threads, isEmpty);
+      expect(controller.archivedThreads, isEmpty);
+      controller.dispose();
+    },
+  );
 }

@@ -17,6 +17,7 @@ class CodexPluginStore {
 
   final String Function() _executableProvider;
   final Directory? _codexHome;
+  Future<void> _configWriteQueue = Future.value();
 
   /// 返回已安装及当前 marketplace 可安装的插件列表。
   /// Returns installed plugins and plugins available from current marketplaces.
@@ -123,12 +124,40 @@ class CodexPluginStore {
   /// Updates an installed plugin's enabled state in `config.toml`.
   Future<void> setPluginEnabled(CodexPlugin plugin, bool enabled) async {
     if (!plugin.installed) return;
+    final operation = _configWriteQueue.then(
+      (_) => _writePluginEnabled(plugin, enabled),
+    );
+    _configWriteQueue = operation.then<void>((_) {}, onError: (_, _) {});
+    return operation;
+  }
+
+  /// 串行且原子地写入插件启用状态，避免应用内并发操作损坏配置文件。
+  /// Serially and atomically writes plugin state to prevent in-app concurrent operations from corrupting the config file.
+  Future<void> _writePluginEnabled(CodexPlugin plugin, bool enabled) async {
     final config = File(
       '${(_codexHome ?? _defaultCodexHome()).path}/config.toml',
     );
     final current = await config.exists() ? await config.readAsString() : '';
     final next = _replaceEnabledValue(current, plugin.id, enabled);
-    await config.writeAsString(next, flush: true);
+    final writeTarget = await _configWriteTarget(config);
+    await writeTarget.parent.create(recursive: true);
+    final temporary = File(
+      '${writeTarget.path}.tmp-${DateTime.now().microsecondsSinceEpoch}',
+    );
+    try {
+      await temporary.writeAsString(next, flush: true);
+      await temporary.rename(writeTarget.path);
+    } finally {
+      if (await temporary.exists()) await temporary.delete();
+    }
+  }
+
+  /// 返回配置写入的实际目标，保留用户通过符号链接维护的 `config.toml`。
+  /// Returns the actual config write target while preserving a user-managed `config.toml` symlink.
+  Future<File> _configWriteTarget(File config) async {
+    final type = await FileSystemEntity.type(config.path, followLinks: false);
+    if (type != FileSystemEntityType.link) return config;
+    return File(await Link(config.path).resolveSymbolicLinks());
   }
 
   /// 执行 CLI 子命令并将失败信息转换为可展示的错误。
@@ -158,7 +187,8 @@ class CodexPluginStore {
     ).firstMatch(config);
     final line = 'enabled = $enabled';
     if (headerMatch == null) {
-      final separator = config.isEmpty || config.endsWith('\n') ? '' : '\n';
+      if (config.isEmpty) return '$header\n$line\n';
+      final separator = config.endsWith('\n') ? '' : '\n';
       return '$config$separator\n$header\n$line\n';
     }
     final nextHeaders = RegExp(

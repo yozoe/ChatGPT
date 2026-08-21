@@ -398,6 +398,13 @@ class CodexAppServer {
     _throwIfError(response);
   }
 
+  /// 在 App Server 中永久删除线程及其派生线程。
+  /// Permanently deletes a thread and its spawned descendants in App Server.
+  Future<void> deleteThread({required String threadId}) async {
+    final response = await request('thread/delete', {'threadId': threadId});
+    _throwIfError(response);
+  }
+
   /// 在 App Server 中恢复归档线程。
   /// Unarchives a thread in App Server.
   Future<void> unarchiveThread({required String threadId}) async {
@@ -562,9 +569,16 @@ class CodexAppServer {
     _pending.clear();
   }
 
-  /// 从诊断文本中隐藏 Bearer Token、常见 API Key 和凭据字段。
-  /// Redacts Bearer tokens, common API keys, and credential fields from diagnostic text.
+  /// 从诊断文本中隐藏 Bearer/Basic 凭据、常见 API Key 和凭据字段。
+  /// Redacts Bearer/Basic credentials, common API keys, and credential fields from diagnostic text.
   static String redactDiagnosticText(String value) => value
+      .replaceAllMapped(
+        RegExp(
+          r'(\bAuthorization\s*[:=]\s*)(?:Bearer|Basic)\s+[^\s,;}\]"]+',
+          caseSensitive: false,
+        ),
+        (match) => '${match.group(1)}***',
+      )
       .replaceAll(
         RegExp(r'Bearer\s+[^\s]+', caseSensitive: false),
         'Bearer ***',

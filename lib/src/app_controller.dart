@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'domain/codex_thread.dart';
 import 'domain/codex_plugin.dart';
@@ -75,6 +76,36 @@ extension ApprovalModeLabel on ApprovalMode {
   };
 }
 
+/// 提供应用共享的 Codex 控制器，并在 ProviderScope 销毁时释放资源。
+/// Provides the app-wide Codex controller and releases its resources when the ProviderScope is disposed.
+final codexControllerProvider =
+    NotifierProvider<CodexControllerNotifier, CodexController>(
+      CodexControllerNotifier.new,
+    );
+
+/// 将既有控制器的状态变更桥接为 Riverpod 状态更新。
+/// Bridges existing controller changes into Riverpod state updates.
+class CodexControllerNotifier extends Notifier<CodexController> {
+  late final CodexController _controller;
+
+  @override
+  CodexController build() {
+    _controller = CodexController();
+    _controller.addListener(_publishControllerChange);
+    ref.onDispose(() {
+      _controller.removeListener(_publishControllerChange);
+      _controller.dispose();
+    });
+    return _controller;
+  }
+
+  void _publishControllerChange() => state = _controller;
+
+  @override
+  bool updateShouldNotify(CodexController previous, CodexController next) =>
+      true;
+}
+
 class CodexController extends ChangeNotifier {
   CodexController({
     CodexAppServer? server,
@@ -137,6 +168,8 @@ class CodexController extends ChangeNotifier {
   int _threadRefreshRequest = 0;
   int _archivedThreadRefreshRequest = 0;
   final Set<String> _unarchivingThreadIds = {};
+  final Set<String> _archivingThreadIds = {};
+  final Set<String> _deletingThreadIds = {};
   static const _maximumRuntimeLogEntries = 200;
   Future<void> _reasoningEffortSave = Future.value();
   Map<String, Set<ReasoningEffort>> _reasoningEffortsByModel = const {};
@@ -563,7 +596,12 @@ class CodexController extends ChangeNotifier {
 
   /// 从 App Server 分页刷新当前工作区的活跃线程列表。
   /// Refreshes the current workspace's active thread list from App Server pages.
-  Future<void> refreshThreads() async {
+  ///
+  /// 当删除通知或删除请求刚完成时，服务端空列表是权威结果，不应由旧本地
+  /// session 元数据重新填充。
+  /// When a deletion event or request has just completed, an empty server list is
+  /// authoritative and must not be repopulated from stale local session metadata.
+  Future<void> refreshThreads({bool allowLocalSessionFallback = true}) async {
     final workspace = workspacePath;
     if (!_server.isRunning || workspace == null) return;
     final epoch = _threadRefreshEpoch;
@@ -575,7 +613,7 @@ class CodexController extends ChangeNotifier {
       final serverThreads = (await _server.listThreads(
         workingDirectory: workspace,
       )).map(CodexThread.fromJson).toList(growable: false);
-      final nextThreads = serverThreads.isEmpty
+      final nextThreads = serverThreads.isEmpty && allowLocalSessionFallback
           ? await _localSessionThreadStore.listThreads(workspace)
           : serverThreads;
       if (_isCurrentThreadRefresh(request, epoch, workspace)) {
@@ -863,25 +901,115 @@ class CodexController extends ChangeNotifier {
   /// 归档指定线程并刷新活跃线程状态。
   /// Archives a thread and refreshes active thread state.
   Future<void> archiveThread(CodexThread thread) async {
-    if (!_server.isRunning || status == RuntimeStatus.running) return;
+    await archiveThreads([thread]);
+  }
+
+  /// 批量归档指定线程，并在成功后更新当前项目的本地列表。
+  /// Archives selected threads in sequence and updates the current workspace list after each success.
+  Future<Set<String>> archiveThreads(Iterable<CodexThread> selected) async {
+    final items =
+        <String, CodexThread>{for (final thread in selected) thread.id: thread}
+            .values
+            .where((thread) => !_archivingThreadIds.contains(thread.id))
+            .toList(growable: false);
+    if (!_server.isRunning ||
+        status == RuntimeStatus.running ||
+        items.isEmpty) {
+      return const <String>{};
+    }
+    _archivingThreadIds.addAll(items.map((thread) => thread.id));
+    if (!_disposed) notifyListeners();
+    final archivedIds = <String>{};
+    Object? failure;
     try {
-      await _server.archiveThread(threadId: thread.id);
+      for (final thread in items) {
+        try {
+          await _server.archiveThread(threadId: thread.id);
+        } catch (error) {
+          failure = error;
+          break;
+        }
+        archivedIds.add(thread.id);
+        threads = threads
+            .where((value) => value.id != thread.id)
+            .toList(growable: false);
+        _pinnedThreadIds.remove(thread.id);
+        if (activeThreadId == thread.id) {
+          activeThreadId = null;
+          _resetConversationTimeline();
+          _clearStreamingState();
+        }
+      }
+      if (archivedIds.isNotEmpty) {
+        _scheduleConversationHistorySave();
+        _add(
+          TimelineKind.system,
+          archivedIds.length == 1 ? '任务已归档' : '任务已批量归档',
+          archivedIds.length == 1
+              ? items
+                    .firstWhere((thread) => thread.id == archivedIds.single)
+                    .title
+              : '已归档 ${archivedIds.length} 个任务。',
+        );
+      }
+      if (failure != null) {
+        lastError = _messageOf(failure);
+        _add(
+          TimelineKind.error,
+          archivedIds.isEmpty ? '归档失败' : '部分任务归档失败',
+          lastError!,
+        );
+      }
+    } finally {
+      _archivingThreadIds.removeAll(items.map((thread) => thread.id));
+      if (!_disposed) notifyListeners();
+    }
+    return archivedIds;
+  }
+
+  /// 永久删除指定任务及 App Server 定义的派生任务，并清理本应用的对应缓存引用。
+  /// Permanently deletes a task and App Server-defined descendants, then removes matching local cache references.
+  Future<void> deleteThread(CodexThread thread) async {
+    if (!_server.isRunning ||
+        status == RuntimeStatus.running ||
+        !_deletingThreadIds.add(thread.id)) {
+      return;
+    }
+    if (!_disposed) notifyListeners();
+    try {
+      await _server.deleteThread(threadId: thread.id);
+      threads = threads
+          .where((value) => value.id != thread.id)
+          .toList(growable: false);
+      archivedThreads = archivedThreads
+          .where((value) => value.id != thread.id)
+          .toList(growable: false);
+      _pinnedThreadIds.remove(thread.id);
       if (activeThreadId == thread.id) {
         activeThreadId = null;
         _resetConversationTimeline();
         _clearStreamingState();
       }
-      threads = threads
-          .where((value) => value.id != thread.id)
-          .toList(growable: false);
-      _pinnedThreadIds.remove(thread.id);
-      _add(TimelineKind.system, '任务已归档', thread.title);
+      _scheduleConversationHistorySave();
+      _add(TimelineKind.system, '任务已永久删除', thread.title);
+      await Future.wait([
+        refreshThreads(allowLocalSessionFallback: false),
+        refreshArchivedThreads(),
+      ]);
     } catch (error) {
       lastError = _messageOf(error);
-      _add(TimelineKind.error, '归档失败', lastError!);
+      _add(TimelineKind.error, '删除任务失败', lastError!);
+    } finally {
+      _deletingThreadIds.remove(thread.id);
+      if (!_disposed) notifyListeners();
     }
-    notifyListeners();
   }
+
+  /// 判断指定任务是否正处于归档或删除处理中。
+  /// Determines whether a task is currently being archived or deleted.
+  bool isUpdatingThread(String threadId) =>
+      _archivingThreadIds.contains(threadId) ||
+      _deletingThreadIds.contains(threadId);
 
   /// 恢复归档线程，并防止对同一线程重复提交恢复请求。
   /// Unarchives a thread while preventing duplicate requests for that thread.
@@ -1217,6 +1345,9 @@ class CodexController extends ChangeNotifier {
       case 'thread/unarchived':
       case 'thread/name/updated':
         unawaited(refreshThreads());
+        unawaited(refreshArchivedThreads());
+      case 'thread/deleted':
+        unawaited(refreshThreads(allowLocalSessionFallback: false));
         unawaited(refreshArchivedThreads());
       case 'runtime/stderr':
       case 'runtime/invalidMessage':

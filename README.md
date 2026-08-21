@@ -2,6 +2,10 @@
 
 一个以 Flutter 构建的本地优先 Codex 桌面客户端。首个目标平台是 macOS。
 
+后续开发任务、优先级与发布前置条件见 [ROADMAP.md](ROADMAP.md)；每项工作完成后会同步更新该清单和本文档。
+
+平台支持范围与 Windows/Linux 评估见 [PLATFORM_SUPPORT.md](PLATFORM_SUPPORT.md)。
+
 ## 当前进度
 
 - Flutter macOS 工程骨架
@@ -27,6 +31,7 @@
 - 提供“插件”管理入口：读取本机 Codex CLI 的已安装与可安装插件、添加本地或远程 marketplace、刷新 Git marketplace、安装/卸载及启用/停用插件；插件会展示安装策略与认证时机，OAuth/连接器授权仍由 Codex Host 在安装或首次使用时处理；变更后需重启运行时并新建任务才会生效
 - “Codex CLI”运行时窗口会展示 CLI 自动发现来源、版本与最近 stderr/协议诊断日志；日志仅在内存中保留最近 200 条，可一键复制脱敏诊断报告，不会写入对话历史
 - 侧栏“Git 项目”提供只读的当前分支、暂存/未暂存/未跟踪改动摘要、文件列表与 Diff；不会执行暂存、还原、提交、切分支、拉取或推送
+- 线程列表支持批量归档；单个活跃或归档线程可在二次确认后永久删除，删除会同时移除 App Server 定义的派生线程，且无法恢复
 - 如果 App Server 暂时返回空线程列表，活跃列表会回退读取当前项目的本地 Codex session 元数据；回退读取只解析每个文件开头的有限元数据，并按工作区合并并缓存 10 秒，服务端有结果时始终以服务端为准，归档列表不使用此回退
 - 归档恢复操作具备重复提交防护，线程状态通知会同步刷新活跃与归档列表
 - 历史线程恢复会保留原 Provider，并防止过期刷新结果污染当前列表
@@ -46,11 +51,23 @@ flutter run -d macos
 
 ### 安装到 Applications
 
-在项目根目录运行以下脚本会构建 Release 版本、替换 `/Applications/Codex Desk.app` 并启动应用。写入 `/Applications` 时 macOS 会要求输入管理员密码。
+在项目根目录运行以下脚本会在应用源码发生变化时构建 Release 版本；随后会先正常关闭正在运行的 Codex Desk、替换 `/Applications/Codex Desk.app`，再启动新版本。若源码未变，则会重启已安装版本，避免临时签名重新覆盖后重复触发 macOS Keychain 授权。写入 `/Applications` 时 macOS 会要求输入管理员密码。
 
 ```bash
 ./install_macos.sh
 ```
+
+如需只构建、不安装或启动，可运行 `./install_macos.sh --build-only`。如需使用既有的 Release 构建重新安装而不重新编译，可运行 `./install_macos.sh --install-only`。
+
+### 生成 DMG
+
+以下命令会构建 Release 应用并生成未签名 DMG；不会启动应用。默认输出为 `dist/Codex-Desk-<version>.dmg`，版本来自 `pubspec.yaml`。
+
+```bash
+./build_dmg.sh
+```
+
+可使用 `./build_dmg.sh --output /absolute/path/Codex-Desk.dmg` 指定输出路径。发布步骤、干净 macOS 安装回归与签名/公证前置条件见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)；当前尚未配置 Apple Developer 签名和 notarization 凭据。
 
 ## App Server 历史验证
 
@@ -73,9 +90,9 @@ dart run tool/verify_app_server_history.dart --cwd /path/to/workspace
 
 ## 运行时诊断
 
-在侧栏点击“Codex CLI”可打开运行时窗口。窗口会重新探测当前 CLI，展示自动发现策略、解析到的可执行文件和版本；最近的 App Server stderr 与无法解析的协议行会以信息、警告或错误级别显示。使用“复制诊断”可生成包含运行状态、CLI 检测结果、`CODEX_HOME` 是否已配置以及最近日志的文本，适合贴到问题反馈中。
+在侧栏点击“Codex CLI”可打开运行时窗口。窗口会重新探测当前 CLI，展示自动发现策略、解析到的可执行文件和版本；最近的 App Server stderr 与无法解析的协议行会以信息、警告或错误级别显示。使用“复制诊断”或“导出诊断”可生成包含运行状态、CLI 检测结果、`CODEX_HOME` 是否已配置以及最近日志的文本，适合贴到问题反馈中。导出时会再次生成脱敏文本，并仅写入你在系统文件选择器中指定的位置。
 
-日志最多保留 200 条，重启本地运行时时会清空，且不会保存到历史缓存或项目文件。复制与展示前会隐藏 Bearer Token、`sk-` Key 以及 `api_key`、`token`、`secret`、`password`、`authorization` 等常见凭据字段；仍应在分享前自行检查诊断文本是否含有不希望公开的项目或环境信息。
+日志最多保留 200 条，重启本地运行时时会清空，且不会保存到历史缓存或项目文件。复制与展示前会完整隐藏 `Authorization: Bearer ...` 和 `Authorization: Basic ...` 凭据、`sk-` Key 以及 `api_key`、`token`、`secret`、`password` 等常见凭据字段；仍应在分享前自行检查诊断文本是否含有不希望公开的项目或环境信息。
 
 ## Git 项目视图
 
@@ -88,12 +105,12 @@ dart run tool/verify_app_server_history.dart --cwd /path/to/workspace
 - 不会在项目文件、应用日志或界面中保存 API Key；密钥仅提交给本地 Codex 运行时。
 - macOS Application Support 内的本地历史缓存会用 Keychain 密钥加密；手动导出的历史 JSON 为便于跨设备或备份恢复而保持明文，因此可能包含敏感对话和 Diff。
 - App Server stderr 和协议诊断只会作为有上限的内存记录展示；不会进入历史缓存、项目文件或应用日志。运行时诊断复制内容会套用凭据脱敏规则，但任何诊断文本都应仅分享给可信对象。
-- Git 项目视图为只读，且通过不使用 Shell 的受限 Git 子命令读取状态和 Diff；不会自动修改暂存区、工作区、分支或远端。
+- Git 项目视图为只读，且通过不使用 Shell 的受限 Git 子命令读取状态和 Diff；会显式读取全部未跟踪文件，不受用户 Git 的 `status.showUntrackedFiles` 配置影响；不会自动修改暂存区、工作区、分支或远端。
 - 运行时只通过本机 `stdio` JSON-RPC 通信；不会启用远程 WebSocket。
 - 审批默认逐次确认；可在“变更与审批”切换为自动批准。自动模式会直接允许命令、文件变更与额外权限请求，并在时间线留下记录。
 - 中转站仅接受 HTTPS（localhost 可用 HTTP），并要求 Responses API 与 SSE 流式协议兼容。密钥存入 macOS Keychain，Provider 定义仅注入本应用创建的 Thread，不修改 `~/.codex/config.toml`。
 - macOS 桌面构建不启用 App Sandbox：客户端需要启动本机 `codex` 并读取其 `~/.codex` 配置。中转站凭据与运行时路径仍使用标准 macOS Keychain 保存，不依赖本地 ad-hoc 签名无法提供的 Data Protection Keychain entitlement。
-- 插件管理会调用本机 `codex plugin` 子命令，并仅修改当前 Codex Home（优先 `CODEX_HOME`，否则 `~/.codex`）配置中相应插件的 `enabled` 状态；会保留 TOML 行尾注释，请只添加和安装可信来源的 marketplace 与插件。
+- 插件管理会调用本机 `codex plugin` 子命令，并仅修改当前 Codex Home（优先 `CODEX_HOME`，否则 `~/.codex`）配置中相应插件的 `enabled` 状态；配置写入会串行化，并以同目录临时文件原子替换，且会保留 TOML 行尾注释；请只添加和安装可信来源的 marketplace 与插件。
 
 ## 开发约定
 

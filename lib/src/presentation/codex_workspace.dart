@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:yeknom_ui_kit/yeknom_workbench.dart';
@@ -16,9 +18,9 @@ import '../domain/codex_thread.dart';
 import '../domain/pending_approval.dart';
 import '../domain/timeline_entry.dart';
 
-class CodexWorkspace extends StatefulWidget {
+class CodexWorkspace extends ConsumerStatefulWidget {
   const CodexWorkspace({
-    required this.controller,
+    this.controller,
     this.themeMode = ThemeMode.dark,
     this.themePreset = YeknomColorPreset.midnight,
     this.onThemeModeChanged,
@@ -26,7 +28,9 @@ class CodexWorkspace extends StatefulWidget {
     super.key,
   });
 
-  final CodexController controller;
+  /// 测试或嵌入式场景可显式注入控制器；正常运行时从 Riverpod 读取共享实例。
+  /// Tests and embedded callers may inject a controller; normal execution reads the shared Riverpod instance.
+  final CodexController? controller;
   final ThemeMode themeMode;
   final YeknomColorPreset themePreset;
   final ValueChanged<ThemeMode>? onThemeModeChanged;
@@ -35,31 +39,44 @@ class CodexWorkspace extends StatefulWidget {
   /// 创建承载工作区页面状态的 State 对象。
   /// Creates the State object that owns workspace-page state.
   @override
-  State<CodexWorkspace> createState() => _CodexWorkspaceState();
+  ConsumerState<CodexWorkspace> createState() => _CodexWorkspaceState();
 }
 
-class _CodexWorkspaceState extends State<CodexWorkspace> {
+class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   final TextEditingController _composer = TextEditingController();
   final ScrollController _timelineScrollController = ScrollController();
   bool _timelineScrollScheduled = false;
+  late final CodexController _controller;
 
   /// 注册控制器监听器，使时间线在内容更新后自动滚动。
   /// Registers the controller listener that scrolls the timeline after updates.
   @override
   void initState() {
     super.initState();
-    widget.controller.addListener(_scheduleTimelineScroll);
+    _controller = widget.controller ?? ref.read(codexControllerProvider)!;
+    _controller.addListener(_handleControllerUpdate);
   }
 
   /// 移除监听器并释放编辑、滚动与控制器资源。
   /// Removes listeners and releases composer, scrolling, and controller resources.
   @override
   void dispose() {
-    widget.controller.removeListener(_scheduleTimelineScroll);
+    _controller.removeListener(_handleControllerUpdate);
     _composer.dispose();
     _timelineScrollController.dispose();
-    widget.controller.dispose();
+    // 显式注入的控制器沿用原有由工作区释放的约定；Provider 创建的
+    // 控制器由 ProviderScope 统一释放。
+    // Explicitly injected controllers retain the original workspace ownership;
+    // Provider-created controllers are disposed by ProviderScope.
+    if (widget.controller != null) _controller.dispose();
     super.dispose();
+  }
+
+  /// 响应控制器更新；显式注入时由工作区重建，Provider 场景仍由 ref.watch 重建。
+  /// Responds to controller updates; the workspace rebuilds explicit injections while ref.watch rebuilds provider state.
+  void _handleControllerUpdate() {
+    if (widget.controller != null && mounted) setState(() {});
+    _scheduleTimelineScroll();
   }
 
   /// 在下一帧将时间线平滑滚动到最新内容。
@@ -85,7 +102,7 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     try {
       final path = await getDirectoryPath(confirmButtonText: '选择项目');
       if (path != null && path.trim().isNotEmpty) {
-        await widget.controller.selectWorkspace(path);
+        await _controller.selectWorkspace(path);
       }
     } catch (_) {
       if (!mounted) return;
@@ -101,7 +118,7 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     final prompt = _composer.text;
     if (prompt.trim().isEmpty) return;
     _composer.clear();
-    await widget.controller.sendPrompt(prompt);
+    await _controller.sendPrompt(prompt);
   }
 
   /// 将当前项目的本地历史导出到用户选择的 JSON 文件；文件不包含 API Key。
@@ -116,7 +133,7 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
         confirmButtonText: '导出历史',
       );
       if (location == null) return;
-      final content = widget.controller.exportConversationHistory();
+      final content = _controller.exportConversationHistory();
       await XFile.fromData(
         Uint8List.fromList(utf8.encode(content)),
         mimeType: 'application/json',
@@ -167,7 +184,7 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
         ),
       );
       if (confirmed != true) return;
-      await widget.controller.importConversationHistory(
+      await _controller.importConversationHistory(
         await selected.readAsString(),
       );
       if (mounted) {
@@ -191,9 +208,9 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     await showDialog<void>(
       context: context,
       builder: (context) => AnimatedBuilder(
-        animation: widget.controller,
+        animation: _controller,
         builder: (context, _) {
-          final controller = widget.controller;
+          final controller = _controller;
           return AlertDialog(
             title: const Text('账户与登录'),
             content: SizedBox(
@@ -292,16 +309,16 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
   /// 显示中转站 Provider 配置对话框并安全提交设置。
   /// Shows the relay-provider dialog and securely submits its settings.
   Future<void> _showRelayProvider() async {
-    final current = widget.controller.relayProvider;
+    final current = _controller.relayProvider;
     final baseUrl = TextEditingController(text: current?.baseUrl ?? '');
     final model = TextEditingController(text: current?.model ?? '');
     final apiKey = TextEditingController();
     await showDialog<void>(
       context: context,
       builder: (context) => AnimatedBuilder(
-        animation: widget.controller,
+        animation: _controller,
         builder: (context, _) {
-          final controller = widget.controller;
+          final controller = _controller;
           final palette = YeknomPalette.of(context);
           return AlertDialog(
             title: const Text('中转站 Provider'),
@@ -401,14 +418,14 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
   /// 探测并显示 Codex CLI 状态，同时提供路径配置入口。
   /// Probes and shows Codex CLI status while offering path configuration.
   Future<void> _showRuntime() async {
-    await widget.controller.inspectRuntime();
+    await _controller.inspectRuntime();
     if (!mounted) return;
     await showDialog<void>(
       context: context,
       builder: (context) => AnimatedBuilder(
-        animation: widget.controller,
+        animation: _controller,
         builder: (context, _) {
-          final controller = widget.controller;
+          final controller = _controller;
           final probe = controller.runtimeProbe;
           return AlertDialog(
             title: const Text('Codex CLI 运行时'),
@@ -503,6 +520,12 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
                 icon: const Icon(Icons.content_copy_outlined, size: 18),
                 label: const Text('复制诊断'),
               ),
+              TextButton.icon(
+                key: const Key('export-runtime-diagnostics-button'),
+                onPressed: _exportRuntimeDiagnosticReport,
+                icon: const Icon(Icons.save_alt_outlined, size: 18),
+                label: const Text('导出诊断'),
+              ),
               TextButton(
                 onPressed:
                     controller.canConfigureRuntime &&
@@ -546,12 +569,40 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
   /// Copies the current redacted runtime diagnostics to the system clipboard and confirms the shareable scope.
   Future<void> _copyRuntimeDiagnosticReport() async {
     await Clipboard.setData(
-      ClipboardData(text: widget.controller.buildRuntimeDiagnosticReport()),
+      ClipboardData(text: _controller.buildRuntimeDiagnosticReport()),
     );
     if (mounted) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('已复制脱敏运行时诊断。')));
+    }
+  }
+
+  /// 再次生成脱敏诊断报告并保存为用户选择的本地文本文件。
+  /// Rebuilds the redacted diagnostic report and saves it as a user-selected local text file.
+  Future<void> _exportRuntimeDiagnosticReport() async {
+    final location = await getSaveLocation(
+      suggestedName: 'codex-desk-diagnostics.txt',
+      acceptedTypeGroups: const [
+        XTypeGroup(label: 'Text', extensions: ['txt']),
+      ],
+    );
+    if (location == null) return;
+    try {
+      await File(
+        location.path,
+      ).writeAsString(_controller.buildRuntimeDiagnosticReport(), flush: true);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('已导出脱敏运行时诊断。')));
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('导出诊断失败：${error.toString()}')));
+      }
     }
   }
 
@@ -584,18 +635,30 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     );
     name.dispose();
     if (nextName != null && nextName.trim().isNotEmpty) {
-      await widget.controller.renameThread(thread, nextName);
+      await _controller.renameThread(thread, nextName);
     }
   }
 
   /// 确认后归档指定历史线程。
   /// Archives a specified history thread after confirmation.
   Future<void> _archiveThread(CodexThread thread) async {
+    await _archiveThreads([thread]);
+  }
+
+  /// 二次确认后批量归档历史线程，并返回实际成功归档的任务 ID。
+  /// Archives multiple history threads after confirmation and returns the task IDs that actually archived.
+  Future<Set<String>> _archiveThreads(List<CodexThread> threads) async {
+    if (threads.isEmpty) return const <String>{};
+    final count = threads.length;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('归档任务？'),
-        content: Text('“${thread.title}”将从当前列表隐藏，但可以在后续归档视图中恢复。'),
+        title: Text(count == 1 ? '归档任务？' : '归档 $count 个任务？'),
+        content: Text(
+          count == 1
+              ? '“${threads.single.title}”将从当前列表隐藏，但可以在后续归档视图中恢复。'
+              : '所选任务将从当前列表隐藏，但可以在后续归档视图中恢复。',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -608,20 +671,49 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
         ],
       ),
     );
-    if (confirmed == true) await widget.controller.archiveThread(thread);
+    if (confirmed != true) return const <String>{};
+    return _controller.archiveThreads(threads);
+  }
+
+  /// 二次确认后永久删除任务及 App Server 定义的派生任务，删除无法恢复。
+  /// Permanently deletes a task and App Server-defined descendants after confirmation; deletion cannot be undone.
+  Future<void> _deleteThread(CodexThread thread) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('永久删除任务？'),
+        content: Text(
+          '“${thread.title}”及其派生任务会从 Codex 中永久删除，无法恢复。本应用的对应本地缓存引用也会移除。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('永久删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await _controller.deleteThread(thread);
   }
 
   /// 刷新并显示归档线程，允许用户恢复线程。
   /// Refreshes and shows archived threads, allowing the user to restore one.
   Future<void> _showArchivedThreads() async {
-    await widget.controller.refreshArchivedThreads();
+    await _controller.refreshArchivedThreads();
     if (!mounted) return;
     await showDialog<void>(
       context: context,
       builder: (context) => AnimatedBuilder(
-        animation: widget.controller,
+        animation: _controller,
         builder: (context, _) {
-          final controller = widget.controller;
+          final controller = _controller;
           return AlertDialog(
             title: const Text('已归档任务'),
             content: SizedBox(
@@ -647,9 +739,11 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
                       thread: thread,
                       enabled:
                           controller.status == RuntimeStatus.ready &&
-                          !controller.isUnarchivingThread(thread.id),
+                          !controller.isUnarchivingThread(thread.id) &&
+                          !controller.isUpdatingThread(thread.id),
                       restoring: controller.isUnarchivingThread(thread.id),
                       onRestore: () => controller.unarchiveThread(thread),
+                      onDelete: () => _deleteThread(thread),
                     );
                   },
                 ),
@@ -673,15 +767,15 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     await showDialog<void>(
       context: context,
       builder: (context) => AnimatedBuilder(
-        animation: widget.controller,
+        animation: _controller,
         builder: (context, _) => AlertDialog(
           title: const Text('文件变更'),
           content: SizedBox(
             width: 760,
             height: 520,
             child: _FileChangesList(
-              changes: widget.controller.fileChanges,
-              turnDiff: widget.controller.turnDiff,
+              changes: _controller.fileChanges,
+              turnDiff: _controller.turnDiff,
             ),
           ),
           actions: [
@@ -698,14 +792,14 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
   /// 刷新并展示当前项目的只读 Git 状态和文件 Diff，不提供仓库写操作。
   /// Refreshes and shows the current project's read-only Git status and file diffs without repository write actions.
   Future<void> _showGitProject() async {
-    await widget.controller.refreshGitProject();
+    await _controller.refreshGitProject();
     if (!mounted) return;
     await showDialog<void>(
       context: context,
       builder: (context) => AnimatedBuilder(
-        animation: widget.controller,
+        animation: _controller,
         builder: (context, _) {
-          final controller = widget.controller;
+          final controller = _controller;
           final status = controller.gitProjectStatus;
           final palette = YeknomPalette.of(context);
           final counts = status?.changeCounts;
@@ -818,14 +912,14 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
   /// 刷新并显示插件管理器，支持本地 marketplace 与启用状态。
   /// Refreshes and shows the plugin manager for local marketplaces and states.
   Future<void> _showPlugins() async {
-    await widget.controller.refreshPlugins();
+    await _controller.refreshPlugins();
     if (!mounted) return;
     await showDialog<void>(
       context: context,
       builder: (context) => AnimatedBuilder(
-        animation: widget.controller,
+        animation: _controller,
         builder: (context, _) {
-          final controller = widget.controller;
+          final controller = _controller;
           return AlertDialog(
             key: const Key('plugin-manager-dialog'),
             title: const Text('Codex 插件'),
@@ -948,21 +1042,21 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
     );
     source.dispose();
     if (selected?.trim().isNotEmpty == true) {
-      await widget.controller.addPluginMarketplace(selected!);
+      await _controller.addPluginMarketplace(selected!);
     }
   }
 
   /// 刷新并显示已配置 marketplace，支持 Git 更新与移除。
   /// Refreshes and shows configured marketplaces with Git updates and removal.
   Future<void> _showMarketplaces() async {
-    await widget.controller.refreshMarketplaces();
+    await _controller.refreshMarketplaces();
     if (!mounted) return;
     await showDialog<void>(
       context: context,
       builder: (context) => AnimatedBuilder(
-        animation: widget.controller,
+        animation: _controller,
         builder: (context, _) {
-          final controller = widget.controller;
+          final controller = _controller;
           final error = controller.marketplacesError;
           return AlertDialog(
             title: const Text('插件市场'),
@@ -1039,7 +1133,7 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
       ),
     );
     if (confirmed == true) {
-      await widget.controller.removePluginMarketplace(marketplace);
+      await _controller.removePluginMarketplace(marketplace);
     }
   }
 
@@ -1063,78 +1157,74 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
         ],
       ),
     );
-    if (confirmed == true) await widget.controller.removePlugin(plugin);
+    if (confirmed == true) await _controller.removePlugin(plugin);
   }
 
   /// 构建响应控制器状态的工作区主布局。
   /// Builds the main workspace layout in response to controller state.
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: widget.controller,
-      builder: (context, _) {
-        final controller = widget.controller;
-        return Scaffold(
-          body: SafeArea(
-            child: Column(
-              children: [
-                _TopBar(
-                  controller: controller,
-                  themeMode: widget.themeMode,
-                  themePreset: widget.themePreset,
-                  onThemeModeChanged: widget.onThemeModeChanged,
-                  onThemePresetChanged: widget.onThemePresetChanged,
-                  onChooseWorkspace: _chooseWorkspace,
-                  onStart: controller.startRuntime,
-                  onStop: controller.stopRuntime,
-                  onAccount: _showAccount,
-                  onRelay: _showRelayProvider,
-                  onPlugins: _showPlugins,
-                  onSetReasoningEffort: controller.setReasoningEffort,
-                ),
-                const Divider(height: 1),
-                Expanded(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final compact = constraints.maxWidth < 980;
-                      return Row(
-                        children: [
-                          _Sidebar(
-                            controller: controller,
-                            onChooseWorkspace: _chooseWorkspace,
-                            onConfigureRuntime: _showRuntime,
-                            onRenameThread: _renameThread,
-                            onArchiveThread: _archiveThread,
-                            onShowArchivedThreads: _showArchivedThreads,
-                            onExportHistory: _exportConversationHistory,
-                            onImportHistory: _importConversationHistory,
-                            onShowGitProject: _showGitProject,
-                          ),
-                          const VerticalDivider(width: 1),
-                          Expanded(
-                            child: _ConversationPane(
-                              controller: controller,
-                              composer: _composer,
-                              timelineScrollController:
-                                  _timelineScrollController,
-                              onSend: _send,
-                              onShowFileChanges: _showFileChanges,
-                            ),
-                          ),
-                          if (!compact) ...[
-                            const VerticalDivider(width: 1),
-                            _Inspector(controller: controller),
-                          ],
-                        ],
-                      );
-                    },
-                  ),
-                ),
-              ],
+    final controller = widget.controller ?? ref.watch(codexControllerProvider)!;
+    return Scaffold(
+      body: SafeArea(
+        child: Column(
+          children: [
+            _TopBar(
+              controller: controller,
+              themeMode: widget.themeMode,
+              themePreset: widget.themePreset,
+              onThemeModeChanged: widget.onThemeModeChanged,
+              onThemePresetChanged: widget.onThemePresetChanged,
+              onChooseWorkspace: _chooseWorkspace,
+              onStart: controller.startRuntime,
+              onStop: controller.stopRuntime,
+              onAccount: _showAccount,
+              onRelay: _showRelayProvider,
+              onPlugins: _showPlugins,
+              onSetReasoningEffort: controller.setReasoningEffort,
             ),
-          ),
-        );
-      },
+            const Divider(height: 1),
+            Expanded(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final compact = constraints.maxWidth < 980;
+                  return Row(
+                    children: [
+                      _Sidebar(
+                        controller: controller,
+                        onChooseWorkspace: _chooseWorkspace,
+                        onConfigureRuntime: _showRuntime,
+                        onRenameThread: _renameThread,
+                        onArchiveThread: _archiveThread,
+                        onArchiveThreads: _archiveThreads,
+                        onDeleteThread: _deleteThread,
+                        onShowArchivedThreads: _showArchivedThreads,
+                        onExportHistory: _exportConversationHistory,
+                        onImportHistory: _importConversationHistory,
+                        onShowGitProject: _showGitProject,
+                      ),
+                      const VerticalDivider(width: 1),
+                      Expanded(
+                        child: _ConversationPane(
+                          controller: controller,
+                          composer: _composer,
+                          timelineScrollController: _timelineScrollController,
+                          onSend: _send,
+                          onShowFileChanges: _showFileChanges,
+                        ),
+                      ),
+                      if (!compact) ...[
+                        const VerticalDivider(width: 1),
+                        _Inspector(controller: controller),
+                      ],
+                    ],
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -1264,6 +1354,7 @@ class _TopBar extends StatelessWidget {
                     .where((action) => action.preset != null)
                     .map(
                       (action) => CheckedPopupMenuItem(
+                        key: ValueKey('theme-preset-${action.preset!.name}'),
                         value: action,
                         checked: action.preset == themePreset,
                         child: Text(_themePresetLabel(action.preset!)),
@@ -1493,6 +1584,8 @@ class _Sidebar extends StatefulWidget {
     required this.onConfigureRuntime,
     required this.onRenameThread,
     required this.onArchiveThread,
+    required this.onArchiveThreads,
+    required this.onDeleteThread,
     required this.onShowArchivedThreads,
     required this.onExportHistory,
     required this.onImportHistory,
@@ -1504,6 +1597,9 @@ class _Sidebar extends StatefulWidget {
   final Future<void> Function() onConfigureRuntime;
   final Future<void> Function(CodexThread thread) onRenameThread;
   final Future<void> Function(CodexThread thread) onArchiveThread;
+  final Future<Set<String>> Function(List<CodexThread> threads)
+  onArchiveThreads;
+  final Future<void> Function(CodexThread thread) onDeleteThread;
   final Future<void> Function() onShowArchivedThreads;
   final Future<void> Function() onExportHistory;
   final Future<void> Function() onImportHistory;
@@ -1518,6 +1614,8 @@ class _Sidebar extends StatefulWidget {
 class _SidebarState extends State<_Sidebar> {
   final TextEditingController _threadSearch = TextEditingController();
   String _query = '';
+  bool _batchMode = false;
+  final Set<String> _selectedThreadIds = {};
 
   /// 释放任务搜索输入控制器。
   /// Disposes the task-search text controller.
@@ -1525,6 +1623,22 @@ class _SidebarState extends State<_Sidebar> {
   void dispose() {
     _threadSearch.dispose();
     super.dispose();
+  }
+
+  /// 将当前选中的活跃任务提交给带二次确认的批量归档操作。
+  /// Sends selected active tasks to the confirmation-backed bulk archive action.
+  Future<void> _archiveSelectedThreads(CodexController controller) async {
+    final selected = controller.threads
+        .where((thread) => _selectedThreadIds.contains(thread.id))
+        .toList(growable: false);
+    final archivedIds = await widget.onArchiveThreads(selected);
+    if (!mounted) return;
+    setState(() {
+      _selectedThreadIds.removeAll(archivedIds);
+      if (_selectedThreadIds.isEmpty && archivedIds.isNotEmpty) {
+        _batchMode = false;
+      }
+    });
   }
 
   /// 构建工作区选择、线程历史和 CLI 配置侧栏。
@@ -1616,6 +1730,8 @@ class _SidebarState extends State<_Sidebar> {
                     switch (action) {
                       case _HistoryAction.archived:
                         await widget.onShowArchivedThreads();
+                      case _HistoryAction.batchArchive:
+                        setState(() => _batchMode = true);
                       case _HistoryAction.export:
                         await widget.onExportHistory();
                       case _HistoryAction.import:
@@ -1628,6 +1744,13 @@ class _SidebarState extends State<_Sidebar> {
                       child: ListTile(
                         leading: Icon(Icons.inventory_2_outlined),
                         title: Text('已归档任务'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: _HistoryAction.batchArchive,
+                      child: ListTile(
+                        leading: Icon(Icons.checklist_outlined),
+                        title: Text('批量归档任务'),
                       ),
                     ),
                     PopupMenuItem(
@@ -1649,6 +1772,32 @@ class _SidebarState extends State<_Sidebar> {
               ],
             ),
             const SizedBox(height: 8),
+            if (_batchMode) ...[
+              Wrap(
+                spacing: 4,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Text('已选 ${_selectedThreadIds.length} 个任务'),
+                  TextButton(
+                    onPressed: () => setState(() {
+                      _batchMode = false;
+                      _selectedThreadIds.clear();
+                    }),
+                    child: const Text('取消'),
+                  ),
+                  FilledButton.tonal(
+                    onPressed:
+                        _selectedThreadIds.isEmpty ||
+                            controller.status != RuntimeStatus.ready
+                        ? null
+                        : () => _archiveSelectedThreads(controller),
+                    child: const Text('归档已选'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
             TextField(
               key: const Key('thread-search-field'),
               controller: _threadSearch,
@@ -1671,9 +1820,11 @@ class _SidebarState extends State<_Sidebar> {
               ),
             ),
             const SizedBox(height: 8),
-            if (controller.threadsLoading)
-              const LinearProgressIndicator(minHeight: 2)
-            else if (controller.threadsError case final error?)
+            if (controller.threadsLoading && controller.threads.isEmpty)
+              const LinearProgressIndicator(minHeight: 2),
+            if (controller.threadsLoading && controller.threads.isEmpty)
+              const SizedBox(height: 6),
+            if (controller.threadsError case final error?)
               _MutedText(error)
             else if (controller.threads.isEmpty)
               const _MutedText('暂无历史任务；发送第一条消息后会创建。')
@@ -1690,10 +1841,25 @@ class _SidebarState extends State<_Sidebar> {
                       thread: thread,
                       selected: controller.activeThreadId == thread.id,
                       pinned: controller.isThreadPinned(thread.id),
-                      enabled: controller.status == RuntimeStatus.ready,
-                      onTap: () => controller.resumeThread(thread),
+                      enabled:
+                          controller.status == RuntimeStatus.ready &&
+                          !controller.isUpdatingThread(thread.id),
+                      selectionMode: _batchMode,
+                      batchSelected: _selectedThreadIds.contains(thread.id),
+                      onTap: () {
+                        if (_batchMode) {
+                          setState(() {
+                            if (!_selectedThreadIds.add(thread.id)) {
+                              _selectedThreadIds.remove(thread.id);
+                            }
+                          });
+                        } else {
+                          controller.resumeThread(thread);
+                        }
+                      },
                       onRename: () => widget.onRenameThread(thread),
                       onArchive: () => widget.onArchiveThread(thread),
+                      onDelete: () => widget.onDeleteThread(thread),
                       onTogglePin: () => controller.toggleThreadPinned(thread),
                     );
                   },
@@ -2423,9 +2589,12 @@ class _HistoryThreadTile extends StatelessWidget {
     required this.selected,
     required this.pinned,
     required this.enabled,
+    required this.selectionMode,
+    required this.batchSelected,
     required this.onTap,
     required this.onRename,
     required this.onArchive,
+    required this.onDelete,
     required this.onTogglePin,
   });
 
@@ -2433,9 +2602,12 @@ class _HistoryThreadTile extends StatelessWidget {
   final bool selected;
   final bool pinned;
   final bool enabled;
+  final bool selectionMode;
+  final bool batchSelected;
   final VoidCallback onTap;
   final VoidCallback onRename;
   final VoidCallback onArchive;
+  final VoidCallback onDelete;
   final VoidCallback onTogglePin;
 
   /// 构建带有恢复、重命名和归档操作的历史线程项。
@@ -2453,15 +2625,21 @@ class _HistoryThreadTile extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(10, 10, 4, 10),
           child: Row(
             children: [
-              Icon(
-                pinned
-                    ? Icons.push_pin
-                    : selected
-                    ? Icons.forum
-                    : Icons.forum_outlined,
-                size: 17,
-                color: selected ? palette.ack : null,
-              ),
+              if (selectionMode)
+                Checkbox(
+                  value: batchSelected,
+                  onChanged: enabled ? (_) => onTap() : null,
+                )
+              else
+                Icon(
+                  pinned
+                      ? Icons.push_pin
+                      : selected
+                      ? Icons.forum
+                      : Icons.forum_outlined,
+                  size: 17,
+                  color: selected ? palette.ack : null,
+                ),
               const SizedBox(width: 8),
               Expanded(
                 child: Column(
@@ -2486,13 +2664,15 @@ class _HistoryThreadTile extends StatelessWidget {
               ),
               PopupMenuButton<_ThreadAction>(
                 tooltip: '任务选项',
-                enabled: enabled,
+                enabled: enabled && !selectionMode,
                 onSelected: (action) {
                   switch (action) {
                     case _ThreadAction.rename:
                       onRename();
                     case _ThreadAction.archive:
                       onArchive();
+                    case _ThreadAction.delete:
+                      onDelete();
                     case _ThreadAction.pin:
                       onTogglePin();
                   }
@@ -2510,6 +2690,10 @@ class _HistoryThreadTile extends StatelessWidget {
                     value: _ThreadAction.archive,
                     child: Text('归档'),
                   ),
+                  const PopupMenuItem(
+                    value: _ThreadAction.delete,
+                    child: Text('永久删除'),
+                  ),
                 ],
               ),
             ],
@@ -2520,9 +2704,9 @@ class _HistoryThreadTile extends StatelessWidget {
   }
 }
 
-enum _ThreadAction { pin, rename, archive }
+enum _ThreadAction { pin, rename, archive, delete }
 
-enum _HistoryAction { archived, export, import }
+enum _HistoryAction { archived, batchArchive, export, import }
 
 enum _ThemeAction {
   system,
@@ -2587,12 +2771,14 @@ class _ArchivedThreadTile extends StatelessWidget {
     required this.enabled,
     required this.restoring,
     required this.onRestore,
+    required this.onDelete,
   });
 
   final CodexThread thread;
   final bool enabled;
   final bool restoring;
   final VoidCallback onRestore;
+  final VoidCallback onDelete;
 
   /// 构建带恢复操作与进行状态的归档线程项。
   /// Builds an archived-thread item with restore action and progress state.
@@ -2603,15 +2789,25 @@ class _ArchivedThreadTile extends StatelessWidget {
       leading: const Icon(Icons.inventory_2_outlined),
       title: Text(thread.title, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: thread.status == null ? null : Text(thread.status!),
-      trailing: TextButton.icon(
-        onPressed: enabled ? onRestore : null,
-        icon: restoring
-            ? const SizedBox.square(
-                dimension: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.unarchive_outlined, size: 18),
-        label: Text(restoring ? '恢复中' : '恢复'),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextButton.icon(
+            onPressed: enabled ? onRestore : null,
+            icon: restoring
+                ? const SizedBox.square(
+                    dimension: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.unarchive_outlined, size: 18),
+            label: Text(restoring ? '恢复中' : '恢复'),
+          ),
+          IconButton(
+            tooltip: '永久删除任务',
+            onPressed: enabled && !restoring ? onDelete : null,
+            icon: const Icon(Icons.delete_outline),
+          ),
+        ],
       ),
     );
   }

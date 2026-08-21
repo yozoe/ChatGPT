@@ -4,11 +4,10 @@ import 'dart:math';
 
 import 'package:cryptography/cryptography.dart'
     show AesGcm, Mac, SecretBox, SecretKey;
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-
 import '../domain/codex_file_change.dart';
 import '../domain/codex_thread.dart';
 import '../domain/timeline_entry.dart';
+import 'codex_keychain_storage.dart';
 
 class ConversationHistorySnapshot {
   const ConversationHistorySnapshot({
@@ -123,17 +122,13 @@ class PortableConversationHistory {
 class ConversationHistoryStore {
   ConversationHistoryStore({
     Directory? directory,
-    FlutterSecureStorage? secureStorage,
+    CodexKeychainStorage? secureStorage,
   }) : _directory = directory,
-       _secureStorage =
-           secureStorage ??
-           const FlutterSecureStorage(
-             mOptions: MacOsOptions(usesDataProtectionKeychain: false),
-           );
+       _secureStorage = secureStorage ?? CodexKeychainStorage();
 
   static const _encryptionKey = 'codex_desk.history.encryption_key.v1';
   final Directory? _directory;
-  final FlutterSecureStorage _secureStorage;
+  final CodexKeychainStorage _secureStorage;
 
   /// 读取指定工作区的历史快照；没有缓存时返回 `null`。
   /// Reads the history snapshot for a workspace and returns `null` when absent.

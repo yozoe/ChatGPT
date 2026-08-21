@@ -1,25 +1,20 @@
 import 'dart:convert';
 
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-
 import '../domain/relay_provider_configuration.dart';
+import 'codex_keychain_storage.dart';
 
 /// 将中转站设置保存在系统安全存储（macOS Keychain）而非项目文件、App Server 配置或应用日志中。
 /// Persists relay settings in the OS secure store (macOS Keychain), never in project files, App Server config, or application logs.
 class RelayProviderStore {
-  RelayProviderStore({FlutterSecureStorage? storage})
-    : _storage =
-          storage ??
-          const FlutterSecureStorage(
-            mOptions: MacOsOptions(usesDataProtectionKeychain: false),
-          );
+  RelayProviderStore({CodexKeychainStorage? storage})
+    : _storage = storage ?? CodexKeychainStorage();
 
   static const _configurationKey = 'codex_desk.relay.configuration.v1';
   static const _legacyBaseUrlKey = 'codex_desk.relay.base_url';
   static const _legacyModelKey = 'codex_desk.relay.model';
   static const _legacyApiKeyKey = 'codex_desk.relay.api_key';
 
-  final FlutterSecureStorage _storage;
+  final CodexKeychainStorage _storage;
 
   /// 读取中转站配置，并在需要时迁移旧版分散的 Keychain 键。
   /// Reads relay configuration and migrates legacy split Keychain keys when needed.

@@ -20,7 +20,12 @@ class GitProjectService {
       }
       final results = await Future.wait([
         _run(workspace, const ['branch', '--show-current']),
-        _run(workspace, const ['status', '--porcelain=v1', '-z']),
+        _run(workspace, const [
+          'status',
+          '--porcelain=v1',
+          '--untracked-files=all',
+          '-z',
+        ]),
       ]);
       final branchResult = results[0];
       final statusResult = results[1];
