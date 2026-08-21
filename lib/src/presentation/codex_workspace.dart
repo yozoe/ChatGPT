@@ -412,42 +412,96 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
           return AlertDialog(
             title: const Text('Codex CLI 运行时'),
             content: SizedBox(
-              width: 460,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (controller.runtimeChecking)
-                    const LinearProgressIndicator()
-                  else if (probe?.isAvailable == true) ...[
-                    const Text('已检测到可用的 Codex CLI。'),
-                    const SizedBox(height: 8),
-                    SelectableText(probe!.executablePath ?? ''),
-                    if (probe.version?.isNotEmpty == true) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        probe.version!,
-                        style: Theme.of(context).textTheme.bodySmall,
+              width: 620,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (controller.runtimeChecking)
+                      const LinearProgressIndicator()
+                    else if (probe?.isAvailable == true) ...[
+                      const Text('已检测到可用的 Codex CLI。'),
+                      const SizedBox(height: 8),
+                      SelectableText(probe!.executablePath ?? ''),
+                      if (probe.version?.isNotEmpty == true) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          probe.version!,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ] else ...[
+                      Text(controller.runtimeError ?? '尚未检测到 Codex CLI。'),
+                      const SizedBox(height: 12),
+                      const Text('可在终端执行以下官方安装命令：'),
+                      const SizedBox(height: 6),
+                      const SelectableText(
+                        'curl -fsSL https://chatgpt.com/codex/install.sh | sh',
                       ),
                     ],
-                  ] else ...[
-                    Text(controller.runtimeError ?? '尚未检测到 Codex CLI。'),
                     const SizedBox(height: 12),
-                    const Text('可在终端执行以下官方安装命令：'),
+                    Text(
+                      '选择的路径仅保存为本应用设置；启动时会再次验证，不依赖 Finder 的 PATH。',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 16),
+                    const Divider(height: 1),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Text(
+                          '最近运行时日志（${controller.runtimeLogs.length}/200）',
+                          style: Theme.of(context).textTheme.labelLarge,
+                        ),
+                        const Spacer(),
+                        TextButton(
+                          onPressed: controller.runtimeLogs.isEmpty
+                              ? null
+                              : controller.clearRuntimeLogs,
+                          child: const Text('清除'),
+                        ),
+                      ],
+                    ),
                     const SizedBox(height: 6),
-                    const SelectableText(
-                      'curl -fsSL https://chatgpt.com/codex/install.sh | sh',
+                    Container(
+                      key: const Key('runtime-diagnostics-log'),
+                      constraints: const BoxConstraints(maxHeight: 180),
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: SingleChildScrollView(
+                        child: SelectableText(
+                          controller.runtimeLogs.isEmpty
+                              ? '本次应用运行中尚未记录 stderr 或协议日志。'
+                              : controller.runtimeLogs
+                                    .map((entry) => entry.toDiagnosticLine())
+                                    .join('\n'),
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '日志只保留在内存中，最多 200 条；展示和复制前都会脱敏。',
+                      style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ],
-                  const SizedBox(height: 12),
-                  Text(
-                    '选择的路径仅保存为本应用设置；启动时会再次验证，不依赖 Finder 的 PATH。',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ],
+                ),
               ),
             ),
             actions: [
+              TextButton.icon(
+                key: const Key('copy-runtime-diagnostics-button'),
+                onPressed: _copyRuntimeDiagnosticReport,
+                icon: const Icon(Icons.content_copy_outlined, size: 18),
+                label: const Text('复制诊断'),
+              ),
               TextButton(
                 onPressed:
                     controller.canConfigureRuntime &&
@@ -485,6 +539,19 @@ class _CodexWorkspaceState extends State<CodexWorkspace> {
         },
       ),
     );
+  }
+
+  /// 将当前脱敏运行时诊断复制到系统剪贴板，并提示用户可安全分享的范围。
+  /// Copies the current redacted runtime diagnostics to the system clipboard and confirms the shareable scope.
+  Future<void> _copyRuntimeDiagnosticReport() async {
+    await Clipboard.setData(
+      ClipboardData(text: widget.controller.buildRuntimeDiagnosticReport()),
+    );
+    if (mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已复制脱敏运行时诊断。')));
+    }
   }
 
   /// 请求新名称并重命名指定历史线程。

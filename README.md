@@ -25,6 +25,7 @@
 - 推理强度选项由当前 Codex 模型能力动态提供；选择会保存，并用于后续新建或恢复的任务
 - 活跃与归档线程列表会跟随 App Server 分页加载，不限于首 50 条
 - 提供“插件”管理入口：读取本机 Codex CLI 的已安装与可安装插件、添加本地或远程 marketplace、刷新 Git marketplace、安装/卸载及启用/停用插件；插件会展示安装策略与认证时机，OAuth/连接器授权仍由 Codex Host 在安装或首次使用时处理；变更后需重启运行时并新建任务才会生效
+- “Codex CLI”运行时窗口会展示 CLI 自动发现来源、版本与最近 stderr/协议诊断日志；日志仅在内存中保留最近 200 条，可一键复制脱敏诊断报告，不会写入对话历史
 - 如果 App Server 暂时返回空线程列表，活跃列表会回退读取当前项目的本地 Codex session 元数据；回退读取只解析每个文件开头的有限元数据，并按工作区合并并缓存 10 秒，服务端有结果时始终以服务端为准，归档列表不使用此回退
 - 归档恢复操作具备重复提交防护，线程状态通知会同步刷新活跃与归档列表
 - 历史线程恢复会保留原 Provider，并防止过期刷新结果污染当前列表
@@ -69,10 +70,17 @@ dart run tool/verify_app_server_history.dart --cwd /path/to/workspace
 
 导出文件不含 API Key、Keychain 内容或 Codex App Server 原始 session；但它包含对话文本和 Diff，文件本身为了可移植性未加密，请仅存放在可信位置。导入不会发送请求、恢复远端任务或修改项目文件；连接 App Server 后，服务端线程列表仍是权威来源。
 
+## 运行时诊断
+
+在侧栏点击“Codex CLI”可打开运行时窗口。窗口会重新探测当前 CLI，展示自动发现策略、解析到的可执行文件和版本；最近的 App Server stderr 与无法解析的协议行会以信息、警告或错误级别显示。使用“复制诊断”可生成包含运行状态、CLI 检测结果、`CODEX_HOME` 是否已配置以及最近日志的文本，适合贴到问题反馈中。
+
+日志最多保留 200 条，重启本地运行时时会清空，且不会保存到历史缓存或项目文件。复制与展示前会隐藏 Bearer Token、`sk-` Key 以及 `api_key`、`token`、`secret`、`password`、`authorization` 等常见凭据字段；仍应在分享前自行检查诊断文本是否含有不希望公开的项目或环境信息。
+
 ## 安全边界
 
 - 不会在项目文件、应用日志或界面中保存 API Key；密钥仅提交给本地 Codex 运行时。
 - macOS Application Support 内的本地历史缓存会用 Keychain 密钥加密；手动导出的历史 JSON 为便于跨设备或备份恢复而保持明文，因此可能包含敏感对话和 Diff。
+- App Server stderr 和协议诊断只会作为有上限的内存记录展示；不会进入历史缓存、项目文件或应用日志。运行时诊断复制内容会套用凭据脱敏规则，但任何诊断文本都应仅分享给可信对象。
 - 运行时只通过本机 `stdio` JSON-RPC 通信；不会启用远程 WebSocket。
 - 审批默认逐次确认；可在“变更与审批”切换为自动批准。自动模式会直接允许命令、文件变更与额外权限请求，并在时间线留下记录。
 - 中转站仅接受 HTTPS（localhost 可用 HTTP），并要求 Responses API 与 SSE 流式协议兼容。密钥存入 macOS Keychain，Provider 定义仅注入本应用创建的 Thread，不修改 `~/.codex/config.toml`。

@@ -11,12 +11,14 @@ class CodexRuntimeProbe {
     required this.isAvailable,
     this.executablePath,
     this.version,
+    this.discovery,
     this.error,
   });
 
   final bool isAvailable;
   final String? executablePath;
   final String? version;
+  final String? discovery;
   final String? error;
 }
 
@@ -94,6 +96,7 @@ class CodexAppServer {
     if (resolvedExecutable == null) {
       return const CodexRuntimeProbe(
         isAvailable: false,
+        discovery: '自动查找：已检查用户设置、常见安装位置和 PATH。',
         error: '未找到 Codex CLI。请安装 Codex 或手动选择可执行文件。',
       );
     }
@@ -105,6 +108,7 @@ class CodexAppServer {
         return CodexRuntimeProbe(
           isAvailable: false,
           executablePath: resolvedExecutable,
+          discovery: _executableDiscovery,
           error: _redact(result.stderr.toString().trim()),
         );
       }
@@ -112,11 +116,13 @@ class CodexAppServer {
         isAvailable: true,
         executablePath: resolvedExecutable,
         version: result.stdout.toString().trim(),
+        discovery: _executableDiscovery,
       );
     } catch (error) {
       return CodexRuntimeProbe(
         isAvailable: false,
         executablePath: resolvedExecutable,
+        discovery: _executableDiscovery,
         error: _redact(error.toString()),
       );
     }
@@ -556,14 +562,30 @@ class CodexAppServer {
     _pending.clear();
   }
 
-  /// 从诊断文本中隐藏 Bearer Token 和常见的 API Key 形式。
-  /// Redacts Bearer tokens and common API-key forms from diagnostic text.
-  String _redact(String value) => value
+  /// 从诊断文本中隐藏 Bearer Token、常见 API Key 和凭据字段。
+  /// Redacts Bearer tokens, common API keys, and credential fields from diagnostic text.
+  static String redactDiagnosticText(String value) => value
       .replaceAll(
         RegExp(r'Bearer\s+[^\s]+', caseSensitive: false),
         'Bearer ***',
       )
+      .replaceAllMapped(
+        RegExp(
+          r'((?:"?(?:api[_-]?key|authorization|token|password|secret)"?)\s*[=:]\s*"?)[^\s,;}\]"]+',
+          caseSensitive: false,
+        ),
+        (match) => '${match.group(1)}***',
+      )
       .replaceAll(RegExp(r'sk-[A-Za-z0-9_-]+'), 'sk-***');
+
+  /// 复用公开脱敏规则，避免日志、协议错误和探测错误处理不一致。
+  /// Reuses the public redaction rules so logs, protocol errors, and probe errors stay consistent.
+  String _redact(String value) => redactDiagnosticText(value);
+
+  /// 返回当前可执行文件查找策略的可展示说明，不输出完整 PATH 内容。
+  /// Returns a displayable executable-discovery summary without exposing full PATH contents.
+  String get _executableDiscovery =>
+      executable.contains('/') ? '使用本应用配置的可执行文件路径。' : '自动查找：用户设置、常见安装位置和 PATH。';
 
   /// 在未释放状态下向订阅者发布服务器事件。
   /// Publishes a server event to subscribers while the client remains active.

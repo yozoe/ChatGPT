@@ -1118,6 +1118,51 @@ void main() {
     await server.dispose();
   });
 
+  test('redacts credentials from runtime diagnostics', () {
+    final value = CodexAppServer.redactDiagnosticText(
+      'api_key=private-key token: token-value '
+      '{"secret":"json-secret"} authorization: Bearer bearer-value sk-private',
+    );
+
+    expect(value, contains('api_key=***'));
+    expect(value, contains('token: ***'));
+    expect(value, isNot(contains('private-key')));
+    expect(value, isNot(contains('token-value')));
+    expect(value, isNot(contains('json-secret')));
+    expect(value, isNot(contains('bearer-value')));
+    expect(value, isNot(contains('sk-private')));
+  });
+
+  test('keeps bounded redacted runtime logs in diagnostic reports', () {
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..runtimeProbe = const CodexRuntimeProbe(
+        isAvailable: true,
+        executablePath: '/usr/local/bin/codex',
+        version: 'codex 1.2.3',
+        discovery: '自动查找：用户设置、常见安装位置和 PATH。',
+      )
+      ..lastError = 'token=last-error-token';
+
+    for (var index = 0; index < 201; index++) {
+      controller.handleServerEventForTesting(
+        ServerEvent(
+          method: 'runtime/stderr',
+          params: {'message': 'log-$index api_key=secret-$index'},
+        ),
+      );
+    }
+    final report = controller.buildRuntimeDiagnosticReport();
+
+    expect(controller.runtimeLogs, hasLength(200));
+    expect(controller.runtimeLogs.first.message, contains('log-1'));
+    expect(report, contains('CLI version: codex 1.2.3'));
+    expect(report, contains('Recent runtime logs (200/200)'));
+    expect(report, isNot(contains('secret-')));
+    expect(report, isNot(contains('last-error-token')));
+    controller.dispose();
+  });
+
   test('preserves the historical provider when resuming a thread', () async {
     final server = _FakeCodexAppServer();
     final controller = CodexController(server: server)

@@ -10,6 +10,7 @@ import 'domain/codex_marketplace.dart';
 import 'domain/codex_file_change.dart';
 import 'domain/pending_approval.dart';
 import 'domain/relay_provider_configuration.dart';
+import 'domain/runtime_log_entry.dart';
 import 'domain/timeline_entry.dart';
 import 'services/codex_app_server.dart';
 import 'services/codex_plugin_store.dart';
@@ -119,6 +120,7 @@ class CodexController extends ChangeNotifier {
   final List<TimelineEntry> _entries = [];
   final Map<String, CodexFileChange> _fileChangesByPath = {};
   final Set<String> _pinnedThreadIds = {};
+  final List<RuntimeLogEntry> _runtimeLogs = [];
   final Map<String, int> _agentEntryIndexByItem = {};
   Timer? _deltaNotificationTimer;
   Timer? _historySaveTimer;
@@ -130,6 +132,7 @@ class CodexController extends ChangeNotifier {
   int _threadRefreshRequest = 0;
   int _archivedThreadRefreshRequest = 0;
   final Set<String> _unarchivingThreadIds = {};
+  static const _maximumRuntimeLogEntries = 200;
   Future<void> _reasoningEffortSave = Future.value();
   Map<String, Set<ReasoningEffort>> _reasoningEffortsByModel = const {};
   String? _defaultModelId;
@@ -186,6 +189,10 @@ class CodexController extends ChangeNotifier {
       List.unmodifiable(_fileChangesByPath.values);
   String? turnDiff;
 
+  /// 返回最近的已脱敏运行时日志；日志仅保留在本次应用进程的内存中。
+  /// Returns recent redacted runtime logs; logs are retained only in this app process's memory.
+  List<RuntimeLogEntry> get runtimeLogs => List.unmodifiable(_runtimeLogs);
+
   /// 返回当前项目中被置顶的任务 ID，不允许外部修改集合。
   /// Returns pinned task IDs for the current workspace as an immutable set.
   Set<String> get pinnedThreadIds => Set.unmodifiable(_pinnedThreadIds);
@@ -193,6 +200,47 @@ class CodexController extends ChangeNotifier {
   /// 判断指定任务是否已在当前项目中置顶。
   /// Returns whether a task is pinned in the current workspace.
   bool isThreadPinned(String threadId) => _pinnedThreadIds.contains(threadId);
+
+  /// 清除当前内存中的运行时诊断日志，不影响历史对话、项目文件或 Codex 配置。
+  /// Clears in-memory runtime diagnostic logs without affecting history, project files, or Codex configuration.
+  void clearRuntimeLogs() {
+    if (_runtimeLogs.isEmpty) return;
+    _runtimeLogs.clear();
+    if (!_disposed) notifyListeners();
+  }
+
+  /// 生成可复制的脱敏运行时诊断报告，用于排查本机 CLI、工作区和最近日志问题。
+  /// Builds a copyable redacted runtime diagnostic report for local CLI, workspace, and recent-log troubleshooting.
+  String buildRuntimeDiagnosticReport() {
+    final probe = runtimeProbe;
+    final lines = <String>[
+      'Codex Desk runtime diagnostics',
+      'Generated: ${DateTime.now().toIso8601String()}',
+      'Runtime status: ${status.name}',
+      'App Server running: ${_server.isRunning ? 'yes' : 'no'}',
+      'Workspace selected: ${workspacePath == null ? 'no' : 'yes'}',
+      'Configured CLI: ${CodexAppServer.redactDiagnosticText(_server.executable)}',
+      'CLI available: ${probe?.isAvailable == true ? 'yes' : 'no'}',
+      if (probe?.discovery?.isNotEmpty == true)
+        'CLI discovery: ${probe!.discovery}',
+      if (probe?.executablePath?.isNotEmpty == true)
+        'Resolved CLI: ${CodexAppServer.redactDiagnosticText(probe!.executablePath!)}',
+      if (probe?.version?.isNotEmpty == true)
+        'CLI version: ${CodexAppServer.redactDiagnosticText(probe!.version!)}',
+      if (probe?.error?.isNotEmpty == true)
+        'CLI error: ${CodexAppServer.redactDiagnosticText(probe!.error!)}',
+      'CODEX_HOME configured: ${Platform.environment['CODEX_HOME']?.isNotEmpty == true ? 'yes' : 'no'}',
+      'Provider: $providerLabel',
+      'Authentication: $authLabel',
+      if (lastError?.isNotEmpty == true)
+        'Last error: ${CodexAppServer.redactDiagnosticText(lastError!)}',
+      '',
+      'Recent runtime logs (${_runtimeLogs.length}/$_maximumRuntimeLogEntries):',
+      if (_runtimeLogs.isEmpty) '(none)',
+      ..._runtimeLogs.map((entry) => entry.toDiagnosticLine()),
+    ];
+    return lines.join('\n');
+  }
 
   /// 指示当前状态是否允许发送新任务。
   /// Indicates whether the current state permits sending a new task.
@@ -326,6 +374,7 @@ class CodexController extends ChangeNotifier {
 
     _startingRuntime = true;
     _invalidateThreadRefreshes();
+    _runtimeLogs.clear();
     status = RuntimeStatus.starting;
     lastError = null;
     _add(TimelineKind.system, '正在启动本地运行时', 'codex app-server · $workspace');
@@ -1098,14 +1147,12 @@ class CodexController extends ChangeNotifier {
         unawaited(refreshThreads());
         unawaited(refreshArchivedThreads());
       case 'runtime/stderr':
-        _add(
-          TimelineKind.system,
-          '运行时日志',
-          event.params['message']?.toString() ?? '',
-        );
+      case 'runtime/invalidMessage':
+        _recordRuntimeLog(event.params['message']?.toString() ?? '');
       case 'runtime/exited':
         status = RuntimeStatus.failed;
         lastError = 'Codex runtime 已退出（code ${event.params['code']}）。';
+        _recordRuntimeLog(lastError!, level: RuntimeLogLevel.error);
         _add(TimelineKind.error, '运行时已断开', lastError!);
       case 'serverRequest/resolved':
         if (event.params['requestId'] == pendingApproval?.requestId) {
@@ -1726,6 +1773,28 @@ class CodexController extends ChangeNotifier {
     runtimeChecking = false;
     if (notify && !_disposed) notifyListeners();
     return probe;
+  }
+
+  /// 将已脱敏运行时文本加入有上限的内存诊断缓冲区。
+  /// Adds redacted runtime text to the bounded in-memory diagnostic buffer.
+  void _recordRuntimeLog(String message, {RuntimeLogLevel? level}) {
+    final value = CodexAppServer.redactDiagnosticText(message).trim();
+    if (value.isEmpty) return;
+    _runtimeLogs.add(
+      level == null
+          ? RuntimeLogEntry.fromMessage(message: value)
+          : RuntimeLogEntry(
+              message: value,
+              level: level,
+              createdAt: DateTime.now(),
+            ),
+    );
+    if (_runtimeLogs.length > _maximumRuntimeLogEntries) {
+      _runtimeLogs.removeRange(
+        0,
+        _runtimeLogs.length - _maximumRuntimeLogEntries,
+      );
+    }
   }
 
   /// 执行一个插件配置变更，避免在任务执行中修改运行时配置。
