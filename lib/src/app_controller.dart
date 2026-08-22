@@ -7,20 +7,20 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'domain/codex_thread.dart';
 import 'domain/codex_plugin.dart';
+import 'domain/codex_skill.dart';
 import 'domain/codex_marketplace.dart';
 import 'domain/codex_file_change.dart';
 import 'domain/git_project_status.dart';
 import 'domain/pending_approval.dart';
-import 'domain/relay_provider_configuration.dart';
 import 'domain/runtime_log_entry.dart';
 import 'domain/task_plan.dart';
 import 'domain/timeline_entry.dart';
+import 'domain/workspace_configuration.dart';
 import 'services/codex_app_server.dart';
 import 'services/codex_plugin_store.dart';
 import 'services/conversation_history_store.dart';
 import 'services/git_project_service.dart';
 import 'services/local_session_thread_store.dart';
-import 'services/relay_provider_store.dart';
 import 'services/runtime_configuration_store.dart';
 
 enum RuntimeStatus { stopped, starting, ready, running, failed }
@@ -29,43 +29,61 @@ enum AuthStatus { checking, signedOut, chatgpt, apiKey, external }
 
 enum ApprovalMode { manual, autoApprove }
 
-/// 推理强度会以 Codex 配置键 `model_reasoning_effort` 传递给 App Server；保留 [defaultValue] 则使用模型默认值。
-/// The value is passed to App Server as the Codex configuration key `model_reasoning_effort`; [defaultValue] lets the selected model use its own default.
-enum ReasoningEffort { defaultValue, minimal, low, medium, high, xhigh }
+/// App Server 公布的推理强度；保留未知字符串以兼容未来新增的模型能力。
+/// A reasoning effort advertised by App Server; unknown strings are preserved for future model capabilities.
+@immutable
+class ReasoningEffort {
+  const ReasoningEffort._(this.configValue);
 
-extension ReasoningEffortLabel on ReasoningEffort {
-  /// 返回用于界面的本地化推理强度标签。
-  /// Returns the localized reasoning-effort label for the UI.
-  String get label => switch (this) {
-    ReasoningEffort.defaultValue => '默认',
-    ReasoningEffort.minimal => '最小',
-    ReasoningEffort.low => '低',
-    ReasoningEffort.medium => '中',
-    ReasoningEffort.high => '高',
-    ReasoningEffort.xhigh => '极高',
+  static const defaultValue = ReasoningEffort._(null);
+  static const minimal = ReasoningEffort._('minimal');
+  static const low = ReasoningEffort._('low');
+  static const medium = ReasoningEffort._('medium');
+  static const high = ReasoningEffort._('high');
+  static const xhigh = ReasoningEffort._('xhigh');
+
+  /// 要发送给 App Server 的原始配置值；`null` 表示使用模型默认值。
+  /// Raw configuration value sent to App Server; `null` uses the model default.
+  final String? configValue;
+
+  /// 返回稳定的菜单 Key 名称，同时保留 App Server 的未知值。
+  /// Returns a stable menu-key name while preserving unknown App Server values.
+  String get name => configValue ?? 'defaultValue';
+
+  /// 返回用于界面的推理强度标签，未知值直接展示原始名称。
+  /// Returns a UI label, displaying an unknown effort by its original name.
+  String get label => switch (configValue) {
+    null => '默认',
+    'minimal' => '最小',
+    'low' => '低',
+    'medium' => '中',
+    'high' => '高',
+    'xhigh' => '极高',
+    'max' => '最高',
+    final value => value,
   };
 
-  /// 返回要发送给 App Server 的配置值，默认项为 `null`。
-  /// Returns the value sent to App Server; the default option is `null`.
-  String? get configValue => switch (this) {
-    ReasoningEffort.defaultValue => null,
-    ReasoningEffort.minimal => 'minimal',
-    ReasoningEffort.low => 'low',
-    ReasoningEffort.medium => 'medium',
-    ReasoningEffort.high => 'high',
-    ReasoningEffort.xhigh => 'xhigh',
-  };
+  /// 将保存或服务器返回的配置值转换为不会丢失未知值的对象。
+  /// Converts a persisted or server-provided value without dropping unknown values.
+  static ReasoningEffort fromConfigValue(String? value) {
+    final normalized = value?.trim();
+    return switch (normalized) {
+      null || '' => defaultValue,
+      'minimal' => minimal,
+      'low' => low,
+      'medium' => medium,
+      'high' => high,
+      'xhigh' => xhigh,
+      final value => ReasoningEffort._(value),
+    };
+  }
 
-  /// 将保存或服务器返回的配置值转换为枚举值。
-  /// Converts a persisted or server-provided configuration value to the enum.
-  static ReasoningEffort fromConfigValue(String? value) => switch (value) {
-    'low' => ReasoningEffort.low,
-    'minimal' => ReasoningEffort.minimal,
-    'medium' => ReasoningEffort.medium,
-    'high' => ReasoningEffort.high,
-    'xhigh' => ReasoningEffort.xhigh,
-    _ => ReasoningEffort.defaultValue,
-  };
+  @override
+  bool operator ==(Object other) =>
+      other is ReasoningEffort && other.configValue == configValue;
+
+  @override
+  int get hashCode => configValue.hashCode;
 }
 
 extension ApprovalModeLabel on ApprovalMode {
@@ -75,6 +93,22 @@ extension ApprovalModeLabel on ApprovalMode {
     ApprovalMode.manual => '逐次确认',
     ApprovalMode.autoApprove => '自动批准',
   };
+}
+
+/// App Server 模型目录中可供新任务选择的只读条目。
+/// A read-only model-catalog entry that can be selected for new App Server threads.
+class CodexModelOption {
+  const CodexModelOption({
+    required this.id,
+    required this.displayName,
+    required this.description,
+    required this.isDefault,
+  });
+
+  final String id;
+  final String displayName;
+  final String description;
+  final bool isDefault;
 }
 
 /// 提供应用共享的 Codex 控制器，并在 ProviderScope 销毁时释放资源。
@@ -93,6 +127,7 @@ class CodexControllerNotifier extends Notifier<CodexController> {
   CodexController build() {
     _controller = CodexController();
     _controller.addListener(_publishControllerChange);
+    unawaited(_controller.connectRestoredWorkspace());
     ref.onDispose(() {
       _controller.removeListener(_publishControllerChange);
       _controller.dispose();
@@ -110,14 +145,12 @@ class CodexControllerNotifier extends Notifier<CodexController> {
 class CodexController extends ChangeNotifier {
   CodexController({
     CodexAppServer? server,
-    RelayProviderStore? relayProviderStore,
     RuntimeConfigurationStore? runtimeConfigurationStore,
     ConversationHistoryStore? conversationHistoryStore,
     LocalSessionThreadStore? localSessionThreadStore,
     CodexPluginStore? pluginStore,
     GitProjectService? gitProjectService,
   }) : _server = server ?? CodexAppServer(),
-       _relayProviderStore = relayProviderStore ?? RelayProviderStore(),
        _runtimeConfigurationStore =
            runtimeConfigurationStore ?? RuntimeConfigurationStore(),
        _conversationHistoryStore =
@@ -134,10 +167,9 @@ class CodexController extends ChangeNotifier {
       _entry(
         TimelineKind.system,
         '欢迎使用 Codex Desk',
-        '选择本地项目后启动 Codex App Server。密钥不会写入项目或日志。',
+        '选择本地项目后启动 Codex App Server。模型、Provider 与凭据由 Codex 配置管理。',
       ),
     );
-    _relayLoad = _loadRelayProvider();
     _runtimeLoad = _loadRuntimeConfiguration();
     _workspaceLoad = _loadWorkspace();
     _historyLoad = _loadConversationHistory();
@@ -147,7 +179,6 @@ class CodexController extends ChangeNotifier {
 
   @visibleForTesting
   static ConversationHistoryStore? testingConversationHistoryStore;
-  final RelayProviderStore _relayProviderStore;
   final RuntimeConfigurationStore _runtimeConfigurationStore;
   final ConversationHistoryStore _conversationHistoryStore;
   final LocalSessionThreadStore _localSessionThreadStore;
@@ -162,9 +193,17 @@ class CodexController extends ChangeNotifier {
   Timer? _deltaNotificationTimer;
   Timer? _historySaveTimer;
   Future<void> _historySave = Future.value();
+  // 串行化附加目录快照，保证完成较晚的旧写入不会覆盖新目录集合。
+  // Serializes workspace-root snapshots so a slow older write cannot overwrite newer state.
+  Future<void> _workspaceRootsSave = Future.value();
   bool _historySaveFailed = false;
   bool _disposed = false;
   bool _startingRuntime = false;
+  // 每次显式停止、重连或释放都会推进代次，使仍在 await 的旧启动流程失效。
+  // Explicit stops, reconnects, and disposal advance this epoch to invalidate stale awaited startup work.
+  int _runtimeConnectionEpoch = 0;
+  Timer? _runtimeReconnectTimer;
+  int _runtimeReconnectAttempt = 0;
   int _threadRefreshEpoch = 0;
   int _threadRefreshRequest = 0;
   int _archivedThreadRefreshRequest = 0;
@@ -172,16 +211,28 @@ class CodexController extends ChangeNotifier {
   final Set<String> _archivingThreadIds = {};
   final Set<String> _deletingThreadIds = {};
   static const _maximumRuntimeLogEntries = 200;
+  static const _runtimeReconnectDelays = [
+    Duration(seconds: 1),
+    Duration(seconds: 2),
+    Duration(seconds: 5),
+  ];
   Future<void> _reasoningEffortSave = Future.value();
+  Future<void> _modelSelectionSave = Future.value();
   Map<String, Set<ReasoningEffort>> _reasoningEffortsByModel = const {};
-  String? _defaultModelId;
-  late final Future<void> _relayLoad;
+  String? _catalogDefaultModelId;
+  String? _configuredModelId;
+  String? _configuredProviderId;
+  String? _configuredModelSource;
+  String? _configuredProviderSource;
+  String? modelCatalogError;
   late final Future<void> _runtimeLoad;
   late final Future<void> _workspaceLoad;
   late final Future<void> _historyLoad;
 
   RuntimeStatus status = RuntimeStatus.stopped;
   String? workspacePath;
+  final List<String> _additionalWorkspacePaths = [];
+  final List<WorkspaceConfiguration> _workspaceConfigurations = [];
   String? activeThreadId;
   String? activeTurnId;
   TaskPlan? activeTaskPlan;
@@ -193,19 +244,20 @@ class CodexController extends ChangeNotifier {
   List<ReasoningEffort> reasoningEffortOptions = const [
     ReasoningEffort.defaultValue,
   ];
+  String? selectedModelId;
+  List<CodexModelOption> modelOptions = const [];
   AuthStatus authStatus = AuthStatus.checking;
   String? accountEmail;
   String? accountPlan;
   String? loginUrl;
   bool loginInProgress = false;
   bool requiresOpenaiAuth = false;
-  RelayProviderConfiguration? relayProvider;
-  bool relayLoading = true;
-  bool relaySaving = false;
-  String? relayError;
   CodexRuntimeProbe? runtimeProbe;
   String? runtimeError;
   bool runtimeChecking = false;
+  bool codexConfigurationLoading = false;
+  bool codexConfigurationRead = false;
+  String? codexConfigurationError;
   List<CodexThread> threads = const [];
   bool threadsLoading = false;
   String? threadsError;
@@ -216,6 +268,13 @@ class CodexController extends ChangeNotifier {
   bool pluginsLoading = false;
   bool pluginSaving = false;
   String? pluginsError;
+  String? pluginActionProgress;
+  String? pluginActionResult;
+  String? pluginActionTargetId;
+  bool pluginRuntimeRestartRequired = false;
+  List<CodexSkill> skills = const [];
+  bool skillsLoading = false;
+  String? skillsError;
   List<CodexMarketplace> marketplaces = const [];
   bool marketplacesLoading = false;
   String? marketplacesError;
@@ -225,6 +284,24 @@ class CodexController extends ChangeNotifier {
   GitProjectChange? gitDiffChange;
   String? gitDiff;
   bool gitDiffLoading = false;
+  bool gitDiffTruncated = false;
+
+  /// 返回不含主目录且不可由外部修改的附加工作区目录。
+  /// Returns additional workspace directories, excluding the primary directory and preventing external mutation.
+  List<String> get additionalWorkspacePaths =>
+      List.unmodifiable(_additionalWorkspacePaths);
+
+  /// 返回所有已保存工作区；每个工作区独立保留主目录和附加目录。
+  /// Returns every saved workspace, each retaining its own primary and additional directories.
+  List<WorkspaceConfiguration> get workspaceConfigurations =>
+      List.unmodifiable(_workspaceConfigurations);
+
+  /// 返回传给新任务的完整工作区根目录，主目录始终位于第一项。
+  /// Returns all workspace roots passed to new tasks, always placing the primary directory first.
+  List<String> get workspaceRoots => [
+    ?workspacePath,
+    ..._additionalWorkspacePaths,
+  ];
 
   /// 返回不可修改的当前时间线副本视图。
   /// Returns an unmodifiable view of the current timeline.
@@ -280,21 +357,24 @@ class CodexController extends ChangeNotifier {
     gitDiffLoading = true;
     gitDiffChange = change;
     gitDiff = null;
+    gitDiffTruncated = false;
     if (!_disposed) notifyListeners();
     try {
-      final next = await _gitProjectService.readDiff(
+      final next = await _gitProjectService.readDiffPreview(
         workspace: workspace,
         change: change,
       );
       if (_disposed || workspacePath != workspace || gitDiffChange != change) {
         return;
       }
-      gitDiff = next;
+      gitDiff = next.content;
+      gitDiffTruncated = next.truncated;
     } catch (error) {
       if (_disposed || workspacePath != workspace || gitDiffChange != change) {
         return;
       }
       gitDiff = '无法读取 Git Diff：${_messageOf(error)}';
+      gitDiffTruncated = false;
     } finally {
       if (!_disposed && workspacePath == workspace && gitDiffChange == change) {
         gitDiffLoading = false;
@@ -349,9 +429,9 @@ class CodexController extends ChangeNotifier {
   bool get canSend =>
       status == RuntimeStatus.ready &&
       workspacePath != null &&
-      (relayProvider != null ||
-          !requiresOpenaiAuth ||
-          authStatus != AuthStatus.signedOut);
+      _hasUsableModelSelection &&
+      _hasUsableReasoningEffort &&
+      (!requiresOpenaiAuth || authStatus != AuthStatus.signedOut);
 
   /// 指示当前正在运行的任务是否可以中断。
   /// Indicates whether the running task can be interrupted.
@@ -362,6 +442,13 @@ class CodexController extends ChangeNotifier {
   bool get canChooseWorkspace =>
       status == RuntimeStatus.stopped ||
       (status == RuntimeStatus.failed && !_server.isRunning);
+
+  /// 指示当前任务状态是否允许新建或切换工作区并重建运行时连接。
+  /// Indicates whether the current task state permits creating or switching workspaces and rebuilding the runtime connection.
+  bool get canChangePrimaryWorkspace =>
+      !_startingRuntime &&
+      status != RuntimeStatus.starting &&
+      status != RuntimeStatus.running;
 
   /// 指示本地 App Server 是否可以停止。
   /// Indicates whether the local App Server can be stopped.
@@ -391,16 +478,168 @@ class CodexController extends ChangeNotifier {
     AuthStatus.external => '外部 Provider',
   };
 
-  /// 返回当前线程使用的 Provider 展示名称。
-  /// Returns the display name of the provider used by current threads.
-  String get providerLabel => relayProvider == null ? 'OpenAI' : '中转站';
+  /// 返回由 App Server 从最终生效配置中解析出的 Provider。
+  /// Returns the provider resolved by App Server from the effective configuration.
+  String get providerLabel =>
+      _configuredProviderId ??
+      (codexConfigurationRead ? 'openai（默认）' : 'Codex 配置');
+
+  /// 返回最终生效配置中的模型；未显式配置时显示 Codex 模型目录的默认值。
+  /// Returns the effective configured model, falling back to Codex's model-catalog default when it is not explicitly configured.
+  String get configuredModelLabel =>
+      _configuredModelId ??
+      _catalogDefaultModelId ??
+      (codexConfigurationRead ? '未显式配置（使用 Codex 默认模型）' : '等待读取运行时配置');
+
+  /// 返回模型选择器当前显示的值；`null` 表示跟随最终生效的 Codex 配置。
+  /// Returns the current model-picker value; `null` means follow the effective Codex configuration.
+  String get selectedModelLabel {
+    final selected = selectedModelId;
+    if (selected == null) return '跟随配置';
+    for (final option in modelOptions) {
+      if (option.id == selected) return option.displayName;
+    }
+    return selected;
+  }
+
+  /// 返回后续新建任务实际将使用的模型标签。
+  /// Returns the model label that subsequent new tasks will use.
+  String get newTaskModelLabel {
+    final selected = selectedModelId;
+    if (selected == null) return configuredModelLabel;
+    for (final option in modelOptions) {
+      if (option.id == selected) return option.displayName;
+    }
+    return selected;
+  }
+
+  /// 指示模型选择器是否有目录选项，或需要允许用户清除失效的已保存选择。
+  /// Indicates whether catalog options exist or an unresolved saved selection must remain clearable.
+  bool get canSelectModel => modelOptions.isNotEmpty || selectedModelId != null;
+
+  /// 指示推理强度选择器是否有能力选项，或需要允许用户恢复为默认值。
+  /// Indicates whether capability options exist or a saved effort must remain resettable.
+  bool get canSelectReasoningEffort =>
+      reasoningEffortOptions.length > 1 ||
+      reasoningEffort != ReasoningEffort.defaultValue;
+
+  /// 返回模型目录失败造成的当前选择错误；安全的“跟随配置 + 默认强度”不受影响。
+  /// Returns a selection error caused by catalog failure; safe config-following defaults remain usable.
+  String? get modelSelectionError {
+    if (_hasUsableModelSelection && _hasUsableReasoningEffort) return null;
+    return modelCatalogError ?? '所选模型或推理强度当前不可用。';
+  }
+
+  bool get _hasUsableModelSelection {
+    final selected = selectedModelId;
+    return selected == null ||
+        modelOptions.any((option) => option.id == selected);
+  }
+
+  bool get _hasUsableReasoningEffort =>
+      reasoningEffort == ReasoningEffort.defaultValue ||
+      _supportsReasoningEffort(_newThreadModelId, reasoningEffort);
+
+  /// 返回模型配置的来源；未显式配置时说明使用 Codex 默认值。
+  /// Returns the model configuration source, or explains that Codex's default is used.
+  String get configuredModelSourceLabel =>
+      _configuredModelSource ??
+      (_configuredModelId == null && codexConfigurationRead
+          ? 'Codex 内置默认值'
+          : '尚未读取');
+
+  /// 返回 Provider 配置的来源；未显式配置时说明使用内置 OpenAI Provider。
+  /// Returns the provider configuration source, or explains that the built-in OpenAI provider is used.
+  String get configuredProviderSourceLabel =>
+      _configuredProviderSource ??
+      (_configuredProviderId == null && codexConfigurationRead
+          ? 'Codex 内置默认值'
+          : '尚未读取');
+
+  /// 返回只读配置读取状态，实际连通性仍需成功请求确认。
+  /// Returns the read-only configuration status; actual connectivity still requires a successful request.
+  String get codexConfigurationStatusLabel {
+    if (codexConfigurationLoading) return '正在从 Codex 运行时读取…';
+    if (codexConfigurationError != null) return '读取失败';
+    if (codexConfigurationRead) return '已从 Codex 运行时读取';
+    return '运行时启动后读取';
+  }
+
+  /// 返回当前 Codex 用户级配置文件的常规路径；项目配置仍由 App Server 合并。
+  /// Returns the conventional user config path; App Server still merges project configuration.
+  String get codexUserConfigPath {
+    final codexHome = Platform.environment['CODEX_HOME']?.trim();
+    if (codexHome != null && codexHome.isNotEmpty) {
+      return '$codexHome/config.toml';
+    }
+    final home = Platform.environment['HOME']?.trim();
+    return home == null || home.isEmpty
+        ? '~/.codex/config.toml'
+        : '$home/.codex/config.toml';
+  }
+
+  /// 让 App Server 按当前项目重新解析配置，并只保留用于展示的非敏感字段。
+  /// Asks App Server to resolve configuration for the current workspace and retains only non-sensitive display fields.
+  Future<void> refreshCodexConfiguration({bool notify = true}) async {
+    if (!_server.isRunning) return;
+    codexConfigurationLoading = true;
+    codexConfigurationError = null;
+    if (notify && !_disposed) notifyListeners();
+    try {
+      final result = await _server.readConfig(workingDirectory: workspacePath);
+      final config = JsonMap.from(result['config'] as Map);
+      final origins = result['origins'];
+      _configuredModelId = _nonEmptyConfigString(
+        config['model'] ?? config['modelId'],
+      );
+      _configuredProviderId = _nonEmptyConfigString(
+        config['model_provider'] ?? config['modelProvider'],
+      );
+      _configuredModelSource = _configurationOriginLabel(origins, 'model');
+      _configuredProviderSource = _configurationOriginLabel(
+        origins,
+        'model_provider',
+      );
+      codexConfigurationRead = true;
+    } catch (error) {
+      _configuredModelId = null;
+      _configuredProviderId = null;
+      _configuredModelSource = null;
+      _configuredProviderSource = null;
+      codexConfigurationRead = false;
+      codexConfigurationError = _messageOf(error);
+    } finally {
+      codexConfigurationLoading = false;
+      if (notify && !_disposed) notifyListeners();
+    }
+  }
+
+  /// 清除只属于已停止 App Server 的配置与模型快照，同时保留用户偏好。
+  /// Clears configuration and model snapshots owned by a stopped App Server while retaining user preferences.
+  void _clearRuntimeResolvedConfiguration() {
+    _configuredModelId = null;
+    _configuredProviderId = null;
+    _configuredModelSource = null;
+    _configuredProviderSource = null;
+    codexConfigurationLoading = false;
+    codexConfigurationRead = false;
+    codexConfigurationError = null;
+    _reasoningEffortsByModel = const {};
+    _catalogDefaultModelId = null;
+    modelOptions = const [];
+    modelCatalogError = null;
+    reasoningEffortOptions = [
+      ReasoningEffort.defaultValue,
+      if (reasoningEffort != ReasoningEffort.defaultValue) reasoningEffort,
+    ];
+  }
 
   /// 指示运行时路径是否可以在不影响会话的情况下配置。
   /// Indicates whether the runtime path can be configured without disrupting a session.
   bool get canConfigureRuntime =>
       !_startingRuntime &&
       status != RuntimeStatus.starting &&
-      !_server.isRunning;
+      status != RuntimeStatus.running;
 
   /// 验证、切换并持久化本地项目，同时恢复该项目的本地历史。
   /// Validates, selects, and persists a local workspace, then restores its local history.
@@ -422,8 +661,25 @@ class CodexController extends ChangeNotifier {
     }
     final canonicalPath = await directory.resolveSymbolicLinks();
     await _saveConversationHistory();
+    _updateCurrentWorkspaceConfiguration();
+    final existingIndex = _workspaceConfigurations.indexWhere(
+      (configuration) => configuration.primaryPath == canonicalPath,
+    );
+    final nextAdditionalPaths = existingIndex < 0
+        ? const <String>[]
+        : _workspaceConfigurations[existingIndex].additionalPaths;
+    if (existingIndex < 0) {
+      _workspaceConfigurations.add(
+        WorkspaceConfiguration(primaryPath: canonicalPath),
+      );
+    }
     _invalidateThreadRefreshes();
     workspacePath = canonicalPath;
+    _additionalWorkspacePaths
+      ..clear()
+      ..addAll(nextAdditionalPaths.where((path) => path != canonicalPath));
+    _updateCurrentWorkspaceConfiguration();
+    _clearRuntimeResolvedConfiguration();
     activeThreadId = null;
     threads = const [];
     archivedThreads = const [];
@@ -433,6 +689,7 @@ class CodexController extends ChangeNotifier {
     gitDiffChange = null;
     gitDiff = null;
     gitDiffLoading = false;
+    gitDiffTruncated = false;
     _clearStreamingState();
     _clearFileChanges();
     _resetConversationTimeline();
@@ -442,8 +699,131 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
     try {
       await _runtimeConfigurationStore.saveWorkspace(canonicalPath);
+      await _saveAdditionalWorkspacePaths();
     } catch (error) {
       _add(TimelineKind.error, '无法保存项目选择', _messageOf(error));
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  /// 创建或切换工作区并自动重建运行时连接；正在执行任务时保持原工作区不变。
+  /// Creates or switches workspaces and automatically rebuilds the runtime connection, preserving the active workspace during a task.
+  Future<bool> selectWorkspaceAndReconnect(String path) async {
+    final normalized = path.trim();
+    if (normalized.isEmpty) return false;
+    final directory = Directory(normalized);
+    if (!await directory.exists()) {
+      lastError = '该项目目录不存在：$normalized';
+      _add(TimelineKind.error, '无法选择项目', lastError!);
+      notifyListeners();
+      return false;
+    }
+    final canonicalPath = await directory.resolveSymbolicLinks();
+    if (canonicalPath == workspacePath) {
+      _updateCurrentWorkspaceConfiguration();
+      try {
+        await _runtimeConfigurationStore.saveWorkspace(canonicalPath);
+        await _saveAdditionalWorkspacePaths();
+      } catch (error) {
+        _add(TimelineKind.error, '无法保存工作区', _messageOf(error));
+        if (!_disposed) notifyListeners();
+      }
+      if (status == RuntimeStatus.stopped || status == RuntimeStatus.failed) {
+        await startRuntime();
+      }
+      return true;
+    }
+    if (!canChangePrimaryWorkspace) {
+      lastError = status == RuntimeStatus.running
+          ? '请等待当前任务完成后再新建或切换工作区。'
+          : '运行时正在自动连接，请稍后再新建或切换工作区。';
+      _add(TimelineKind.error, '无法切换工作区', lastError!);
+      notifyListeners();
+      return false;
+    }
+
+    if (_server.isRunning || status == RuntimeStatus.ready) {
+      await stopRuntime();
+      if (_server.isRunning) return false;
+    }
+    await selectWorkspace(canonicalPath);
+    if (workspacePath != canonicalPath || _disposed) return false;
+    await startRuntime();
+    return true;
+  }
+
+  /// 用所选主目录创建并打开工作区；已保存目录会直接切换，不会生成重复记录。
+  /// Creates and opens a workspace from a primary directory, switching to an existing saved entry without duplication.
+  Future<bool> createWorkspace(String path) =>
+      selectWorkspaceAndReconnect(path);
+
+  /// 从工作区列表移除一个非当前记录；只删除本地偏好，不删除目录或历史缓存。
+  /// Removes a non-active workspace record from local preferences without deleting directories or cached history.
+  Future<void> forgetWorkspace(String primaryPath) async {
+    if (primaryPath == workspacePath) {
+      lastError = '不能移除当前工作区，请先切换到其他工作区。';
+      notifyListeners();
+      return;
+    }
+    final previousLength = _workspaceConfigurations.length;
+    _workspaceConfigurations.removeWhere(
+      (configuration) => configuration.primaryPath == primaryPath,
+    );
+    if (_workspaceConfigurations.length == previousLength) return;
+    _add(TimelineKind.system, '已移除工作区记录', primaryPath);
+    notifyListeners();
+    try {
+      await _saveAdditionalWorkspacePaths();
+    } catch (error) {
+      _add(TimelineKind.error, '无法保存工作区列表', _messageOf(error));
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  /// 验证并添加一个供后续新任务访问的附加工作区目录；首个目录会成为主目录。
+  /// Validates and adds an additional workspace directory for future tasks; the first directory becomes primary.
+  Future<void> addWorkspaceRoot(String path) async {
+    final normalized = path.trim();
+    if (normalized.isEmpty) return;
+    final directory = Directory(normalized);
+    if (!await directory.exists()) {
+      lastError = '该目录不存在：$normalized';
+      _add(TimelineKind.error, '无法添加目录', lastError!);
+      notifyListeners();
+      return;
+    }
+    final canonicalPath = await directory.resolveSymbolicLinks();
+    if (workspacePath == null) {
+      await selectWorkspace(canonicalPath);
+      return;
+    }
+    if (canonicalPath == workspacePath ||
+        _additionalWorkspacePaths.contains(canonicalPath)) {
+      return;
+    }
+    _additionalWorkspacePaths.add(canonicalPath);
+    lastError = null;
+    _add(TimelineKind.system, '已添加工作区目录', canonicalPath);
+    notifyListeners();
+    try {
+      await _saveAdditionalWorkspacePaths();
+    } catch (error) {
+      _add(TimelineKind.error, '无法保存附加目录', _messageOf(error));
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  /// 删除当前工作区的一个附加目录；主目录由工作区记录确定。
+  /// Removes an additional directory from the current workspace; its saved entry determines the primary directory.
+  Future<void> removeWorkspaceRoot(String path) async {
+    if (!_additionalWorkspacePaths.remove(path)) return;
+    lastError = null;
+    _add(TimelineKind.system, '已移除工作区目录', path);
+    notifyListeners();
+    try {
+      await _saveAdditionalWorkspacePaths();
+    } catch (error) {
+      _add(TimelineKind.error, '无法保存附加目录', _messageOf(error));
       if (!_disposed) notifyListeners();
     }
   }
@@ -480,8 +860,12 @@ class CodexController extends ChangeNotifier {
       return;
     }
 
+    final connectionEpoch = ++_runtimeConnectionEpoch;
+    _runtimeReconnectTimer?.cancel();
+    _runtimeReconnectTimer = null;
     _startingRuntime = true;
     _invalidateThreadRefreshes();
+    _clearRuntimeResolvedConfiguration();
     _runtimeLogs.clear();
     status = RuntimeStatus.starting;
     lastError = null;
@@ -489,38 +873,73 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      await Future.wait([_relayLoad, _runtimeLoad, _workspaceLoad]);
+      await Future.wait([_runtimeLoad, _workspaceLoad]);
+      if (!_isCurrentRuntimeConnection(connectionEpoch)) return;
       final probe = await _inspectRuntime(notify: false);
+      if (!_isCurrentRuntimeConnection(connectionEpoch)) return;
       if (!probe.isAvailable) {
         throw StateError(probe.error ?? 'Codex CLI 不可用。');
       }
       _eventSubscription ??= _server.events.listen(_handleServerEvent);
       if (_server.isRunning) await _server.stop();
-      await _server.start(
-        workingDirectory: workspace,
-        environment: relayProvider?.processEnvironment,
-      );
+      if (!_isCurrentRuntimeConnection(connectionEpoch)) return;
+      await _server.start(workingDirectory: workspace);
+      if (!_isCurrentRuntimeConnection(connectionEpoch)) {
+        // 启动进程期间可能已切换连接代次；此时必须回收刚创建的旧进程。
+        // The connection epoch may change while spawning; reclaim that now-stale process immediately.
+        await _server.stop();
+        return;
+      }
       await _server.initialize();
+      if (!_isCurrentRuntimeConnection(connectionEpoch)) return;
+      await refreshCodexConfiguration(notify: false);
+      if (!_isCurrentRuntimeConnection(connectionEpoch)) return;
       await refreshAccount();
+      if (!_isCurrentRuntimeConnection(connectionEpoch)) return;
       await _refreshReasoningEffortCapabilities();
+      if (!_isCurrentRuntimeConnection(connectionEpoch)) return;
       status = RuntimeStatus.ready;
+      _runtimeReconnectAttempt = 0;
+      if (pluginRuntimeRestartRequired) {
+        pluginRuntimeRestartRequired = false;
+        pluginActionResult = '运行时已重启，最新插件配置将在新建任务中生效。';
+      }
       _add(TimelineKind.system, '运行时已连接', 'App Server 已通过本地 stdio 通道就绪。');
       await refreshThreads();
+      await refreshSkills(notify: false);
     } catch (error) {
+      if (!_isCurrentRuntimeConnection(connectionEpoch)) return;
       status = RuntimeStatus.failed;
       lastError = _messageOf(error);
       _add(TimelineKind.error, '无法启动运行时', lastError!);
     } finally {
       _startingRuntime = false;
     }
+    if (!_isCurrentRuntimeConnection(connectionEpoch)) return;
+    if (status == RuntimeStatus.failed) _scheduleRuntimeReconnect();
     notifyListeners();
   }
 
-  /// 向当前或新建线程发送用户提示词。
-  /// Sends a user prompt to the current or a newly created thread.
-  Future<void> sendPrompt(String prompt) async {
+  /// 等待本地配置、工作区和历史恢复完成，并为已恢复的主目录自动连接运行时。
+  /// Waits for local configuration, workspace, and history restoration, then automatically connects the restored primary directory.
+  Future<void> connectRestoredWorkspace() async {
+    await Future.wait([_runtimeLoad, _workspaceLoad, _historyLoad]);
+    if (_disposed || workspacePath == null || status != RuntimeStatus.stopped) {
+      return;
+    }
+    await startRuntime();
+  }
+
+  /// 向当前或新建线程发送用户提示词，并返回任务是否已成功启动。
+  /// Sends a prompt to the current or a new thread and reports whether the turn started.
+  Future<bool> sendPrompt(
+    String prompt, {
+    List<JsonMap> additionalInput = const [],
+    String? goal,
+    bool planMode = false,
+  }) async {
     final text = prompt.trim();
-    if (text.isEmpty || !canSend) return;
+    if (text.isEmpty || !canSend) return false;
     final workspace = workspacePath!;
     if (activeThreadId == null) {
       _resetConversationTimeline();
@@ -535,31 +954,79 @@ class CodexController extends ChangeNotifier {
     try {
       activeThreadId ??= await _server.startThread(
         workingDirectory: workspace,
-        modelProvider: relayProvider == null
-            ? null
-            : RelayProviderConfiguration.providerId,
-        model: relayProvider?.model,
-        config: _threadConfig(
-          usesRelay: relayProvider != null,
-          model: relayProvider?.model,
-          useDefaultModelWhenMissing: relayProvider == null,
-        ),
+        runtimeWorkspaceRoots: workspaceRoots.length > 1
+            ? workspaceRoots
+            : null,
+        modelProvider: null,
+        model: _modelOverrideForNewThread,
+        config: _newThreadConfig(),
       );
       await refreshThreads();
       final id = activeThreadId!;
+      final objective = goal?.trim();
+      if (objective != null && objective.isNotEmpty) {
+        await _server.setThreadGoal(threadId: id, objective: objective);
+      }
       final shortId = id.length > 12 ? id.substring(0, 12) : id;
       _add(TimelineKind.system, '任务已创建', 'Thread $shortId');
       await _server.startTurn(
         threadId: id,
         prompt: text,
         workingDirectory: workspace,
+        additionalInput: additionalInput,
+        collaborationMode: _newThreadModelId == null
+            ? null
+            : {
+                'mode': planMode ? 'plan' : 'default',
+                'settings': {
+                  'model': _newThreadModelId,
+                  'reasoning_effort': reasoningEffort.configValue,
+                  'developer_instructions': null,
+                },
+              },
       );
+      notifyListeners();
+      return true;
     } catch (error) {
-      status = RuntimeStatus.failed;
+      status = _server.isRunning ? RuntimeStatus.ready : RuntimeStatus.failed;
       lastError = _messageOf(error);
       _add(TimelineKind.error, '任务未能启动', lastError!);
     }
+    if (status == RuntimeStatus.failed) _scheduleRuntimeReconnect();
     notifyListeners();
+    return false;
+  }
+
+  /// Refreshes the workspace-scoped skills advertised by App Server.
+  Future<void> refreshSkills({
+    bool forceReload = false,
+    bool notify = true,
+  }) async {
+    final workspace = workspacePath;
+    if (!_server.isRunning || workspace == null || skillsLoading) return;
+    skillsLoading = true;
+    skillsError = null;
+    if (notify && !_disposed) notifyListeners();
+    try {
+      final rows = await _server.listSkills(
+        workingDirectory: workspace,
+        forceReload: forceReload,
+      );
+      if (_disposed || workspacePath != workspace) return;
+      skills = rows
+          .map(CodexSkill.fromJson)
+          .whereType<CodexSkill>()
+          .where((skill) => skill.enabled)
+          .toList(growable: false);
+    } catch (error) {
+      if (_disposed || workspacePath != workspace) return;
+      skillsError = _messageOf(error);
+    } finally {
+      if (!_disposed && workspacePath == workspace) {
+        skillsLoading = false;
+        if (notify) notifyListeners();
+      }
+    }
   }
 
   /// 请求 App Server 中断当前正在执行的任务。
@@ -580,21 +1047,65 @@ class CodexController extends ChangeNotifier {
   /// Stops App Server and resets state that is only valid while it runs.
   Future<void> stopRuntime() async {
     if (status == RuntimeStatus.stopped && !_server.isRunning) return;
+    _runtimeConnectionEpoch++;
+    _runtimeReconnectTimer?.cancel();
+    _runtimeReconnectTimer = null;
     try {
       await _server.stop();
       _invalidateThreadRefreshes();
+      _clearRuntimeResolvedConfiguration();
       status = RuntimeStatus.stopped;
       activeThreadId = null;
       pendingApproval = null;
       approvalResponding = false;
       _clearStreamingState();
-      _add(TimelineKind.system, '运行时已停止', '现在可以切换项目或重新启动运行时。');
+      _add(TimelineKind.system, '运行时连接已关闭', '应用会在需要时自动重新连接。');
     } catch (error) {
       status = RuntimeStatus.failed;
       lastError = _messageOf(error);
       _add(TimelineKind.error, '停止运行时失败', lastError!);
     }
     notifyListeners();
+  }
+
+  /// 在没有任务执行时自动重建当前主目录的运行时连接。
+  /// Automatically rebuilds the current primary directory's runtime connection while no task is executing.
+  Future<void> reconnectRuntime() async {
+    if (workspacePath == null ||
+        status == RuntimeStatus.running ||
+        status == RuntimeStatus.starting ||
+        _startingRuntime) {
+      return;
+    }
+    if (_server.isRunning || status == RuntimeStatus.ready) {
+      await stopRuntime();
+      if (_server.isRunning) return;
+    }
+    await startRuntime();
+  }
+
+  /// 判断异步连接步骤是否仍属于当前控制器和最新连接代次。
+  /// Determines whether an asynchronous connection step still belongs to this controller and connection epoch.
+  bool _isCurrentRuntimeConnection(int epoch) =>
+      !_disposed && epoch == _runtimeConnectionEpoch;
+
+  /// 使用有限退避自动恢复失败或意外退出的运行时，避免无限重启循环。
+  /// Automatically restores a failed or exited runtime with bounded backoff to avoid an infinite restart loop.
+  void _scheduleRuntimeReconnect() {
+    if (_disposed ||
+        workspacePath == null ||
+        status != RuntimeStatus.failed ||
+        _runtimeReconnectTimer != null ||
+        _runtimeReconnectAttempt >= _runtimeReconnectDelays.length) {
+      return;
+    }
+    final delay = _runtimeReconnectDelays[_runtimeReconnectAttempt++];
+    _add(TimelineKind.system, '等待自动重连', '${delay.inSeconds} 秒后重新连接本地运行时。');
+    _runtimeReconnectTimer = Timer(delay, () {
+      _runtimeReconnectTimer = null;
+      if (_disposed || status != RuntimeStatus.failed) return;
+      unawaited(reconnectRuntime());
+    });
   }
 
   /// 从 App Server 分页刷新当前工作区的活跃线程列表。
@@ -739,6 +1250,7 @@ class CodexController extends ChangeNotifier {
     await _runPluginAction(
       () => _pluginStore.addLocalMarketplace(directory),
       '已添加本地插件市场',
+      progressMessage: '正在添加本地插件市场…',
     );
   }
 
@@ -748,6 +1260,7 @@ class CodexController extends ChangeNotifier {
     await _runPluginAction(
       () => _pluginStore.addMarketplace(source),
       '已添加插件市场',
+      progressMessage: '正在添加插件市场…',
     );
   }
 
@@ -757,6 +1270,8 @@ class CodexController extends ChangeNotifier {
     await _runPluginAction(
       () => _pluginStore.upgradeMarketplace(name),
       name == null ? '已刷新所有 Git 插件市场' : '已刷新插件市场：$name',
+      progressMessage: name == null ? '正在刷新所有 Git 插件市场…' : '正在刷新插件市场 $name…',
+      targetId: name,
     );
   }
 
@@ -766,6 +1281,8 @@ class CodexController extends ChangeNotifier {
     await _runPluginAction(
       () => _pluginStore.removeMarketplace(marketplace),
       '已移除插件市场：${marketplace.name}',
+      progressMessage: '正在移除插件市场 ${marketplace.name}…',
+      targetId: marketplace.name,
     );
   }
 
@@ -775,6 +1292,8 @@ class CodexController extends ChangeNotifier {
     await _runPluginAction(
       () => _pluginStore.installPlugin(plugin),
       '已安装插件：${plugin.name}',
+      progressMessage: '正在安装插件 ${plugin.name}…',
+      targetId: plugin.id,
     );
   }
 
@@ -784,6 +1303,8 @@ class CodexController extends ChangeNotifier {
     await _runPluginAction(
       () => _pluginStore.removePlugin(plugin),
       '已卸载插件：${plugin.name}',
+      progressMessage: '正在卸载插件 ${plugin.name}…',
+      targetId: plugin.id,
     );
   }
 
@@ -793,6 +1314,8 @@ class CodexController extends ChangeNotifier {
     await _runPluginAction(
       () => _pluginStore.setPluginEnabled(plugin, enabled),
       '${enabled ? '已启用' : '已停用'}插件：${plugin.name}',
+      progressMessage: '正在${enabled ? '启用' : '停用'}插件 ${plugin.name}…',
+      targetId: plugin.id,
     );
   }
 
@@ -843,12 +1366,7 @@ class CodexController extends ChangeNotifier {
         threadId: thread.id,
         modelProvider: thread.modelProvider,
         model: thread.model,
-        config: _threadConfig(
-          usesRelay:
-              thread.modelProvider == RelayProviderConfiguration.providerId,
-          model: thread.model,
-          useDefaultModelWhenMissing: false,
-        ),
+        config: null,
       );
       activeThreadId = thread.id;
       status = RuntimeStatus.ready;
@@ -1039,75 +1557,6 @@ class CodexController extends ChangeNotifier {
     }
   }
 
-  /// 验证并保存中转站设置，然后将其应用于后续新线程。
-  /// Validates and saves relay settings, applying them to subsequent new threads.
-  Future<void> saveRelayProvider({
-    required String baseUrl,
-    required String model,
-    required String apiKey,
-  }) async {
-    if (canStopRuntime) {
-      relayError = '请先停止运行时，再修改中转站配置。';
-      notifyListeners();
-      return;
-    }
-    final existingKey = relayProvider?.apiKey;
-    final key = apiKey.trim().isEmpty ? existingKey : apiKey.trim();
-    if (key == null || key.isEmpty) {
-      relayError = '请输入中转站 API Key。';
-      notifyListeners();
-      return;
-    }
-    final modelName = model.trim();
-    if (modelName.isEmpty) {
-      relayError = '请输入中转站提供的模型名称。';
-      notifyListeners();
-      return;
-    }
-
-    relaySaving = true;
-    relayError = null;
-    notifyListeners();
-    try {
-      final configuration = RelayProviderConfiguration(
-        baseUrl: RelayProviderConfiguration.normalizeBaseUrl(baseUrl),
-        model: modelName,
-        apiKey: key,
-      );
-      await _relayProviderStore.save(configuration);
-      relayProvider = configuration;
-      _add(TimelineKind.system, '中转站已配置', '将在下次启动运行时后生效。');
-    } catch (error) {
-      relayError = _messageOf(error);
-    } finally {
-      relaySaving = false;
-      if (!_disposed) notifyListeners();
-    }
-  }
-
-  /// 清除 Keychain 中的中转站设置，并恢复 OpenAI 默认 Provider。
-  /// Clears relay settings from Keychain and restores the default OpenAI provider.
-  Future<void> clearRelayProvider() async {
-    if (canStopRuntime) {
-      relayError = '请先停止运行时，再移除中转站配置。';
-      notifyListeners();
-      return;
-    }
-    relaySaving = true;
-    relayError = null;
-    notifyListeners();
-    try {
-      await _relayProviderStore.clear();
-      relayProvider = null;
-      _add(TimelineKind.system, '中转站已移除', '下次启动将使用默认 OpenAI Provider。');
-    } catch (error) {
-      relayError = _messageOf(error);
-    } finally {
-      relaySaving = false;
-      if (!_disposed) notifyListeners();
-    }
-  }
-
   /// 选择并异步保存后续任务要使用的推理强度。
   /// Selects and asynchronously persists the reasoning effort for subsequent tasks.
   Future<void> setReasoningEffort(ReasoningEffort value) async {
@@ -1120,7 +1569,7 @@ class CodexController extends ChangeNotifier {
       '推理强度已更新',
       value == ReasoningEffort.defaultValue
           ? '将使用模型默认推理强度。'
-          : '将用于后续新建或恢复的任务：${value.label}。',
+          : '将用于后续新建任务：${value.label}。',
     );
     notifyListeners();
     try {
@@ -1131,22 +1580,65 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 选择后续新建任务的模型；传入 `null` 时恢复为跟随 Codex 配置。
+  /// Selects the model for subsequent new tasks; passing `null` restores configuration-following behavior.
+  Future<void> setModel(String? value) async {
+    await _runtimeLoad;
+    final normalized = _nonEmptyConfigString(value);
+    if (normalized != null &&
+        !modelOptions.any((option) => option.id == normalized)) {
+      return;
+    }
+    if (selectedModelId == normalized) return;
+    selectedModelId = normalized;
+    final effortWasReset = _updateReasoningEffortOptions();
+    _add(
+      TimelineKind.system,
+      '新任务模型已更新',
+      normalized == null
+          ? '后续新建任务将跟随 Codex 配置：$configuredModelLabel。'
+          : '后续新建任务将使用：$newTaskModelLabel。',
+    );
+    notifyListeners();
+    try {
+      await _saveModelSelection(normalized);
+      if (effortWasReset) {
+        await _saveReasoningEffort(ReasoningEffort.defaultValue);
+      }
+    } catch (error) {
+      _add(TimelineKind.error, '无法保存模型选择', _messageOf(error));
+      if (!_disposed) notifyListeners();
+    }
+  }
+
   /// 探测当前 Codex CLI 路径及其可用性。
   /// Probes the current Codex CLI path and availability.
   Future<void> inspectRuntime() async {
     await _runtimeLoad;
-    await _inspectRuntime(notify: true);
+    final probe = await _inspectRuntime(notify: true);
+    if (probe.isAvailable &&
+        status == RuntimeStatus.failed &&
+        workspacePath != null &&
+        !_disposed) {
+      _runtimeReconnectAttempt = 0;
+      await reconnectRuntime();
+    }
   }
 
   /// 验证并保存用户指定的 Codex CLI 可执行文件路径。
   /// Validates and saves a user-specified Codex CLI executable path.
   Future<void> setRuntimeExecutable(String path) async {
     if (!canConfigureRuntime) {
-      runtimeError = '请先停止运行时，再修改 Codex CLI 路径。';
+      runtimeError = '请等待当前任务完成后再修改 Codex CLI 路径。';
       notifyListeners();
       return;
     }
     await _runtimeLoad;
+    final reconnect = workspacePath != null;
+    if (_server.isRunning || status == RuntimeStatus.ready) {
+      await stopRuntime();
+      if (_server.isRunning) return;
+    }
     final previous = _server.executable;
     runtimeChecking = true;
     runtimeError = null;
@@ -1165,6 +1657,7 @@ class CodexController extends ChangeNotifier {
     } finally {
       runtimeChecking = false;
       if (!_disposed) notifyListeners();
+      if (reconnect && !_disposed) await startRuntime();
     }
   }
 
@@ -1172,9 +1665,14 @@ class CodexController extends ChangeNotifier {
   /// Clears the custom CLI path and restores automatic discovery.
   Future<void> resetRuntimeExecutable() async {
     if (!canConfigureRuntime) {
-      runtimeError = '请先停止运行时，再修改 Codex CLI 路径。';
+      runtimeError = '请等待当前任务完成后再修改 Codex CLI 路径。';
       notifyListeners();
       return;
+    }
+    final reconnect = workspacePath != null;
+    if (_server.isRunning || status == RuntimeStatus.ready) {
+      await stopRuntime();
+      if (_server.isRunning) return;
     }
     runtimeChecking = true;
     runtimeError = null;
@@ -1188,6 +1686,7 @@ class CodexController extends ChangeNotifier {
     } finally {
       runtimeChecking = false;
       if (!_disposed) notifyListeners();
+      if (reconnect && !_disposed) await startRuntime();
     }
   }
 
@@ -1361,15 +1860,23 @@ class CodexController extends ChangeNotifier {
       case 'runtime/invalidMessage':
         _recordRuntimeLog(event.params['message']?.toString() ?? '');
       case 'runtime/exited':
+        // 只有进程退出才会使连接失败；单个 turn 失败仍可继续复用当前连接。
+        // Only process exit fails the connection; an individual failed turn remains recoverable in-place.
         status = RuntimeStatus.failed;
         lastError = 'Codex runtime 已退出（code ${event.params['code']}）。';
+        pendingApproval = null;
+        approvalResponding = false;
+        _clearStreamingState();
         _recordRuntimeLog(lastError!, level: RuntimeLogLevel.error);
         _add(TimelineKind.error, '运行时已断开', lastError!);
+        _scheduleRuntimeReconnect();
       case 'serverRequest/resolved':
         if (event.params['requestId'] == pendingApproval?.requestId) {
           pendingApproval = null;
           approvalResponding = false;
         }
+      case 'skills/changed':
+        unawaited(refreshSkills(forceReload: true));
       default:
         if (event.method.contains('command')) {
           _add(TimelineKind.command, '执行事件', event.method);
@@ -1467,7 +1974,9 @@ class CodexController extends ChangeNotifier {
     approvalResponding = false;
     switch (completionStatus) {
       case 'failed':
-        status = RuntimeStatus.failed;
+        // Turn 失败属于任务级错误，不代表 stdio 运行时已断开。
+        // A failed turn is a task-level error and does not imply that the stdio runtime disconnected.
+        status = RuntimeStatus.ready;
         lastError = _findText(turnMap['error']).isNotEmpty
             ? _findText(turnMap['error'])
             : 'Codex 未能完成当前任务。';
@@ -1724,7 +2233,96 @@ class CodexController extends ChangeNotifier {
     }
     if (details.isNotEmpty) {
       _add(TimelineKind.command, '文件变更', details.join('\n'));
+      // App Server 有时只提供文件路径和变更类型，Diff 会由工作区状态补齐。
+      // App Server sometimes sends only the path and change kind; hydrate the Diff from the workspace.
+      unawaited(_hydrateMissingFileChangeDiffs());
     }
+  }
+
+  /// 从当前工作区的只读 Git 状态补齐 App Server 未携带的文件 Diff。
+  /// Hydrates file Diffs omitted by App Server from the current read-only Git workspace state.
+  Future<void> _hydrateMissingFileChangeDiffs() async {
+    final workspace = workspacePath;
+    if (workspace == null || _disposed) return;
+    final pending = fileChanges
+        .where((change) => change.diff.trim().isEmpty)
+        .toList(growable: false);
+    if (pending.isEmpty) return;
+
+    try {
+      final status = await _gitProjectService.inspect(workspace);
+      if (_disposed || workspacePath != workspace || !status.isRepository) {
+        return;
+      }
+      final requests = <({CodexFileChange source, GitProjectChange target})>[];
+      for (final source in pending) {
+        GitProjectChange? target;
+        for (final candidate in status.changes) {
+          if (_sameWorkspaceChangePath(
+                source.path,
+                candidate.path,
+                workspace,
+              ) &&
+              // A newly created file has no pre-existing user content, so the
+              // /dev/null preview is safe. Tracked files may contain unrelated
+              // edits from before this task and need turnDiff or a baseline.
+              candidate.isUntracked) {
+            target = candidate;
+            break;
+          }
+        }
+        if (target != null) requests.add((source: source, target: target));
+      }
+      if (requests.isEmpty) return;
+      var hydrated = false;
+      for (final request in requests) {
+        if (_disposed || workspacePath != workspace) return;
+        GitDiffPreview preview;
+        try {
+          preview = await _gitProjectService.readDiffPreview(
+            workspace: workspace,
+            change: request.target,
+          );
+        } catch (_) {
+          continue;
+        }
+        final current = _fileChangesByPath[request.source.path];
+        if (current != request.source || preview.content.trim().isEmpty) {
+          continue;
+        }
+        _fileChangesByPath[request.source.path] = request.source.copyWith(
+          diff: preview.content,
+        );
+        hydrated = true;
+      }
+      if (hydrated) {
+        _scheduleConversationHistorySave();
+        notifyListeners();
+      }
+    } catch (_) {
+      // Git fallback is best-effort; the path remains visible even when the
+      // workspace is not a repository or the file disappears before reading.
+    }
+  }
+
+  /// 确保当前任务的文件变更尽可能包含只读工作区 Diff。
+  /// Ensures the current task's file changes include a best-effort read-only workspace Diff.
+  Future<void> ensureFileChangeDiffs() => _hydrateMissingFileChangeDiffs();
+
+  /// Compares an App Server path with Git's workspace-relative path.
+  bool _sameWorkspaceChangePath(
+    String appServerPath,
+    String gitPath,
+    String workspace,
+  ) {
+    String normalize(String value) =>
+        value.replaceAll('\\', '/').replaceFirst(RegExp(r'^\./'), '');
+
+    final source = normalize(appServerPath);
+    final target = normalize(gitPath);
+    if (source == target) return true;
+    final root = normalize(workspace).replaceFirst(RegExp(r'/$'), '');
+    return source == '$root/$target' || target == '$root/$source';
   }
 
   /// 规范化并保存当前任务的统一 Diff。
@@ -1755,73 +2353,60 @@ class CodexController extends ChangeNotifier {
     };
   }
 
-  /// 从 Keychain 加载中转站配置，并将读取失败显示给界面。
-  /// Loads relay configuration from Keychain and surfaces read failures to the UI.
-  Future<void> _loadRelayProvider() async {
-    try {
-      relayProvider = await _relayProviderStore.read();
-    } catch (error) {
-      relayError = '无法读取 Keychain 中的中转站配置：${_messageOf(error)}';
-    } finally {
-      relayLoading = false;
-      if (!_disposed) notifyListeners();
-    }
-  }
-
-  /// 加载本地运行时路径和推理强度偏好。
-  /// Loads local runtime-path and reasoning-effort preferences.
+  /// 加载本地运行时路径、新任务模型和推理强度偏好。
+  /// Loads local runtime-path, new-task model, and reasoning-effort preferences.
   Future<void> _loadRuntimeConfiguration() async {
     try {
       final values = await Future.wait([
         _runtimeConfigurationStore.readExecutable(),
         _runtimeConfigurationStore.readReasoningEffort(),
+        _runtimeConfigurationStore.readModel(),
       ]);
       final executable = values[0];
       if (executable != null && executable.trim().isNotEmpty) {
         _server.setExecutable(executable);
       }
-      reasoningEffort = ReasoningEffortLabel.fromConfigValue(values[1]);
+      reasoningEffort = ReasoningEffort.fromConfigValue(values[1]);
       if (reasoningEffort != ReasoningEffort.defaultValue) {
         reasoningEffortOptions = [
           ReasoningEffort.defaultValue,
           reasoningEffort,
         ];
       }
+      selectedModelId = _nonEmptyConfigString(values[2]);
     } catch (error) {
       runtimeError = '无法读取已保存的运行时配置：${_messageOf(error)}';
     }
   }
 
-  /// 构建新建或恢复线程时可选的 Provider 与推理配置。
-  /// Builds optional provider and reasoning configuration for a new or resumed thread.
-  JsonMap? _threadConfig({
-    required bool usesRelay,
-    required bool useDefaultModelWhenMissing,
-    String? model,
-  }) {
+  /// 构建新线程的可选推理配置；模型为空时由 App Server 跟随 Codex 配置。
+  /// Builds optional reasoning configuration for a new thread; a null model follows Codex configuration.
+  JsonMap? _newThreadConfig() {
     final effort = reasoningEffort.configValue;
     final config = <String, dynamic>{
-      if (usesRelay && relayProvider != null) ...relayProvider!.threadConfig,
       if (effort != null &&
-          _supportsReasoningEffort(
-            model,
-            reasoningEffort,
-            useDefaultModelWhenMissing: useDefaultModelWhenMissing,
-          ))
+          _supportsReasoningEffort(_newThreadModelId, reasoningEffort))
         'model_reasoning_effort': effort,
     };
     return config.isEmpty ? null : config;
   }
 
+  String? get _modelOverrideForNewThread {
+    final selected = selectedModelId;
+    return selected != null &&
+            modelOptions.any((option) => option.id == selected)
+        ? selected
+        : null;
+  }
+
+  String? get _newThreadModelId =>
+      _modelOverrideForNewThread ??
+      _configuredModelId ??
+      _catalogDefaultModelId;
+
   /// 判断指定或默认模型是否支持给定的推理强度。
   /// Determines whether the specified or default model supports a reasoning effort.
-  bool _supportsReasoningEffort(
-    String? model,
-    ReasoningEffort effort, {
-    required bool useDefaultModelWhenMissing,
-  }) {
-    final modelId =
-        model ?? (useDefaultModelWhenMissing ? _defaultModelId : null);
+  bool _supportsReasoningEffort(String? modelId, ReasoningEffort effort) {
     return modelId != null &&
         (_reasoningEffortsByModel[modelId]?.contains(effort) ?? false);
   }
@@ -1832,16 +2417,17 @@ class CodexController extends ChangeNotifier {
     try {
       final models = await _server.listModels();
       final capabilities = <String, Set<ReasoningEffort>>{};
+      final optionsById = <String, CodexModelOption>{};
       String? defaultModelId;
       for (final model in models) {
-        final id = model['id']?.toString() ?? model['model']?.toString();
-        if (id == null || id.isEmpty) continue;
+        final id = _nonEmptyConfigString(model['id'] ?? model['model']);
+        if (id == null) continue;
         final options = <ReasoningEffort>{};
         final supported = model['supportedReasoningEfforts'];
         if (supported is Iterable) {
           for (final rawOption in supported) {
             if (rawOption is! Map) continue;
-            final effort = ReasoningEffortLabel.fromConfigValue(
+            final effort = ReasoningEffort.fromConfigValue(
               rawOption['reasoningEffort']?.toString(),
             );
             if (effort != ReasoningEffort.defaultValue) options.add(effort);
@@ -1852,34 +2438,77 @@ class CodexController extends ChangeNotifier {
         if (modelName != null && modelName.isNotEmpty) {
           capabilities[modelName] = options;
         }
-        if (model['isDefault'] == true) defaultModelId ??= id;
+        final isDefault = model['isDefault'] == true;
+        optionsById.putIfAbsent(
+          id,
+          () => CodexModelOption(
+            id: id,
+            displayName:
+                _nonEmptyConfigString(model['displayName']) ?? modelName ?? id,
+            description: _nonEmptyConfigString(model['description']) ?? '',
+            isDefault: isDefault,
+          ),
+        );
+        if (isDefault) defaultModelId ??= id;
       }
       _reasoningEffortsByModel = capabilities;
-      _defaultModelId =
+      modelOptions = List.unmodifiable(optionsById.values);
+      modelCatalogError = null;
+      _catalogDefaultModelId =
           defaultModelId ??
           (models.isEmpty
               ? null
               : (models.first['id'] ?? models.first['model'])?.toString());
-      final activeModel = relayProvider?.model ?? _defaultModelId;
-      final availableEfforts = [...?_reasoningEffortsByModel[activeModel]]
-        ..sort((left, right) => left.index.compareTo(right.index));
-      reasoningEffortOptions = [
-        ReasoningEffort.defaultValue,
-        ...availableEfforts,
-      ];
-      if (!reasoningEffortOptions.contains(reasoningEffort)) {
-        reasoningEffort = ReasoningEffort.defaultValue;
-        _add(TimelineKind.system, '推理强度已恢复为默认', '当前模型不支持已保存的推理强度。');
+      final savedModel = selectedModelId;
+      if (savedModel != null && !optionsById.containsKey(savedModel)) {
+        selectedModelId = null;
+        _add(TimelineKind.system, '新任务模型已恢复为跟随配置', '已保存的模型当前不可用。');
+        try {
+          await _saveModelSelection(null);
+        } catch (error) {
+          _add(TimelineKind.error, '无法清除失效模型选择', _messageOf(error));
+        }
+      }
+      final effortWasReset = _updateReasoningEffortOptions();
+      if (effortWasReset) {
+        try {
+          await _saveReasoningEffort(ReasoningEffort.defaultValue);
+        } catch (error) {
+          _add(TimelineKind.error, '无法保存默认推理强度', _messageOf(error));
+        }
       }
     } catch (error) {
       _reasoningEffortsByModel = const {};
-      _defaultModelId = null;
-      reasoningEffortOptions = const [ReasoningEffort.defaultValue];
-      if (reasoningEffort != ReasoningEffort.defaultValue) {
-        reasoningEffort = ReasoningEffort.defaultValue;
-      }
-      _add(TimelineKind.system, '无法加载推理强度选项', '将使用模型默认值。');
+      modelOptions = const [];
+      _catalogDefaultModelId = null;
+      modelCatalogError = '无法加载模型目录：${_messageOf(error)}';
+      reasoningEffortOptions = [
+        ReasoningEffort.defaultValue,
+        if (reasoningEffort != ReasoningEffort.defaultValue) reasoningEffort,
+      ];
+      _add(
+        TimelineKind.error,
+        '无法加载模型目录',
+        selectedModelId == null &&
+                reasoningEffort == ReasoningEffort.defaultValue
+            ? '仍可跟随 Codex 配置创建任务。'
+            : '当前模型或推理强度选择无法验证，请恢复为跟随配置和默认强度后重试。',
+      );
     }
+  }
+
+  /// 根据后续新任务模型刷新推理强度选项；返回是否将已选强度恢复为默认。
+  /// Refreshes reasoning-effort options for the new-task model and returns whether the selected effort was reset.
+  bool _updateReasoningEffortOptions() {
+    final availableEfforts = [...?_reasoningEffortsByModel[_newThreadModelId]];
+    reasoningEffortOptions = [
+      ReasoningEffort.defaultValue,
+      ...availableEfforts,
+    ];
+    if (reasoningEffortOptions.contains(reasoningEffort)) return false;
+    reasoningEffort = ReasoningEffort.defaultValue;
+    _add(TimelineKind.system, '推理强度已恢复为默认', '所选的新任务模型不支持此前的推理强度。');
+    return true;
   }
 
   /// 串行保存推理强度，以确保较新的选择不会被旧写入覆盖。
@@ -1898,6 +2527,70 @@ class CodexController extends ChangeNotifier {
     return nextSave;
   }
 
+  /// 串行保存新任务模型，避免较早写入覆盖用户较新的选择。
+  /// Serializes new-task model writes so an older save cannot overwrite a newer selection.
+  Future<void> _saveModelSelection(String? value) {
+    final previousSave = _modelSelectionSave;
+    final nextSave = () async {
+      try {
+        await previousSave;
+      } catch (_) {
+        // A previous write failure must not prevent a newer choice from saving.
+      }
+      await _runtimeConfigurationStore.saveModel(value);
+    }();
+    _modelSelectionSave = nextSave;
+    return nextSave;
+  }
+
+  /// 将当前目录集合写回对应工作区记录；没有主目录时保持列表不变。
+  /// Writes the current directory set back to its workspace record, leaving the list unchanged without a primary path.
+  void _updateCurrentWorkspaceConfiguration() {
+    final primary = workspacePath;
+    if (primary == null) return;
+    final configuration = WorkspaceConfiguration(
+      primaryPath: primary,
+      additionalPaths: _additionalWorkspacePaths
+          .where((path) => path != primary)
+          .toList(growable: false),
+    );
+    final index = _workspaceConfigurations.indexWhere(
+      (candidate) => candidate.primaryPath == primary,
+    );
+    if (index < 0) {
+      _workspaceConfigurations.add(configuration);
+    } else {
+      _workspaceConfigurations[index] = configuration;
+    }
+  }
+
+  /// 串行保存完整工作区快照，并同步旧版当前附加目录偏好以支持平滑迁移。
+  /// Serializes complete workspace snapshots while mirroring the current legacy additional-root preference for migration.
+  Future<void> _saveAdditionalWorkspacePaths() {
+    _updateCurrentWorkspaceConfiguration();
+    final snapshot = List<String>.unmodifiable(_additionalWorkspacePaths);
+    final workspaceSnapshot = List<WorkspaceConfiguration>.unmodifiable(
+      _workspaceConfigurations.map(
+        (configuration) => WorkspaceConfiguration(
+          primaryPath: configuration.primaryPath,
+          additionalPaths: configuration.additionalPaths,
+        ),
+      ),
+    );
+    final previousSave = _workspaceRootsSave;
+    final nextSave = () async {
+      try {
+        await previousSave;
+      } catch (_) {
+        // A previous write failure must not prevent a newer snapshot from saving.
+      }
+      await _runtimeConfigurationStore.saveWorkspaces(workspaceSnapshot);
+      await _runtimeConfigurationStore.saveAdditionalWorkspaces(snapshot);
+    }();
+    _workspaceRootsSave = nextSave;
+    return nextSave;
+  }
+
   @visibleForTesting
   /// 刷新模型能力，供测试验证推理强度选择。
   /// Refreshes model capabilities for reasoning-effort tests.
@@ -1905,22 +2598,166 @@ class CodexController extends ChangeNotifier {
     return _refreshReasoningEffortCapabilities();
   }
 
-  /// 恢复上次有效的本地项目路径，失效路径会被自动清除。
-  /// Restores the last valid local workspace path and clears an invalid one.
+  static String? _nonEmptyConfigString(Object? value) {
+    final text = value?.toString().trim();
+    return text == null || text.isEmpty ? null : text;
+  }
+
+  /// 从 `config/read` 的 origins 中找到字段来源；不读取或保留任何凭据内容。
+  /// Finds a field origin from `config/read`; no credential content is read or retained.
+  static String? _configurationOriginLabel(Object? rawOrigins, String field) {
+    if (rawOrigins is! Map) return null;
+    Object? metadata = rawOrigins[field];
+    if (metadata == null) {
+      for (final entry in rawOrigins.entries) {
+        final key = entry.key.toString();
+        if (key == field ||
+            key.endsWith('/$field') ||
+            key.endsWith('.$field')) {
+          metadata = entry.value;
+          break;
+        }
+      }
+    }
+    if (metadata is! Map || metadata['name'] is! Map) return null;
+    final source = metadata['name'] as Map;
+    final type = source['type']?.toString();
+    return switch (type) {
+      'user' => _nonEmptyConfigString(source['file']) ?? '用户配置',
+      'project' => switch (_nonEmptyConfigString(source['dotCodexFolder'])) {
+        final folder? => '$folder/config.toml',
+        null => '项目配置',
+      },
+      'system' || 'legacyManagedConfigTomlFromFile' =>
+        _nonEmptyConfigString(source['file']) ?? '系统配置',
+      'packagedDefaults' => 'Codex 内置默认值',
+      'sessionFlags' => '运行时启动参数',
+      'mdm' => '设备管理配置',
+      'enterpriseManaged' => _nonEmptyConfigString(source['name']) ?? '组织管理配置',
+      'legacyManagedConfigTomlFromMdm' => '设备管理配置',
+      _ => null,
+    };
+  }
+
+  /// 校验并规范化一个已保存工作区，过滤失效、重复或与主目录相同的附加路径。
+  /// Validates and canonicalizes a saved workspace, filtering missing, duplicate, or primary-matching additional paths.
+  Future<WorkspaceConfiguration?> _restoreWorkspaceConfiguration(
+    WorkspaceConfiguration stored,
+  ) async {
+    final primaryDirectory = Directory(stored.primaryPath);
+    if (stored.primaryPath.isEmpty || !await primaryDirectory.exists()) {
+      return null;
+    }
+    try {
+      final primaryPath = await primaryDirectory.resolveSymbolicLinks();
+      final additionalPaths = <String>[];
+      for (final storedAdditional in stored.additionalPaths) {
+        final directory = Directory(storedAdditional);
+        if (!await directory.exists()) continue;
+        final canonicalPath = await directory.resolveSymbolicLinks();
+        if (canonicalPath != primaryPath &&
+            !additionalPaths.contains(canonicalPath)) {
+          additionalPaths.add(canonicalPath);
+        }
+      }
+      return WorkspaceConfiguration(
+        primaryPath: primaryPath,
+        additionalPaths: additionalPaths,
+      );
+    } on FileSystemException {
+      return null;
+    }
+  }
+
+  /// 恢复全部有效工作区及上次活动项，并将旧版单工作区偏好迁移为可切换列表。
+  /// Restores all valid workspaces and the last active entry, migrating legacy single-workspace preferences to a switchable list.
   Future<void> _loadWorkspace() async {
     try {
       final storedPath = await _runtimeConfigurationStore.readWorkspace();
-      if (storedPath == null || storedPath.trim().isEmpty) return;
-      final directory = Directory(storedPath.trim());
-      if (!await directory.exists()) {
-        await _runtimeConfigurationStore.clearWorkspace();
-        _add(TimelineKind.system, '已清除无效项目记录', storedPath.trim());
-        return;
+      String? restoredActivePath;
+      if (storedPath != null && storedPath.trim().isNotEmpty) {
+        final directory = Directory(storedPath.trim());
+        if (!await directory.exists()) {
+          await _runtimeConfigurationStore.clearWorkspace();
+          _add(TimelineKind.system, '已清除无效项目记录', storedPath.trim());
+        } else {
+          final canonicalPath = await directory.resolveSymbolicLinks();
+          restoredActivePath = canonicalPath;
+          if (workspacePath == null) {
+            workspacePath = canonicalPath;
+            _add(TimelineKind.system, '已恢复上次项目', canonicalPath);
+          }
+        }
       }
-      final canonicalPath = await directory.resolveSymbolicLinks();
-      if (workspacePath != null) return;
-      workspacePath = canonicalPath;
-      _add(TimelineKind.system, '已恢复上次项目', canonicalPath);
+
+      final storedConfigurations = await _runtimeConfigurationStore
+          .readWorkspaces();
+      final restoredConfigurations = <WorkspaceConfiguration>[];
+      for (final stored in storedConfigurations) {
+        final restored = await _restoreWorkspaceConfiguration(stored);
+        if (restored != null &&
+            !restoredConfigurations.any(
+              (existing) => existing.primaryPath == restored.primaryPath,
+            )) {
+          restoredConfigurations.add(restored);
+        }
+      }
+
+      final legacyAdditional = await _runtimeConfigurationStore
+          .readAdditionalWorkspaces();
+      var activePath = workspacePath ?? restoredActivePath;
+      if (activePath == null && restoredConfigurations.isNotEmpty) {
+        activePath = restoredConfigurations.first.primaryPath;
+        workspacePath = activePath;
+        await _runtimeConfigurationStore.saveWorkspace(activePath);
+        _add(TimelineKind.system, '已恢复可用工作区', activePath);
+      }
+
+      if (activePath != null &&
+          !restoredConfigurations.any(
+            (configuration) => configuration.primaryPath == activePath,
+          )) {
+        final migrated = await _restoreWorkspaceConfiguration(
+          WorkspaceConfiguration(
+            primaryPath: activePath,
+            additionalPaths: legacyAdditional,
+          ),
+        );
+        if (migrated != null) restoredConfigurations.add(migrated);
+      }
+
+      _workspaceConfigurations
+        ..clear()
+        ..addAll(restoredConfigurations);
+      final activeIndex = activePath == null
+          ? -1
+          : _workspaceConfigurations.indexWhere(
+              (configuration) => configuration.primaryPath == activePath,
+            );
+      _additionalWorkspacePaths
+        ..clear()
+        ..addAll(
+          activeIndex < 0
+              ? const <String>[]
+              : _workspaceConfigurations[activeIndex].additionalPaths,
+        );
+
+      final storedJson = jsonEncode(
+        storedConfigurations
+            .map((configuration) => configuration.toJson())
+            .toList(),
+      );
+      final restoredJson = jsonEncode(
+        restoredConfigurations
+            .map((configuration) => configuration.toJson())
+            .toList(),
+      );
+      if (storedJson != restoredJson) {
+        await _runtimeConfigurationStore.saveWorkspaces(restoredConfigurations);
+      }
+      if (!listEquals(legacyAdditional, _additionalWorkspacePaths)) {
+        await _saveAdditionalWorkspacePaths();
+      }
     } catch (error) {
       lastError = '无法恢复上次项目：${_messageOf(error)}';
     } finally {
@@ -1969,12 +2806,7 @@ class CodexController extends ChangeNotifier {
   /// 等待所有启动阶段的本地配置与历史恢复完成。
   /// Waits for all startup local configuration and history restoration to finish.
   Future<void> waitForInitialConfiguration() {
-    return Future.wait([
-      _relayLoad,
-      _runtimeLoad,
-      _workspaceLoad,
-      _historyLoad,
-    ]);
+    return Future.wait([_runtimeLoad, _workspaceLoad, _historyLoad]);
   }
 
   @visibleForTesting
@@ -2023,8 +2855,10 @@ class CodexController extends ChangeNotifier {
   /// Runs a plugin configuration change while avoiding runtime changes mid-turn.
   Future<void> _runPluginAction(
     Future<void> Function() action,
-    String successMessage,
-  ) async {
+    String successMessage, {
+    required String progressMessage,
+    String? targetId,
+  }) async {
     if (status == RuntimeStatus.running) {
       pluginsError = '请等待当前任务完成后再变更插件。';
       if (!_disposed) notifyListeners();
@@ -2033,16 +2867,34 @@ class CodexController extends ChangeNotifier {
     if (pluginSaving) return;
     pluginSaving = true;
     pluginsError = null;
+    pluginActionProgress = progressMessage;
+    if (!pluginRuntimeRestartRequired) pluginActionResult = null;
+    pluginActionTargetId = targetId;
     if (!_disposed) notifyListeners();
     try {
       await action();
-      _add(TimelineKind.system, successMessage, '请在新建任务前重启本地运行时，以加载最新插件。');
-      plugins = await _pluginStore.listPlugins();
-      marketplaces = await _pluginStore.listMarketplaces();
+      pluginRuntimeRestartRequired = true;
+      pluginActionResult = '$successMessage。应用会自动重启运行时，使变更用于后续新任务。';
+      _add(TimelineKind.system, successMessage, '应用会在安全状态下自动重连，以加载最新插件。');
+      try {
+        plugins = await _pluginStore.listPlugins();
+        marketplaces = await _pluginStore.listMarketplaces();
+      } catch (error) {
+        pluginsError = '操作已完成，但刷新插件状态失败：${_messageOf(error)}';
+      }
+      if (workspacePath != null && status != RuntimeStatus.starting) {
+        await reconnectRuntime();
+        if (status == RuntimeStatus.failed) {
+          pluginActionResult = '$successMessage，但自动重连失败：$lastError';
+        }
+      }
     } catch (error) {
-      pluginsError = _messageOf(error);
+      final actionLabel = progressMessage.replaceFirst(RegExp(r'…$'), '');
+      pluginsError = '$actionLabel失败：${_messageOf(error)}';
     } finally {
       pluginSaving = false;
+      pluginActionProgress = null;
+      pluginActionTargetId = null;
       if (!_disposed) notifyListeners();
     }
   }
@@ -2205,6 +3057,9 @@ class CodexController extends ChangeNotifier {
   @override
   void dispose() {
     _historySaveTimer?.cancel();
+    _runtimeReconnectTimer?.cancel();
+    _runtimeReconnectTimer = null;
+    _runtimeConnectionEpoch++;
     unawaited(_saveConversationHistory());
     _disposed = true;
     _clearStreamingState();

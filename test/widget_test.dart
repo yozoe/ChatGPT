@@ -2,23 +2,24 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:chatgpt/src/app.dart';
 import 'package:chatgpt/src/app_controller.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
 import 'package:chatgpt/src/domain/codex_file_change.dart';
 import 'package:chatgpt/src/domain/codex_plugin.dart';
+import 'package:chatgpt/src/domain/codex_skill.dart';
 import 'package:chatgpt/src/domain/codex_marketplace.dart';
 import 'package:chatgpt/src/domain/git_project_status.dart';
-import 'package:chatgpt/src/domain/relay_provider_configuration.dart';
 import 'package:chatgpt/src/domain/task_plan.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
+import 'package:chatgpt/src/domain/workspace_configuration.dart';
 import 'package:chatgpt/src/presentation/codex_workspace.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/services/codex_plugin_store.dart';
 import 'package:chatgpt/src/services/conversation_history_store.dart';
 import 'package:chatgpt/src/services/git_project_service.dart';
 import 'package:chatgpt/src/services/local_session_thread_store.dart';
-import 'package:chatgpt/src/services/relay_provider_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'package:chatgpt/src/services/theme_preferences_store.dart';
 import 'package:flutter/material.dart';
@@ -26,27 +27,17 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 
-class _DelayedRelayProviderStore extends RelayProviderStore {
-  final completer = Completer<RelayProviderConfiguration?>();
-
-  /// 延迟返回配置，供启动期异步加载测试控制时序。
-  /// Delays configuration return so startup tests can control async timing.
-  @override
-  Future<RelayProviderConfiguration?> read() => completer.future;
-}
-
-class _EmptyRelayProviderStore extends RelayProviderStore {
-  /// 返回空配置，模拟没有已保存中转站设置的情形。
-  /// Returns no configuration, simulating absent saved relay settings.
-  @override
-  Future<RelayProviderConfiguration?> read() async => null;
-}
-
 class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
   String? workspace;
   String? savedWorkspace;
+  List<String> additionalWorkspaces = [];
+  List<String>? savedAdditionalWorkspaces;
+  List<WorkspaceConfiguration> workspaces = [];
+  List<WorkspaceConfiguration>? savedWorkspaces;
   String? reasoningEffort;
   String? savedReasoningEffort;
+  String? model;
+  String? savedModel;
   bool clearedWorkspace = false;
 
   /// 模拟未保存自定义 CLI 路径。
@@ -75,6 +66,50 @@ class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
     workspace = null;
   }
 
+  /// 返回测试预设的附加工作区目录。
+  /// Returns test-configured additional workspace directories.
+  @override
+  Future<List<String>> readAdditionalWorkspaces() async =>
+      List.of(additionalWorkspaces);
+
+  /// 在内存中保存附加工作区目录，便于断言持久化结果。
+  /// Saves additional workspace directories in memory for persistence assertions.
+  @override
+  Future<void> saveAdditionalWorkspaces(List<String> workspaces) async {
+    savedAdditionalWorkspaces = List.of(workspaces);
+    additionalWorkspaces = List.of(workspaces);
+  }
+
+  /// 返回测试预设的可切换工作区列表。
+  /// Returns the test-configured switchable workspace list.
+  @override
+  Future<List<WorkspaceConfiguration>> readWorkspaces() async => workspaces
+      .map(
+        (workspace) => WorkspaceConfiguration(
+          primaryPath: workspace.primaryPath,
+          additionalPaths: workspace.additionalPaths,
+        ),
+      )
+      .toList(growable: false);
+
+  /// 在内存中保存完整工作区列表，便于验证迁移和切换。
+  /// Saves the complete workspace list in memory for migration and switching assertions.
+  @override
+  Future<void> saveWorkspaces(
+    List<WorkspaceConfiguration> configurations,
+  ) async {
+    final snapshot = configurations
+        .map(
+          (workspace) => WorkspaceConfiguration(
+            primaryPath: workspace.primaryPath,
+            additionalPaths: workspace.additionalPaths,
+          ),
+        )
+        .toList(growable: false);
+    savedWorkspaces = snapshot;
+    workspaces = snapshot;
+  }
+
   /// 返回测试预设的推理强度。
   /// Returns the test-configured reasoning effort.
   @override
@@ -86,6 +121,34 @@ class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
   Future<void> saveReasoningEffort(String? value) async {
     savedReasoningEffort = value;
     reasoningEffort = value;
+  }
+
+  /// 返回测试预设的新任务模型；`null` 表示跟随 Codex 配置。
+  /// Returns the test-configured model for new tasks; `null` means follow Codex configuration.
+  @override
+  Future<String?> readModel() async => model;
+
+  /// 在内存中保存新任务模型，便于断言模型切换持久化。
+  /// Saves the new-task model in memory so model-selection persistence can be asserted.
+  @override
+  Future<void> saveModel(String? value) async {
+    savedModel = value;
+    model = value;
+  }
+}
+
+class _DelayedAdditionalWorkspaceStore extends _FakeRuntimeConfigurationStore {
+  final savedSnapshots = <List<String>>[];
+  final saveCompleters = <Completer<void>>[];
+
+  /// 记录目录快照并延迟写入完成，用于验证保存顺序。
+  /// Records directory snapshots and delays completion to verify save ordering.
+  @override
+  Future<void> saveAdditionalWorkspaces(List<String> workspaces) {
+    savedSnapshots.add(List.of(workspaces));
+    final completer = Completer<void>();
+    saveCompleters.add(completer);
+    return completer.future;
   }
 }
 
@@ -230,6 +293,40 @@ class _MemoryCodexPluginStore extends CodexPluginStore {
   }
 }
 
+class _BlockingCodexPluginStore extends _MemoryCodexPluginStore {
+  final installCompleter = Completer<void>();
+
+  /// 保持安装操作未完成，供界面断言进行中状态。
+  /// Keeps installation pending so the interface can assert its progress state.
+  @override
+  Future<void> installPlugin(CodexPlugin plugin) async {
+    await installCompleter.future;
+    await super.installPlugin(plugin);
+  }
+}
+
+class _FailingCodexPluginStore extends _MemoryCodexPluginStore {
+  /// 模拟 CLI 安装失败并返回可展示的具体原因。
+  /// Simulates a CLI installation failure with a displayable reason.
+  @override
+  Future<void> installPlugin(CodexPlugin plugin) async {
+    throw StateError('marketplace 无法访问');
+  }
+}
+
+class _FailOnSecondInstallCodexPluginStore extends _MemoryCodexPluginStore {
+  var installCalls = 0;
+
+  /// 首次安装成功，第二次失败，用于验证待重启提示不会丢失。
+  /// Succeeds once, then fails to verify pending restart feedback persists.
+  @override
+  Future<void> installPlugin(CodexPlugin plugin) async {
+    installCalls++;
+    if (installCalls == 2) throw StateError('second install failed');
+    await super.installPlugin(plugin);
+  }
+}
+
 class _FakeGitProjectService extends GitProjectService {
   GitProjectStatus status = const GitProjectStatus(isRepository: false);
   String diff = '';
@@ -254,6 +351,18 @@ class _FakeGitProjectService extends GitProjectService {
     requestedChange = change;
     return diff;
   }
+
+  @override
+  Future<GitDiffPreview> readDiffPreview({
+    required String workspace,
+    required GitProjectChange change,
+  }) async {
+    requestedChange = change;
+    return GitDiffPreview(
+      content: diff,
+      truncated: diff.endsWith(GitProjectService.truncatedDiffMarker),
+    );
+  }
 }
 
 class _FakeCodexAppServer extends CodexAppServer {
@@ -263,6 +372,12 @@ class _FakeCodexAppServer extends CodexAppServer {
   List<JsonMap> listResponse = <JsonMap>[];
   List<JsonMap> archivedListResponse = <JsonMap>[];
   List<JsonMap> modelListResponse = <JsonMap>[];
+  Object? modelListError;
+  JsonMap configReadResponse = {
+    'config': <String, Object?>{},
+    'origins': <String, Object?>{},
+  };
+  String? configReadDirectory;
   bool queueListRequests = false;
   Object? resumeError;
   JsonMap resumeResult = {
@@ -280,9 +395,16 @@ class _FakeCodexAppServer extends CodexAppServer {
   String? resumedModel;
   JsonMap? resumedConfig;
   String? startedThreadDirectory;
+  List<String>? startedRuntimeWorkspaceRoots;
   String? startedModelProvider;
   String? startedModel;
   JsonMap? startedConfig;
+  List<JsonMap> skillListResponse = <JsonMap>[];
+  String? startedTurnPrompt;
+  List<JsonMap> startedTurnAdditionalInput = <JsonMap>[];
+  JsonMap? startedTurnCollaborationMode;
+  Object? startTurnError;
+  String? threadGoal;
   String? unarchivedThreadId;
   int unarchiveCalls = 0;
   Completer<void>? unarchiveCompleter;
@@ -315,7 +437,16 @@ class _FakeCodexAppServer extends CodexAppServer {
   /// Returns the preset model-capability list.
   @override
   Future<List<JsonMap>> listModels({bool includeHidden = false}) async {
+    if (modelListError case final error?) throw error;
     return modelListResponse;
+  }
+
+  /// 返回 App Server 已按层级合并的配置，并记录用于解析项目配置的目录。
+  /// Returns App Server's merged configuration and records the workspace used to resolve project layers.
+  @override
+  Future<JsonMap> readConfig({String? workingDirectory}) async {
+    configReadDirectory = workingDirectory;
+    return configReadResponse;
   }
 
   /// 记录恢复参数，并返回预设结果或抛出预设异常。
@@ -341,11 +472,13 @@ class _FakeCodexAppServer extends CodexAppServer {
   @override
   Future<String> startThread({
     required String workingDirectory,
+    List<String>? runtimeWorkspaceRoots,
     String? modelProvider,
     String? model,
     JsonMap? config,
   }) async {
     startedThreadDirectory = workingDirectory;
+    startedRuntimeWorkspaceRoots = runtimeWorkspaceRoots;
     startedModelProvider = modelProvider;
     startedModel = model;
     startedConfig = config;
@@ -359,7 +492,28 @@ class _FakeCodexAppServer extends CodexAppServer {
     required String threadId,
     required String prompt,
     required String workingDirectory,
-  }) async {}
+    List<JsonMap> additionalInput = const [],
+    JsonMap? collaborationMode,
+  }) async {
+    startedTurnPrompt = prompt;
+    startedTurnAdditionalInput = List.of(additionalInput);
+    startedTurnCollaborationMode = collaborationMode;
+    if (startTurnError case final error?) throw error;
+  }
+
+  @override
+  Future<void> setThreadGoal({
+    required String threadId,
+    required String objective,
+  }) async {
+    threadGoal = objective;
+  }
+
+  @override
+  Future<List<JsonMap>> listSkills({
+    required String workingDirectory,
+    bool forceReload = false,
+  }) async => List.of(skillListResponse);
 
   /// 返回预设 turn 页面并记录使用的游标。
   /// Returns a preset turn page and records the cursor used.
@@ -432,6 +586,65 @@ class _FakeCodexAppServer extends CodexAppServer {
   }
 }
 
+class _ManagedRuntimeFakeServer extends _FakeCodexAppServer {
+  bool running = false;
+  int startCalls = 0;
+  int stopCalls = 0;
+  String? runtimeDirectory;
+
+  @override
+  bool get isRunning => running;
+
+  /// 返回可用的模拟 CLI 探测结果。
+  /// Returns an available fake CLI probe result.
+  @override
+  Future<CodexRuntimeProbe> probe() async => const CodexRuntimeProbe(
+    isAvailable: true,
+    executablePath: '/fake/codex',
+    version: 'codex fake',
+    discovery: '测试运行时',
+  );
+
+  /// 记录自动连接使用的主目录。
+  /// Records the primary directory used for automatic connection.
+  @override
+  Future<void> start({required String workingDirectory}) async {
+    startCalls++;
+    runtimeDirectory = workingDirectory;
+    running = true;
+  }
+
+  /// 接受模拟初始化握手。
+  /// Accepts the fake initialization handshake.
+  @override
+  Future<void> initialize() async {}
+
+  /// 返回无需登录的模拟账户状态。
+  /// Returns a fake account state that does not require login.
+  @override
+  Future<JsonMap> readAccount() async => {
+    'account': null,
+    'requiresOpenaiAuth': false,
+  };
+
+  /// 记录自动断开操作。
+  /// Records an automatic disconnect operation.
+  @override
+  Future<void> stop() async {
+    stopCalls++;
+    running = false;
+  }
+}
+
+class _BlockingRuntimeFakeServer extends _ManagedRuntimeFakeServer {
+  final probeCompleter = Completer<CodexRuntimeProbe>();
+
+  /// 延迟 CLI 探测，供测试在连接中销毁控制器。
+  /// Delays CLI probing so tests can dispose the controller during connection.
+  @override
+  Future<CodexRuntimeProbe> probe() => probeCompleter.future;
+}
+
 /// 创建具有可预测字段的测试线程。
 /// Creates a test thread with predictable fields.
 CodexThread _thread({
@@ -461,6 +674,32 @@ final class _MemoryThemePreferencesStore implements CodexThemePreferencesStore {
   }
 }
 
+class _ProtocolCaptureCodexAppServer extends CodexAppServer {
+  String? requestedMethod;
+  JsonMap? requestedParams;
+  final notifications = <String>[];
+
+  /// 捕获协议请求并返回稳定响应，不启动真实子进程。
+  /// Captures a protocol request and returns a stable response without starting a child process.
+  @override
+  Future<JsonMap> request(String method, [JsonMap params = const {}]) async {
+    requestedMethod = method;
+    requestedParams = params;
+    return {
+      'result': {
+        'thread': {'id': 'thread-with-roots'},
+      },
+    };
+  }
+
+  /// 捕获初始化完成通知，避免协议测试依赖真实子进程。
+  /// Captures initialization notifications without requiring a real child process.
+  @override
+  void notify(String method, [JsonMap params = const {}]) {
+    notifications.add(method);
+  }
+}
+
 void main() {
   late _MemoryConversationHistoryStore historyStore;
 
@@ -477,7 +716,10 @@ void main() {
     await tester.pumpWidget(const CodexDeskApp());
 
     expect(find.text('Codex Desk'), findsOneWidget);
-    expect(find.text('选择一个本地项目'), findsOneWidget);
+    expect(find.text('新建第一个工作区'), findsOneWidget);
+    expect(find.text('等待目录'), findsOneWidget);
+    expect(find.byKey(const Key('runtime-start-button')), findsNothing);
+    expect(find.byTooltip('停止运行时'), findsNothing);
     expect(find.text('任务控制台'), findsOneWidget);
   });
 
@@ -500,8 +742,192 @@ void main() {
     );
     expect(
       (picker.decoration! as BoxDecoration).color,
-      YeknomPalette.of(tester.element(find.text('选择一个本地项目'))).raised,
+      YeknomPalette.of(tester.element(find.text('新建第一个工作区'))).raised,
     );
+  });
+
+  testWidgets('shows saved workspaces as a switchable sidebar list', (
+    tester,
+  ) async {
+    late Directory root;
+    late String firstPath;
+    late String secondPath;
+    late CodexController controller;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp(
+        'codex-desk-sidebar-workspaces-',
+      );
+      final first = await Directory(
+        '${root.path}/first-project',
+      ).create(recursive: true);
+      final second = await Directory(
+        '${root.path}/second-project',
+      ).create(recursive: true);
+      final additional = await Directory(
+        '${root.path}/shared',
+      ).create(recursive: true);
+      firstPath = await first.resolveSymbolicLinks();
+      secondPath = await second.resolveSymbolicLinks();
+      controller = CodexController(
+        server: _ManagedRuntimeFakeServer(),
+        runtimeConfigurationStore: _FakeRuntimeConfigurationStore()
+          ..workspace = second.path
+          ..workspaces = [
+            WorkspaceConfiguration(
+              primaryPath: first.path,
+              additionalPaths: [additional.path],
+            ),
+            WorkspaceConfiguration(primaryPath: second.path),
+          ],
+      );
+      await controller.waitForInitialConfiguration();
+      controller.status = RuntimeStatus.ready;
+    });
+    addTearDown(() => root.delete(recursive: true));
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final firstTile = find.byKey(ValueKey('sidebar-workspace-$firstPath'));
+    final secondTile = find.byKey(ValueKey('sidebar-workspace-$secondPath'));
+    expect(firstTile, findsOneWidget);
+    expect(secondTile, findsOneWidget);
+    expect(find.text('first-project'), findsOneWidget);
+    expect(find.text('second-project'), findsOneWidget);
+    expect(find.text('+1'), findsOneWidget);
+    expect(
+      tester.getTopLeft(firstTile).dy,
+      lessThan(tester.getTopLeft(secondTile).dy),
+    );
+    expect(
+      tester
+          .widget<InkWell>(
+            find.descendant(of: firstTile, matching: find.byType(InkWell)),
+          )
+          .onTap,
+      isNotNull,
+    );
+    expect(
+      tester
+          .widget<InkWell>(
+            find.descendant(of: secondTile, matching: find.byType(InkWell)),
+          )
+          .onTap,
+      isNull,
+    );
+    expect(
+      find.byKey(const Key('sidebar-create-workspace-button')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('sidebar-manage-workspaces-button')),
+      findsOneWidget,
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('shows Codex configuration without provider input fields', (
+    tester,
+  ) async {
+    final server = _FakeCodexAppServer()
+      ..configReadResponse = {
+        'config': {'model': 'gpt-5.6-sol', 'model_provider': 'company-relay'},
+        'origins': {
+          'model': {
+            'name': {'type': 'project', 'dotCodexFolder': '/workspace/.codex'},
+            'version': '1',
+          },
+          'model_provider': {
+            'name': {'type': 'user', 'file': '/Users/test/.codex/config.toml'},
+            'version': '1',
+          },
+        },
+      };
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace';
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('codex-configuration-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('codex-configuration-dialog')), findsOneWidget);
+    expect(find.byKey(const Key('codex-configuration-path')), findsOneWidget);
+    expect(find.text('已从 Codex 运行时读取'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('codex-configuration-dialog')),
+        matching: find.text('gpt-5.6-sol'),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('company-relay'), findsWidgets);
+    expect(find.text('来源：/workspace/.codex/config.toml'), findsOneWidget);
+    expect(find.text('来源：/Users/test/.codex/config.toml'), findsOneWidget);
+    expect(server.configReadDirectory, '/workspace');
+    expect(find.text('Base URL'), findsNothing);
+    expect(find.text('模型名称'), findsNothing);
+    expect(find.text('中转站 API Key'), findsNothing);
+    expect(find.textContaining('本应用不再单独收集或保存这些字段'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('switches the new-task model and updates the reasoning menu', (
+    tester,
+  ) async {
+    final server = _FakeCodexAppServer()
+      ..modelListResponse = [
+        {
+          'id': 'deep-model',
+          'model': 'deep-model',
+          'displayName': 'deep-model',
+          'isDefault': true,
+          'supportedReasoningEfforts': [
+            {'reasoningEffort': 'high'},
+          ],
+        },
+        {
+          'id': 'fast-model',
+          'model': 'fast-model',
+          'displayName': 'fast-model',
+          'isDefault': false,
+          'supportedReasoningEfforts': [
+            {'reasoningEffort': 'low'},
+          ],
+        },
+      ];
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    await controller.refreshReasoningEffortCapabilitiesForTesting();
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(find.byKey(const Key('composer-model-controls')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('model-selector')));
+    await tester.pumpAndSettle();
+    final fastModelItem = find.byKey(const Key('model-option-fast-model'));
+    await tester.tapAt(tester.getTopLeft(fastModelItem) + const Offset(12, 12));
+    await tester.pumpAndSettle();
+
+    expect(controller.selectedModelId, 'fast-model');
+    expect(controller.reasoningEffortOptions, [
+      ReasoningEffort.defaultValue,
+      ReasoningEffort.low,
+    ]);
+
+    await tester.tap(find.byKey(const Key('reasoning-effort-selector')));
+    await tester.pumpAndSettle();
+    expect(find.text('新任务推理强度：低'), findsOneWidget);
+    expect(find.text('新任务推理强度：高'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('persists display mode and color preset selections', (
@@ -550,6 +976,554 @@ void main() {
 
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets('shows goals, plan mode, and skills from the composer menu', (
+    tester,
+  ) async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..selectedModelId = 'gpt-test'
+      ..modelOptions = const [
+        CodexModelOption(
+          id: 'gpt-test',
+          displayName: 'GPT Test',
+          description: '',
+          isDefault: true,
+        ),
+      ]
+      ..skills = const [
+        CodexSkill(
+          name: 'skill-creator',
+          path: '/skills/skill-creator/SKILL.md',
+          description: 'Create reusable skills',
+          enabled: true,
+          scope: 'system',
+          displayName: 'Skill Creator',
+        ),
+        CodexSkill(
+          name: 'documents',
+          path: '/skills/documents/SKILL.md',
+          description: 'Create and edit documents',
+          enabled: true,
+          scope: 'system',
+          displayName: 'Documents',
+        ),
+      ];
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('composer-add-button')));
+    await tester.pumpAndSettle();
+    expect(find.text('文件和文件夹'), findsOneWidget);
+    expect(find.text('附加 workspace'), findsOneWidget);
+    expect(find.text('插件'), findsOneWidget);
+    expect(find.text('Documents'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('add-goal-menu-item')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('composer-goal-field')),
+      '完成附件菜单',
+    );
+    await tester.tap(find.byKey(const Key('save-composer-goal')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('composer-goal-chip')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('composer-add-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('add-plan-mode-menu-item')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('composer-plan-mode-chip')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('composer-add-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('composer-skill-documents')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('composer-skill-chip-documents')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const Key('composer-add-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('record-skill-menu-item')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('composer-record-skill-chip')), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('highlights the composer and deduplicates dropped files', (
+    tester,
+  ) async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    var dropTarget = tester.widget<DropTarget>(find.byType(DropTarget));
+    dropTarget.onDragEntered?.call(
+      DropEventDetails(
+        localPosition: const Offset(40, 40),
+        globalPosition: const Offset(40, 40),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const Key('composer-drop-overlay')), findsOneWidget);
+    expect(find.text('松开即可添加文件'), findsOneWidget);
+
+    dropTarget = tester.widget<DropTarget>(find.byType(DropTarget));
+    dropTarget.onDragDone?.call(
+      DropDoneDetails(
+        files: [
+          DropItemFile('/tmp/design.png'),
+          DropItemFile('/tmp/design.png'),
+          DropItemDirectory('/tmp/reference-folder', const []),
+        ],
+        localPosition: const Offset(40, 40),
+        globalPosition: const Offset(40, 40),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const Key('composer-drop-overlay')), findsNothing);
+    expect(
+      find.byKey(const Key('composer-attachment-/tmp/design.png')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('composer-attachment-/tmp/reference-folder')),
+      findsOneWidget,
+    );
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('pastes copied files and folders as composer attachments', (
+    tester,
+  ) async {
+    const channel = MethodChannel('codex_desk/clipboard');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'readFileItems');
+      return [
+        {'path': '/tmp/copied.png', 'isDirectory': false},
+        {'path': '/tmp/copied-folder', 'isDirectory': true},
+        {'path': '/tmp/copied.png', 'isDirectory': false},
+        {'path': '/tmp/trailing-space ', 'isDirectory': false},
+      ];
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.tap(find.byKey(const Key('composer-field')));
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const Key('composer-attachment-/tmp/copied.png')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('composer-attachment-/tmp/copied-folder')),
+      findsOneWidget,
+    );
+    expect(find.text('copied.png'), findsOneWidget);
+    expect(find.text('copied-folder'), findsOneWidget);
+    expect(
+      find.byKey(const Key('composer-attachment-/tmp/trailing-space ')),
+      findsOneWidget,
+    );
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('pastes clipboard screenshots and deletes the temporary image', (
+    tester,
+  ) async {
+    const channel = MethodChannel('codex_desk/clipboard');
+    const imagePath = '/tmp/CodexDeskClipboard/clipboard-image-42.png';
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    var deleteCalls = 0;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      switch (call.method) {
+        case 'readFileItems':
+          return [
+            {'path': imagePath, 'isDirectory': false, 'isTemporary': true},
+          ];
+        case 'deleteTemporaryItem':
+          expect(call.arguments, imagePath);
+          deleteCalls++;
+          return true;
+      }
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final server = _FakeCodexAppServer()
+      ..listResponse = [
+        {'id': 'new-thread'},
+      ];
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.tap(find.byKey(const Key('composer-field')));
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pumpAndSettle();
+
+    final screenshotChip = find.byKey(
+      const Key('composer-attachment-$imagePath'),
+    );
+    expect(screenshotChip, findsOneWidget);
+    expect(
+      find.descendant(
+        of: screenshotChip,
+        matching: find.byKey(const Key('composer-image-thumbnail')),
+      ),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const Key('composer-image-thumbnail')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('composer-image-preview-dialog')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('composer-image-preview')), findsOneWidget);
+    await tester.tap(find.byTooltip('关闭预览'));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('composer-image-preview-dialog')),
+      findsNothing,
+    );
+    tester
+        .widget<IconButton>(
+          find.byWidgetPredicate(
+            (widget) => widget is IconButton && widget.tooltip == '发送任务',
+          ),
+        )
+        .onPressed!();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(server.startedTurnAdditionalInput, [
+      {'type': 'localImage', 'path': imagePath},
+    ]);
+    expect(deleteCalls, 0);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'turn': {'status': 'completed'},
+        },
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(deleteCalls, 1);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('falls back to normal text paste when no file is copied', (
+    tester,
+  ) async {
+    const channel = MethodChannel('codex_desk/clipboard');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async => <String>[]);
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.getData') {
+        return <String, Object?>{'text': '粘贴文本'};
+      }
+      return null;
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.enterText(find.byKey(const Key('composer-field')), '已有内容：');
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pumpAndSettle();
+
+    expect(find.text('已有内容：粘贴文本'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('sends image-suffixed directories as path context', (
+    tester,
+  ) async {
+    const channel = MethodChannel('codex_desk/clipboard');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      return [
+        {'path': '/tmp/reference.png', 'isDirectory': true},
+        {'path': '/tmp/design.png', 'isDirectory': false},
+      ];
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final server = _FakeCodexAppServer()
+      ..listResponse = [
+        {'id': 'new-thread'},
+      ];
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.enterText(find.byKey(const Key('composer-field')), '检查附件');
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pumpAndSettle();
+
+    expect(controller.canSend, isTrue);
+    tester
+        .widget<IconButton>(
+          find.byWidgetPredicate(
+            (widget) => widget is IconButton && widget.tooltip == '发送任务',
+          ),
+        )
+        .onPressed!();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(server.startedTurnPrompt, contains('附加路径：/tmp/reference.png'));
+    expect(server.startedTurnAdditionalInput, [
+      {'type': 'localImage', 'path': '/tmp/design.png'},
+    ]);
+    expect(
+      find.byKey(const Key('composer-attachment-/tmp/reference.png')),
+      findsNothing,
+    );
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('keeps composer text and attachments when task start fails', (
+    tester,
+  ) async {
+    const channel = MethodChannel('codex_desk/clipboard');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(
+      channel,
+      (call) async => [
+        {'path': '/tmp/retry.txt', 'isDirectory': false},
+      ],
+    );
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final controller = CodexController(
+      server: _FakeCodexAppServer()
+        ..listResponse = [
+          {'id': 'new-thread'},
+        ]
+        ..startTurnError = StateError('turn rejected'),
+      runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.enterText(find.byKey(const Key('composer-field')), '保留这个输入');
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pumpAndSettle();
+
+    expect(controller.canSend, isTrue);
+    tester
+        .widget<IconButton>(
+          find.byWidgetPredicate(
+            (widget) => widget is IconButton && widget.tooltip == '发送任务',
+          ),
+        )
+        .onPressed!();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final field = tester.widget<TextField>(
+      find.byKey(const Key('composer-field')),
+    );
+    expect(field.controller?.text, '保留这个输入');
+    expect(
+      find.byKey(const Key('composer-attachment-/tmp/retry.txt')),
+      findsOneWidget,
+    );
+    expect(controller.lastError, contains('turn rejected'));
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('releases dropped security scope after the turn completes', (
+    tester,
+  ) async {
+    const dropChannel = MethodChannel('desktop_drop');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    var startCalls = 0;
+    var stopCalls = 0;
+    messenger.setMockMethodCallHandler(dropChannel, (call) async {
+      switch (call.method) {
+        case 'startAccessingSecurityScopedResource':
+          startCalls++;
+          return true;
+        case 'stopAccessingSecurityScopedResource':
+          stopCalls++;
+          return true;
+      }
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(dropChannel, null));
+    final controller = CodexController(
+      server: _FakeCodexAppServer()
+        ..listResponse = [
+          {'id': 'new-thread'},
+        ],
+      runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    final dropTarget = tester.widget<DropTarget>(find.byType(DropTarget));
+    dropTarget.onDragDone?.call(
+      DropDoneDetails(
+        files: [
+          DropItemFile(
+            '/tmp/scoped.txt',
+            extraAppleBookmark: Uint8List.fromList([1, 2, 3]),
+          ),
+        ],
+        localPosition: const Offset(40, 40),
+        globalPosition: const Offset(40, 40),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(startCalls, 1);
+
+    expect(controller.canSend, isTrue);
+    tester
+        .widget<IconButton>(
+          find.byWidgetPredicate(
+            (widget) => widget is IconButton && widget.tooltip == '发送任务',
+          ),
+        )
+        .onPressed!();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(stopCalls, 0);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'turn': {'status': 'completed'},
+        },
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(stopCalls, 1);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  test(
+    'sends goals, plan mode, and structured skill input to App Server',
+    () async {
+      final server = _FakeCodexAppServer();
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+      );
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready
+        ..selectedModelId = 'gpt-test'
+        ..modelOptions = const [
+          CodexModelOption(
+            id: 'gpt-test',
+            displayName: 'GPT Test',
+            description: '',
+            isDefault: true,
+          ),
+        ];
+
+      await controller.sendPrompt(
+        r'$documents 实现这个功能',
+        goal: '完成附件菜单',
+        planMode: true,
+        additionalInput: const [
+          {
+            'type': 'skill',
+            'name': 'documents',
+            'path': '/skills/documents/SKILL.md',
+          },
+        ],
+      );
+
+      expect(server.threadGoal, '完成附件菜单');
+      expect(server.startedTurnPrompt, contains(r'$documents'));
+      expect(server.startedTurnAdditionalInput, [
+        {
+          'type': 'skill',
+          'name': 'documents',
+          'path': '/skills/documents/SKILL.md',
+        },
+      ]);
+      expect(server.startedTurnCollaborationMode?['mode'], 'plan');
+      controller.dispose();
+    },
+  );
 
   testWidgets('rebuilds when an explicitly injected controller changes', (
     tester,
@@ -846,7 +1820,6 @@ void main() {
     final store = _FakeRuntimeConfigurationStore();
     final firstController = CodexController(
       server: CodexAppServer(),
-      relayProviderStore: _EmptyRelayProviderStore(),
       runtimeConfigurationStore: store,
     );
 
@@ -857,7 +1830,6 @@ void main() {
 
     final restoredController = CodexController(
       server: CodexAppServer(),
-      relayProviderStore: _EmptyRelayProviderStore(),
       runtimeConfigurationStore: store,
     );
     await restoredController.waitForInitialConfiguration();
@@ -867,12 +1839,494 @@ void main() {
   });
 
   test(
+    'creates switchable workspaces with independent additional directories',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-desk-workspace-profiles-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final first = await Directory(
+        '${root.path}/first',
+      ).create(recursive: true);
+      final firstAdditional = await Directory(
+        '${root.path}/first-shared',
+      ).create(recursive: true);
+      final second = await Directory(
+        '${root.path}/second',
+      ).create(recursive: true);
+      final secondAdditional = await Directory(
+        '${root.path}/second-shared',
+      ).create(recursive: true);
+      final store = _FakeRuntimeConfigurationStore();
+      final controller = CodexController(
+        server: CodexAppServer(),
+        runtimeConfigurationStore: store,
+      );
+      await controller.waitForInitialConfiguration();
+
+      await controller.selectWorkspace(first.path);
+      await controller.addWorkspaceRoot(firstAdditional.path);
+      await controller.selectWorkspace(second.path);
+      await controller.addWorkspaceRoot(secondAdditional.path);
+
+      expect(controller.workspaceConfigurations, hasLength(2));
+      expect(controller.additionalWorkspacePaths, [
+        await secondAdditional.resolveSymbolicLinks(),
+      ]);
+
+      await controller.selectWorkspace(first.path);
+
+      expect(controller.additionalWorkspacePaths, [
+        await firstAdditional.resolveSymbolicLinks(),
+      ]);
+      expect(
+        controller.workspaceConfigurations
+            .map((workspace) => workspace.primaryPath)
+            .toList(),
+        [
+          await first.resolveSymbolicLinks(),
+          await second.resolveSymbolicLinks(),
+        ],
+      );
+      expect(store.savedWorkspaces, hasLength(2));
+      controller.dispose();
+
+      final restoredController = CodexController(
+        server: CodexAppServer(),
+        runtimeConfigurationStore: store,
+      );
+      await restoredController.waitForInitialConfiguration();
+
+      expect(
+        restoredController.workspacePath,
+        await first.resolveSymbolicLinks(),
+      );
+      expect(restoredController.additionalWorkspacePaths, [
+        await firstAdditional.resolveSymbolicLinks(),
+      ]);
+      await restoredController.selectWorkspace(second.path);
+      expect(restoredController.additionalWorkspacePaths, [
+        await secondAdditional.resolveSymbolicLinks(),
+      ]);
+      await restoredController.selectWorkspace(first.path);
+      expect(
+        restoredController.workspaceConfigurations
+            .map((workspace) => workspace.primaryPath)
+            .toList(),
+        [
+          await first.resolveSymbolicLinks(),
+          await second.resolveSymbolicLinks(),
+        ],
+      );
+
+      await restoredController.forgetWorkspace(
+        await second.resolveSymbolicLinks(),
+      );
+      expect(restoredController.workspaceConfigurations, hasLength(1));
+      expect(
+        restoredController.workspacePath,
+        await first.resolveSymbolicLinks(),
+      );
+      restoredController.dispose();
+    },
+  );
+
+  test('automatically connects a restored primary workspace', () async {
+    final primary = await Directory.systemTemp.createTemp(
+      'codex-desk-auto-restore-',
+    );
+    addTearDown(() => primary.delete(recursive: true));
+    final server = _ManagedRuntimeFakeServer()
+      ..listResponse = [
+        {'id': 'connected-thread', 'preview': 'connected'},
+      ];
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: _FakeRuntimeConfigurationStore()
+        ..workspace = primary.path,
+    );
+
+    await controller.connectRestoredWorkspace();
+
+    expect(controller.status, RuntimeStatus.ready);
+    expect(server.startCalls, 1);
+    expect(server.runtimeDirectory, await primary.resolveSymbolicLinks());
+    controller.dispose();
+  });
+
+  test(
+    'automatically reconnects after changing the primary workspace',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-desk-auto-switch-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final first = await Directory(
+        '${root.path}/first',
+      ).create(recursive: true);
+      final second = await Directory(
+        '${root.path}/second',
+      ).create(recursive: true);
+      final additional = await Directory(
+        '${root.path}/additional',
+      ).create(recursive: true);
+      final server = _ManagedRuntimeFakeServer()
+        ..listResponse = [
+          {'id': 'connected-thread', 'preview': 'connected'},
+        ];
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+      );
+      await controller.waitForInitialConfiguration();
+
+      expect(await controller.selectWorkspaceAndReconnect(first.path), isTrue);
+      expect(controller.status, RuntimeStatus.ready);
+      expect(server.startCalls, 1);
+      expect(server.stopCalls, 0);
+
+      await controller.addWorkspaceRoot(additional.path);
+      expect(server.stopCalls, 0);
+      expect(await controller.selectWorkspaceAndReconnect(second.path), isTrue);
+      expect(controller.status, RuntimeStatus.ready);
+      expect(server.stopCalls, 1);
+      expect(server.startCalls, 2);
+      expect(server.runtimeDirectory, await second.resolveSymbolicLinks());
+      expect(controller.workspaceConfigurations, hasLength(2));
+      expect(controller.additionalWorkspacePaths, isEmpty);
+
+      controller.status = RuntimeStatus.running;
+      expect(await controller.selectWorkspaceAndReconnect(first.path), isFalse);
+      expect(controller.workspacePath, await second.resolveSymbolicLinks());
+      expect(controller.lastError, contains('等待当前任务完成'));
+      expect(server.stopCalls, 1);
+      controller.dispose();
+    },
+  );
+
+  test('reconnects after a successful CLI recheck from failure', () async {
+    final primary = await Directory.systemTemp.createTemp(
+      'codex-desk-runtime-recheck-',
+    );
+    addTearDown(() => primary.delete(recursive: true));
+    final server = _ManagedRuntimeFakeServer()
+      ..listResponse = [
+        {'id': 'connected-thread', 'preview': 'connected'},
+      ];
+    final controller = CodexController(server: server)
+      ..workspacePath = primary.path
+      ..status = RuntimeStatus.failed;
+
+    await controller.inspectRuntime();
+
+    expect(controller.status, RuntimeStatus.ready);
+    expect(server.startCalls, 1);
+    controller.dispose();
+  });
+
+  test('automatically reconnects after an unexpected runtime exit', () async {
+    final primary = await Directory.systemTemp.createTemp(
+      'codex-desk-runtime-exit-',
+    );
+    addTearDown(() => primary.delete(recursive: true));
+    final server = _ManagedRuntimeFakeServer()
+      ..listResponse = [
+        {'id': 'connected-thread', 'preview': 'connected'},
+      ];
+    final controller = CodexController(server: server)
+      ..workspacePath = primary.path
+      ..status = RuntimeStatus.ready;
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(method: 'runtime/exited', params: {'code': 1}),
+    );
+    expect(controller.status, RuntimeStatus.failed);
+
+    await Future<void>.delayed(const Duration(milliseconds: 1100));
+
+    expect(controller.status, RuntimeStatus.ready);
+    expect(server.startCalls, 1);
+    controller.dispose();
+  });
+
+  test('cancels an in-flight automatic connection on dispose', () async {
+    final primary = await Directory.systemTemp.createTemp(
+      'codex-desk-runtime-dispose-',
+    );
+    addTearDown(() => primary.delete(recursive: true));
+    final server = _BlockingRuntimeFakeServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = primary.path;
+
+    final connection = controller.startRuntime();
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.status, RuntimeStatus.starting);
+    controller.dispose();
+    server.probeCompleter.complete(const CodexRuntimeProbe(isAvailable: true));
+
+    await connection;
+
+    expect(server.startCalls, 0);
+  });
+
+  test(
+    'restores, canonicalizes, and deduplicates additional workspaces',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-desk-workspaces-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final primary = await Directory(
+        '${root.path}/primary',
+      ).create(recursive: true);
+      final additional = await Directory(
+        '${root.path}/additional',
+      ).create(recursive: true);
+      final alias = Link('${root.path}/additional-alias');
+      await alias.create(additional.path);
+      final store = _FakeRuntimeConfigurationStore()
+        ..workspace = primary.path
+        ..additionalWorkspaces = [
+          additional.path,
+          alias.path,
+          '${root.path}/missing',
+          primary.path,
+        ];
+
+      final controller = CodexController(
+        server: CodexAppServer(),
+        runtimeConfigurationStore: store,
+      );
+      await controller.waitForInitialConfiguration();
+
+      expect(controller.workspacePath, await primary.resolveSymbolicLinks());
+      expect(controller.additionalWorkspacePaths, [
+        await additional.resolveSymbolicLinks(),
+      ]);
+      expect(store.savedAdditionalWorkspaces, [
+        await additional.resolveSymbolicLinks(),
+      ]);
+      expect(controller.workspaceConfigurations, hasLength(1));
+      expect(controller.workspaceConfigurations.single.additionalPaths, [
+        await additional.resolveSymbolicLinks(),
+      ]);
+      expect(store.savedWorkspaces, hasLength(1));
+      controller.dispose();
+    },
+  );
+
+  test(
+    'adds and removes additional directories without disconnecting runtime',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-desk-workspace-add-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final primary = await Directory(
+        '${root.path}/primary',
+      ).create(recursive: true);
+      final first = await Directory(
+        '${root.path}/first',
+      ).create(recursive: true);
+      final second = await Directory(
+        '${root.path}/second',
+      ).create(recursive: true);
+      final store = _FakeRuntimeConfigurationStore();
+      final controller = CodexController(
+        server: CodexAppServer(),
+        runtimeConfigurationStore: store,
+      );
+      await controller.waitForInitialConfiguration();
+
+      await controller.selectWorkspace(primary.path);
+      await controller.addWorkspaceRoot(first.path);
+      await controller.addWorkspaceRoot(second.path);
+      await controller.addWorkspaceRoot(first.path);
+
+      expect(controller.workspaceRoots, [
+        await primary.resolveSymbolicLinks(),
+        await first.resolveSymbolicLinks(),
+        await second.resolveSymbolicLinks(),
+      ]);
+      expect(
+        store.savedAdditionalWorkspaces,
+        controller.additionalWorkspacePaths,
+      );
+
+      controller.status = RuntimeStatus.ready;
+      await controller.removeWorkspaceRoot(
+        controller.additionalWorkspacePaths.first,
+      );
+      expect(controller.additionalWorkspacePaths, [
+        await second.resolveSymbolicLinks(),
+      ]);
+      expect(store.savedAdditionalWorkspaces, [
+        await second.resolveSymbolicLinks(),
+      ]);
+      controller.dispose();
+    },
+  );
+
+  test('serializes additional workspace persistence snapshots', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'codex-desk-workspace-save-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final primary = await Directory(
+      '${root.path}/primary',
+    ).create(recursive: true);
+    final first = await Directory('${root.path}/first').create(recursive: true);
+    final second = await Directory(
+      '${root.path}/second',
+    ).create(recursive: true);
+    final store = _DelayedAdditionalWorkspaceStore();
+    final controller = CodexController(
+      server: CodexAppServer(),
+      runtimeConfigurationStore: store,
+    )..workspacePath = primary.path;
+    await controller.waitForInitialConfiguration();
+
+    final firstSave = controller.addWorkspaceRoot(first.path);
+    while (store.saveCompleters.isEmpty) {
+      await Future<void>.delayed(Duration.zero);
+    }
+    final secondSave = controller.addWorkspaceRoot(second.path);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.savedSnapshots, [
+      [await first.resolveSymbolicLinks()],
+    ]);
+
+    store.saveCompleters.first.complete();
+    while (store.saveCompleters.length < 2) {
+      await Future<void>.delayed(Duration.zero);
+    }
+    expect(store.savedSnapshots.last, [
+      await first.resolveSymbolicLinks(),
+      await second.resolveSymbolicLinks(),
+    ]);
+    store.saveCompleters.last.complete();
+    await Future.wait([firstSave, secondSave]);
+    controller.dispose();
+  });
+
+  testWidgets('manages primary and additional workspace directories', (
+    tester,
+  ) async {
+    late Directory root;
+    late String additionalPath;
+    late String secondPath;
+    late CodexController controller;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp(
+        'codex-desk-workspace-dialog-',
+      );
+      final primary = await Directory(
+        '${root.path}/primary',
+      ).create(recursive: true);
+      final additional = await Directory(
+        '${root.path}/additional',
+      ).create(recursive: true);
+      final second = await Directory(
+        '${root.path}/second',
+      ).create(recursive: true);
+      additionalPath = await additional.resolveSymbolicLinks();
+      secondPath = await second.resolveSymbolicLinks();
+      controller = CodexController(
+        server: _ManagedRuntimeFakeServer(),
+        runtimeConfigurationStore: _FakeRuntimeConfigurationStore()
+          ..workspace = primary.path
+          ..additionalWorkspaces = [additional.path]
+          ..workspaces = [
+            WorkspaceConfiguration(
+              primaryPath: primary.path,
+              additionalPaths: [additional.path],
+            ),
+            WorkspaceConfiguration(primaryPath: second.path),
+          ],
+      );
+      await controller.waitForInitialConfiguration();
+      controller.status = RuntimeStatus.running;
+    });
+    addTearDown(() => root.delete(recursive: true));
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('sidebar-manage-workspaces-button')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(
+      find.byKey(const Key('workspace-directories-dialog')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('主目录'), findsWidgets);
+    expect(find.text(additionalPath), findsOneWidget);
+    expect(find.text('附加目录'), findsWidgets);
+    expect(find.text('新建工作区'), findsOneWidget);
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.byKey(const Key('create-workspace-button')),
+          )
+          .onPressed,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<TextButton>(
+            find.byKey(ValueKey('switch-workspace-$secondPath')),
+          )
+          .onPressed,
+      isNull,
+    );
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'turn': {'status': 'completed'},
+        },
+      ),
+    );
+    await tester.pump();
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.byKey(const Key('create-workspace-button')),
+          )
+          .onPressed,
+      isNotNull,
+    );
+    expect(
+      tester
+          .widget<TextButton>(
+            find.byKey(ValueKey('switch-workspace-$secondPath')),
+          )
+          .onPressed,
+      isNotNull,
+    );
+
+    final removeAdditional = find.byTooltip('移除附加目录');
+    await tester.ensureVisible(removeAdditional);
+    await tester.pump();
+    await tester.tap(removeAdditional);
+    await tester.pump();
+    expect(controller.additionalWorkspacePaths, isEmpty);
+    expect(
+      find.byKey(const Key('additional-workspaces-empty')),
+      findsOneWidget,
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  test(
     'restores cached conversation history for the selected workspace',
     () async {
       final runtimeStore = _FakeRuntimeConfigurationStore();
       final firstController = CodexController(
         server: CodexAppServer(),
-        relayProviderStore: _EmptyRelayProviderStore(),
         runtimeConfigurationStore: runtimeStore,
         conversationHistoryStore: historyStore,
       );
@@ -902,7 +2356,6 @@ void main() {
 
       final restoredController = CodexController(
         server: CodexAppServer(),
-        relayProviderStore: _EmptyRelayProviderStore(),
         runtimeConfigurationStore: runtimeStore,
         conversationHistoryStore: historyStore,
       );
@@ -1178,6 +2631,159 @@ void main() {
   });
 
   test(
+    'reports plugin progress, completion, and restart requirement',
+    () async {
+      const plugin = CodexPlugin(
+        id: 'sample@local',
+        name: 'sample',
+        marketplaceName: 'local',
+        installed: false,
+        enabled: false,
+      );
+      final pluginStore = _BlockingCodexPluginStore()..plugins.add(plugin);
+      final controller = CodexController(pluginStore: pluginStore);
+
+      final install = controller.installPlugin(plugin);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.pluginSaving, isTrue);
+      expect(controller.pluginActionTargetId, plugin.id);
+      expect(controller.pluginActionProgress, '正在安装插件 sample…');
+      expect(controller.pluginRuntimeRestartRequired, isFalse);
+
+      pluginStore.installCompleter.complete();
+      await install;
+
+      expect(controller.pluginSaving, isFalse);
+      expect(controller.pluginActionProgress, isNull);
+      expect(controller.pluginActionResult, contains('重启运行时'));
+      expect(controller.pluginRuntimeRestartRequired, isTrue);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'automatically reconnects after a plugin configuration change',
+    () async {
+      final primary = await Directory.systemTemp.createTemp(
+        'codex-desk-plugin-reconnect-',
+      );
+      addTearDown(() => primary.delete(recursive: true));
+      const plugin = CodexPlugin(
+        id: 'sample@local',
+        name: 'sample',
+        marketplaceName: 'local',
+        installed: false,
+        enabled: false,
+      );
+      final pluginStore = _MemoryCodexPluginStore()..plugins.add(plugin);
+      final server = _ManagedRuntimeFakeServer()
+        ..listResponse = [
+          {'id': 'connected-thread', 'preview': 'connected'},
+        ];
+      final controller = CodexController(
+        server: server,
+        pluginStore: pluginStore,
+        runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+      );
+      await controller.waitForInitialConfiguration();
+      await controller.selectWorkspaceAndReconnect(primary.path);
+
+      await controller.installPlugin(plugin);
+
+      expect(server.stopCalls, 1);
+      expect(server.startCalls, 2);
+      expect(controller.status, RuntimeStatus.ready);
+      expect(controller.pluginRuntimeRestartRequired, isFalse);
+      expect(controller.pluginActionResult, contains('运行时已重启'));
+      controller.dispose();
+    },
+  );
+
+  test('keeps the plugin CLI failure reason in action feedback', () async {
+    const plugin = CodexPlugin(
+      id: 'sample@local',
+      name: 'sample',
+      marketplaceName: 'local',
+      installed: false,
+      enabled: false,
+    );
+    final controller = CodexController(
+      pluginStore: _FailingCodexPluginStore()..plugins.add(plugin),
+    );
+
+    await controller.installPlugin(plugin);
+
+    expect(controller.pluginsError, contains('安装插件 sample失败'));
+    expect(controller.pluginsError, contains('marketplace 无法访问'));
+    expect(controller.pluginRuntimeRestartRequired, isFalse);
+    controller.dispose();
+  });
+
+  test(
+    'keeps a pending restart notice when a later plugin action fails',
+    () async {
+      const plugin = CodexPlugin(
+        id: 'sample@local',
+        name: 'sample',
+        marketplaceName: 'local',
+        installed: false,
+        enabled: false,
+      );
+      final controller = CodexController(
+        pluginStore: _FailOnSecondInstallCodexPluginStore()
+          ..plugins.add(plugin),
+      );
+
+      await controller.installPlugin(plugin);
+      final pendingRestartNotice = controller.pluginActionResult;
+      await controller.installPlugin(plugin);
+
+      expect(controller.pluginsError, contains('second install failed'));
+      expect(controller.pluginRuntimeRestartRequired, isTrue);
+      expect(controller.pluginActionResult, pendingRestartNotice);
+      expect(controller.pluginActionResult, contains('重启运行时'));
+      controller.dispose();
+    },
+  );
+
+  test('rejects malformed plugin list JSON from the Codex CLI', () async {
+    final store = CodexPluginStore(
+      executableProvider: () => 'codex-test',
+      processRunner: (executable, arguments) async =>
+          ProcessResult(1, 0, '{"installed":"invalid","available":[]}', ''),
+    );
+
+    await expectLater(store.listPlugins(), throwsFormatException);
+  });
+
+  test('preserves Codex CLI stderr when a plugin command fails', () async {
+    const plugin = CodexPlugin(
+      id: 'sample@local',
+      name: 'sample',
+      marketplaceName: 'local',
+      installed: false,
+      enabled: false,
+    );
+    final store = CodexPluginStore(
+      executableProvider: () => 'codex-test',
+      processRunner: (executable, arguments) async =>
+          ProcessResult(1, 9, '', 'marketplace signature invalid'),
+    );
+
+    await expectLater(
+      store.installPlugin(plugin),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          'marketplace signature invalid',
+        ),
+      ),
+    );
+  });
+
+  test(
     'writes only the selected plugin enabled state to Codex config',
     () async {
       final codexHome = await Directory.systemTemp.createTemp('codex-config-');
@@ -1296,6 +2902,37 @@ void main() {
     expect(find.text('Sample plugin'), findsOneWidget);
   });
 
+  testWidgets('shows plugin progress and restart feedback in the manager', (
+    tester,
+  ) async {
+    const plugin = CodexPlugin(
+      id: 'available@local',
+      name: 'Available plugin',
+      marketplaceName: 'local',
+      installed: false,
+      enabled: false,
+    );
+    final pluginStore = _BlockingCodexPluginStore()..plugins.add(plugin);
+    final controller = CodexController(pluginStore: pluginStore);
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('plugin-manager-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '安装'));
+    await tester.pump();
+
+    expect(find.byKey(const Key('plugin-action-progress')), findsOneWidget);
+    expect(find.byKey(const Key('plugin-tile-progress')), findsOneWidget);
+
+    pluginStore.installCompleter.complete();
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('plugin-action-result')), findsOneWidget);
+    expect(find.textContaining('重启运行时'), findsWidgets);
+  });
+
   test('caches local session metadata during the refresh interval', () async {
     final directory = await Directory.systemTemp.createTemp('codex-sessions-');
     addTearDown(() => directory.delete(recursive: true));
@@ -1335,6 +2972,35 @@ void main() {
 
     expect(store.snapshots['/workspace']!.threads.single.id, 'second-thread');
     controller.dispose();
+  });
+
+  test('ignores malformed collection fields in cached history snapshots', () {
+    final snapshot = ConversationHistorySnapshot.fromJson({
+      'threads': 'invalid',
+      'archivedThreads': 42,
+      'entries': null,
+      'fileChanges': {'invalid': true},
+      'pinnedThreadIds': [null, '', 'kept-thread'],
+      'turnDiff': 123,
+    });
+
+    expect(snapshot.threads, isEmpty);
+    expect(snapshot.archivedThreads, isEmpty);
+    expect(snapshot.entries, isEmpty);
+    expect(snapshot.fileChanges, isEmpty);
+    expect(snapshot.pinnedThreadIds, {'kept-thread'});
+    expect(snapshot.turnDiff, '123');
+  });
+
+  test('rejects unsupported portable history schemas', () {
+    expect(
+      () => PortableConversationHistory.fromJson({
+        'format': 'codex-desk-history',
+        'version': 999,
+        'snapshot': <String, Object?>{},
+      }),
+      throwsFormatException,
+    );
   });
 
   test('updates visible account state from App Server notifications', () {
@@ -1394,76 +3060,169 @@ void main() {
     controller.dispose();
   });
 
-  test(
-    'builds a Responses-only relay configuration without leaking its key',
-    () {
-      const relay = RelayProviderConfiguration(
-        baseUrl: 'https://relay.example.com/v1',
-        model: 'codex-compatible-model',
-        apiKey: 'relay-secret',
-      );
+  testWidgets('opens the code review surface from the completed file summary', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
 
-      expect(relay.processEnvironment, {
-        RelayProviderConfiguration.environmentVariable: 'relay-secret',
-      });
-      expect(relay.threadConfig, {
-        'model_providers': {
-          RelayProviderConfiguration.providerId: {
-            'name': 'Codex Desk Relay',
-            'base_url': 'https://relay.example.com/v1',
-            'env_key': RelayProviderConfiguration.environmentVariable,
-            'wire_api': 'responses',
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {
+                'path': 'lib/main.dart',
+                'kind': 'modified',
+                'diff': '@@ -1 +1 @@\n-old\n+new',
+              },
+            ],
           },
         },
-      });
-    },
-  );
+      ),
+    );
+    await tester.pump();
 
-  test('only permits HTTPS relay URLs except localhost', () {
-    expect(
-      () => RelayProviderConfiguration.normalizeBaseUrl('http://relay.test/v1'),
-      throwsFormatException,
+    expect(find.byKey(const Key('file-change-summary-card')), findsOneWidget);
+    await tester.ensureVisible(
+      find.byKey(const Key('review-file-changes-button')),
     );
-    expect(
-      RelayProviderConfiguration.normalizeBaseUrl('http://localhost:8080/v1/'),
-      'http://localhost:8080/v1',
-    );
+    await tester.tap(find.byKey(const Key('review-file-changes-button')));
+    await tester.pump();
+
+    expect(find.byKey(const Key('code-review-dialog')), findsOneWidget);
+    expect(find.text('审查'), findsOneWidget);
+    expect(find.text('lib/main.dart'), findsWidgets);
+    expect(find.byType(SelectableText), findsWidgets);
+    await tester.pumpWidget(const SizedBox());
   });
 
   test(
-    'permits sending with a configured relay when OpenAI auth is required',
-    () {
-      final controller = CodexController(server: CodexAppServer())
-        ..workspacePath = '/workspace'
-        ..status = RuntimeStatus.ready
-        ..requiresOpenaiAuth = true
-        ..authStatus = AuthStatus.signedOut;
+    'hydrates a missing file Diff from the read-only Git workspace',
+    () async {
+      final git = _FakeGitProjectService()
+        ..status = const GitProjectStatus(
+          isRepository: true,
+          changes: [GitProjectChange(code: '??', path: 'hello.py')],
+        )
+        ..diff = 'diff --git a/hello.py b/hello.py\n+Hello, world!';
+      final controller =
+          CodexController(server: CodexAppServer(), gitProjectService: git)
+            ..workspacePath = '/workspace'
+            ..status = RuntimeStatus.ready;
 
-      expect(controller.canSend, isFalse);
-
-      controller.relayProvider = const RelayProviderConfiguration(
-        baseUrl: 'https://relay.example.com/v1',
-        model: 'relay-model',
-        apiKey: 'relay-secret',
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'item': {
+              'type': 'fileChange',
+              'changes': [
+                {'path': '/workspace/hello.py', 'kind': 'added'},
+              ],
+            },
+          },
+        ),
       );
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
 
-      expect(controller.canSend, isTrue);
+      expect(controller.fileChanges.single.diff, contains('+Hello, world!'));
+      expect(git.requestedChange?.isUntracked, isTrue);
       controller.dispose();
     },
   );
 
-  test('locks runtime startup before waiting for Keychain', () async {
-    final store = _DelayedRelayProviderStore();
+  testWidgets('keeps aggregate Diff out of the reviewed file count', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {'path': 'hello.py', 'kind': 'added'},
+            ],
+          },
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/diff/updated',
+        params: {'diff': '@@ -0 +1 @@\n+Hello, world!'},
+      ),
+    );
+    await tester.pump();
+    await tester.ensureVisible(
+      find.byKey(const Key('review-file-changes-button')),
+    );
+    await tester.tap(find.byKey(const Key('review-file-changes-button')));
+    await tester.pump();
+
+    expect(find.text('1 个文件'), findsOneWidget);
+    expect(find.text('本次任务完整 Diff'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  test('uses the authentication requirement resolved from Codex config', () {
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..authStatus = AuthStatus.signedOut;
+
+    controller.requiresOpenaiAuth = false;
+    expect(controller.canSend, isTrue);
+
+    controller.requiresOpenaiAuth = true;
+    expect(controller.canSend, isFalse);
+    controller.dispose();
+  });
+
+  test('keeps the connected runtime usable after a failed turn', () {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running;
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'turn': {
+            'status': 'failed',
+            'error': {'message': 'request rejected'},
+          },
+        },
+      ),
+    );
+
+    expect(controller.status, RuntimeStatus.ready);
+    expect(controller.lastError, 'request rejected');
+    expect(controller.canSend, isTrue);
+    controller.dispose();
+  });
+
+  test('deduplicates concurrent runtime startup attempts', () async {
     final controller = CodexController(
       server: CodexAppServer(executable: '/not/a/codex'),
-      relayProviderStore: store,
     )..workspacePath = Directory.systemTemp.path;
 
     final firstStart = controller.startRuntime();
     final secondStart = controller.startRuntime();
 
     expect(controller.status, RuntimeStatus.starting);
-    store.completer.complete(null);
     await Future.wait([firstStart, secondStart]);
 
     expect(
@@ -1547,6 +3306,63 @@ void main() {
     },
   );
 
+  test('filters Git changes by state and case-insensitive path query', () {
+    const status = GitProjectStatus(
+      isRepository: true,
+      changes: [
+        GitProjectChange(code: 'M ', path: 'lib/staged.dart'),
+        GitProjectChange(code: ' M', path: 'lib/Editor.dart'),
+        GitProjectChange(code: '??', path: 'notes/TODO.md'),
+        GitProjectChange(
+          code: 'R ',
+          path: 'lib/new_name.dart',
+          previousPath: 'lib/Legacy.dart',
+        ),
+      ],
+    );
+
+    expect(
+      status.filteredChanges(filter: GitChangeFilter.staged),
+      hasLength(2),
+    );
+    expect(
+      status.filteredChanges(filter: GitChangeFilter.untracked).single.path,
+      'notes/TODO.md',
+    );
+    expect(
+      status.filteredChanges(query: 'EDITOR').single.path,
+      'lib/Editor.dart',
+    );
+    expect(
+      status.filteredChanges(query: 'legacy').single.path,
+      'lib/new_name.dart',
+    );
+  });
+
+  test('marks oversized Git diffs as truncated previews', () async {
+    final directory = await Directory.systemTemp.createTemp('codex-git-large-');
+    addTearDown(() => directory.delete(recursive: true));
+    expect(
+      (await Process.run('git', [
+        'init',
+        '-q',
+      ], workingDirectory: directory.path)).exitCode,
+      0,
+    );
+    await File('${directory.path}/large.txt').writeAsString(
+      List.filled(GitProjectService.maximumDiffCharacters + 1, 'x').join(),
+    );
+    const change = GitProjectChange(code: '??', path: 'large.txt');
+
+    final preview = await GitProjectService().readDiffPreview(
+      workspace: directory.path,
+      change: change,
+    );
+
+    expect(preview.truncated, isTrue);
+    expect(preview.content, endsWith(GitProjectService.truncatedDiffMarker));
+  });
+
   test(
     'loads only read-only Git status and selected diff through controller',
     () async {
@@ -1581,8 +3397,12 @@ void main() {
       ..status = const GitProjectStatus(
         isRepository: true,
         branch: 'main',
-        changes: [change],
-      );
+        changes: [
+          change,
+          GitProjectChange(code: ' M', path: 'lib/editor.dart'),
+        ],
+      )
+      ..diff = 'preview\n\n${GitProjectService.truncatedDiffMarker}';
     final controller = CodexController(
       server: CodexAppServer(),
       gitProjectService: git,
@@ -1597,6 +3417,24 @@ void main() {
     expect(find.byKey(const Key('git-project-dialog')), findsOneWidget);
     expect(find.text('分支：main'), findsOneWidget);
     expect(find.text('只读视图：不会执行暂存、还原、提交、切分支、拉取或推送。'), findsOneWidget);
+    expect(find.byKey(const Key('git-change-search')), findsOneWidget);
+    expect(find.byKey(const Key('git-change-filter')), findsOneWidget);
+
+    await tester.enterText(
+      find.byKey(const Key('git-change-search')),
+      'editor',
+    );
+    await tester.pump();
+
+    expect(find.text('lib/editor.dart'), findsOneWidget);
+    expect(find.text('new_file.txt'), findsNothing);
+
+    await tester.enterText(find.byKey(const Key('git-change-search')), '');
+    await tester.pump();
+    await tester.tap(find.text('new_file.txt'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('git-diff-truncated-warning')), findsOneWidget);
   });
 
   test('redacts credentials from runtime diagnostics', () {
@@ -1651,12 +3489,7 @@ void main() {
     final server = _FakeCodexAppServer();
     final controller = CodexController(server: server)
       ..workspacePath = '/workspace'
-      ..status = RuntimeStatus.ready
-      ..relayProvider = const RelayProviderConfiguration(
-        baseUrl: 'https://relay.example.com/v1',
-        model: 'relay-model',
-        apiKey: 'secret',
-      );
+      ..status = RuntimeStatus.ready;
 
     await controller.resumeThread(
       _thread(id: 'openai-thread', modelProvider: 'openai', model: 'gpt-5'),
@@ -1669,74 +3502,223 @@ void main() {
     controller.dispose();
   });
 
+  test('passes every workspace root only when creating a new thread', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'codex-desk-thread-roots-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final primary = await Directory(
+      '${root.path}/primary',
+    ).create(recursive: true);
+    final additional = await Directory(
+      '${root.path}/additional',
+    ).create(recursive: true);
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    await controller.selectWorkspace(primary.path);
+    await controller.addWorkspaceRoot(additional.path);
+    controller.status = RuntimeStatus.ready;
+
+    await controller.sendPrompt('读取两个目录');
+
+    expect(server.startedThreadDirectory, await primary.resolveSymbolicLinks());
+    expect(server.startedRuntimeWorkspaceRoots, [
+      await primary.resolveSymbolicLinks(),
+      await additional.resolveSymbolicLinks(),
+    ]);
+
+    controller
+      ..status = RuntimeStatus.ready
+      ..activeThreadId = null;
+    await controller.resumeThread(_thread(id: 'historical-thread'));
+    expect(server.resumedThreadId, 'historical-thread');
+    controller.dispose();
+  });
+
+  test('encodes runtime workspace roots in the thread start request', () async {
+    final server = _ProtocolCaptureCodexAppServer();
+    final threadId = await server.startThread(
+      workingDirectory: '/primary',
+      runtimeWorkspaceRoots: const ['/primary', '/shared'],
+    );
+
+    expect(server.requestedMethod, 'thread/start');
+    expect(server.requestedParams, {
+      'cwd': '/primary',
+      'runtimeWorkspaceRoots': ['/primary', '/shared'],
+    });
+    expect(threadId, 'thread-with-roots');
+  });
+
+  test('encodes composer context in the turn start request', () async {
+    final server = _ProtocolCaptureCodexAppServer();
+
+    await server.startTurn(
+      threadId: 'thread-1',
+      prompt: r'$documents Review this image',
+      workingDirectory: '/workspace',
+      additionalInput: const [
+        {'type': 'localImage', 'path': '/tmp/design.png'},
+        {
+          'type': 'skill',
+          'name': 'documents',
+          'path': '/skills/documents/SKILL.md',
+        },
+      ],
+      collaborationMode: const {
+        'mode': 'plan',
+        'settings': {
+          'model': 'gpt-test',
+          'reasoning_effort': null,
+          'developer_instructions': null,
+        },
+      },
+    );
+
+    expect(server.requestedMethod, 'turn/start');
+    expect(server.requestedParams, {
+      'threadId': 'thread-1',
+      'cwd': '/workspace',
+      'input': [
+        {'type': 'text', 'text': r'$documents Review this image'},
+        {'type': 'localImage', 'path': '/tmp/design.png'},
+        {
+          'type': 'skill',
+          'name': 'documents',
+          'path': '/skills/documents/SKILL.md',
+        },
+      ],
+      'collaborationMode': {
+        'mode': 'plan',
+        'settings': {
+          'model': 'gpt-test',
+          'reasoning_effort': null,
+          'developer_instructions': null,
+        },
+      },
+    });
+  });
+
+  test('opts into experimental App Server fields during initialize', () async {
+    final server = _ProtocolCaptureCodexAppServer();
+
+    await server.initialize();
+
+    expect(server.requestedMethod, 'initialize');
+    expect(server.requestedParams, {
+      'clientInfo': {
+        'name': 'chatgpt_flutter',
+        'title': 'Codex Desk',
+        'version': '0.1.0',
+      },
+      'capabilities': {'experimentalApi': true},
+    });
+    expect(server.notifications, ['initialized']);
+  });
+
+  test('applies selected model and effort only to new threads', () async {
+    final store = _FakeRuntimeConfigurationStore();
+    final server = _FakeCodexAppServer()
+      ..modelListResponse = [
+        {
+          'id': 'gpt-5',
+          'model': 'gpt-5',
+          'isDefault': true,
+          'supportedReasoningEfforts': [
+            {'reasoningEffort': 'low'},
+            {'reasoningEffort': 'high'},
+          ],
+        },
+      ];
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: store,
+    );
+    await controller.waitForInitialConfiguration();
+    await controller.refreshReasoningEffortCapabilitiesForTesting();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+
+    await controller.setModel('gpt-5');
+    await controller.setReasoningEffort(ReasoningEffort.high);
+    await controller.sendPrompt('开始新任务');
+
+    expect(store.savedModel, 'gpt-5');
+    expect(store.savedReasoningEffort, 'high');
+    expect(server.startedModelProvider, isNull);
+    expect(server.startedModel, 'gpt-5');
+    expect(server.startedConfig, {'model_reasoning_effort': 'high'});
+
+    controller
+      ..activeThreadId = null
+      ..status = RuntimeStatus.ready;
+    await controller.resumeThread(
+      _thread(id: 'openai-thread', model: 'historical-model'),
+    );
+
+    expect(server.resumedModel, 'historical-model');
+    expect(server.resumedConfig, isNull);
+    controller.dispose();
+  });
+
   test(
-    'passes selected effort only to new and resumed compatible threads',
+    'switching the new-task model updates supported reasoning strengths',
     () async {
       final store = _FakeRuntimeConfigurationStore();
       final server = _FakeCodexAppServer()
         ..modelListResponse = [
           {
-            'id': 'gpt-5',
-            'model': 'gpt-5',
+            'id': 'deep-model',
+            'model': 'deep-model',
+            'displayName': 'Deep model',
             'isDefault': true,
             'supportedReasoningEfforts': [
-              {'reasoningEffort': 'low'},
               {'reasoningEffort': 'high'},
+            ],
+          },
+          {
+            'id': 'fast-model',
+            'model': 'fast-model',
+            'displayName': 'Fast model',
+            'isDefault': false,
+            'supportedReasoningEfforts': [
+              {'reasoningEffort': 'low'},
             ],
           },
         ];
       final controller = CodexController(
         server: server,
-        relayProviderStore: _EmptyRelayProviderStore(),
         runtimeConfigurationStore: store,
       );
+
       await controller.waitForInitialConfiguration();
       await controller.refreshReasoningEffortCapabilitiesForTesting();
-      controller
-        ..workspacePath = '/workspace'
-        ..status = RuntimeStatus.ready
-        ..relayProvider = const RelayProviderConfiguration(
-          baseUrl: 'https://relay.example.com/v1',
-          model: 'relay-model',
-          apiKey: 'secret',
-        );
-
       await controller.setReasoningEffort(ReasoningEffort.high);
-      await controller.sendPrompt('开始新任务');
+      await controller.setModel('fast-model');
 
-      expect(store.savedReasoningEffort, 'high');
-      expect(
-        server.startedModelProvider,
-        RelayProviderConfiguration.providerId,
-      );
-      expect(server.startedConfig, {
-        'model_providers': {
-          RelayProviderConfiguration.providerId: {
-            'name': 'Codex Desk Relay',
-            'base_url': 'https://relay.example.com/v1',
-            'env_key': RelayProviderConfiguration.environmentVariable,
-            'wire_api': 'responses',
-          },
-        },
-      });
+      expect(controller.selectedModelId, 'fast-model');
+      expect(controller.selectedModelLabel, 'Fast model');
+      expect(store.savedModel, 'fast-model');
+      expect(controller.reasoningEffort, ReasoningEffort.defaultValue);
+      expect(controller.reasoningEffortOptions, [
+        ReasoningEffort.defaultValue,
+        ReasoningEffort.low,
+      ]);
+      expect(store.savedReasoningEffort, isNull);
 
-      controller
-        ..activeThreadId = null
-        ..status = RuntimeStatus.ready
-        ..relayProvider = null;
-      await controller.sendPrompt('使用默认模型的新任务');
+      await controller.setModel(null);
 
-      expect(server.startedModelProvider, isNull);
-      expect(server.startedConfig, {'model_reasoning_effort': 'high'});
-
-      controller
-        ..activeThreadId = null
-        ..status = RuntimeStatus.ready;
-      await controller.resumeThread(
-        _thread(id: 'openai-thread', model: 'gpt-5'),
-      );
-
-      expect(server.resumedConfig, {'model_reasoning_effort': 'high'});
+      expect(controller.selectedModelId, isNull);
+      expect(store.savedModel, isNull);
+      expect(controller.reasoningEffortOptions, [
+        ReasoningEffort.defaultValue,
+        ReasoningEffort.high,
+      ]);
       controller.dispose();
     },
   );
@@ -1758,7 +3740,6 @@ void main() {
         ];
       final controller = CodexController(
         server: server,
-        relayProviderStore: _EmptyRelayProviderStore(),
         runtimeConfigurationStore: store,
       );
 
@@ -1771,6 +3752,119 @@ void main() {
         ReasoningEffort.defaultValue,
         ReasoningEffort.low,
       ]);
+      controller.dispose();
+    },
+  );
+
+  test('preserves newly advertised reasoning effort values', () async {
+    final store = _FakeRuntimeConfigurationStore();
+    final server = _FakeCodexAppServer()
+      ..modelListResponse = [
+        {
+          'id': 'future-model',
+          'model': 'future-model',
+          'isDefault': true,
+          'supportedReasoningEfforts': [
+            {'reasoningEffort': 'ultra'},
+          ],
+        },
+      ];
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: store,
+    );
+    await controller.waitForInitialConfiguration();
+    await controller.refreshReasoningEffortCapabilitiesForTesting();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+
+    final ultra = controller.reasoningEffortOptions.singleWhere(
+      (effort) => effort.configValue == 'ultra',
+    );
+    await controller.setReasoningEffort(ultra);
+    await controller.sendPrompt('使用新推理强度');
+
+    expect(ultra.label, 'ultra');
+    expect(store.savedReasoningEffort, 'ultra');
+    expect(server.startedConfig, {'model_reasoning_effort': 'ultra'});
+    controller.dispose();
+  });
+
+  test(
+    'blocks unresolved saved selections when the model catalog fails',
+    () async {
+      final store = _FakeRuntimeConfigurationStore()
+        ..model = 'saved-model'
+        ..reasoningEffort = 'high';
+      final controller = CodexController(
+        server: _FakeCodexAppServer()
+          ..modelListError = StateError('catalog unavailable'),
+        runtimeConfigurationStore: store,
+      );
+      await controller.waitForInitialConfiguration();
+      await controller.refreshReasoningEffortCapabilitiesForTesting();
+      controller
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+
+      expect(controller.selectedModelLabel, 'saved-model');
+      expect(controller.modelSelectionError, contains('catalog unavailable'));
+      expect(controller.canSend, isFalse);
+
+      await controller.setModel(null);
+      await controller.setReasoningEffort(ReasoningEffort.defaultValue);
+
+      expect(controller.modelSelectionError, isNull);
+      expect(controller.canSend, isTrue);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'clears runtime-resolved configuration when switching projects',
+    () async {
+      final firstWorkspace = await Directory.systemTemp.createTemp(
+        'codex-config-first-',
+      );
+      final secondWorkspace = await Directory.systemTemp.createTemp(
+        'codex-config-second-',
+      );
+      addTearDown(() => firstWorkspace.delete(recursive: true));
+      addTearDown(() => secondWorkspace.delete(recursive: true));
+      final server = _FakeCodexAppServer()
+        ..configReadResponse = {
+          'config': {
+            'model': 'project-model',
+            'model_provider': 'project-provider',
+          },
+          'origins': <String, Object?>{},
+        }
+        ..modelListResponse = [
+          {
+            'id': 'project-model',
+            'model': 'project-model',
+            'isDefault': true,
+            'supportedReasoningEfforts': <Object?>[],
+          },
+        ];
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+      )..workspacePath = firstWorkspace.path;
+      await controller.refreshCodexConfiguration();
+      await controller.refreshReasoningEffortCapabilitiesForTesting();
+
+      expect(controller.configuredModelLabel, 'project-model');
+      expect(controller.providerLabel, 'project-provider');
+      expect(controller.modelOptions, isNotEmpty);
+
+      await controller.selectWorkspace(secondWorkspace.path);
+
+      expect(controller.codexConfigurationRead, isFalse);
+      expect(controller.configuredModelLabel, '等待读取运行时配置');
+      expect(controller.providerLabel, 'Codex 配置');
+      expect(controller.modelOptions, isEmpty);
       controller.dispose();
     },
   );
