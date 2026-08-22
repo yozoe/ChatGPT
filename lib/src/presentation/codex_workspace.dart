@@ -385,6 +385,50 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     return sent;
   }
 
+  /// Sends text entered while a turn is running as a direction adjustment.
+  /// 运行中 Composer 的纯文本输入通过 `turn/steer` 发送到当前活动 turn。
+  Future<bool> _steer(String prompt) => _controller.steerCurrentTurn(prompt);
+
+  /// Opens a focused editor for steering the currently running turn.
+  /// 打开“调整方向”编辑器，将新的指示发送到当前活动 turn。
+  Future<void> _adjustDirection(String originalPrompt) async {
+    var draft = '';
+    final direction = await showDialog<String?>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        key: const Key('adjust-direction-dialog'),
+        title: const Text('调整方向'),
+        content: SizedBox(
+          width: 520,
+          child: TextFormField(
+            key: const Key('adjust-direction-field'),
+            autofocus: true,
+            minLines: 3,
+            maxLines: 8,
+            onChanged: (value) => draft = value,
+            decoration: InputDecoration(
+              hintText: '告诉 Codex 接下来应该怎么调整…',
+              helperText: '原指令：${originalPrompt.trim()}',
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const Key('send-adjust-direction'),
+            onPressed: () => Navigator.of(dialogContext).pop(draft.trim()),
+            child: const Text('发送调整'),
+          ),
+        ],
+      ),
+    );
+    if (direction == null || direction.trim().isEmpty || !mounted) return;
+    await _controller.steerCurrentTurn(direction);
+  }
+
   /// 将当前项目的本地历史导出到用户选择的 JSON 文件；文件不包含 API Key。
   /// Exports the current workspace's local history to a user-selected JSON file without API keys.
   Future<void> _exportConversationHistory() async {
@@ -1435,6 +1479,8 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                           composer: _composer,
                           timelineScrollController: _timelineScrollController,
                           onSend: _send,
+                          onSteer: _steer,
+                          onAdjustDirection: _adjustDirection,
                           onShowFileChanges: _showFileChanges,
                           onReview: _showCodeReview,
                         ),
@@ -2282,6 +2328,8 @@ class _ConversationPane extends StatelessWidget {
     required this.composer,
     required this.timelineScrollController,
     required this.onSend,
+    required this.onSteer,
+    required this.onAdjustDirection,
     required this.onShowFileChanges,
     required this.onReview,
   });
@@ -2290,6 +2338,8 @@ class _ConversationPane extends StatelessWidget {
   final TextEditingController composer;
   final ScrollController timelineScrollController;
   final Future<bool> Function(_ComposerSubmission submission) onSend;
+  final Future<bool> Function(String prompt) onSteer;
+  final Future<void> Function(String originalPrompt) onAdjustDirection;
   final Future<void> Function() onShowFileChanges;
   final Future<void> Function() onReview;
 
@@ -2364,6 +2414,9 @@ class _ConversationPane extends StatelessWidget {
                 100.0,
                 340.0,
               );
+              final latestUserIndex = controller.entries.lastIndexWhere(
+                (entry) => entry.kind == TimelineKind.user,
+              );
               return Stack(
                 children: [
                   ListView.separated(
@@ -2392,7 +2445,16 @@ class _ConversationPane extends StatelessWidget {
                           onReview: onReview,
                         );
                       }
-                      return _TimelineEntry(controller.entries[index]);
+                      final entry = controller.entries[index];
+                      return _TimelineEntry(
+                        entry,
+                        onAdjustDirection:
+                            controller.canSteer &&
+                                index == latestUserIndex &&
+                                entry.kind == TimelineKind.user
+                            ? () => onAdjustDirection(entry.detail)
+                            : null,
+                      );
                     },
                   ),
                   if (plan != null)
@@ -2420,6 +2482,7 @@ class _ConversationPane extends StatelessWidget {
           controller: controller,
           composer: composer,
           onSend: onSend,
+          onSteer: onSteer,
         ),
       ],
     );
@@ -2595,50 +2658,400 @@ class _FileChangeSummaryCardState extends State<_FileChangeSummaryCard> {
   }
 }
 
-class _FileChangeSummaryRow extends StatelessWidget {
+class _FileChangeSummaryRow extends StatefulWidget {
   const _FileChangeSummaryRow({required this.change, this.fallbackDiff});
 
   final CodexFileChange change;
   final String? fallbackDiff;
 
   @override
-  Widget build(BuildContext context) {
-    final palette = YeknomPalette.of(context);
-    final stats =
-        change.diff.trim().isEmpty &&
-            fallbackDiff != null &&
-            fallbackDiff!.isNotEmpty
-        ? _diffStats(fallbackDiff!)
-        : _diffStats(change.diff);
-    final unknown =
-        change.diff.trim().isEmpty &&
-        (fallbackDiff == null || fallbackDiff!.isEmpty);
-    return Container(
-      color: palette.field.withValues(alpha: 0.42),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              change.path,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: palette.trace),
+  State<_FileChangeSummaryRow> createState() => _FileChangeSummaryRowState();
+}
+
+class _FileChangeSummaryRowState extends State<_FileChangeSummaryRow> {
+  static const _previewMargin = 12.0;
+  static const _previewGap = 8.0;
+  static const _previewMaxWidth = 560.0;
+  static const _previewMaxHeight = 330.0;
+
+  final LayerLink _layerLink = LayerLink();
+  final ValueNotifier<int> _previewVersion = ValueNotifier(0);
+  OverlayEntry? _previewEntry;
+  Timer? _hideTimer;
+  bool _hovering = false;
+  Offset _previewOffset = Offset.zero;
+  Alignment _targetAnchor = Alignment.topLeft;
+  Alignment _followerAnchor = Alignment.bottomLeft;
+  double _previewWidth = _previewMaxWidth;
+  double _previewMaxHeightValue = _previewMaxHeight;
+  double _previewHeight = _previewMaxHeight;
+  bool _previewRefreshScheduled = false;
+
+  String get _diff => widget.change.diff.trim().isEmpty
+      ? (widget.fallbackDiff ?? '')
+      : widget.change.diff;
+
+  bool _updatePreviewGeometry() {
+    final renderObject = context.findRenderObject();
+    if (renderObject is! RenderBox) return false;
+    final viewport = MediaQuery.sizeOf(context);
+    final targetTopLeft = renderObject.localToGlobal(Offset.zero);
+    final targetBottom = targetTopLeft.dy + renderObject.size.height;
+    final availableAbove = targetTopLeft.dy - _previewMargin - _previewGap;
+    final availableBelow =
+        viewport.height - targetBottom - _previewMargin - _previewGap;
+    final showAbove = availableAbove >= availableBelow;
+    final availableHeight = showAbove ? availableAbove : availableBelow;
+    final width = (viewport.width - _previewMargin * 2)
+        .clamp(1.0, _previewMaxWidth)
+        .toDouble();
+    final horizontalShift =
+        targetTopLeft.dx + width > viewport.width - _previewMargin
+        ? viewport.width - _previewMargin - targetTopLeft.dx - width
+        : targetTopLeft.dx < _previewMargin
+        ? _previewMargin - targetTopLeft.dx
+        : 0.0;
+    _previewWidth = width;
+    _previewMaxHeightValue = availableHeight
+        .clamp(1.0, _previewMaxHeight)
+        .toDouble();
+    final previewLineCount = _previewLines(_diff).length;
+    final estimatedHeight = _diff.trim().isEmpty
+        ? 96.0
+        : 60.0 +
+              (previewLineCount > 12 ? 12 : previewLineCount) * 18.0 +
+              (previewLineCount > 12 ? 24.0 : 0.0);
+    _previewHeight = estimatedHeight < _previewMaxHeightValue
+        ? estimatedHeight
+        : _previewMaxHeightValue;
+    _previewOffset = Offset(
+      horizontalShift,
+      showAbove
+          ? -_previewHeight - _previewGap
+          : renderObject.size.height + _previewGap,
+    );
+    _targetAnchor = Alignment.topLeft;
+    _followerAnchor = Alignment.topLeft;
+    return true;
+  }
+
+  void _showPreview() {
+    _hideTimer?.cancel();
+    if (_previewEntry != null || !mounted) return;
+    final overlay = Overlay.maybeOf(context, rootOverlay: true);
+    if (overlay == null || !_updatePreviewGeometry()) return;
+
+    final entry = OverlayEntry(
+      builder: (context) => ValueListenableBuilder<int>(
+        valueListenable: _previewVersion,
+        builder: (context, _, _) => CompositedTransformFollower(
+          link: _layerLink,
+          showWhenUnlinked: false,
+          targetAnchor: _targetAnchor,
+          followerAnchor: _followerAnchor,
+          offset: _previewOffset,
+          child: IgnorePointer(
+            child: UnconstrainedBox(
+              alignment: Alignment.topLeft,
+              child: _FileChangeHoverPreview(
+                path: widget.change.path,
+                diff: _diff,
+                width: _previewWidth,
+                maxHeight: _previewMaxHeightValue,
+                height: _previewHeight,
+              ),
             ),
           ),
-          const SizedBox(width: 12),
-          Text(
-            _diffCountLabel('+', stats.additions, unknown: unknown),
-            style: TextStyle(color: palette.ack),
-          ),
-          const SizedBox(width: 10),
-          Text(
-            _diffCountLabel('-', stats.deletions, unknown: unknown),
-            style: TextStyle(color: palette.fault),
-          ),
-        ],
+        ),
       ),
     );
+    _previewEntry = entry;
+    overlay.insert(entry);
+  }
+
+  void _scheduleHide() {
+    _hideTimer?.cancel();
+    _hideTimer = Timer(const Duration(milliseconds: 120), () {
+      _previewEntry?.remove();
+      _previewEntry = null;
+    });
+  }
+
+  @override
+  void dispose() {
+    _hideTimer?.cancel();
+    _previewEntry?.remove();
+    _previewVersion.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant _FileChangeSummaryRow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.change.path != widget.change.path ||
+        oldWidget.change.diff != widget.change.diff ||
+        oldWidget.fallbackDiff != widget.fallbackDiff) {
+      if (_previewEntry != null && !_previewRefreshScheduled) {
+        _previewRefreshScheduled = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _previewRefreshScheduled = false;
+          if (mounted && _previewEntry != null) {
+            _updatePreviewGeometry();
+            _previewVersion.value++;
+          }
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final stats = _diffStats(_diff);
+    final unknown = _diff.trim().isEmpty;
+    return CompositedTransformTarget(
+      link: _layerLink,
+      child: MouseRegion(
+        key: ValueKey('file-change-row-${widget.change.path}'),
+        onEnter: (_) {
+          setState(() => _hovering = true);
+          _showPreview();
+        },
+        onExit: (_) {
+          setState(() => _hovering = false);
+          _scheduleHide();
+        },
+        cursor: SystemMouseCursors.basic,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          color: palette.field.withValues(alpha: _hovering ? 0.68 : 0.42),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  widget.change.path,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: palette.trace),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                _diffCountLabel('+', stats.additions, unknown: unknown),
+                style: TextStyle(color: palette.ack),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                _diffCountLabel('-', stats.deletions, unknown: unknown),
+                style: TextStyle(color: palette.fault),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DiffPreviewLine {
+  const _DiffPreviewLine(this.text, this.lineNumber);
+
+  final String text;
+  final int? lineNumber;
+}
+
+List<_DiffPreviewLine> _previewLines(String diff) {
+  final hunkPattern = RegExp(r'^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@');
+  var inHunk = false;
+  var oldLine = 0;
+  var newLine = 0;
+  return diff
+      .split('\n')
+      .map((line) {
+        final hunk = hunkPattern.firstMatch(line);
+        if (hunk != null) {
+          inHunk = true;
+          oldLine = int.parse(hunk.group(1)!);
+          newLine = int.parse(hunk.group(2)!);
+          return _DiffPreviewLine(line, null);
+        }
+        if (!inHunk) return _DiffPreviewLine(line, null);
+
+        if (line.startsWith('+') && !line.startsWith('+++')) {
+          return _DiffPreviewLine(line, newLine++);
+        }
+        if (line.startsWith('-') && !line.startsWith('---')) {
+          return _DiffPreviewLine(line, oldLine++);
+        }
+        if (line.startsWith(' ')) {
+          final number = newLine++;
+          oldLine++;
+          return _DiffPreviewLine(line, number);
+        }
+        return _DiffPreviewLine(line, null);
+      })
+      .toList(growable: false);
+}
+
+class _FileChangeHoverPreview extends StatelessWidget {
+  const _FileChangeHoverPreview({
+    required this.path,
+    required this.diff,
+    required this.width,
+    required this.maxHeight,
+    required this.height,
+  });
+
+  final String path;
+  final String diff;
+  final double width;
+  final double maxHeight;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final stats = _diffStats(diff);
+    final lines = _previewLines(diff);
+    final visibleLines = lines.length > 12 ? lines.take(12).toList() : lines;
+    final truncated = visibleLines.length < lines.length;
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        key: const Key('file-change-hover-preview'),
+        width: width,
+        height: height,
+        constraints: BoxConstraints(maxHeight: maxHeight),
+        decoration: BoxDecoration(
+          color: palette.raised,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: palette.border),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.34),
+              blurRadius: 24,
+              offset: const Offset(0, 10),
+            ),
+          ],
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 11, 14, 10),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.description_outlined,
+                    size: 17,
+                    color: palette.muted,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      path,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: palette.trace,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    '+${stats.additions}',
+                    style: TextStyle(color: palette.ack),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    '-${stats.deletions}',
+                    style: TextStyle(color: palette.fault),
+                  ),
+                ],
+              ),
+            ),
+            Divider(height: 1, color: palette.border),
+            if (diff.trim().isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: _MutedText('App Server 未提供可显示的 Diff。'),
+              )
+            else
+              Flexible(
+                child: Container(
+                  color: palette.field,
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: SelectableText.rich(
+                        TextSpan(
+                          children: _previewSpans(palette, visibleLines),
+                        ),
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 12,
+                          height: 1.5,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            if (truncated)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+                child: Text(
+                  '仅显示前 12 行 · 打开“审核”查看完整 Diff',
+                  style: TextStyle(color: palette.muted, fontSize: 11),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<TextSpan> _previewSpans(
+    YeknomPalette palette,
+    List<_DiffPreviewLine> lines,
+  ) {
+    return [
+      for (var index = 0; index < lines.length; index++)
+        TextSpan(
+          text:
+              '${lines[index].lineNumber?.toString().padLeft(4) ?? '    '}  '
+              '${lines[index].text}\n',
+          style: TextStyle(
+            color: _lineColor(palette, lines[index].text),
+            backgroundColor: _lineBackground(palette, lines[index].text),
+          ),
+        ),
+    ];
+  }
+
+  Color _lineColor(YeknomPalette palette, String line) {
+    return switch (line) {
+      _ when line.startsWith('+++') || line.startsWith('---') => palette.muted,
+      _ when line.startsWith('+') => palette.ack,
+      _ when line.startsWith('-') => palette.fault,
+      _ when line.startsWith('@@') => palette.active,
+      _ => palette.trace,
+    };
+  }
+
+  Color? _lineBackground(YeknomPalette palette, String line) {
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      return palette.ack.withValues(alpha: 0.12);
+    }
+    if (line.startsWith('-') && !line.startsWith('---')) {
+      return palette.fault.withValues(alpha: 0.12);
+    }
+    return null;
   }
 }
 
@@ -3360,16 +3773,126 @@ class _ComposerModelControls extends StatelessWidget {
   }
 }
 
+class _ComposerActivityPill extends StatelessWidget {
+  const _ComposerActivityPill({required this.label, required this.active});
+
+  final String label;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Container(
+      key: const Key('composer-activity-pill'),
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
+      decoration: BoxDecoration(
+        color: palette.raised,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: palette.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 11,
+            height: 11,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: active ? palette.active : palette.muted,
+                width: 2,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: palette.muted),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ComposerFileChangePill extends StatelessWidget {
+  const _ComposerFileChangePill({
+    required this.changes,
+    required this.turnDiff,
+  });
+
+  final List<CodexFileChange> changes;
+  final String? turnDiff;
+
+  _DiffStats get _stats {
+    final stats = changes.fold(
+      const _DiffStats(0, 0),
+      (total, change) => total + _diffStats(change.diff),
+    );
+    final fallback = turnDiff;
+    final hasMissingDiff = changes.any((change) => change.diff.trim().isEmpty);
+    return hasMissingDiff && fallback != null && fallback.isNotEmpty
+        ? _diffStats(fallback)
+        : stats;
+  }
+
+  bool get _statsUnknown =>
+      changes.any((change) => change.diff.trim().isEmpty) &&
+      (turnDiff == null || turnDiff!.isEmpty);
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final stats = _stats;
+    return Container(
+      key: const Key('composer-file-change-pill'),
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+      decoration: BoxDecoration(
+        color: palette.raised,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: palette.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '${changes.length} 个文件已更改',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: palette.muted),
+          ),
+          const SizedBox(width: 9),
+          Text(
+            _diffCountLabel('+', stats.additions, unknown: _statsUnknown),
+            style: TextStyle(color: palette.ack),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            _diffCountLabel('-', stats.deletions, unknown: _statsUnknown),
+            style: TextStyle(color: palette.fault),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _ComposerPanel extends StatefulWidget {
   const _ComposerPanel({
     required this.controller,
     required this.composer,
     required this.onSend,
+    required this.onSteer,
   });
 
   final CodexController controller;
   final TextEditingController composer;
   final Future<bool> Function(_ComposerSubmission submission) onSend;
+  final Future<bool> Function(String prompt) onSteer;
 
   @override
   State<_ComposerPanel> createState() => _ComposerPanelState();
@@ -3404,6 +3927,14 @@ class _ComposerPanelState extends State<_ComposerPanel> {
       _includeWorkspace ||
       _goal?.isNotEmpty == true ||
       _planMode ||
+      _recordSkill ||
+      _selectedSkillPaths.isNotEmpty;
+
+  /// 指示运行中的 steering 是否仍有无法随纯文本发送的临时上下文。
+  /// Indicates whether steering still has transient context that cannot be sent as plain text.
+  bool get _hasUnsupportedSteeringContext =>
+      _attachments.isNotEmpty ||
+      _includeWorkspace ||
       _recordSkill ||
       _selectedSkillPaths.isNotEmpty;
 
@@ -3496,18 +4027,27 @@ class _ComposerPanelState extends State<_ComposerPanel> {
   }
 
   Future<void> _submit() async {
-    final submitted = await widget.onSend(
-      _ComposerSubmission(
-        attachments: List.unmodifiable(_attachments),
-        includeWorkspace: _includeWorkspace,
-        goal: _goal,
-        planMode: _planMode,
-        recordSkill: _recordSkill,
-        skills: _selectedSkills,
-      ),
-    );
+    if (controller.canSteer && _hasUnsupportedSteeringContext) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('运行中的调整方向仅支持文本输入。')));
+      return;
+    }
+    final submitted = controller.canSteer
+        ? await widget.onSteer(composer.text.trim())
+        : await widget.onSend(
+            _ComposerSubmission(
+              attachments: List.unmodifiable(_attachments),
+              includeWorkspace: _includeWorkspace,
+              goal: _goal,
+              planMode: _planMode,
+              recordSkill: _recordSkill,
+              skills: _selectedSkills,
+            ),
+          );
     if (!submitted || !mounted) return;
     setState(() {
+      composer.clear();
       _attachments.clear();
       _selectedSkillPaths.clear();
       _includeWorkspace = false;
@@ -3600,6 +4140,12 @@ class _ComposerPanelState extends State<_ComposerPanel> {
     final items = await _clipboardFileReader.readItems();
     if (!mounted) return;
     if (items.isNotEmpty) {
+      if (!controller.canSend) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('运行中的调整方向仅支持文本输入。')));
+        return;
+      }
       _addAttachments(
         items.map(
           (item) => _ComposerAttachment(
@@ -3661,7 +4207,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
   }
 
   Future<void> _handleDroppedFiles(List<DropItem> items) async {
-    if (items.isEmpty || !mounted) return;
+    if (items.isEmpty || !mounted || !controller.canSend) return;
     final attachments = <_ComposerAttachment>[];
     for (final item in items) {
       final path = item.path;
@@ -3692,6 +4238,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
   }
 
   void _addAttachments(Iterable<_ComposerAttachment> attachments) {
+    if (!controller.canSend) return;
     setState(() {
       for (final attachment in attachments) {
         if (attachment.path.isEmpty) continue;
@@ -3921,52 +4468,29 @@ class _ComposerPanelState extends State<_ComposerPanel> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (controller.activeThreadId != null ||
-              controller.status == RuntimeStatus.running) ...[
-            Container(
-              margin: const EdgeInsets.only(bottom: 10),
-              padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
-              decoration: BoxDecoration(
-                color: palette.raised,
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(color: palette.border),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 11,
-                    height: 11,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: controller.status == RuntimeStatus.running
-                            ? palette.active
-                            : palette.muted,
-                        width: 2,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    _activityLabel,
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodySmall?.copyWith(color: palette.muted),
-                  ),
-                ],
-              ),
+          if (controller.fileChanges.isNotEmpty)
+            _ComposerFileChangePill(
+              changes: controller.fileChanges,
+              turnDiff: controller.turnDiff,
+            )
+          else if (controller.activeThreadId != null ||
+              controller.status == RuntimeStatus.running)
+            _ComposerActivityPill(
+              label: _activityLabel,
+              active: controller.status == RuntimeStatus.running,
             ),
-          ],
           DropTarget(
             onDragEntered: (_) {
-              if (mounted) setState(() => _draggingFiles = true);
+              if (controller.canSend && mounted) {
+                setState(() => _draggingFiles = true);
+              }
             },
             onDragExited: (_) {
               if (mounted) setState(() => _draggingFiles = false);
             },
             onDragDone: (details) {
               if (mounted) setState(() => _draggingFiles = false);
+              if (!controller.canSend) return;
               unawaited(_handleDroppedFiles(details.files));
             },
             child: Stack(
@@ -4021,7 +4545,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
                           child: TextField(
                             key: const Key('composer-field'),
                             controller: composer,
-                            enabled: controller.canSend,
+                            enabled: controller.canSend || controller.canSteer,
                             contextMenuBuilder: _buildComposerContextMenu,
                             minLines: 2,
                             maxLines: 5,
@@ -4127,6 +4651,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
                               if (showAttachment)
                                 PopupMenuButton<_AddMenuAction>(
                                   key: const Key('composer-add-button'),
+                                  enabled: controller.canSend,
                                   tooltip: '添加上下文',
                                   icon: const Icon(Icons.add, size: 20),
                                   constraints: const BoxConstraints(
@@ -4189,10 +4714,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
                                         if (showApprovalLabel) ...[
                                           const SizedBox(width: 5),
                                           Text(
-                                            controller.approvalMode ==
-                                                    ApprovalMode.autoApprove
-                                                ? '自动批准'
-                                                : '帮助批准',
+                                            controller.approvalMode.label,
                                             style: Theme.of(
                                               context,
                                             ).textTheme.bodySmall,
@@ -4676,7 +5198,7 @@ class _Inspector extends StatelessWidget {
             ),
             _MutedText(
               controller.approvalMode == ApprovalMode.autoApprove
-                  ? '自动批准命令、文件变更和额外权限请求。'
+                  ? '帮我批准命令、文件变更和额外权限请求。'
                   : '每次请求都会显示批准与拒绝按钮。',
             ),
             const SizedBox(height: 12),
@@ -5074,9 +5596,10 @@ class _GitDiffViewer extends StatelessWidget {
 }
 
 class _TimelineEntry extends StatelessWidget {
-  const _TimelineEntry(this.entry);
+  const _TimelineEntry(this.entry, {this.onAdjustDirection});
 
   final TimelineEntry entry;
+  final VoidCallback? onAdjustDirection;
 
   /// 按时间线条目类型构建消息或系统事件视图。
   /// Builds a message or system-event view based on the timeline entry kind.
@@ -5088,12 +5611,37 @@ class _TimelineEntry extends StatelessWidget {
         alignment: Alignment.centerRight,
         child: Container(
           constraints: const BoxConstraints(maxWidth: 560),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          padding: const EdgeInsets.fromLTRB(14, 10, 8, 8),
           decoration: BoxDecoration(
             color: palette.raised,
             borderRadius: BorderRadius.circular(16),
           ),
-          child: SelectableText(entry.detail),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: SelectableText(entry.detail),
+              ),
+              if (onAdjustDirection != null) ...[
+                const SizedBox(height: 5),
+                TextButton.icon(
+                  key: const Key('adjust-direction-button'),
+                  onPressed: onAdjustDirection,
+                  icon: const Icon(Icons.reply_outlined, size: 17),
+                  label: const Text('调整方向'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: palette.muted,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       );
     }

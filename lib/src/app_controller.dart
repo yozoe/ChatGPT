@@ -90,8 +90,8 @@ extension ApprovalModeLabel on ApprovalMode {
   /// 返回用于界面的本地化审批模式标签。
   /// Returns the localized approval-mode label for the UI.
   String get label => switch (this) {
-    ApprovalMode.manual => '逐次确认',
-    ApprovalMode.autoApprove => '自动批准',
+    ApprovalMode.manual => '请求批准',
+    ApprovalMode.autoApprove => '帮我批准',
   };
 }
 
@@ -234,6 +234,9 @@ class CodexController extends ChangeNotifier {
   final List<String> _additionalWorkspacePaths = [];
   final List<WorkspaceConfiguration> _workspaceConfigurations = [];
   String? activeThreadId;
+  // A thread ID restored from local history must be resumed on the new
+  // app-server connection before it can receive a turn.
+  bool _activeThreadAttached = false;
   String? activeTurnId;
   TaskPlan? activeTaskPlan;
   String? lastError;
@@ -429,6 +432,7 @@ class CodexController extends ChangeNotifier {
   bool get canSend =>
       status == RuntimeStatus.ready &&
       workspacePath != null &&
+      (activeThreadId == null || _activeThreadAttached) &&
       _hasUsableModelSelection &&
       _hasUsableReasoningEffort &&
       (!requiresOpenaiAuth || authStatus != AuthStatus.signedOut);
@@ -436,6 +440,13 @@ class CodexController extends ChangeNotifier {
   /// 指示当前正在运行的任务是否可以中断。
   /// Indicates whether the running task can be interrupted.
   bool get canStop => status == RuntimeStatus.running && activeThreadId != null;
+
+  /// Indicates whether the active turn can accept a direction adjustment.
+  /// 当前运行中的 turn 只有在已收到 turn id 时才能调整方向。
+  bool get canSteer =>
+      status == RuntimeStatus.running &&
+      activeThreadId != null &&
+      activeTurnId != null;
 
   /// 指示当前是否可以安全切换本地项目。
   /// Indicates whether it is safe to switch the local workspace.
@@ -681,6 +692,7 @@ class CodexController extends ChangeNotifier {
     _updateCurrentWorkspaceConfiguration();
     _clearRuntimeResolvedConfiguration();
     activeThreadId = null;
+    _activeThreadAttached = false;
     threads = const [];
     archivedThreads = const [];
     _pinnedThreadIds.clear();
@@ -837,6 +849,7 @@ class CodexController extends ChangeNotifier {
       return;
     }
     activeThreadId = null;
+    _activeThreadAttached = false;
     _clearStreamingState();
     _clearFileChanges();
     _resetConversationTimeline();
@@ -873,7 +886,7 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      await Future.wait([_runtimeLoad, _workspaceLoad]);
+      await Future.wait([_runtimeLoad, _workspaceLoad, _historyLoad]);
       if (!_isCurrentRuntimeConnection(connectionEpoch)) return;
       final probe = await _inspectRuntime(notify: false);
       if (!_isCurrentRuntimeConnection(connectionEpoch)) return;
@@ -906,6 +919,7 @@ class CodexController extends ChangeNotifier {
       }
       _add(TimelineKind.system, '运行时已连接', 'App Server 已通过本地 stdio 通道就绪。');
       await refreshThreads();
+      await _resumeRestoredThreadIfNeeded();
       await refreshSkills(notify: false);
     } catch (error) {
       if (!_isCurrentRuntimeConnection(connectionEpoch)) return;
@@ -940,6 +954,12 @@ class CodexController extends ChangeNotifier {
   }) async {
     final text = prompt.trim();
     if (text.isEmpty || !canSend) return false;
+    if (activeThreadId != null && !_activeThreadAttached) {
+      lastError = '当前历史任务尚未恢复，请先点击左侧任务后再发送。';
+      _add(TimelineKind.error, '无法继续历史任务', lastError!);
+      notifyListeners();
+      return false;
+    }
     final workspace = workspacePath!;
     if (activeThreadId == null) {
       _resetConversationTimeline();
@@ -961,6 +981,7 @@ class CodexController extends ChangeNotifier {
         model: _modelOverrideForNewThread,
         config: _newThreadConfig(),
       );
+      _activeThreadAttached = true;
       await refreshThreads();
       final id = activeThreadId!;
       final objective = goal?.trim();
@@ -1043,6 +1064,41 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Sends a correction to the active turn through `turn/steer`.
+  /// 调整方向不会创建新 turn，而是继续当前线程中的活动 turn。
+  Future<bool> steerCurrentTurn(
+    String prompt, {
+    List<JsonMap> additionalInput = const [],
+  }) async {
+    final text = prompt.trim();
+    final threadId = activeThreadId;
+    final turnId = activeTurnId;
+    if (text.isEmpty || !canSteer || threadId == null || turnId == null) {
+      return false;
+    }
+    _add(TimelineKind.user, '你', text);
+    lastError = null;
+    notifyListeners();
+    try {
+      final nextTurnId = await _server.steerTurn(
+        threadId: threadId,
+        expectedTurnId: turnId,
+        prompt: text,
+        additionalInput: additionalInput,
+      );
+      if (status == RuntimeStatus.running && activeThreadId == threadId) {
+        activeTurnId = nextTurnId;
+      }
+      notifyListeners();
+      return true;
+    } catch (error) {
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '调整方向失败', lastError!);
+      notifyListeners();
+      return false;
+    }
+  }
+
   /// 停止 App Server 并重置仅在运行期有效的状态。
   /// Stops App Server and resets state that is only valid while it runs.
   Future<void> stopRuntime() async {
@@ -1056,6 +1112,7 @@ class CodexController extends ChangeNotifier {
       _clearRuntimeResolvedConfiguration();
       status = RuntimeStatus.stopped;
       activeThreadId = null;
+      _activeThreadAttached = false;
       pendingApproval = null;
       approvalResponding = false;
       _clearStreamingState();
@@ -1127,9 +1184,21 @@ class CodexController extends ChangeNotifier {
       final serverThreads = (await _server.listThreads(
         workingDirectory: workspace,
       )).map(CodexThread.fromJson).toList(growable: false);
-      final nextThreads = serverThreads.isEmpty && allowLocalSessionFallback
-          ? await _localSessionThreadStore.listThreads(workspace)
-          : serverThreads;
+      var nextThreads = serverThreads;
+      if (serverThreads.isEmpty && allowLocalSessionFallback) {
+        final localThreads = await _localSessionThreadStore.listThreads(
+          workspace,
+        );
+        nextThreads = localThreads;
+        final activeId = activeThreadId;
+        if (activeId != null &&
+            !nextThreads.any((thread) => thread.id == activeId)) {
+          final cachedActive = _cachedThread(activeId);
+          if (cachedActive != null) {
+            nextThreads = [...nextThreads, cachedActive];
+          }
+        }
+      }
       if (_isCurrentThreadRefresh(request, epoch, workspace)) {
         threads = nextThreads;
         _scheduleConversationHistorySave();
@@ -1186,6 +1255,7 @@ class CodexController extends ChangeNotifier {
     final snapshot = imported.snapshot;
     _invalidateThreadRefreshes();
     activeThreadId = null;
+    _activeThreadAttached = false;
     threads = List.of(snapshot.threads);
     archivedThreads = List.of(snapshot.archivedThreads);
     _pinnedThreadIds
@@ -1201,6 +1271,9 @@ class CodexController extends ChangeNotifier {
         snapshot.fileChanges.map((change) => MapEntry(change.path, change)),
       );
     turnDiff = snapshot.turnDiff;
+    // Imported history may contain file metadata without file-level Diff.
+    // Hydrate safe untracked-file previews after restoring the snapshot.
+    unawaited(_hydrateMissingFileChangeDiffs());
     _add(
       TimelineKind.system,
       '已导入本地历史',
@@ -1354,9 +1427,10 @@ class CodexController extends ChangeNotifier {
   /// Resumes a thread and writes its historic messages and tool records to the timeline.
   Future<void> resumeThread(CodexThread thread) async {
     if (status != RuntimeStatus.ready || !_server.isRunning) return;
-    if (activeThreadId == thread.id) return;
+    if (activeThreadId == thread.id && _activeThreadAttached) return;
     status = RuntimeStatus.starting;
     final previousThreadId = activeThreadId;
+    final previousThreadAttached = _activeThreadAttached;
     lastError = null;
     _clearStreamingState();
     _add(TimelineKind.system, '正在恢复任务', thread.title);
@@ -1369,33 +1443,70 @@ class CodexController extends ChangeNotifier {
         config: null,
       );
       activeThreadId = thread.id;
+      _activeThreadAttached = true;
       status = RuntimeStatus.ready;
-      final history = await _loadThreadHistory(
-        threadId: thread.id,
-        resumeResult: resumeResult,
-      );
-      _resetConversationTimeline();
-      _appendThreadHistory(history);
-      final incompleteItemTurnCount =
-          history['incompleteItemTurnCount'] as int? ?? 0;
-      final incompleteTurnHistory = history['incompleteTurnHistory'] == true;
-      if (incompleteTurnHistory || incompleteItemTurnCount > 0) {
-        final detail = [
-          if (incompleteTurnHistory) '部分历史 turns',
-          if (incompleteItemTurnCount > 0)
-            '$incompleteItemTurnCount 个 turn 的 items',
-        ].join('和');
-        _add(TimelineKind.system, '历史内容未完全加载', '$detail 超出安全页数限制。');
+      try {
+        final history = await _loadThreadHistory(
+          threadId: thread.id,
+          resumeResult: resumeResult,
+        );
+        _resetConversationTimeline();
+        _appendThreadHistory(history);
+        final incompleteItemTurnCount =
+            history['incompleteItemTurnCount'] as int? ?? 0;
+        final incompleteTurnHistory = history['incompleteTurnHistory'] == true;
+        if (incompleteTurnHistory || incompleteItemTurnCount > 0) {
+          final detail = [
+            if (incompleteTurnHistory) '部分历史 turns',
+            if (incompleteItemTurnCount > 0)
+              '$incompleteItemTurnCount 个 turn 的 items',
+          ].join('和');
+          _add(TimelineKind.system, '历史内容未完全加载', '$detail 超出安全页数限制。');
+        }
+      } catch (error) {
+        // Resuming the remote thread succeeded. A history page may still be
+        // unavailable, but that must not turn the next message into a new
+        // thread.
+        _add(TimelineKind.error, '历史内容加载不完整', _messageOf(error));
       }
       _add(TimelineKind.system, '任务已恢复', '可以继续在此任务中追问。');
       await refreshThreads();
     } catch (error) {
       activeThreadId = previousThreadId;
+      _activeThreadAttached = previousThreadAttached;
       status = RuntimeStatus.ready;
       lastError = _messageOf(error);
       _add(TimelineKind.error, '无法恢复任务', lastError!);
     }
     notifyListeners();
+  }
+
+  /// 自动恢复本地快照中上次打开的线程，避免重启后发送消息创建新线程。
+  /// Reattaches the thread that was open in the restored snapshot before the
+  /// first follow-up message is sent after an app restart.
+  Future<void> _resumeRestoredThreadIfNeeded() async {
+    final id = activeThreadId;
+    if (id == null || _activeThreadAttached || status != RuntimeStatus.ready) {
+      return;
+    }
+    CodexThread? thread;
+    for (final candidate in [...threads, ...archivedThreads]) {
+      if (candidate.id == id) {
+        thread = candidate;
+        break;
+      }
+    }
+    if (thread == null) return;
+    await resumeThread(thread);
+  }
+
+  /// 返回当前活动线程的本地缓存候选，供服务端暂时返回空列表时恢复。
+  /// Returns a cached active or archived thread that can be used for recovery.
+  CodexThread? _cachedThread(String id) {
+    for (final thread in [...threads, ...archivedThreads]) {
+      if (thread.id == id) return thread;
+    }
+    return null;
   }
 
   /// 在服务器上更新线程名称，并同步本地列表。
@@ -1457,6 +1568,7 @@ class CodexController extends ChangeNotifier {
         _pinnedThreadIds.remove(thread.id);
         if (activeThreadId == thread.id) {
           activeThreadId = null;
+          _activeThreadAttached = false;
           _resetConversationTimeline();
           _clearStreamingState();
         }
@@ -1508,6 +1620,7 @@ class CodexController extends ChangeNotifier {
       _pinnedThreadIds.remove(thread.id);
       if (activeThreadId == thread.id) {
         activeThreadId = null;
+        _activeThreadAttached = false;
         _resetConversationTimeline();
         _clearStreamingState();
       }
@@ -1781,8 +1894,8 @@ class CodexController extends ChangeNotifier {
       TimelineKind.system,
       '审批模式已更新',
       mode == ApprovalMode.autoApprove
-          ? '后续命令、文件变更和额外权限请求将自动批准。'
-          : '后续请求需要逐次确认。',
+          ? '后续命令、文件变更和额外权限请求将由“帮我批准”自动处理。'
+          : '后续请求会显示批准和拒绝按钮。',
     );
     if (mode == ApprovalMode.autoApprove && pendingApproval != null) {
       unawaited(respondToApproval(accepted: true));
@@ -1863,6 +1976,8 @@ class CodexController extends ChangeNotifier {
         // 只有进程退出才会使连接失败；单个 turn 失败仍可继续复用当前连接。
         // Only process exit fails the connection; an individual failed turn remains recoverable in-place.
         status = RuntimeStatus.failed;
+        // The next runtime process must attach the retained thread again.
+        _activeThreadAttached = false;
         lastError = 'Codex runtime 已退出（code ${event.params['code']}）。';
         pendingApproval = null;
         approvalResponding = false;
@@ -2795,6 +2910,11 @@ class CodexController extends ChangeNotifier {
           snapshot.fileChanges.map((change) => MapEntry(change.path, change)),
         );
       turnDiff = snapshot.turnDiff;
+      activeThreadId = snapshot.activeThreadId;
+      _activeThreadAttached = false;
+      // Cached history may predate file-level Diff support.
+      // Hydrate safe untracked-file previews after restoring the snapshot.
+      unawaited(_hydrateMissingFileChangeDiffs());
     } catch (error) {
       _add(TimelineKind.error, '无法读取本地历史', _messageOf(error));
     } finally {
@@ -2962,6 +3082,7 @@ class CodexController extends ChangeNotifier {
       fileChanges: List.of(fileChanges),
       pinnedThreadIds: Set.of(_pinnedThreadIds),
       turnDiff: turnDiff,
+      activeThreadId: activeThreadId,
     );
   }
 

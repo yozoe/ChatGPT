@@ -401,9 +401,15 @@ class _FakeCodexAppServer extends CodexAppServer {
   JsonMap? startedConfig;
   List<JsonMap> skillListResponse = <JsonMap>[];
   String? startedTurnPrompt;
+  String? startedTurnThreadId;
   List<JsonMap> startedTurnAdditionalInput = <JsonMap>[];
   JsonMap? startedTurnCollaborationMode;
   Object? startTurnError;
+  String? steeredTurnThreadId;
+  String? steeredTurnId;
+  String? steeredTurnPrompt;
+  String? steerResponseTurnId;
+  Object? steerTurnError;
   String? threadGoal;
   String? unarchivedThreadId;
   int unarchiveCalls = 0;
@@ -495,10 +501,25 @@ class _FakeCodexAppServer extends CodexAppServer {
     List<JsonMap> additionalInput = const [],
     JsonMap? collaborationMode,
   }) async {
+    startedTurnThreadId = threadId;
     startedTurnPrompt = prompt;
     startedTurnAdditionalInput = List.of(additionalInput);
     startedTurnCollaborationMode = collaborationMode;
     if (startTurnError case final error?) throw error;
+  }
+
+  @override
+  Future<String> steerTurn({
+    required String threadId,
+    required String expectedTurnId,
+    required String prompt,
+    List<JsonMap> additionalInput = const [],
+  }) async {
+    steeredTurnThreadId = threadId;
+    steeredTurnId = expectedTurnId;
+    steeredTurnPrompt = prompt;
+    if (steerTurnError case final error?) throw error;
+    return steerResponseTurnId ?? expectedTurnId;
   }
 
   @override
@@ -685,6 +706,11 @@ class _ProtocolCaptureCodexAppServer extends CodexAppServer {
   Future<JsonMap> request(String method, [JsonMap params = const {}]) async {
     requestedMethod = method;
     requestedParams = params;
+    if (method == 'turn/steer') {
+      return {
+        'result': {'turnId': 'turn-1'},
+      };
+    }
     return {
       'result': {
         'thread': {'id': 'thread-with-roots'},
@@ -974,6 +1000,113 @@ void main() {
       contains('用 Enter 发送'),
     );
 
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('shows file change stats above the composer', (tester) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {
+                'path': 'lib/main.dart',
+                'kind': 'modified',
+                'diff': '@@ -1 +1 @@\n-old\n+new',
+              },
+            ],
+          },
+        },
+      ),
+    );
+    await tester.pump();
+
+    final pill = find.byKey(const Key('composer-file-change-pill'));
+    expect(pill, findsOneWidget);
+    expect(
+      find.descendant(of: pill, matching: find.text('1 个文件已更改')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: pill, matching: find.text('+1')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: pill, matching: find.text('-1')),
+      findsOneWidget,
+    );
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  test('adjusts the active turn direction through the App Server', () async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+
+    final sent = await controller.steerCurrentTurn('改成灰色');
+
+    expect(sent, isTrue);
+    expect(server.steeredTurnThreadId, 'thread-1');
+    expect(server.steeredTurnId, 'turn-1');
+    expect(server.steeredTurnPrompt, '改成灰色');
+    expect(controller.entries.any((entry) => entry.detail == '改成灰色'), isTrue);
+    controller.dispose();
+  });
+
+  test('retains the turn id returned by steering', () async {
+    final server = _FakeCodexAppServer()..steerResponseTurnId = 'turn-2';
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+
+    expect(await controller.steerCurrentTurn('继续'), isTrue);
+    expect(controller.activeTurnId, 'turn-2');
+    controller.dispose();
+  });
+
+  testWidgets('keeps the composer editable while steering an active turn', (
+    tester,
+  ) async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final field = find.byKey(const Key('composer-field'));
+    expect(tester.widget<TextField>(field).enabled, isTrue);
+    expect(
+      tester
+          .widget<PopupMenuButton<dynamic>>(
+            find.byKey(const Key('composer-add-button')),
+          )
+          .enabled,
+      isFalse,
+    );
+    await tester.enterText(field, '请改成灰色');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+
+    expect(server.steeredTurnPrompt, '请改成灰色');
+    expect(tester.widget<TextField>(field).controller!.text, isEmpty);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -1778,6 +1911,11 @@ void main() {
     controller.dispose();
   });
 
+  test('uses the unified approval mode labels', () {
+    expect(ApprovalMode.manual.label, '请求批准');
+    expect(ApprovalMode.autoApprove.label, '帮我批准');
+  });
+
   test('coalesces agent deltas into one timeline entry', () async {
     final controller = CodexController(server: CodexAppServer());
 
@@ -2333,6 +2471,7 @@ void main() {
       await firstController.selectWorkspace(Directory.systemTemp.path);
       firstController
         ..threads = [_thread(id: 'cached-thread')]
+        ..activeThreadId = 'cached-thread'
         ..handleServerEventForTesting(
           const ServerEvent(
             method: 'item/completed',
@@ -2365,6 +2504,7 @@ void main() {
       expect(restoredController.threads.map((thread) => thread.id), [
         'cached-thread',
       ]);
+      expect(restoredController.activeThreadId, 'cached-thread');
       expect(restoredController.fileChanges.single.diff, '+cached');
       expect(
         restoredController.entries.map((entry) => entry.title),
@@ -2389,6 +2529,79 @@ void main() {
       await controller.saveConversationHistoryForTesting();
 
       expect(historyStore.snapshots['/workspace']!.pinnedThreadIds, {'second'});
+      controller.dispose();
+    },
+  );
+
+  test(
+    'continues the restored thread after reconnecting the runtime',
+    () async {
+      final workspace = await Directory.systemTemp.createTemp(
+        'codex-restored-thread-',
+      );
+      addTearDown(() => workspace.delete(recursive: true));
+      final canonicalWorkspace = await workspace.resolveSymbolicLinks();
+      final runtimeStore = _FakeRuntimeConfigurationStore()
+        ..workspace = canonicalWorkspace;
+      historyStore.snapshots[canonicalWorkspace] = ConversationHistorySnapshot(
+        threads: [_thread(id: 'restored-thread')],
+        archivedThreads: const [],
+        entries: const [],
+        fileChanges: const [],
+        activeThreadId: 'restored-thread',
+      );
+      final server = _ManagedRuntimeFakeServer()
+        ..listResponse = [
+          {'id': 'restored-thread', 'preview': 'restored'},
+        ];
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: runtimeStore,
+        conversationHistoryStore: historyStore,
+      );
+
+      await controller.waitForInitialConfiguration();
+      await controller.startRuntime();
+      expect(server.resumedThreadId, 'restored-thread');
+      expect(controller.activeThreadId, 'restored-thread');
+
+      await controller.sendPrompt('继续上一轮');
+      expect(server.startedTurnThreadId, 'restored-thread');
+      expect(server.startedThreadDirectory, isNull);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'keeps a cached active thread when both runtime lists are temporarily empty',
+    () async {
+      final workspace = await Directory.systemTemp.createTemp(
+        'codex-empty-thread-list-',
+      );
+      addTearDown(() => workspace.delete(recursive: true));
+      final canonicalWorkspace = await workspace.resolveSymbolicLinks();
+      final runtimeStore = _FakeRuntimeConfigurationStore()
+        ..workspace = canonicalWorkspace;
+      historyStore.snapshots[canonicalWorkspace] = ConversationHistorySnapshot(
+        threads: [_thread(id: 'cached-active-thread')],
+        archivedThreads: const [],
+        entries: const [],
+        fileChanges: const [],
+        activeThreadId: 'cached-active-thread',
+      );
+      final server = _ManagedRuntimeFakeServer()..listResponse = const [];
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: runtimeStore,
+        conversationHistoryStore: historyStore,
+        localSessionThreadStore: _MemoryLocalSessionThreadStore(),
+      );
+
+      await controller.waitForInitialConfiguration();
+      await controller.startRuntime();
+
+      expect(server.resumedThreadId, 'cached-active-thread');
+      expect(controller.canSend, isTrue);
       controller.dispose();
     },
   );
@@ -3102,6 +3315,73 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('previews an edited file when the pointer hovers its row', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {'path': 'lib/main.dart', 'kind': 'modified', 'diff': ''},
+            ],
+          },
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/diff/updated',
+        params: {'diff': '@@ -432 +432 @@\n-old\n+new'},
+      ),
+    );
+    await tester.pump();
+
+    final row = find.byKey(const ValueKey('file-change-row-lib/main.dart'));
+    await tester.ensureVisible(row);
+    final rowMouseRegion = tester.widget<MouseRegion>(row);
+    rowMouseRegion.onEnter?.call(const PointerEnterEvent());
+    await tester.pump();
+
+    expect(find.byKey(const Key('file-change-hover-preview')), findsOneWidget);
+    expect(find.text('lib/main.dart'), findsWidgets);
+    expect(find.textContaining('432  -old'), findsOneWidget);
+    expect(find.textContaining('+new'), findsOneWidget);
+    final previewRect = tester.getRect(
+      find.byKey(const Key('file-change-hover-preview')),
+    );
+    final viewport = tester.view.physicalSize / tester.view.devicePixelRatio;
+    expect(previewRect.left, greaterThanOrEqualTo(0));
+    expect(previewRect.top, greaterThanOrEqualTo(0));
+    expect(previewRect.right, lessThanOrEqualTo(viewport.width));
+    expect(previewRect.bottom, lessThanOrEqualTo(viewport.height));
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/diff/updated',
+        params: {'diff': '@@ -432 +432 @@\n-old\n+updated'},
+      ),
+    );
+    await tester.pump();
+    expect(controller.fileChanges.single.diff, isEmpty);
+    await tester.pump();
+    expect(find.textContaining('+updated'), findsOneWidget);
+    expect(find.textContaining('+new'), findsNothing);
+
+    rowMouseRegion.onExit?.call(const PointerExitEvent());
+    await tester.pump(const Duration(milliseconds: 140));
+    expect(find.byKey(const Key('file-change-hover-preview')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   test(
     'hydrates a missing file Diff from the read-only Git workspace',
     () async {
@@ -3188,6 +3468,20 @@ void main() {
 
     controller.requiresOpenaiAuth = true;
     expect(controller.canSend, isFalse);
+    controller.dispose();
+  });
+
+  test('disables sending until a restored thread is attached', () async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..activeThreadId = 'restored-thread';
+
+    expect(controller.canSend, isFalse);
+
+    await controller.resumeThread(_thread(id: 'restored-thread'));
+
+    expect(controller.canSend, isTrue);
     controller.dispose();
   });
 
@@ -3603,6 +3897,25 @@ void main() {
     });
   });
 
+  test('encodes active-turn direction adjustments', () async {
+    final server = _ProtocolCaptureCodexAppServer();
+
+    await server.steerTurn(
+      threadId: 'thread-1',
+      expectedTurnId: 'turn-1',
+      prompt: '改成灰色',
+    );
+
+    expect(server.requestedMethod, 'turn/steer');
+    expect(server.requestedParams, {
+      'threadId': 'thread-1',
+      'expectedTurnId': 'turn-1',
+      'input': [
+        {'type': 'text', 'text': '改成灰色'},
+      ],
+    });
+  });
+
   test('opts into experimental App Server fields during initialize', () async {
     final server = _ProtocolCaptureCodexAppServer();
 
@@ -3942,6 +4255,7 @@ void main() {
 
     expect(controller.status, RuntimeStatus.ready);
     expect(controller.activeThreadId, 'old-thread');
+    expect(server.resumedThreadId, 'new-thread');
     expect(controller.lastError, 'offline');
     controller.dispose();
   });
@@ -4065,7 +4379,8 @@ void main() {
 
     await controller.resumeThread(_thread(id: 'target-thread'));
 
-    expect(controller.activeThreadId, 'old-thread');
+    expect(controller.activeThreadId, 'target-thread');
+    expect(server.resumedThreadId, 'target-thread');
     expect(controller.entries.map((entry) => entry.detail), contains('旧线程回答'));
     controller.dispose();
   });

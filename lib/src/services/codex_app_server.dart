@@ -61,7 +61,12 @@ class CodexAppServer {
   StreamSubscription<String>? _stdoutSubscription;
   StreamSubscription<String>? _stderrSubscription;
   int _nextRequestId = 1;
+  // stop/dispose 会推进代次，取消仍停留在可执行文件解析或进程创建阶段的 start。
+  // stop/dispose advances this epoch to cancel start calls still resolving or spawning a process.
+  int _lifecycleEpoch = 0;
   bool _disposed = false;
+  // 主动停止的进程不应再向控制器发布意外 runtime/exited 事件。
+  // Processes stopped by the client must not emit an unexpected runtime/exited event.
   final Set<Process> _stoppedProcesses = {};
 
   /// 返回 App Server 通知及请求组成的广播事件流。
@@ -130,23 +135,32 @@ class CodexAppServer {
 
   /// 以指定项目目录启动本地 App Server 并订阅其标准输出和错误流。
   /// Starts local App Server for a workspace and subscribes to its stdout and stderr.
-  Future<void> start({
-    required String workingDirectory,
-    Map<String, String>? environment,
-  }) async {
+  Future<void> start({required String workingDirectory}) async {
     if (_disposed) throw StateError('The Codex runtime has been disposed.');
     if (_process != null) return;
 
+    final lifecycleEpoch = _lifecycleEpoch;
     final resolvedExecutable = await _resolveExecutable();
+    if (_disposed || lifecycleEpoch != _lifecycleEpoch) {
+      throw StateError('The Codex runtime start was cancelled.');
+    }
     final process = await Process.start(
       resolvedExecutable,
       const ['app-server', '--listen', 'stdio://'],
       workingDirectory: workingDirectory,
-      environment: environment == null
-          ? null
-          : {...Platform.environment, ...environment},
       runInShell: false,
     );
+    if (_disposed || lifecycleEpoch != _lifecycleEpoch) {
+      // Process.start 无法中途取消，因此创建完成后再校验代次并立即回收。
+      // Process.start is not cancellable, so validate the epoch after spawn and reclaim if stale.
+      process.kill(ProcessSignal.sigterm);
+      try {
+        await process.exitCode.timeout(const Duration(seconds: 5));
+      } on TimeoutException {
+        process.kill(ProcessSignal.sigkill);
+      }
+      throw StateError('The Codex runtime start was cancelled.');
+    }
     _process = process;
 
     _stdoutSubscription = process.stdout
@@ -188,6 +202,10 @@ class CodexAppServer {
         'title': 'Codex Desk',
         'version': '0.1.0',
       },
+      // `thread/start.runtimeWorkspaceRoots` is an experimental App Server
+      // field. Opt in during the handshake so additional workspace directories
+      // can be passed to newly created threads without a protocol rejection.
+      'capabilities': {'experimentalApi': true},
     });
     _throwIfError(response);
     notify('initialized');
@@ -221,16 +239,35 @@ class CodexAppServer {
     return models;
   }
 
+  /// 读取指定项目最终生效的 Codex 配置；返回值由 App Server 按官方配置层级合并。
+  /// Reads the effective Codex configuration for a workspace after App Server applies the official layer precedence.
+  Future<JsonMap> readConfig({String? workingDirectory}) async {
+    final response = await request('config/read', {
+      'cwd': ?workingDirectory,
+      'includeLayers': false,
+    });
+    _throwIfError(response);
+    final result = response['result'];
+    if (result is! Map || result['config'] is! Map) {
+      throw const FormatException(
+        'App Server did not return the effective Codex configuration.',
+      );
+    }
+    return JsonMap.from(result);
+  }
+
   /// 在指定项目中创建线程，并返回服务器分配的线程 ID。
   /// Creates a thread in a workspace and returns the server-assigned thread ID.
   Future<String> startThread({
     required String workingDirectory,
+    List<String>? runtimeWorkspaceRoots,
     String? modelProvider,
     String? model,
     JsonMap? config,
   }) async {
     final response = await request('thread/start', {
       'cwd': workingDirectory,
+      'runtimeWorkspaceRoots': ?runtimeWorkspaceRoots,
       'modelProvider': ?modelProvider,
       'model': ?model,
       'config': ?config,
@@ -251,15 +288,87 @@ class CodexAppServer {
     required String threadId,
     required String prompt,
     required String workingDirectory,
+    List<JsonMap> additionalInput = const [],
+    JsonMap? collaborationMode,
   }) async {
     final response = await request('turn/start', {
       'threadId': threadId,
       'cwd': workingDirectory,
       'input': [
         {'type': 'text', 'text': prompt},
+        ...additionalInput,
+      ],
+      'collaborationMode': ?collaborationMode,
+    });
+    _throwIfError(response);
+  }
+
+  /// Steers the currently active turn without starting a second turn.
+  /// Sends a user correction to the App Server's `turn/steer` endpoint.
+  Future<String> steerTurn({
+    required String threadId,
+    required String expectedTurnId,
+    required String prompt,
+    List<JsonMap> additionalInput = const [],
+  }) async {
+    final response = await request('turn/steer', {
+      'threadId': threadId,
+      'expectedTurnId': expectedTurnId,
+      'input': [
+        {'type': 'text', 'text': prompt},
+        ...additionalInput,
       ],
     });
     _throwIfError(response);
+    final result = response['result'];
+    final turnId = result is Map ? result['turnId']?.toString().trim() : null;
+    if (turnId == null || turnId.isEmpty) {
+      throw const FormatException(
+        'App Server did not return the steered turn id.',
+      );
+    }
+    return turnId;
+  }
+
+  /// Sets or replaces the persistent objective for a thread.
+  Future<void> setThreadGoal({
+    required String threadId,
+    required String objective,
+  }) async {
+    final response = await request('thread/goal/set', {
+      'threadId': threadId,
+      'objective': objective,
+      'status': 'active',
+    });
+    _throwIfError(response);
+  }
+
+  /// Lists the skills available to the current workspace.
+  Future<List<JsonMap>> listSkills({
+    required String workingDirectory,
+    bool forceReload = false,
+  }) async {
+    final response = await request('skills/list', {
+      'cwds': [workingDirectory],
+      'forceReload': forceReload,
+    });
+    _throwIfError(response);
+    final result = response['result'];
+    if (result is! Map || result['data'] is! Iterable) {
+      throw const FormatException('App Server did not return a skill list.');
+    }
+    for (final rawEntry in result['data'] as Iterable) {
+      if (rawEntry is! Map) continue;
+      final entry = JsonMap.from(rawEntry);
+      if (entry['cwd']?.toString() != workingDirectory) continue;
+      final rawSkills = entry['skills'];
+      if (rawSkills is! Iterable) return const [];
+      return rawSkills
+          .whereType<Map>()
+          .map((skill) => JsonMap.from(skill))
+          .toList(growable: false);
+    }
+    return const [];
   }
 
   /// 请求中断指定线程正在执行的任务。
@@ -652,6 +761,7 @@ class CodexAppServer {
   /// 取消流订阅、失败化等待请求并终止本地 App Server 进程。
   /// Cancels stream subscriptions, fails pending requests, and terminates local App Server.
   Future<void> stop() async {
+    _lifecycleEpoch++;
     _failPending(StateError('Codex runtime stopped.'));
     await _stdoutSubscription?.cancel();
     await _stderrSubscription?.cancel();
