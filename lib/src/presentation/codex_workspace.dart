@@ -86,12 +86,14 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   final TextEditingController _composer = TextEditingController();
   final Map<_ThreadViewportKey, ScrollController> _timelineScrollControllers =
       {};
+  final Map<_ThreadViewportKey, _TimelinePageData> _timelinePages = {};
   final Map<_ThreadViewportKey, bool> _fileChangeSummaryExpanded = {};
   final Map<String, bool> _activityListExpanded = {};
   late ScrollController _timelineScrollController;
   late _ThreadViewportKey _displayedThreadKey;
   bool _timelineScrollScheduled = false;
   bool _threadHistoryLoading = false;
+  bool _suppressTimelineScrollAfterThreadResume = false;
   int _timelineScrollGeneration = 0;
   static const _minimumSidebarWidth = 210.0;
   static const _maximumSidebarWidth = 420.0;
@@ -112,6 +114,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       _displayedThreadKey,
       ScrollController.new,
     );
+    _captureActiveTimelinePage();
     _controller.addListener(_handleControllerUpdate);
   }
 
@@ -138,6 +141,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     if (_controller.isResumingThread) {
       _timelineScrollGeneration++;
       _timelineScrollScheduled = false;
+      _suppressTimelineScrollAfterThreadResume = true;
       // Cancel an animation that may still be finishing from the previous
       // task before the newly restored timeline is laid out.
       if (_timelineScrollController.hasClients) {
@@ -147,15 +151,33 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       _activateTimelineViewport(_controller.activeThreadId);
       if (!_controller.hasCachedActiveThreadView) {
         _threadHistoryLoading = true;
+        _captureActiveTimelinePage();
+      } else {
+        _threadHistoryLoading = false;
+        // The controller can outlive this workspace State (for example after
+        // the shell is rebuilt). Recreate the rendering inputs only when the
+        // retained UI page is absent, so IndexedStack never falls back to an
+        // unrelated task while preserving existing mounted pages unchanged.
+        // 控制器可能比当前工作区 State 存活更久（例如外壳重建后）。仅在
+        // 保活 UI 页面缺失时重建渲染输入，避免 IndexedStack 回退到无关任务，
+        // 已挂载页面则保持不变。
+        if (!_timelinePages.containsKey(_displayedThreadKey)) {
+          _captureActiveTimelinePage();
+        }
       }
       if (widget.controller != null && mounted) setState(() {});
       return;
     }
     _activateTimelineViewport(_controller.activeThreadId);
     _pruneTimelineViewports();
+    _captureActiveTimelinePage();
     if (widget.controller != null && mounted) setState(() {});
     if (_threadHistoryLoading) {
       _finishFirstThreadViewport();
+      return;
+    }
+    if (_suppressTimelineScrollAfterThreadResume) {
+      _suppressTimelineScrollAfterThreadResume = false;
       return;
     }
     _scheduleTimelineScroll();
@@ -171,6 +193,23 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     _timelineScrollController = _timelineScrollControllers.putIfAbsent(
       key,
       ScrollController.new,
+    );
+  }
+
+  /// Captures the active task's rendered timeline inputs so previously opened
+  /// tasks can remain mounted as complete pages instead of rebuilding from a
+  /// shared timeline when the sidebar selection changes.
+  /// 保存当前任务的时间线渲染输入，使已打开任务以完整页面保活，而不是在
+  /// 侧栏切换时从共享时间线重新构建。
+  void _captureActiveTimelinePage() {
+    _timelinePages[_displayedThreadKey] = _TimelinePageData(
+      entries: List.unmodifiable(_controller.entries),
+      fileChanges: List.unmodifiable(_controller.fileChanges),
+      turnDiff: _controller.turnDiff,
+      showFileChangeSummary:
+          _controller.status != RuntimeStatus.running &&
+          _controller.fileChanges.isNotEmpty,
+      canSteer: _controller.canSteer,
     );
   }
 
@@ -197,6 +236,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
         .toList(growable: false);
     for (final key in staleKeys) {
       final controller = _timelineScrollControllers.remove(key);
+      _timelinePages.remove(key);
       _fileChangeSummaryExpanded.remove(key);
       _activityListExpanded.removeWhere(
         (activityKey, _) => activityKey.startsWith('${key.storageKey}/'),
@@ -208,8 +248,8 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     }
   }
 
-  /// 在下一帧将时间线平滑滚动到最新内容。
-  /// Smoothly scrolls the timeline to the latest content on the next frame.
+  /// 在下一帧无动画定位时间线到最新内容。
+  /// Positions the timeline at the latest content without animation next frame.
   void _scheduleTimelineScroll() {
     if (!mounted || _timelineScrollScheduled) return;
     _timelineScrollScheduled = true;
@@ -222,11 +262,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
         return;
       }
       final position = _timelineScrollController.position;
-      position.animateTo(
-        position.maxScrollExtent,
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOut,
-      );
+      position.jumpTo(position.maxScrollExtent);
     });
   }
 
@@ -242,7 +278,12 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
         final position = _timelineScrollController.position;
         position.jumpTo(position.maxScrollExtent);
       }
-      if (mounted) setState(() => _threadHistoryLoading = false);
+      if (mounted) {
+        setState(() {
+          _threadHistoryLoading = false;
+          _suppressTimelineScrollAfterThreadResume = false;
+        });
+      }
     });
   }
 
@@ -1946,27 +1987,29 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                         child: _ConversationPane(
                           controller: controller,
                           composer: _composer,
-                          timelineScrollController: _timelineScrollController,
-                          timelinePageKey: _displayedThreadKey.storageKey,
+                          timelinePages: _timelinePages,
+                          timelineScrollControllers: _timelineScrollControllers,
+                          activeTimelinePageKey: _displayedThreadKey,
                           threadHistoryLoading: _threadHistoryLoading,
-                          fileChangeSummaryExpanded:
-                              _fileChangeSummaryExpanded[_displayedThreadKey] ??
-                              false,
-                          onFileChangeSummaryExpandedChanged: (expanded) {
-                            setState(() {
-                              _fileChangeSummaryExpanded[_displayedThreadKey] =
-                                  expanded;
-                            });
-                          },
-                          activityExpanded: (activityId) =>
-                              _activityListExpanded['${_displayedThreadKey.storageKey}/$activityId'] ??
+                          fileChangeSummaryExpanded: (pageKey) =>
+                              _fileChangeSummaryExpanded[pageKey] ?? false,
+                          onFileChangeSummaryExpandedChanged:
+                              (pageKey, expanded) {
+                                setState(() {
+                                  _fileChangeSummaryExpanded[pageKey] =
+                                      expanded;
+                                });
+                              },
+                          activityExpanded: (pageKey, activityId) =>
+                              _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
                               true,
-                          onActivityExpandedChanged: (activityId, expanded) {
-                            setState(() {
-                              _activityListExpanded['${_displayedThreadKey.storageKey}/$activityId'] =
-                                  expanded;
-                            });
-                          },
+                          onActivityExpandedChanged:
+                              (pageKey, activityId, expanded) {
+                                setState(() {
+                                  _activityListExpanded['${pageKey.storageKey}/$activityId'] =
+                                      expanded;
+                                });
+                              },
                           onSend: _send,
                           onSteer: _steer,
                           onAdjustDirection: _adjustDirection,
@@ -3926,8 +3969,9 @@ class _ConversationPane extends StatelessWidget {
   const _ConversationPane({
     required this.controller,
     required this.composer,
-    required this.timelineScrollController,
-    required this.timelinePageKey,
+    required this.timelinePages,
+    required this.timelineScrollControllers,
+    required this.activeTimelinePageKey,
     required this.threadHistoryLoading,
     required this.fileChangeSummaryExpanded,
     required this.onFileChangeSummaryExpandedChanged,
@@ -3942,13 +3986,20 @@ class _ConversationPane extends StatelessWidget {
 
   final CodexController controller;
   final TextEditingController composer;
-  final ScrollController timelineScrollController;
-  final String timelinePageKey;
+  final Map<_ThreadViewportKey, _TimelinePageData> timelinePages;
+  final Map<_ThreadViewportKey, ScrollController> timelineScrollControllers;
+  final _ThreadViewportKey activeTimelinePageKey;
   final bool threadHistoryLoading;
-  final bool fileChangeSummaryExpanded;
-  final ValueChanged<bool> onFileChangeSummaryExpandedChanged;
-  final bool Function(String activityId) activityExpanded;
-  final void Function(String activityId, bool expanded)
+  final bool Function(_ThreadViewportKey pageKey) fileChangeSummaryExpanded;
+  final void Function(_ThreadViewportKey pageKey, bool expanded)
+  onFileChangeSummaryExpandedChanged;
+  final bool Function(_ThreadViewportKey pageKey, String activityId)
+  activityExpanded;
+  final void Function(
+    _ThreadViewportKey pageKey,
+    String activityId,
+    bool expanded,
+  )
   onActivityExpandedChanged;
   final Future<bool> Function(_ComposerSubmission submission) onSend;
   final Future<bool> Function(_ComposerSubmission submission) onSteer;
@@ -4027,68 +4078,49 @@ class _ConversationPane extends StatelessWidget {
                 100.0,
                 340.0,
               );
-              final latestUserIndex = controller.entries.lastIndexWhere(
-                (entry) => entry.kind == TimelineKind.user,
-              );
-              final timelineItems = _conversationTimelineItems(
-                controller.entries,
+              final pages = timelinePages.entries.toList(growable: false);
+              final activePageIndex = pages.indexWhere(
+                (page) => page.key == activeTimelinePageKey,
               );
               return Stack(
                 children: [
-                  ListView.separated(
-                    key: const Key('conversation-timeline'),
-                    controller: timelineScrollController,
-                    padding: EdgeInsets.fromLTRB(
-                      24,
-                      12,
-                      24,
-                      plan == null ? 12 : planHeight + 28,
-                    ),
-                    itemCount:
-                        timelineItems.length +
-                        (controller.status != RuntimeStatus.running &&
-                                controller.fileChanges.isNotEmpty
-                            ? 1
-                            : 0),
-                    separatorBuilder: (_, _) => const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 14),
-                      child: Divider(height: 1),
-                    ),
-                    itemBuilder: (context, index) {
-                      if (index == timelineItems.length) {
-                        return _FileChangeSummaryCard(
-                          key: ValueKey('file-change-summary-$timelinePageKey'),
-                          changes: controller.fileChanges,
-                          turnDiff: controller.turnDiff,
-                          expanded: fileChangeSummaryExpanded,
-                          onExpandedChanged: onFileChangeSummaryExpandedChanged,
-                          onReview: onReview,
-                        );
-                      }
-                      final item = timelineItems[index];
-                      if (item.activities case final activities?) {
-                        final activityId = item.entryIndex.toString();
-                        return _TimelineActivityList(
+                  IndexedStack(
+                    index: activePageIndex < 0 ? 0 : activePageIndex,
+                    children: [
+                      for (final page in pages)
+                        _ConversationTimeline(
                           key: ValueKey(
-                            'timeline-activity-$timelinePageKey-$activityId',
+                            'conversation-timeline-${page.key.storageKey}',
                           ),
-                          entries: activities,
-                          expanded: activityExpanded(activityId),
-                          onExpandedChanged: (expanded) =>
-                              onActivityExpandedChanged(activityId, expanded),
-                        );
-                      }
-                      final entry = item.entry!;
-                      return _TimelineEntry(
-                        entry,
-                        onAdjustDirection:
-                            controller.canSteer &&
-                                item.entryIndex == latestUserIndex &&
-                                entry.kind == TimelineKind.user
-                            ? () => onAdjustDirection(entry.detail)
-                            : null,
-                      );
-                    },
+                          pageKey: page.key,
+                          data: page.value,
+                          scrollController:
+                              timelineScrollControllers[page.key]!,
+                          bottomPadding:
+                              page.key == activeTimelinePageKey && plan != null
+                              ? planHeight + 28
+                              : 12,
+                          active: page.key == activeTimelinePageKey,
+                          fileChangeSummaryExpanded: fileChangeSummaryExpanded(
+                            page.key,
+                          ),
+                          onFileChangeSummaryExpandedChanged: (expanded) =>
+                              onFileChangeSummaryExpandedChanged(
+                                page.key,
+                                expanded,
+                              ),
+                          activityExpanded: (activityId) =>
+                              activityExpanded(page.key, activityId),
+                          onActivityExpandedChanged: (activityId, expanded) =>
+                              onActivityExpandedChanged(
+                                page.key,
+                                activityId,
+                                expanded,
+                              ),
+                          onAdjustDirection: onAdjustDirection,
+                          onReview: onReview,
+                        ),
+                    ],
                   ),
                   if (plan != null)
                     Positioned(
@@ -4127,6 +4159,110 @@ class _ConversationPane extends StatelessWidget {
           onSteer: onSteer,
         ),
       ],
+    );
+  }
+}
+
+/// Immutable rendering inputs for one retained task timeline.
+/// 单个保活任务时间线的不可变渲染输入。
+class _TimelinePageData {
+  const _TimelinePageData({
+    required this.entries,
+    required this.fileChanges,
+    required this.turnDiff,
+    required this.showFileChangeSummary,
+    required this.canSteer,
+  });
+
+  final List<TimelineEntry> entries;
+  final List<CodexFileChange> fileChanges;
+  final String? turnDiff;
+  final bool showFileChangeSummary;
+  final bool canSteer;
+}
+
+/// A task timeline that remains mounted inside the page cache.
+/// 在页面缓存中持续挂载的任务时间线。
+class _ConversationTimeline extends StatelessWidget {
+  const _ConversationTimeline({
+    required this.pageKey,
+    required this.data,
+    required this.scrollController,
+    required this.bottomPadding,
+    required this.active,
+    required this.fileChangeSummaryExpanded,
+    required this.onFileChangeSummaryExpandedChanged,
+    required this.activityExpanded,
+    required this.onActivityExpandedChanged,
+    required this.onAdjustDirection,
+    required this.onReview,
+    super.key,
+  });
+
+  final _ThreadViewportKey pageKey;
+  final _TimelinePageData data;
+  final ScrollController scrollController;
+  final double bottomPadding;
+  final bool active;
+  final bool fileChangeSummaryExpanded;
+  final ValueChanged<bool> onFileChangeSummaryExpandedChanged;
+  final bool Function(String activityId) activityExpanded;
+  final void Function(String activityId, bool expanded)
+  onActivityExpandedChanged;
+  final Future<void> Function(String originalPrompt) onAdjustDirection;
+  final Future<void> Function() onReview;
+
+  @override
+  Widget build(BuildContext context) {
+    final latestUserIndex = data.entries.lastIndexWhere(
+      (entry) => entry.kind == TimelineKind.user,
+    );
+    final timelineItems = _conversationTimelineItems(data.entries);
+    return ListView.separated(
+      key: PageStorageKey('conversation-timeline-${pageKey.storageKey}'),
+      controller: scrollController,
+      padding: EdgeInsets.fromLTRB(24, 12, 24, bottomPadding),
+      itemCount: timelineItems.length + (data.showFileChangeSummary ? 1 : 0),
+      separatorBuilder: (_, _) => const Padding(
+        padding: EdgeInsets.symmetric(vertical: 14),
+        child: Divider(height: 1),
+      ),
+      itemBuilder: (context, index) {
+        if (index == timelineItems.length) {
+          return _FileChangeSummaryCard(
+            key: ValueKey('file-change-summary-${pageKey.storageKey}'),
+            changes: data.fileChanges,
+            turnDiff: data.turnDiff,
+            expanded: fileChangeSummaryExpanded,
+            onExpandedChanged: onFileChangeSummaryExpandedChanged,
+            onReview: onReview,
+          );
+        }
+        final item = timelineItems[index];
+        if (item.activities case final activities?) {
+          final activityId = item.entryIndex.toString();
+          return _TimelineActivityList(
+            key: ValueKey(
+              'timeline-activity-${pageKey.storageKey}-$activityId',
+            ),
+            entries: activities,
+            expanded: activityExpanded(activityId),
+            onExpandedChanged: (expanded) =>
+                onActivityExpandedChanged(activityId, expanded),
+          );
+        }
+        final entry = item.entry!;
+        return _TimelineEntry(
+          entry,
+          onAdjustDirection:
+              active &&
+                  data.canSteer &&
+                  item.entryIndex == latestUserIndex &&
+                  entry.kind == TimelineKind.user
+              ? () => onAdjustDirection(entry.detail)
+              : null,
+        );
+      },
     );
   }
 }
@@ -7982,7 +8118,7 @@ class _TimelineEntry extends StatelessWidget {
             children: [
               Align(
                 alignment: Alignment.centerLeft,
-                child: SelectableText(entry.detail),
+                child: SelectionArea(child: Text(entry.detail)),
               ),
               if (entry.imagePaths.isNotEmpty) ...[
                 const SizedBox(height: 9),
@@ -8042,7 +8178,7 @@ class _TimelineEntry extends StatelessWidget {
           if (entry.kind == TimelineKind.agent)
             _AgentMarkdown(entry.detail)
           else
-            SelectableText(entry.detail),
+            SelectionArea(child: Text(entry.detail)),
         ],
       ],
     );
@@ -8084,55 +8220,58 @@ class _AgentMarkdown extends StatelessWidget {
     final palette = YeknomPalette.of(context);
     final theme = Theme.of(context);
     final body = theme.textTheme.bodyMedium?.copyWith(height: 1.5);
-    return MarkdownBody(
-      data: data,
-      selectable: true,
-      onTapLink: (_, href, _) async {
-        final uri = href == null ? null : Uri.tryParse(href);
-        if (uri == null ||
-            !const {
-              'http',
-              'https',
-              'mailto',
-            }.contains(uri.scheme.toLowerCase())) {
-          return;
-        }
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      },
-      styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-        p: body,
-        pPadding: EdgeInsets.zero,
-        blockSpacing: 8,
-        listIndent: 22,
-        listBullet: body,
-        a: body?.copyWith(
-          color: palette.active,
-          decoration: TextDecoration.underline,
-          decorationColor: palette.active.withValues(alpha: 0.65),
+    return SelectionArea(
+      key: const Key('agent-markdown-selection'),
+      child: MarkdownBody(
+        data: data,
+        selectable: false,
+        onTapLink: (_, href, _) async {
+          final uri = href == null ? null : Uri.tryParse(href);
+          if (uri == null ||
+              !const {
+                'http',
+                'https',
+                'mailto',
+              }.contains(uri.scheme.toLowerCase())) {
+            return;
+          }
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        },
+        styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+          p: body,
+          pPadding: EdgeInsets.zero,
+          blockSpacing: 8,
+          listIndent: 22,
+          listBullet: body,
+          a: body?.copyWith(
+            color: palette.active,
+            decoration: TextDecoration.underline,
+            decorationColor: palette.active.withValues(alpha: 0.65),
+          ),
+          code: body?.copyWith(
+            color: palette.trace,
+            fontFamily: 'monospace',
+            fontSize: 12,
+            backgroundColor: palette.field,
+          ),
+          codeblockPadding: const EdgeInsets.all(12),
+          codeblockDecoration: BoxDecoration(
+            color: palette.field,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: palette.border),
+          ),
+          blockquotePadding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: 8,
+          ),
+          blockquoteDecoration: BoxDecoration(
+            color: palette.raised,
+            border: Border(left: BorderSide(color: palette.active, width: 3)),
+          ),
+          tableBorder: TableBorder.all(color: palette.border),
+          tableHead: body?.copyWith(fontWeight: FontWeight.w700),
+          tableBody: body,
         ),
-        code: body?.copyWith(
-          color: palette.trace,
-          fontFamily: 'monospace',
-          fontSize: 12,
-          backgroundColor: palette.field,
-        ),
-        codeblockPadding: const EdgeInsets.all(12),
-        codeblockDecoration: BoxDecoration(
-          color: palette.field,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: palette.border),
-        ),
-        blockquotePadding: const EdgeInsets.symmetric(
-          horizontal: 12,
-          vertical: 8,
-        ),
-        blockquoteDecoration: BoxDecoration(
-          color: palette.raised,
-          border: Border(left: BorderSide(color: palette.active, width: 3)),
-        ),
-        tableBorder: TableBorder.all(color: palette.border),
-        tableHead: body?.copyWith(fontWeight: FontWeight.w700),
-        tableBody: body,
       ),
     );
   }

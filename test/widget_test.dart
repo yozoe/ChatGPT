@@ -2350,13 +2350,18 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 60));
 
+    final selectionArea = find.byKey(const Key('agent-markdown-selection'));
+    expect(selectionArea, findsOneWidget);
+    expect(
+      find.descendant(of: selectionArea, matching: find.byType(Scrollable)),
+      findsNothing,
+    );
     final renderedText = find.byWidgetPredicate(
       (widget) =>
-          widget is SelectableText &&
-          (widget.textSpan?.toPlainText() ?? '').contains('严重'),
+          widget is RichText && widget.text.toPlainText().contains('严重'),
     );
     expect(renderedText, findsOneWidget);
-    final text = tester.widget<SelectableText>(renderedText).textSpan!;
+    final text = tester.widget<RichText>(renderedText).text;
     expect(text.toPlainText(), contains('严重'));
     expect(text.toPlainText(), isNot(contains('**')));
 
