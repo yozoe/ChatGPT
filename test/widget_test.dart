@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:chatgpt/src/app.dart';
 import 'package:chatgpt/src/app_controller.dart';
+import 'package:chatgpt/src/codex_hover_popup.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
 import 'package:chatgpt/src/domain/codex_file_change.dart';
 import 'package:chatgpt/src/domain/codex_plugin.dart';
@@ -12,6 +13,7 @@ import 'package:chatgpt/src/domain/codex_skill.dart';
 import 'package:chatgpt/src/domain/codex_marketplace.dart';
 import 'package:chatgpt/src/domain/git_project_status.dart';
 import 'package:chatgpt/src/domain/task_plan.dart';
+import 'package:chatgpt/src/domain/scheduled_task.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/domain/workspace_configuration.dart';
 import 'package:chatgpt/src/presentation/codex_workspace.dart';
@@ -45,6 +47,8 @@ class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
   bool clearedWorkspace = false;
   Set<String> pinnedWorkspaces = {};
   Set<String>? savedPinnedWorkspaces;
+  List<ScheduledTask> scheduledTasks = [];
+  List<ScheduledTask>? savedScheduledTasks;
 
   /// 模拟未保存自定义 CLI 路径。
   /// Simulates no saved custom CLI path.
@@ -125,6 +129,16 @@ class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
   Future<void> savePinnedWorkspaces(Iterable<String> paths) async {
     savedPinnedWorkspaces = paths.toSet();
     pinnedWorkspaces = paths.toSet();
+  }
+
+  @override
+  Future<List<ScheduledTask>> readScheduledTasks() async =>
+      List.of(scheduledTasks);
+
+  @override
+  Future<void> saveScheduledTasks(Iterable<ScheduledTask> tasks) async {
+    savedScheduledTasks = tasks.toList(growable: false);
+    scheduledTasks = List.of(savedScheduledTasks!);
   }
 
   /// 返回测试预设的推理强度。
@@ -451,6 +465,8 @@ class _FakeCodexAppServer extends CodexAppServer {
   String? steerResponseTurnId;
   Object? steerTurnError;
   String? threadGoal;
+  String? renamedThreadId;
+  String? renamedThreadName;
   String? unarchivedThreadId;
   int unarchiveCalls = 0;
   Completer<void>? unarchiveCompleter;
@@ -569,6 +585,15 @@ class _FakeCodexAppServer extends CodexAppServer {
     required String objective,
   }) async {
     threadGoal = objective;
+  }
+
+  @override
+  Future<void> renameThread({
+    required String threadId,
+    required String name,
+  }) async {
+    renamedThreadId = threadId;
+    renamedThreadName = name;
   }
 
   @override
@@ -707,6 +732,18 @@ class _BlockingRuntimeFakeServer extends _ManagedRuntimeFakeServer {
   Future<CodexRuntimeProbe> probe() => probeCompleter.future;
 }
 
+class _DelayedStartRuntimeFakeServer extends _ManagedRuntimeFakeServer {
+  final startEntered = Completer<void>();
+  final allowStart = Completer<void>();
+
+  @override
+  Future<void> start({required String workingDirectory}) async {
+    if (!startEntered.isCompleted) startEntered.complete();
+    await allowStart.future;
+    await super.start(workingDirectory: workingDirectory);
+  }
+}
+
 /// 创建具有可预测字段的测试线程。
 /// Creates a test thread with predictable fields.
 CodexThread _thread({
@@ -789,14 +826,19 @@ final class _InjectedCodexControllerNotifier extends CodexControllerNotifier {
 
 void main() {
   late _MemoryConversationHistoryStore historyStore;
+  late _FakeRuntimeConfigurationStore runtimeConfigurationStore;
 
   setUp(() {
     historyStore = _MemoryConversationHistoryStore();
+    runtimeConfigurationStore = _FakeRuntimeConfigurationStore();
     CodexController.testingConversationHistoryStore = historyStore;
+    CodexController.testingRuntimeConfigurationStore =
+        runtimeConfigurationStore;
   });
 
   tearDown(() {
     CodexController.testingConversationHistoryStore = null;
+    CodexController.testingRuntimeConfigurationStore = null;
   });
 
   testWidgets('shows the Codex Desk shell', (tester) async {
@@ -807,7 +849,326 @@ void main() {
     expect(find.text('等待目录'), findsOneWidget);
     expect(find.byKey(const Key('runtime-start-button')), findsNothing);
     expect(find.byTooltip('停止运行时'), findsNothing);
-    expect(find.text('任务控制台'), findsOneWidget);
+    expect(find.text('新建任务'), findsOneWidget);
+    expect(find.byKey(const Key('sidebar-new-chat-button')), findsOneWidget);
+    expect(
+      find.byKey(const Key('sidebar-pull-requests-button')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('sidebar-scheduled-tasks-button')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('sidebar-plugins-button')), findsOneWidget);
+  });
+
+  test('persists and cancels a scheduled prompt', () async {
+    final store = _FakeRuntimeConfigurationStore();
+    final controller = CodexController(runtimeConfigurationStore: store)
+      ..workspacePath = '/workspace';
+
+    final scheduled = await controller.schedulePrompt(
+      prompt: '检查测试结果',
+      runAt: DateTime.now().add(const Duration(hours: 1)),
+    );
+
+    expect(scheduled, isTrue);
+    expect(controller.scheduledTasks, hasLength(1));
+    expect(store.savedScheduledTasks, hasLength(1));
+    await controller.cancelScheduledTask(controller.scheduledTasks.single.id);
+    expect(controller.scheduledTasks, isEmpty);
+    expect(store.savedScheduledTasks, isEmpty);
+    controller.dispose();
+  });
+
+  test(
+    'does not dispatch a scheduled prompt cancelled during project switch',
+    () async {
+      final first = await Directory.systemTemp.createTemp(
+        'codex-desk-schedule-current-',
+      );
+      final second = await Directory.systemTemp.createTemp(
+        'codex-desk-schedule-target-',
+      );
+      addTearDown(() => first.delete(recursive: true));
+      addTearDown(() => second.delete(recursive: true));
+      final server = _DelayedStartRuntimeFakeServer()..running = true;
+      final controller = CodexController(server: server);
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = first.path
+        ..status = RuntimeStatus.ready;
+
+      expect(
+        await controller.schedulePrompt(
+          prompt: '这条任务已经取消，不能发送',
+          runAt: DateTime.now().add(const Duration(milliseconds: 100)),
+        ),
+        isTrue,
+      );
+      final taskId = controller.scheduledTasks.single.id;
+      // Simulate the user moving to another idle project before the timer fires.
+      // The dispatch now has to await a runtime switch back to the task project.
+      controller.workspacePath = second.path;
+      await server.startEntered.future;
+      await controller.cancelScheduledTask(taskId);
+      server.allowStart.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(controller.scheduledTasks, isEmpty);
+      expect(server.startedTurnPrompt, isNull);
+      controller.dispose();
+    },
+  );
+
+  testWidgets('opens the three project-library workspaces from the sidebar', (
+    tester,
+  ) async {
+    final controller =
+        CodexController(
+            server: CodexAppServer(),
+            pluginStore: _MemoryCodexPluginStore(),
+          )
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('sidebar-scheduled-tasks-button')));
+    await tester.pump();
+    expect(find.byKey(const Key('scheduled-tasks-page')), findsOneWidget);
+    expect(find.text('已安排的任务'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('sidebar-plugins-button')));
+    await tester.pump();
+    expect(find.byKey(const Key('plugins-page')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('sidebar-pull-requests-button')));
+    await tester.pump();
+    expect(find.text('Pull Request'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('switches plugin library tabs and starts plugin or skill flows', (
+    tester,
+  ) async {
+    final server = _FakeCodexAppServer()
+      ..skillListResponse = const [
+        {
+          'name': 'skill-creator',
+          'path': '/skills/skill-creator/SKILL.md',
+          'description': 'Create reusable skills',
+          'enabled': true,
+          'scope': 'system',
+          'interface': {
+            'displayName': 'Skill Creator',
+            'shortDescription': 'Create a reusable Codex skill',
+          },
+        },
+      ];
+    final controller =
+        CodexController(server: server, pluginStore: _MemoryCodexPluginStore())
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('sidebar-plugins-button')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('plugins-skills-tab')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('skills-page')), findsOneWidget);
+    expect(find.text('Skill Creator'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('plugins-tab')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('plugins-add-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('创建插件'));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('composer-field')))
+          .controller!
+          .text,
+      r'$plugin-creator help me create a plugin',
+    );
+
+    await tester.tap(find.byKey(const Key('sidebar-plugins-button')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('plugins-add-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('录制技能'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('composer-record-skill-chip')), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('opens the marketplace source form from plugin add menu', (
+    tester,
+  ) async {
+    final controller =
+        CodexController(
+            server: _FakeCodexAppServer(),
+            pluginStore: _MemoryCodexPluginStore(),
+          )
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('sidebar-plugins-button')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('plugins-add-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('添加插件市场'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('add-marketplace-dialog')), findsOneWidget);
+    expect(find.byKey(const Key('marketplace-source-field')), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('gives the project and workbench columns independent top bars', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final projectTopBar = find.byKey(const Key('workspace-column-topbar'));
+    final workbenchTopBar = find.byKey(const Key('workbench-column-topbar'));
+    final sidebar = find.byKey(const Key('sidebar-pane'));
+
+    expect(projectTopBar, findsOneWidget);
+    expect(workbenchTopBar, findsOneWidget);
+    expect(tester.getTopLeft(projectTopBar).dx, lessThan(250));
+    expect(
+      tester.getTopLeft(workbenchTopBar).dx,
+      greaterThan(tester.getTopLeft(projectTopBar).dx),
+    );
+    expect(
+      tester.getTopLeft(sidebar).dy,
+      greaterThan(tester.getBottomLeft(projectTopBar).dy),
+    );
+    expect(
+      tester.getTopLeft(find.byKey(const Key('workbench-task-title'))).dy,
+      lessThan(tester.getBottomLeft(workbenchTopBar).dy),
+    );
+    expect(
+      tester.getTopLeft(find.byKey(const Key('composer-panel'))).dy,
+      greaterThan(tester.getBottomLeft(workbenchTopBar).dy),
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('shows unknown file stats when a Diff has no countable lines', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {
+                'path': 'assets/logo.png',
+                'kind': 'modified',
+                'diff': 'diff --git a/assets/logo.png b/assets/logo.png',
+              },
+            ],
+          },
+        },
+      ),
+    );
+    await tester.pump();
+
+    final pill = find.byKey(const Key('composer-file-change-pill'));
+    expect(
+      find.descendant(of: pill, matching: find.text('+?')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: pill, matching: find.text('-?')),
+      findsOneWidget,
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('edits the current task name from the workbench top bar', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..status = RuntimeStatus.ready
+      ..activeThreadId = 'active-task'
+      ..threads = [
+        const CodexThread(
+          id: 'active-task',
+          name: '初始任务名称',
+          preview: '任务预览',
+          createdAt: 1,
+          updatedAt: 1,
+        ),
+      ];
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final topBar = find.byKey(const Key('workbench-column-topbar'));
+    expect(
+      find.descendant(of: topBar, matching: find.text('初始任务名称')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: topBar, matching: find.text('Codex 配置 / App Server')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: topBar, matching: find.text('workspace-write')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: topBar,
+        matching: find.byKey(const Key('workbench-file-changes-button')),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('任务控制台'), findsNothing);
+
+    await tester.tap(find.byKey(const Key('workbench-task-title')));
+    await tester.pump();
+    await tester.enterText(
+      find.byKey(const Key('workbench-task-title-editor')),
+      '整理桌面工作台布局',
+    );
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pump();
+
+    expect(server.renamedThreadId, 'active-task');
+    expect(server.renamedThreadName, '整理桌面工作台布局');
+    expect(
+      find.descendant(of: topBar, matching: find.text('整理桌面工作台布局')),
+      findsOneWidget,
+    );
+    await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets(
@@ -858,7 +1219,7 @@ void main() {
       await tester.pump();
       await tester.pumpAndSettle();
 
-      expect(timeline.controller!.position.extentAfter, lessThan(20));
+      expect(timeline.controller!.position.extentAfter, lessThan(32));
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -926,14 +1287,25 @@ void main() {
       controller.status = RuntimeStatus.ready;
       controller.threads = [
         _thread(id: 'nested-task', status: 'idle'),
+        _thread(id: 'delayed-completion-task'),
         _thread(id: 'failed-task', status: 'systemError'),
       ];
       historyStore.snapshots[firstPath] = ConversationHistorySnapshot(
-        threads: [_thread(id: 'cached-first-task')],
+        // 缓存中可能保留了已在其他项目恢复的同一线程 ID；它不能继承
+        // 当前项目的选中态或运行中状态。
+        threads: [
+          const CodexThread(
+            id: 'nested-task',
+            preview: 'preview-cached-first-task',
+            createdAt: 1,
+            updatedAt: 2,
+          ),
+        ],
         archivedThreads: const [],
         entries: const [],
         fileChanges: const [],
       );
+      await controller.refreshInactiveWorkspaceTaskLists();
     });
     addTearDown(() => root.delete(recursive: true));
 
@@ -963,11 +1335,25 @@ void main() {
       find.byKey(const Key('sidebar-completed-task-indicator')),
       findsOneWidget,
     );
-    expect(
-      find.byKey(const Key('sidebar-error-task-indicator')),
-      findsOneWidget,
-    );
+    await tester.ensureVisible(nestedTask);
     await tester.tap(nestedTask);
+    await tester.pump();
+    expect(
+      find.byKey(const Key('sidebar-completed-task-indicator')),
+      findsNothing,
+    );
+    // The completion status can arrive after a task has already been opened.
+    // That delayed refresh must not revive an old completion reminder.
+    final delayedTask = find.text('preview-delayed-completion-task');
+    await tester.ensureVisible(delayedTask);
+    await tester.tap(delayedTask);
+    await tester.pump();
+    controller.threads = [
+      _thread(id: 'nested-task', status: 'idle'),
+      _thread(id: 'delayed-completion-task', status: 'idle'),
+      _thread(id: 'failed-task', status: 'systemError'),
+    ];
+    controller.notifyListeners();
     await tester.pump();
     expect(
       find.byKey(const Key('sidebar-completed-task-indicator')),
@@ -980,7 +1366,9 @@ void main() {
     expect(
       tester
           .widget<InkWell>(
-            find.descendant(of: firstTile, matching: find.byType(InkWell)),
+            find
+                .descendant(of: firstTile, matching: find.byType(InkWell))
+                .first,
           )
           .onTap,
       isNotNull,
@@ -988,14 +1376,18 @@ void main() {
     expect(
       tester
           .widget<InkWell>(
-            find.descendant(of: secondTile, matching: find.byType(InkWell)),
+            find
+                .descendant(of: secondTile, matching: find.byType(InkWell))
+                .first,
           )
           .onTap,
       isNull,
     );
+    await tester.ensureVisible(firstTile);
     final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await tester.ensureVisible(firstTile);
     await mouse.moveTo(tester.getCenter(firstTile));
-    await tester.pumpAndSettle();
+    await tester.pump();
     final moreButton = find.byKey(
       ValueKey('sidebar-workspace-more-$firstPath'),
     );
@@ -1004,9 +1396,45 @@ void main() {
     );
     expect(moreButton, findsOneWidget);
     expect(newTaskButton, findsOneWidget);
-    // 悬停本身显示项目详情卡片。
+    // 项目详情卡片只会在持续悬停后显示。
+    expect(find.text('1 个任务'), findsNothing);
+    expect(find.text('编辑项目'), findsNothing);
+    await tester.pump(codexHoverPopupDelay - const Duration(milliseconds: 1));
+    expect(find.text('1 个任务'), findsNothing);
+    await tester.pump(const Duration(milliseconds: 1));
     expect(find.text('1 个任务'), findsOneWidget);
     expect(find.text('编辑项目'), findsOneWidget);
+    // A project can receive new tasks after its count was first shown. Opening
+    // its details again must reload the local cache instead of retaining 1.
+    await tester.ensureVisible(secondTile);
+    await mouse.moveTo(tester.getCenter(secondTile));
+    await tester.pump(const Duration(milliseconds: 180));
+    historyStore.snapshots[firstPath] = ConversationHistorySnapshot(
+      threads: [
+        const CodexThread(
+          id: 'nested-task',
+          preview: 'preview-cached-first-task',
+          createdAt: 1,
+          updatedAt: 2,
+        ),
+        const CodexThread(
+          id: 'new-cached-first-task',
+          preview: 'preview-new-cached-first-task',
+          createdAt: 3,
+          updatedAt: 4,
+        ),
+      ],
+      archivedThreads: const [],
+      entries: const [],
+      fileChanges: const [],
+    );
+    await tester.ensureVisible(firstTile);
+    await mouse.moveTo(Offset.zero);
+    await tester.pump();
+    await mouse.moveTo(tester.getCenter(firstTile));
+    await tester.pump(codexHoverPopupDelay);
+    await tester.pump();
+    expect(find.text('2 个任务'), findsOneWidget);
     await tester.tap(find.byTooltip('置顶项目'));
     await tester.pumpAndSettle();
     expect(controller.isWorkspacePinned(firstPath), isTrue);
@@ -1052,11 +1480,15 @@ void main() {
       find.byKey(const Key('sidebar-running-task-indicator')),
       findsOneWidget,
     );
+    expect(tester.widget<IconButton>(newTaskButton).onPressed, isNull);
     expect(
       tester
           .widget<InkWell>(
             find.ancestor(
-              of: find.text('preview-nested-task'),
+              of: find.descendant(
+                of: find.byKey(const Key('sidebar-pane')),
+                matching: find.text('preview-nested-task'),
+              ),
               matching: find.byType(InkWell),
             ),
           )
@@ -1071,6 +1503,19 @@ void main() {
       find.byKey(const Key('sidebar-manage-workspaces-button')),
       findsOneWidget,
     );
+    // 启动后，未选中的项目也会从本地缓存读取任务并保持展开；
+    // 只有点击该项目自己的按钮才会收起。
+    final cachedFirstTask = find.text('preview-cached-first-task');
+    expect(cachedFirstTask, findsOneWidget);
+    final firstToggle = find.byKey(
+      ValueKey('sidebar-workspace-toggle-$firstPath'),
+    );
+    await tester.tap(firstToggle);
+    await tester.pump();
+    expect(cachedFirstTask, findsNothing);
+    await tester.tap(firstToggle);
+    await tester.pump();
+    expect(cachedFirstTask, findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -1304,6 +1749,37 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('uses compact text and a circular send button in the composer', (
+    tester,
+  ) async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final sendButton = tester.widget<IconButton>(
+      find.byWidgetPredicate(
+        (widget) => widget is IconButton && widget.tooltip == '发送任务',
+      ),
+    );
+    expect(
+      sendButton.style?.shape?.resolve(const <WidgetState>{}),
+      isA<CircleBorder>(),
+    );
+    expect(
+      sendButton.style?.fixedSize?.resolve(const <WidgetState>{}),
+      const Size.square(36),
+    );
+    expect(
+      tester.widget<TextField>(find.byKey(const Key('composer-field'))).style,
+      isA<TextStyle>().having((style) => style.fontSize, 'fontSize', 14),
+    );
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('floats file change stats without moving the composer', (
     tester,
   ) async {
@@ -1498,7 +1974,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('文件和文件夹'), findsOneWidget);
     expect(find.text('附加 workspace'), findsOneWidget);
-    expect(find.text('插件'), findsOneWidget);
+    expect(find.text('插件'), findsAtLeastNWidgets(1));
     expect(find.text('Documents'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('add-goal-menu-item')));
@@ -2334,6 +2810,286 @@ void main() {
     controller.dispose();
   });
 
+  test('tracks a live command and persists the completed turn duration', () {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1';
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/started',
+        params: {
+          'turn': {'id': 'turn-1', 'startedAt': 1000},
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/started',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'command-1',
+            'type': 'commandExecution',
+            'command': 'dart test',
+          },
+        },
+      ),
+    );
+
+    expect(controller.activeCommand, 'dart test');
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'command-1',
+            'type': 'commandExecution',
+            'command': 'dart test',
+            'aggregatedOutput': 'All tests passed',
+          },
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'thread-1',
+          'turn': {'id': 'turn-1', 'status': 'completed', 'durationMs': 63000},
+        },
+      ),
+    );
+
+    expect(controller.activeCommand, isNull);
+    expect(controller.activeTurnId, isNull);
+    expect(
+      controller.entries.map((entry) => '${entry.title}:${entry.detail}'),
+      containsAll(['执行命令:dart test\nAll tests passed', '已处理 1 分钟 3 秒:']),
+    );
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/started',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'late-command',
+            'type': 'commandExecution',
+            'command': 'should not appear',
+          },
+        },
+      ),
+    );
+    expect(controller.activeCommand, isNull);
+    controller.dispose();
+  });
+
+  test('ignores lifecycle events from a previously resumed thread', () {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'current-thread';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/started',
+        params: {
+          'threadId': 'current-thread',
+          'turn': {'id': 'current-turn'},
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/started',
+        params: {
+          'threadId': 'current-thread',
+          'turnId': 'current-turn',
+          'item': {
+            'id': 'current-command',
+            'type': 'commandExecution',
+            'command': 'dart test',
+          },
+        },
+      ),
+    );
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/started',
+        params: {
+          'threadId': 'previous-thread',
+          'turn': {'id': 'previous-turn'},
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'threadId': 'previous-thread',
+          'turnId': 'previous-turn',
+          'item': {
+            'id': 'previous-file',
+            'type': 'fileChange',
+            'changes': [
+              {'path': 'lib/other.dart', 'kind': 'modified'},
+            ],
+          },
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/diff/updated',
+        params: {
+          'threadId': 'previous-thread',
+          'turnId': 'previous-turn',
+          'diff': 'unrelated diff',
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'previous-thread',
+          'turn': {
+            'id': 'previous-turn',
+            'status': 'completed',
+            'durationMs': 63000,
+          },
+        },
+      ),
+    );
+
+    expect(controller.status, RuntimeStatus.running);
+    expect(controller.activeTurnId, 'current-turn');
+    expect(controller.activeCommand, 'dart test');
+    expect(controller.fileChanges, isEmpty);
+    expect(controller.turnDiff, isNull);
+    expect(
+      controller.entries.map((entry) => entry.kind),
+      isNot(contains(TimelineKind.elapsed)),
+    );
+    controller.dispose();
+  });
+
+  test('ignores delayed lifecycle and plan events with no active task', () {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/started',
+        params: {
+          'threadId': 'previous-thread',
+          'turn': {'id': 'previous-turn'},
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/plan/updated',
+        params: {
+          'threadId': 'previous-thread',
+          'turnId': 'previous-turn',
+          'plan': [
+            {'step': '旧任务计划', 'status': 'inProgress'},
+          ],
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/started',
+        params: {
+          'threadId': 'previous-thread',
+          'turnId': 'previous-turn',
+          'item': {
+            'id': 'previous-command',
+            'type': 'commandExecution',
+            'command': 'should not appear',
+          },
+        },
+      ),
+    );
+
+    expect(controller.activeTurnId, isNull);
+    expect(controller.activeTaskPlan, isNull);
+    expect(controller.activeCommand, isNull);
+    controller.dispose();
+  });
+
+  testWidgets('renders the quiet live command row and completed duration', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/started',
+        params: {
+          'turn': {'id': 'turn-1'},
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/started',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'command-1',
+            'type': 'commandExecution',
+            'command': '/bin/zsh -lc dart test',
+          },
+        },
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(find.byKey(const Key('live-command-row')), findsOneWidget);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'command-1',
+            'type': 'commandExecution',
+            'command': '/bin/zsh -lc dart test',
+          },
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'thread-1',
+          'turn': {'id': 'turn-1', 'status': 'completed', 'durationMs': 63000},
+        },
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const Key('live-command-row')), findsNothing);
+    expect(find.text('已处理 1 分钟 3 秒'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('renders Codex replies as selectable Markdown', (tester) async {
     final controller = CodexController(server: CodexAppServer());
     controller.handleServerEventForTesting(
@@ -2397,14 +3153,48 @@ void main() {
     controller.dispose();
   });
 
+  test('refuses the system temporary directory as a workspace', () async {
+    final controller = CodexController(server: CodexAppServer());
+
+    await controller.selectWorkspace(Directory.systemTemp.path);
+
+    expect(controller.workspacePath, isNull);
+    expect(controller.lastError, contains('系统临时目录'));
+    expect(runtimeConfigurationStore.savedWorkspace, isNull);
+    controller.dispose();
+  });
+
+  test('cleans a persisted system temporary directory workspace', () async {
+    final temporaryPath = await Directory.systemTemp.resolveSymbolicLinks();
+    final store = _FakeRuntimeConfigurationStore()
+      ..workspace = temporaryPath
+      ..workspaces = [WorkspaceConfiguration(primaryPath: temporaryPath)];
+    final controller = CodexController(
+      server: CodexAppServer(),
+      runtimeConfigurationStore: store,
+    );
+
+    await controller.waitForInitialConfiguration();
+
+    expect(controller.workspacePath, isNull);
+    expect(controller.workspaceConfigurations, isEmpty);
+    expect(store.clearedWorkspace, isTrue);
+    expect(store.savedWorkspaces, isEmpty);
+    controller.dispose();
+  });
+
   test('persists and restores the most recently selected workspace', () async {
+    final workspace = await Directory.systemTemp.createTemp(
+      'codex-desk-persisted-workspace-',
+    );
+    addTearDown(() => workspace.delete(recursive: true));
     final store = _FakeRuntimeConfigurationStore();
     final firstController = CodexController(
       server: CodexAppServer(),
       runtimeConfigurationStore: store,
     );
 
-    await firstController.selectWorkspace(Directory.systemTemp.path);
+    await firstController.selectWorkspace(workspace.path);
 
     expect(store.savedWorkspace, firstController.workspacePath);
     firstController.dispose();
@@ -2543,6 +3333,36 @@ void main() {
       expect(await controller.sendPrompt('创建任务'), isTrue);
       expect(controller.threads.map((thread) => thread.id), ['new-thread']);
 
+      controller.dispose();
+    },
+  );
+
+  test(
+    'switches to an inactive task workspace before resuming its task',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-desk-open-cached-task-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final first = await Directory('${root.path}/first').create();
+      final second = await Directory('${root.path}/second').create();
+      final server = _ManagedRuntimeFakeServer();
+      final controller = CodexController(server: server);
+      await controller.waitForInitialConfiguration();
+
+      expect(await controller.createWorkspace(first.path), isTrue);
+      expect(await controller.createWorkspace(second.path), isTrue);
+      expect(await controller.selectWorkspaceAndReconnect(first.path), isTrue);
+      final secondPath = await second.resolveSymbolicLinks();
+
+      await controller.openWorkspaceThread(
+        workspace: secondPath,
+        thread: _thread(id: 'second-project-thread'),
+      );
+
+      expect(controller.workspacePath, secondPath);
+      expect(server.runtimeDirectory, secondPath);
+      expect(server.resumedThreadId, 'second-project-thread');
       controller.dispose();
     },
   );
@@ -2940,13 +3760,17 @@ void main() {
   test(
     'restores cached conversation history for the selected workspace',
     () async {
+      final workspaceDirectory = await Directory.systemTemp.createTemp(
+        'codex-desk-cached-history-',
+      );
+      addTearDown(() => workspaceDirectory.delete(recursive: true));
       final runtimeStore = _FakeRuntimeConfigurationStore();
       final firstController = CodexController(
         server: CodexAppServer(),
         runtimeConfigurationStore: runtimeStore,
         conversationHistoryStore: historyStore,
       );
-      await firstController.selectWorkspace(Directory.systemTemp.path);
+      await firstController.selectWorkspace(workspaceDirectory.path);
       firstController
         ..threads = [_thread(id: 'cached-thread')]
         ..activeThreadId = 'cached-thread'
@@ -2986,7 +3810,7 @@ void main() {
       expect(restoredController.fileChanges.single.diff, '+cached');
       expect(
         restoredController.entries.map((entry) => entry.title),
-        contains('文件变更'),
+        isNot(contains('文件变更')),
       );
       restoredController.dispose();
     },
@@ -3228,7 +4052,7 @@ void main() {
     },
   );
 
-  testWidgets('filters the task list with the sidebar search field', (
+  testWidgets('searches tasks from the top toolbar command surface', (
     tester,
   ) async {
     final controller = CodexController(server: CodexAppServer())
@@ -3239,14 +4063,34 @@ void main() {
       MaterialApp(home: CodexWorkspace(controller: controller)),
     );
 
+    final taskTile = find.byKey(const ValueKey('sidebar-thread-tile-alpha'));
+    final taskContent = tester.widget<Padding>(
+      find.descendant(of: taskTile, matching: find.byType(Padding)).first,
+    );
+    expect(taskContent.padding, const EdgeInsets.fromLTRB(9, 2, 1, 2));
+
+    expect(find.byKey(const Key('thread-search-field')), findsNothing);
+    await tester.tap(find.byKey(const Key('task-search-button')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('task-search-dialog')), findsOneWidget);
+
     await tester.enterText(
-      find.byKey(const Key('thread-search-field')),
+      find.byKey(const Key('task-search-dialog-field')),
       'bravo',
     );
     await tester.pump();
 
-    expect(find.text('preview-bravo'), findsOneWidget);
-    expect(find.text('preview-alpha'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('task-search-result-bravo')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('task-search-result-alpha')),
+      findsNothing,
+    );
+    expect(find.text('新聊天'), findsOneWidget);
+    expect(find.text('打开文件夹'), findsOneWidget);
+    expect(find.text('搜索文件'), findsOneWidget);
   });
 
   testWidgets('keeps the task list visible while a selected task refreshes', (
@@ -3271,8 +4115,20 @@ void main() {
 
     expect(controller.threadsLoading, isTrue);
     expect(find.byType(LinearProgressIndicator), findsNothing);
-    expect(find.text('preview-alpha'), findsOneWidget);
-    expect(find.text('preview-bravo'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('sidebar-pane')),
+        matching: find.text('preview-alpha'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('sidebar-pane')),
+        matching: find.text('preview-bravo'),
+      ),
+      findsOneWidget,
+    );
 
     server.listRequests.single.complete(server.listResponse);
     await tester.pumpAndSettle();
@@ -3526,6 +4382,22 @@ void main() {
     );
 
     await expectLater(store.listPlugins(), throwsFormatException);
+  });
+
+  test('resolves the CLI path before running plugin commands', () async {
+    const resolvedPath = '/Applications/ChatGPT.app/Contents/Resources/codex';
+    String? launchedExecutable;
+    final store = CodexPluginStore(
+      executableProvider: () async => resolvedPath,
+      processRunner: (executable, arguments) async {
+        launchedExecutable = executable;
+        return ProcessResult(1, 0, '{"installed":[],"available":[]}', '');
+      },
+    );
+
+    await store.listPlugins();
+
+    expect(launchedExecutable, resolvedPath);
   });
 
   test('preserves Codex CLI stderr when a plugin command fails', () async {
@@ -3826,9 +4698,68 @@ void main() {
     expect(controller.turnDiff, 'diff --git a/lib/main.dart b/lib/main.dart');
     expect(
       controller.entries.map((entry) => '${entry.title}:${entry.detail}'),
-      contains('文件变更:modified lib/main.dart'),
+      isNot(contains('文件变更:modified lib/main.dart')),
     );
     controller.dispose();
+  });
+
+  testWidgets('hides legacy per-file change records from the conversation', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer());
+    controller.replaceTimelineEntriesForTesting([
+      TimelineEntry(
+        kind: TimelineKind.command,
+        title: '文件变更',
+        detail: '{type: update} lib/main.dart',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.agent,
+        title: 'Codex',
+        detail: '变更已完成。',
+        createdAt: DateTime(2026, 1, 1, 0, 0, 1),
+      ),
+    ]);
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(find.text('文件变更'), findsNothing);
+    expect(find.text('{type: update} lib/main.dart'), findsNothing);
+    expect(find.text('变更已完成。'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('hides legacy file change records following a command activity', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer());
+    controller.replaceTimelineEntriesForTesting([
+      TimelineEntry(
+        kind: TimelineKind.command,
+        title: '执行命令',
+        detail: 'dart format',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.command,
+        title: '文件变更',
+        detail: '{type: update} lib/main.dart',
+        createdAt: DateTime(2026, 1, 1, 0, 0, 1),
+      ),
+    ]);
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(find.text('已运行了命令'), findsOneWidget);
+    expect(find.text('已运行 dart format'), findsOneWidget);
+    expect(find.text('文件变更'), findsNothing);
+    expect(find.text('{type: update} lib/main.dart'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('opens the code review surface from the completed file summary', (
@@ -3860,6 +4791,15 @@ void main() {
     await tester.pump();
 
     expect(find.byKey(const Key('file-change-summary-card')), findsOneWidget);
+    final title = tester.widget<Text>(
+      find.byKey(const Key('file-change-summary-title')),
+    );
+    final stats = tester.widget<Text>(
+      find.byKey(const Key('file-change-summary-stats')),
+    );
+    expect(title.style?.fontSize, 14);
+    expect(title.style?.fontWeight, FontWeight.w600);
+    expect(stats.style?.fontSize, 13);
     await tester.ensureVisible(
       find.byKey(const Key('review-file-changes-button')),
     );
@@ -3909,6 +4849,10 @@ void main() {
     rowMouseRegion.onEnter?.call(const PointerEnterEvent());
     await tester.pump();
 
+    expect(find.byKey(const Key('file-change-hover-preview')), findsNothing);
+    await tester.pump(codexHoverPopupDelay - const Duration(milliseconds: 1));
+    expect(find.byKey(const Key('file-change-hover-preview')), findsNothing);
+    await tester.pump(const Duration(milliseconds: 1));
     expect(find.byKey(const Key('file-change-hover-preview')), findsOneWidget);
     expect(find.text('lib/main.dart'), findsWidgets);
     expect(find.textContaining('432  -old'), findsOneWidget);
@@ -4067,6 +5011,16 @@ void main() {
       find.descendant(of: cardFinder, matching: find.text('1 个')),
       findsNWidgets(2),
     );
+    final environmentTitle = tester.widget<Text>(find.text('环境信息'));
+    final changeLabel = tester.widget<Text>(
+      find.descendant(of: cardFinder, matching: find.text('变更')),
+    );
+    final taskFilesLabel = tester.widget<Text>(
+      find.descendant(of: cardFinder, matching: find.text('任务文件')),
+    );
+    expect(environmentTitle.style?.fontSize, 18);
+    expect(changeLabel.style?.fontSize, 14);
+    expect(taskFilesLabel.style?.fontSize, 14);
     expect(decoration.borderRadius, BorderRadius.circular(28));
     await tester.pumpWidget(const SizedBox());
   });

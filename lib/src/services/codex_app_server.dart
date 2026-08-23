@@ -81,6 +81,10 @@ class CodexAppServer {
   /// Returns the Codex CLI path currently selected for launch or probing.
   String get executable => _executable;
 
+  /// 解析当前配置为可直接执行的 Codex CLI 路径。
+  /// Resolves the current configuration to an executable Codex CLI path.
+  Future<String> resolveExecutable() => _resolveExecutable();
+
   /// 设置 CLI 路径；运行时启动后禁止修改以避免进程不一致。
   /// Sets the CLI path; changes are prohibited while running to avoid process inconsistency.
   void setExecutable(String? executable) {

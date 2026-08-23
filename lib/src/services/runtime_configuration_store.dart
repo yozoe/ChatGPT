@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../domain/workspace_configuration.dart';
+import '../domain/scheduled_task.dart';
 import 'codex_keychain_storage.dart';
 
 /// 将本机 Codex Desk 偏好保存到项目目录之外。
@@ -18,6 +19,7 @@ class RuntimeConfigurationStore {
   static const _reasoningEffortKey = 'codex_desk.reasoning_effort.v1';
   static const _modelKey = 'codex_desk.model.selected.v1';
   static const _approvalModeKey = 'codex_desk.approval_mode.v1';
+  static const _scheduledTasksKey = 'codex_desk.scheduled_tasks.v1';
 
   final CodexKeychainStorage _storage;
 
@@ -171,5 +173,36 @@ class RuntimeConfigurationStore {
   Future<void> saveApprovalMode(String? mode) {
     if (mode == null) return _storage.delete(key: _approvalModeKey);
     return _storage.write(key: _approvalModeKey, value: mode);
+  }
+
+  /// Reads locally scheduled prompts. Invalid entries are ignored so a damaged
+  /// single schedule does not prevent the rest of the application from loading.
+  Future<List<ScheduledTask>> readScheduledTasks() async {
+    final stored = await _storage.read(key: _scheduledTasksKey);
+    if (stored == null || stored.trim().isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(stored);
+      if (decoded is! List) return const [];
+      return decoded
+          .map((value) {
+            try {
+              return ScheduledTask.fromJson(value);
+            } on FormatException {
+              return null;
+            }
+          })
+          .whereType<ScheduledTask>()
+          .toList(growable: false);
+    } on FormatException {
+      return const [];
+    }
+  }
+
+  /// Saves scheduled prompts outside project folders; an empty list clears the
+  /// preference without touching any project or conversation history.
+  Future<void> saveScheduledTasks(Iterable<ScheduledTask> tasks) {
+    final values = tasks.map((task) => task.toJson()).toList(growable: false);
+    if (values.isEmpty) return _storage.delete(key: _scheduledTasksKey);
+    return _storage.write(key: _scheduledTasksKey, value: jsonEncode(values));
   }
 }

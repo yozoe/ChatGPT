@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 
+import 'codex_hover_popup.dart';
 import 'presentation/codex_workspace.dart';
 import 'services/theme_preferences_store.dart';
 import 'theme_preferences_controller.dart';
@@ -95,8 +96,16 @@ class _CodexDeskAppViewState extends ConsumerState<_CodexDeskAppView> {
       title: 'Codex Desk',
       debugShowCheckedModeBanner: false,
       scaffoldMessengerKey: _messengerKey,
-      theme: YeknomWorkbenchTheme.light(preset: preferences.preset),
-      darkTheme: YeknomWorkbenchTheme.dark(preset: preferences.preset),
+      theme: YeknomWorkbenchTheme.light(preset: preferences.preset).copyWith(
+        tooltipTheme: const TooltipThemeData(
+          waitDuration: codexHoverPopupDelay,
+        ),
+      ),
+      darkTheme: YeknomWorkbenchTheme.dark(preset: preferences.preset).copyWith(
+        tooltipTheme: const TooltipThemeData(
+          waitDuration: codexHoverPopupDelay,
+        ),
+      ),
       themeMode: preferences.mode,
       home: CodexWorkspace(
         themeMode: preferences.mode,

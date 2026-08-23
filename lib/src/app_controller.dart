@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -14,6 +15,7 @@ import 'domain/codex_file_change.dart';
 import 'domain/git_project_status.dart';
 import 'domain/pending_approval.dart';
 import 'domain/runtime_log_entry.dart';
+import 'domain/scheduled_task.dart';
 import 'domain/task_plan.dart';
 import 'domain/timeline_entry.dart';
 import 'domain/workspace_configuration.dart';
@@ -42,6 +44,16 @@ class _ThreadViewSnapshot {
   final List<TimelineEntry> entries;
   final List<CodexFileChange> fileChanges;
   final String? turnDiff;
+}
+
+/// Read-only local task list for a workspace that is not currently connected.
+/// 由本地历史恢复的非当前项目只读任务列表。
+@immutable
+class WorkspaceTaskList {
+  const WorkspaceTaskList({required this.threads, required this.pinnedIds});
+
+  final List<CodexThread> threads;
+  final Set<String> pinnedIds;
 }
 
 /// 将本地存储的审批模式转换为受支持的安全值。
@@ -174,7 +186,9 @@ class CodexController extends ChangeNotifier {
     GitProjectService? gitProjectService,
   }) : _server = server ?? CodexAppServer(),
        _runtimeConfigurationStore =
-           runtimeConfigurationStore ?? RuntimeConfigurationStore(),
+           runtimeConfigurationStore ??
+           testingRuntimeConfigurationStore ??
+           RuntimeConfigurationStore(),
        _conversationHistoryStore =
            conversationHistoryStore ??
            testingConversationHistoryStore ??
@@ -184,7 +198,7 @@ class CodexController extends ChangeNotifier {
        _gitProjectService = gitProjectService ?? GitProjectService() {
     _pluginStore =
         pluginStore ??
-        CodexPluginStore(executableProvider: () => _server.executable);
+        CodexPluginStore(executableProvider: _server.resolveExecutable);
     _entries.add(
       _entry(
         TimelineKind.system,
@@ -201,6 +215,8 @@ class CodexController extends ChangeNotifier {
 
   @visibleForTesting
   static ConversationHistoryStore? testingConversationHistoryStore;
+  @visibleForTesting
+  static RuntimeConfigurationStore? testingRuntimeConfigurationStore;
   final RuntimeConfigurationStore _runtimeConfigurationStore;
   final ConversationHistoryStore _conversationHistoryStore;
   final LocalSessionThreadStore _localSessionThreadStore;
@@ -211,7 +227,10 @@ class CodexController extends ChangeNotifier {
   final Map<String, CodexFileChange> _fileChangesByPath = {};
   final Set<String> _pinnedThreadIds = {};
   final List<RuntimeLogEntry> _runtimeLogs = [];
+  final List<ScheduledTask> _scheduledTasks = [];
+  final Map<String, Timer> _scheduledTaskTimers = {};
   final Map<String, int> _agentEntryIndexByItem = {};
+  final Set<String> _completedCommandItemIds = {};
   Timer? _deltaNotificationTimer;
   Timer? _historySaveTimer;
   Future<void> _historySave = Future.value();
@@ -262,6 +281,8 @@ class CodexController extends ChangeNotifier {
   final List<String> _additionalWorkspacePaths = [];
   final List<WorkspaceConfiguration> _workspaceConfigurations = [];
   final Set<String> _pinnedWorkspacePaths = {};
+  final Map<String, WorkspaceTaskList> _workspaceTaskLists = {};
+  int _workspaceTaskListLoadEpoch = 0;
   String? _workspaceProjectId;
   final Set<String> _ownedThreadIds = {};
   bool _threadHistoryInitialized = false;
@@ -273,6 +294,9 @@ class CodexController extends ChangeNotifier {
   // app-server connection before it can receive a turn.
   bool _activeThreadAttached = false;
   String? activeTurnId;
+  DateTime? _activeTurnStartedAt;
+  String? _activeCommand;
+  String? _activeCommandItemId;
   TaskPlan? activeTaskPlan;
   String? lastError;
   PendingApproval? pendingApproval;
@@ -346,6 +370,11 @@ class CodexController extends ChangeNotifier {
   Set<String> get pinnedWorkspacePaths =>
       Set.unmodifiable(_pinnedWorkspacePaths);
 
+  /// Returns the cached local task list for an inactive workspace.
+  /// 返回非当前项目已缓存的本地任务列表。
+  WorkspaceTaskList? workspaceTaskListFor(String path) =>
+      _workspaceTaskLists[path];
+
   /// Returns whether a workspace is pinned.
   /// 判断指定工作区是否已置顶。
   bool isWorkspacePinned(String path) => _pinnedWorkspacePaths.contains(path);
@@ -375,7 +404,21 @@ class CodexController extends ChangeNotifier {
   /// Reads a workspace's cached task count for the hover details card.
   /// 读取工作区本地缓存中的任务数量，供悬停详情卡片显示。
   Future<int> readWorkspaceTaskCount(String path) async {
-    if (path == workspacePath) return threads.length;
+    final taskList = await readWorkspaceTaskList(path);
+    return taskList.threads.length;
+  }
+
+  /// Reads a workspace's cached task list without switching the active
+  /// runtime. This lets the sidebar keep every project expanded at launch.
+  /// 不切换当前运行时地读取项目的本地任务列表，以便侧栏启动时展开全部项目。
+  Future<({List<CodexThread> threads, Set<String> pinnedIds})>
+  readWorkspaceTaskList(String path) async {
+    if (path == workspacePath) {
+      return (
+        threads: List<CodexThread>.unmodifiable(threads),
+        pinnedIds: Set<String>.unmodifiable(_pinnedThreadIds),
+      );
+    }
     final project = _workspaceConfigurations
         .where((workspace) => workspace.primaryPath == path)
         .firstOrNull;
@@ -387,7 +430,45 @@ class CodexController extends ChangeNotifier {
     if (snapshot == null && project?.id != null) {
       snapshot = await _conversationHistoryStore.read(path);
     }
-    return snapshot?.threads.length ?? 0;
+    return (
+      threads: List<CodexThread>.unmodifiable(
+        snapshot?.threads ?? const <CodexThread>[],
+      ),
+      pinnedIds: Set<String>.unmodifiable(
+        snapshot?.pinnedThreadIds ?? const <String>{},
+      ),
+    );
+  }
+
+  /// Refreshes local task previews for every inactive workspace. This state is
+  /// held by the app-wide controller so Riverpod publishes lifecycle and
+  /// asynchronous updates consistently to every sidebar instance.
+  Future<void> refreshInactiveWorkspaceTaskLists() async {
+    final activePath = workspacePath;
+    final workspaces = List<WorkspaceConfiguration>.of(
+      _workspaceConfigurations,
+    );
+    final epoch = ++_workspaceTaskListLoadEpoch;
+    final next = <String, WorkspaceTaskList>{};
+    for (final workspace in workspaces) {
+      if (workspace.primaryPath == activePath) continue;
+      try {
+        final taskList = await readWorkspaceTaskList(workspace.primaryPath);
+        if (_disposed || epoch != _workspaceTaskListLoadEpoch) return;
+        next[workspace.primaryPath] = WorkspaceTaskList(
+          threads: taskList.threads,
+          pinnedIds: taskList.pinnedIds,
+        );
+      } catch (_) {
+        // Leave an unreadable cache out of the sidebar. Selecting the project
+        // still reports the detailed persistence error through normal restore.
+      }
+    }
+    if (_disposed || epoch != _workspaceTaskListLoadEpoch) return;
+    _workspaceTaskLists
+      ..clear()
+      ..addAll(next);
+    notifyListeners();
   }
 
   /// 返回传给新任务的完整工作区根目录，主目录始终位于第一项。
@@ -424,6 +505,10 @@ class CodexController extends ChangeNotifier {
   /// 返回最近的已脱敏运行时日志；日志仅保留在本次应用进程的内存中。
   /// Returns recent redacted runtime logs; logs are retained only in this app process's memory.
   List<RuntimeLogEntry> get runtimeLogs => List.unmodifiable(_runtimeLogs);
+
+  /// Scheduled prompts are local to Codex Desk and remain queued across app
+  /// restarts. They execute only while this desktop app is running.
+  List<ScheduledTask> get scheduledTasks => List.unmodifiable(_scheduledTasks);
 
   /// 返回当前项目中被置顶的任务 ID，不允许外部修改集合。
   /// Returns pinned task IDs for the current workspace as an immutable set.
@@ -601,6 +686,11 @@ class CodexController extends ChangeNotifier {
       _hasUsableReasoningEffort &&
       (!requiresOpenaiAuth || authStatus != AuthStatus.signedOut);
 
+  /// 指示是否可以清空当前任务并开始一个新任务。
+  /// Indicates whether the current task can be cleared to start a new task.
+  bool get canCreateThread =>
+      status == RuntimeStatus.ready && workspacePath != null;
+
   /// 指示当前正在运行的任务是否可以中断。
   /// Indicates whether the running task can be interrupted.
   bool get canStop => status == RuntimeStatus.running && activeThreadId != null;
@@ -611,6 +701,11 @@ class CodexController extends ChangeNotifier {
       status == RuntimeStatus.running &&
       activeThreadId != null &&
       activeTurnId != null;
+
+  /// 当前 turn 中正执行的命令；命令完成后立即清除，不写入持久化状态。
+  /// The command currently running in this turn. It is cleared on completion
+  /// and is deliberately not persisted.
+  String? get activeCommand => _activeCommand;
 
   /// 指示当前是否可以安全切换本地项目。
   /// Indicates whether it is safe to switch the local workspace.
@@ -835,6 +930,12 @@ class CodexController extends ChangeNotifier {
       return;
     }
     final canonicalPath = await directory.resolveSymbolicLinks();
+    if (await _isSystemTemporaryDirectory(canonicalPath)) {
+      lastError = '系统临时目录不能作为项目，请选择实际项目文件夹。';
+      _add(TimelineKind.error, '无法选择项目', lastError!);
+      notifyListeners();
+      return;
+    }
     await _saveConversationHistory();
     _updateCurrentWorkspaceConfiguration();
     final existingIndex = _workspaceConfigurations.indexWhere(
@@ -887,6 +988,7 @@ class CodexController extends ChangeNotifier {
       await _restoreConversationHistory(canonicalPath);
     }
     unawaited(refreshGitProject());
+    unawaited(refreshInactiveWorkspaceTaskLists());
     _add(TimelineKind.system, '项目已选择', canonicalPath);
     notifyListeners();
     try {
@@ -911,6 +1013,12 @@ class CodexController extends ChangeNotifier {
       return false;
     }
     final canonicalPath = await directory.resolveSymbolicLinks();
+    if (await _isSystemTemporaryDirectory(canonicalPath)) {
+      lastError = '系统临时目录不能作为项目，请选择实际项目文件夹。';
+      _add(TimelineKind.error, '无法选择项目', lastError!);
+      notifyListeners();
+      return false;
+    }
     if (canonicalPath == workspacePath) {
       _updateCurrentWorkspaceConfiguration();
       try {
@@ -944,6 +1052,20 @@ class CodexController extends ChangeNotifier {
     return true;
   }
 
+  /// Switches to a task's owning workspace before resuming it. Cached task
+  /// previews from other projects must never be resumed on the current
+  /// project's runtime connection.
+  Future<void> openWorkspaceThread({
+    required String workspace,
+    required CodexThread thread,
+  }) async {
+    if (workspace != workspacePath) {
+      final switched = await selectWorkspaceAndReconnect(workspace);
+      if (!switched || workspacePath != workspace || _disposed) return;
+    }
+    await resumeThread(thread);
+  }
+
   /// 用所选主目录创建并打开工作区；已保存目录会直接切换，不会生成重复记录。
   /// Creates and opens a workspace from a primary directory, switching to an existing saved entry without duplication.
   Future<bool> createWorkspace(String path) =>
@@ -961,6 +1083,8 @@ class CodexController extends ChangeNotifier {
     _workspaceConfigurations.removeWhere(
       (configuration) => configuration.primaryPath == primaryPath,
     );
+    _workspaceTaskLists.remove(primaryPath);
+    _workspaceTaskListLoadEpoch++;
     if (_workspaceConfigurations.length == previousLength) return;
     final wasPinned = _pinnedWorkspacePaths.remove(primaryPath);
     _add(TimelineKind.system, '已移除工作区记录', primaryPath);
@@ -1051,6 +1175,12 @@ class CodexController extends ChangeNotifier {
       return;
     }
     final canonicalPath = await directory.resolveSymbolicLinks();
+    if (await _isSystemTemporaryDirectory(canonicalPath)) {
+      lastError = '系统临时目录不能作为工作区目录。';
+      _add(TimelineKind.error, '无法添加目录', lastError!);
+      notifyListeners();
+      return;
+    }
     if (workspacePath == null) {
       await selectWorkspace(canonicalPath);
       return;
@@ -1086,6 +1216,11 @@ class CodexController extends ChangeNotifier {
       return;
     }
     final canonicalPath = await directory.resolveSymbolicLinks();
+    if (await _isSystemTemporaryDirectory(canonicalPath)) {
+      lastError = '系统临时目录不能作为工作区目录。';
+      notifyListeners();
+      return;
+    }
     final index = _workspaceConfigurations.indexWhere(
       (configuration) => configuration.primaryPath == primaryPath,
     );
@@ -1156,8 +1291,10 @@ class CodexController extends ChangeNotifier {
   /// 清空当前任务状态，使下一条消息创建新的服务器线程。
   /// Clears the current task state so the next message creates a server thread.
   void createThread() {
-    if (status != RuntimeStatus.ready || workspacePath == null) {
-      lastError = '运行时就绪后才能新建任务。';
+    if (!canCreateThread) {
+      lastError = status == RuntimeStatus.running
+          ? '当前任务运行中；完成或停止后才能新建任务。'
+          : '运行时就绪后才能新建任务。';
       notifyListeners();
       return;
     }
@@ -1168,6 +1305,61 @@ class CodexController extends ChangeNotifier {
     _resetConversationTimeline();
     _add(TimelineKind.system, '已新建任务', '发送第一条消息后会创建新的 Thread。');
     notifyListeners();
+  }
+
+  /// Queues a prompt for the current project. The task reconnects to its saved
+  /// project before it sends, so changing projects meanwhile is safe.
+  Future<bool> schedulePrompt({
+    required String prompt,
+    required DateTime runAt,
+  }) async {
+    await _runtimeLoad;
+    final text = prompt.trim();
+    final workspace = workspacePath;
+    if (text.isEmpty || workspace == null || !runAt.isAfter(DateTime.now())) {
+      return false;
+    }
+    final task = ScheduledTask(
+      id: '${DateTime.now().microsecondsSinceEpoch}-${math.Random().nextInt(1 << 32)}',
+      workspacePath: workspace,
+      prompt: text,
+      runAt: runAt,
+    );
+    _scheduledTasks.add(task);
+    _scheduledTasks.sort((left, right) => left.runAt.compareTo(right.runAt));
+    _armScheduledTask(task);
+    try {
+      await _saveScheduledTasks();
+    } catch (error) {
+      _scheduledTasks.removeWhere((value) => value.id == task.id);
+      _scheduledTaskTimers.remove(task.id)?.cancel();
+      lastError = '无法保存已安排任务：${_messageOf(error)}';
+      _add(TimelineKind.error, '已安排任务保存失败', lastError!);
+      notifyListeners();
+      return false;
+    }
+    _add(TimelineKind.system, '已安排任务', '将在 ${task.runAt} 发送到项目 $workspace。');
+    notifyListeners();
+    return true;
+  }
+
+  /// Removes an unsent scheduled prompt without changing any project files.
+  Future<void> cancelScheduledTask(String id) async {
+    await _runtimeLoad;
+    final removed = _scheduledTasks.where((task) => task.id == id).firstOrNull;
+    if (removed == null) return;
+    _scheduledTasks.remove(removed);
+    _scheduledTaskTimers.remove(id)?.cancel();
+    try {
+      await _saveScheduledTasks();
+    } catch (error) {
+      _scheduledTasks.add(removed);
+      _scheduledTasks.sort((left, right) => left.runAt.compareTo(right.runAt));
+      _armScheduledTask(removed);
+      lastError = '无法取消已安排任务：${_messageOf(error)}';
+      _add(TimelineKind.error, '取消已安排任务失败', lastError!);
+    }
+    if (!_disposed) notifyListeners();
   }
 
   /// 启动、初始化本地 App Server，并加载账户与线程状态。
@@ -1282,6 +1474,7 @@ class CodexController extends ChangeNotifier {
     status = RuntimeStatus.running;
     lastError = null;
     _clearStreamingState();
+    _activeTurnStartedAt = DateTime.now();
     _add(TimelineKind.user, '你', text, imagePaths: imagePaths);
     notifyListeners();
 
@@ -1331,6 +1524,7 @@ class CodexController extends ChangeNotifier {
       return true;
     } catch (error) {
       status = _server.isRunning ? RuntimeStatus.ready : RuntimeStatus.failed;
+      _clearStreamingState();
       lastError = _messageOf(error);
       _updateThreadStatus(activeThreadId, 'systemError');
       _add(TimelineKind.error, '任务未能启动', lastError!);
@@ -2374,15 +2568,32 @@ class CodexController extends ChangeNotifier {
         return;
       case 'turn/started':
         final turn = event.params['turn'];
-        if (turn is Map) activeTurnId = turn['id']?.toString();
+        if (_isEventForActiveThread(event.params) && turn is Map) {
+          activeTurnId = turn['id']?.toString();
+          _activeTurnStartedAt =
+              _turnStartedAt(JsonMap.from(turn)) ??
+              _activeTurnStartedAt ??
+              DateTime.now();
+        }
+      case 'item/started':
+        _recordStartedCommand(event.params);
       case 'turn/plan/updated':
-        _updateTaskPlan(event.params);
+        if (_isEventForActiveTurn(event.params)) {
+          _updateTaskPlan(event.params);
+        }
       case 'item/completed':
-        _recordCompletedFileChange(event.params['item']);
+        if (_isEventForActiveTurn(event.params)) {
+          _recordCompletedCommand(event.params);
+          _recordCompletedFileChange(event.params['item']);
+        }
       case 'turn/diff/updated':
-        _updateTurnDiff(event.params['diff']);
+        if (_isEventForActiveTurn(event.params)) {
+          _updateTurnDiff(event.params['diff']);
+        }
       case 'turn/completed':
-        _handleTurnCompleted(event.params);
+        if (_isEventForActiveTurn(event.params)) {
+          _handleTurnCompleted(event.params);
+        }
         unawaited(refreshThreads());
       case 'thread/archived':
       case 'thread/unarchived':
@@ -2520,6 +2731,7 @@ class CodexController extends ChangeNotifier {
         turnMap['status']?.toString() ??
         params['status']?.toString() ??
         'completed';
+    _appendTurnElapsed(turnMap);
     pendingApproval = null;
     approvalResponding = false;
     switch (completionStatus) {
@@ -2541,6 +2753,7 @@ class CodexController extends ChangeNotifier {
         _updateThreadStatus(activeThreadId, 'idle');
         _add(TimelineKind.system, '任务完成', '你可以继续在同一线程追问。');
     }
+    _clearStreamingState();
   }
 
   /// Updates a cached task status immediately after a turn changes outcome.
@@ -2574,15 +2787,7 @@ class CodexController extends ChangeNotifier {
             final text = item['text']?.toString() ?? _findText(item);
             if (text.isNotEmpty) _add(TimelineKind.agent, 'Codex', text);
           case 'commandExecution':
-            final command = item['command']?.toString() ?? '';
-            final output = item['aggregatedOutput']?.toString() ?? '';
-            final detail = [
-              command,
-              output,
-            ].where((value) => value.isNotEmpty).join('\n');
-            if (detail.isNotEmpty) {
-              _add(TimelineKind.command, '执行命令', detail);
-            }
+            _appendCompletedCommandItem(item);
           case 'plan':
             final text = item['text']?.toString() ?? '';
             if (text.isNotEmpty) _add(TimelineKind.system, '计划', text);
@@ -2604,7 +2809,123 @@ class CodexController extends ChangeNotifier {
             _appendToolHistoryItem(item);
         }
       }
+      _appendTurnElapsed(JsonMap.from(rawTurn));
     }
+  }
+
+  /// Keeps a single concise command line visible only while App Server marks a
+  /// command-execution item as active. Output deltas intentionally remain
+  /// hidden so the conversation does not turn into a terminal transcript.
+  void _recordStartedCommand(JsonMap params) {
+    if (!_isEventForActiveTurn(params)) return;
+    final rawItem = params['item'];
+    if (rawItem is! Map) return;
+    final item = JsonMap.from(rawItem);
+    if (item['type']?.toString() != 'commandExecution') return;
+    final command = _label(item['command']);
+    if (command.isEmpty) return;
+    _activeCommand = command;
+    _activeCommandItemId = _label(item['id']);
+  }
+
+  /// Converts a completed command item into the existing activity history and
+  /// removes its transient live-command presentation.
+  void _recordCompletedCommand(JsonMap params) {
+    if (!_isEventForActiveTurn(params)) return;
+    final rawItem = params['item'];
+    if (rawItem is! Map) return;
+    final item = JsonMap.from(rawItem);
+    if (item['type']?.toString() != 'commandExecution') return;
+    final itemId = _label(item['id']);
+    if (itemId.isEmpty || itemId == _activeCommandItemId) {
+      _activeCommand = null;
+      _activeCommandItemId = null;
+    }
+    _appendCompletedCommandItem(item);
+  }
+
+  bool _isEventForActiveTurn(JsonMap params) {
+    if (!_isEventForActiveThread(params)) return false;
+    final turn = params['turn'];
+    final threadId = _label(params['threadId']);
+    final turnId = _label(
+      params['turnId'] ?? (turn is Map ? turn['id'] : null),
+    );
+    // Some compatible App Server notifications omit both IDs. They may be the
+    // first plan update for the current turn, so let the plan handler attach
+    // them. Explicitly identified notifications must still match the open
+    // turn and thread.
+    return turnId.isEmpty ||
+        activeTurnId == turnId ||
+        (activeTurnId == null && threadId.isEmpty);
+  }
+
+  /// Limits timeline mutations to notifications for the thread being shown.
+  /// A connection can remain subscribed to previously resumed threads.
+  bool _isEventForActiveThread(JsonMap params) {
+    final threadId = _label(params['threadId']);
+    // Older App Server notifications may omit the thread ID, so retain that
+    // compatibility. An explicitly identified event, however, must belong to
+    // the task being shown; a blank task cannot receive a prior task's event.
+    return threadId.isEmpty || threadId == activeThreadId;
+  }
+
+  void _appendCompletedCommandItem(JsonMap item) {
+    final itemId = _label(item['id']);
+    if (itemId.isNotEmpty && !_completedCommandItemIds.add(itemId)) return;
+    final command = _label(item['command']);
+    final output = _label(item['aggregatedOutput']);
+    final detail = [
+      command,
+      output,
+    ].where((value) => value.isNotEmpty).join('\n');
+    if (detail.isNotEmpty) _add(TimelineKind.command, '执行命令', detail);
+  }
+
+  void _appendTurnElapsed(JsonMap turn) {
+    final duration = _turnDuration(turn);
+    if (duration == null) return;
+    _add(TimelineKind.elapsed, '已处理 ${_formatTurnDuration(duration)}', '');
+  }
+
+  Duration? _turnDuration(JsonMap turn) {
+    final durationMs = turn['durationMs'];
+    if (durationMs is num && durationMs >= 0) {
+      return Duration(milliseconds: durationMs.round());
+    }
+    final startedAt = _turnStartedAt(turn);
+    final completedAt = _turnCompletedAt(turn);
+    if (startedAt != null && completedAt != null) {
+      return completedAt.difference(startedAt);
+    }
+    if (_activeTurnStartedAt != null) {
+      return DateTime.now().difference(_activeTurnStartedAt!);
+    }
+    return null;
+  }
+
+  DateTime? _turnStartedAt(JsonMap turn) =>
+      _unixSecondsToDateTime(turn['startedAt']);
+
+  DateTime? _turnCompletedAt(JsonMap turn) =>
+      _unixSecondsToDateTime(turn['completedAt']);
+
+  DateTime? _unixSecondsToDateTime(Object? value) {
+    if (value is! num) return null;
+    return DateTime.fromMillisecondsSinceEpoch(value.round() * 1000);
+  }
+
+  String _formatTurnDuration(Duration duration) {
+    final seconds = duration.inSeconds;
+    final hours = seconds ~/ Duration.secondsPerHour;
+    final minutes =
+        (seconds % Duration.secondsPerHour) ~/ Duration.secondsPerMinute;
+    final remainingSeconds = seconds % Duration.secondsPerMinute;
+    final parts = <String>[];
+    if (hours > 0) parts.add('$hours 小时');
+    if (minutes > 0 || hours > 0) parts.add('$minutes 分钟');
+    if (remainingSeconds > 0 || parts.isEmpty) parts.add('$remainingSeconds 秒');
+    return parts.join(' ');
   }
 
   /// 将专用工具历史项转换为可读的时间线条目。
@@ -2761,17 +3082,6 @@ class CodexController extends ChangeNotifier {
       (turn['completedAt'] as num?)?.toInt() ??
       0;
 
-  /// 从原始文件变更协议值生成简短的可读描述。
-  /// Creates a short readable description from a raw file-change protocol value.
-  String _describeFileChange(Object? value) {
-    if (value is! Map) return '';
-    final path =
-        value['path']?.toString() ?? value['filePath']?.toString() ?? '';
-    final kind =
-        value['kind']?.toString() ?? value['type']?.toString() ?? 'changed';
-    return path.isEmpty ? kind : '$kind $path';
-  }
-
   /// 从任务完成项中提取并记录文件变更。
   /// Extracts and records file changes from a completed-turn item.
   void _recordCompletedFileChange(Object? rawItem) {
@@ -2781,11 +3091,11 @@ class CodexController extends ChangeNotifier {
     _recordFileChanges(rawItem['changes']);
   }
 
-  /// 合并服务器文件变更，并向时间线写入变更摘要。
-  /// Merges server file changes and writes a change summary to the timeline.
+  /// 合并服务器文件变更，供摘要、审查和右侧检查器使用。
+  /// Merges server file changes for the summary, review, and inspector.
   void _recordFileChanges(Object? rawChanges) {
     if (rawChanges is! Iterable) return;
-    final details = <String>[];
+    var changed = false;
     for (final rawChange in rawChanges) {
       if (rawChange is! Map) continue;
       final change = CodexFileChange.fromJson(rawChange);
@@ -2794,11 +3104,9 @@ class CodexController extends ChangeNotifier {
       _fileChangesByPath[change.path] = change.diff.isEmpty && previous != null
           ? previous.copyWith(kind: change.kind)
           : change;
-      final detail = _describeFileChange(rawChange);
-      if (detail.isNotEmpty) details.add(detail);
+      changed = true;
     }
-    if (details.isNotEmpty) {
-      _add(TimelineKind.command, '文件变更', details.join('\n'));
+    if (changed) {
       // App Server 有时只提供文件路径和变更类型，Diff 会由工作区状态补齐。
       // App Server sometimes sends only the path and change kind; hydrate the Diff from the workspace.
       unawaited(_hydrateMissingFileChangeDiffs());
@@ -2929,6 +3237,7 @@ class CodexController extends ChangeNotifier {
         _runtimeConfigurationStore.readModel(),
         _runtimeConfigurationStore.readPinnedWorkspaces(),
         _runtimeConfigurationStore.readApprovalMode(),
+        _runtimeConfigurationStore.readScheduledTasks(),
       ]);
       final executable = values[0] as String?;
       if (executable != null && executable.trim().isNotEmpty) {
@@ -2948,10 +3257,87 @@ class CodexController extends ChangeNotifier {
       if (!_approvalModeChangedBeforeLoad) {
         approvalMode = approvalModeFromStorageValue(values[4] as String?);
       }
+      _scheduledTasks
+        ..clear()
+        ..addAll(values[5] as List<ScheduledTask>);
+      _scheduledTasks.sort((left, right) => left.runAt.compareTo(right.runAt));
+      for (final task in _scheduledTasks) {
+        _armScheduledTask(task);
+      }
     } catch (error) {
       runtimeError = '无法读取已保存的运行时配置：${_messageOf(error)}';
     }
   }
+
+  Future<void> _saveScheduledTasks() =>
+      _runtimeConfigurationStore.saveScheduledTasks(_scheduledTasks);
+
+  /// Starts one timer per saved task. Overdue items are dispatched promptly
+  /// after launch; a task is removed only after it has been handed to Codex.
+  void _armScheduledTask(ScheduledTask task) {
+    _scheduledTaskTimers.remove(task.id)?.cancel();
+    final delay = task.runAt.difference(DateTime.now());
+    _scheduledTaskTimers[task.id] = Timer(
+      delay.isNegative ? Duration.zero : delay,
+      () => unawaited(_dispatchScheduledTask(task.id)),
+    );
+  }
+
+  Future<void> _dispatchScheduledTask(String id) async {
+    _scheduledTaskTimers.remove(id)?.cancel();
+    final task = _scheduledTasks.where((value) => value.id == id).firstOrNull;
+    if (task == null || _disposed) return;
+    // A live turn must not be replaced by unattended work. Keep the task and
+    // retry after a short delay, preserving the user's currently running task.
+    if (status == RuntimeStatus.running) {
+      _scheduledTaskTimers[id] = Timer(
+        const Duration(minutes: 1),
+        () => unawaited(_dispatchScheduledTask(id)),
+      );
+      return;
+    }
+    if (task.workspacePath != workspacePath) {
+      final switched = await selectWorkspaceAndReconnect(task.workspacePath);
+      // Selecting a different workspace waits for runtime teardown and
+      // startup. The user can cancel the task during that await, so never let
+      // a stale dispatch create a thread or schedule another retry.
+      if (_disposed || !_isScheduledTaskPending(task)) return;
+      if (!switched || _disposed || workspacePath != task.workspacePath) {
+        _scheduledTaskTimers[id] = Timer(
+          const Duration(minutes: 1),
+          () => unawaited(_dispatchScheduledTask(id)),
+        );
+        return;
+      }
+    }
+    if (status != RuntimeStatus.ready) {
+      _scheduledTaskTimers[id] = Timer(
+        const Duration(minutes: 1),
+        () => unawaited(_dispatchScheduledTask(id)),
+      );
+      return;
+    }
+    createThread();
+    final sent = await sendPrompt(task.prompt);
+    if (!sent) {
+      _scheduledTaskTimers[id] = Timer(
+        const Duration(minutes: 1),
+        () => unawaited(_dispatchScheduledTask(id)),
+      );
+      return;
+    }
+    _scheduledTasks.removeWhere((value) => value.id == id);
+    try {
+      await _saveScheduledTasks();
+    } catch (error) {
+      lastError = '已安排任务已发送，但清理记录失败：${_messageOf(error)}';
+      _add(TimelineKind.error, '已安排任务清理失败', lastError!);
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  bool _isScheduledTaskPending(ScheduledTask task) =>
+      _scheduledTasks.any((candidate) => candidate.id == task.id);
 
   /// 构建新线程的可选推理配置；模型为空时由 App Server 跟随 Codex 配置。
   /// Builds optional reasoning configuration for a new thread; a null model follows Codex configuration.
@@ -3251,12 +3637,14 @@ class CodexController extends ChangeNotifier {
     }
     try {
       final primaryPath = await primaryDirectory.resolveSymbolicLinks();
+      if (await _isSystemTemporaryDirectory(primaryPath)) return null;
       final additionalPaths = <String>[];
       for (final storedAdditional in stored.additionalPaths) {
         final directory = Directory(storedAdditional);
         if (!await directory.exists()) continue;
         final canonicalPath = await directory.resolveSymbolicLinks();
-        if (canonicalPath != primaryPath &&
+        if (!await _isSystemTemporaryDirectory(canonicalPath) &&
+            canonicalPath != primaryPath &&
             !additionalPaths.contains(canonicalPath)) {
           additionalPaths.add(canonicalPath);
         }
@@ -3285,10 +3673,15 @@ class CodexController extends ChangeNotifier {
           _add(TimelineKind.system, '已清除无效项目记录', storedPath.trim());
         } else {
           final canonicalPath = await directory.resolveSymbolicLinks();
-          restoredActivePath = canonicalPath;
-          if (workspacePath == null) {
-            workspacePath = canonicalPath;
-            _add(TimelineKind.system, '已恢复上次项目', canonicalPath);
+          if (await _isSystemTemporaryDirectory(canonicalPath)) {
+            await _runtimeConfigurationStore.clearWorkspace();
+            _add(TimelineKind.system, '已清除系统临时目录项目', canonicalPath);
+          } else {
+            restoredActivePath = canonicalPath;
+            if (workspacePath == null) {
+              workspacePath = canonicalPath;
+              _add(TimelineKind.system, '已恢复上次项目', canonicalPath);
+            }
           }
         }
       }
@@ -3384,6 +3777,7 @@ class CodexController extends ChangeNotifier {
       if (!listEquals(legacyAdditional, _additionalWorkspacePaths)) {
         await _saveAdditionalWorkspacePaths();
       }
+      unawaited(refreshInactiveWorkspaceTaskLists());
     } catch (error) {
       lastError = '无法恢复上次项目：${_messageOf(error)}';
     } finally {
@@ -3551,7 +3945,11 @@ class CodexController extends ChangeNotifier {
   /// Cancels streaming timers and clears the Agent-entry index.
   void _clearStreamingState() {
     _agentEntryIndexByItem.clear();
+    _completedCommandItemIds.clear();
     activeTurnId = null;
+    _activeTurnStartedAt = null;
+    _activeCommand = null;
+    _activeCommandItemId = null;
     activeTaskPlan = null;
     _deltaNotificationTimer?.cancel();
     _deltaNotificationTimer = null;
@@ -3733,6 +4131,16 @@ class CodexController extends ChangeNotifier {
   String _messageOf(Object error) =>
       error.toString().replaceFirst('Bad state: ', '');
 
+  /// 系统临时目录根会被系统随时清理，不能作为稳定的 Codex 项目。
+  /// The system temporary-directory root is not a stable Codex project.
+  Future<bool> _isSystemTemporaryDirectory(String canonicalPath) async {
+    try {
+      return canonicalPath == await Directory.systemTemp.resolveSymbolicLinks();
+    } on FileSystemException {
+      return false;
+    }
+  }
+
   /// Creates a local project identity without tying history to its directory.
   String _newWorkspaceProjectId() =>
       'project-${DateTime.now().microsecondsSinceEpoch}-${_workspaceConfigurations.length}';
@@ -3775,6 +4183,10 @@ class CodexController extends ChangeNotifier {
     _historySaveTimer?.cancel();
     _runtimeReconnectTimer?.cancel();
     _runtimeReconnectTimer = null;
+    for (final timer in _scheduledTaskTimers.values) {
+      timer.cancel();
+    }
+    _scheduledTaskTimers.clear();
     _runtimeConnectionEpoch++;
     unawaited(_saveConversationHistory());
     _disposed = true;

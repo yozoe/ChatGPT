@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -6,21 +7,24 @@ import '../domain/codex_marketplace.dart';
 
 typedef CodexPluginProcessRunner =
     Future<ProcessResult> Function(String executable, List<String> arguments);
+typedef CodexPluginExecutableProvider = FutureOr<String> Function();
 
 /// 通过本机 Codex CLI 管理 marketplace 插件与启用状态。
 /// Manages marketplace plugins and enabled states through the local Codex CLI.
 class CodexPluginStore {
+  static const _commandTimeout = Duration(seconds: 20);
+
   /// 创建插件存储；测试可替换可执行路径和 Codex 用户目录。
   /// Creates a plugin store; tests can replace the executable and Codex home.
   CodexPluginStore({
-    String Function()? executableProvider,
+    CodexPluginExecutableProvider? executableProvider,
     Directory? codexHome,
     CodexPluginProcessRunner? processRunner,
   }) : _executableProvider = executableProvider ?? _defaultExecutable,
        _codexHome = codexHome,
        _processRunner = processRunner ?? _defaultProcessRunner;
 
-  final String Function() _executableProvider;
+  final CodexPluginExecutableProvider _executableProvider;
   final Directory? _codexHome;
   final CodexPluginProcessRunner _processRunner;
   Future<void> _configWriteQueue = Future.value();
@@ -173,10 +177,15 @@ class CodexPluginStore {
   /// 执行 CLI 子命令并将失败信息转换为可展示的错误。
   /// Runs a CLI subcommand and converts failures into displayable errors.
   Future<String> _run(List<String> arguments) async {
+    // The executable provider may scan PATH entries asynchronously. Keep that
+    // work inside the same bounded user-visible operation as the CLI command.
+    final executable = await Future<String>.sync(
+      _executableProvider,
+    ).timeout(_commandTimeout);
     final result = await _processRunner(
-      _executableProvider(),
+      executable,
       arguments,
-    ).timeout(const Duration(seconds: 20));
+    ).timeout(_commandTimeout);
     if (result.exitCode != 0) {
       final detail = result.stderr.toString().trim();
       throw StateError(detail.isEmpty ? 'Codex CLI 插件命令执行失败。' : detail);

@@ -5,6 +5,7 @@ import 'dart:math' as math;
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -13,6 +14,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 
 import '../app_controller.dart';
+import '../codex_hover_popup.dart';
 import '../domain/codex_file_change.dart';
 import '../domain/git_project_status.dart';
 import '../domain/codex_plugin.dart';
@@ -20,6 +22,7 @@ import '../domain/codex_skill.dart';
 import '../domain/codex_marketplace.dart';
 import '../domain/codex_thread.dart';
 import '../domain/pending_approval.dart';
+import '../domain/scheduled_task.dart';
 import '../domain/task_plan.dart';
 import '../domain/timeline_entry.dart';
 import '../domain/workspace_configuration.dart';
@@ -36,6 +39,15 @@ bool _isImagePath(String path) {
     '.bmp',
   ].any(lower.endsWith);
 }
+
+enum _WorkspaceDestination {
+  conversation,
+  pullRequests,
+  scheduledTasks,
+  plugins,
+}
+
+enum _PluginLibraryTab { plugins, skills }
 
 /// Identifies a retained timeline viewport within its owning workspace.
 /// 在所属项目范围内标识保留的时间线视口。
@@ -84,6 +96,7 @@ class CodexWorkspace extends ConsumerStatefulWidget {
 
 class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   final TextEditingController _composer = TextEditingController();
+  final ValueNotifier<int> _recordSkillRequest = ValueNotifier(0);
   final Map<_ThreadViewportKey, ScrollController> _timelineScrollControllers =
       {};
   final Map<_ThreadViewportKey, _TimelinePageData> _timelinePages = {};
@@ -94,6 +107,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   bool _timelineScrollScheduled = false;
   bool _threadHistoryLoading = false;
   bool _suppressTimelineScrollAfterThreadResume = false;
+  _WorkspaceDestination _destination = _WorkspaceDestination.conversation;
   int _timelineScrollGeneration = 0;
   static const _minimumSidebarWidth = 210.0;
   static const _maximumSidebarWidth = 420.0;
@@ -124,6 +138,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   void dispose() {
     _controller.removeListener(_handleControllerUpdate);
     _composer.dispose();
+    _recordSkillRequest.dispose();
     for (final controller in _timelineScrollControllers.values.toSet()) {
       controller.dispose();
     }
@@ -210,6 +225,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
           _controller.status != RuntimeStatus.running &&
           _controller.fileChanges.isNotEmpty,
       canSteer: _controller.canSteer,
+      activeCommand: _controller.activeCommand,
     );
   }
 
@@ -1730,51 +1746,80 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     );
   }
 
+  /// Opens the scheduled-task workspace instead of covering the active task.
+  Future<void> _showScheduledTasks() async {
+    if (!mounted) return;
+    setState(() => _destination = _WorkspaceDestination.scheduledTasks);
+  }
+
+  /// Opens the full plugin workspace while the top-bar button keeps its
+  /// focused management dialog for compact task-context use.
+  Future<void> _showPluginsPage() async {
+    if (!mounted) return;
+    setState(() => _destination = _WorkspaceDestination.plugins);
+    unawaited(_controller.refreshPlugins());
+  }
+
+  /// Opens the pull-request workspace without starting an unrequested Git
+  /// process; the page exposes an explicit refresh control.
+  Future<void> _showPullRequests() async {
+    if (!mounted) return;
+    setState(() => _destination = _WorkspaceDestination.pullRequests);
+  }
+
+  /// Opens the scheduling editor from the scheduled-task workspace.
+  Future<void> _showScheduledTaskComposer([String? initialPrompt]) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => _ControllerBuilder(
+        overrideController: widget.controller,
+        builder: (context, controller) => _ScheduledTasksDialog(
+          controller: controller,
+          initialPrompt: initialPrompt,
+        ),
+      ),
+    );
+  }
+
+  void _startNewConversation() {
+    setState(() => _destination = _WorkspaceDestination.conversation);
+    _controller.createThread();
+  }
+
+  void _askCodexAboutGitHubCli() {
+    _startNewConversation();
+    _composer.text = '请帮我安装并配置 GitHub CLI，以便查看和管理 Pull Request。';
+    _composer.selection = TextSelection.collapsed(
+      offset: _composer.text.length,
+    );
+  }
+
+  void _createPluginWithCodex() {
+    _startNewConversation();
+    _composer.text = r'$plugin-creator help me create a plugin';
+    _composer.selection = TextSelection.collapsed(
+      offset: _composer.text.length,
+    );
+  }
+
+  void _recordSkillWithCodex() {
+    _startNewConversation();
+    _composer.clear();
+    // The composer is mounted after the destination changes. Deferring the
+    // request makes this behave exactly like choosing "录制技能" from its
+    // own context menu, including the structured skill input on send.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _recordSkillRequest.value++;
+    });
+  }
+
   /// 输入或选择一个本地/远程 marketplace 来源并交给控制器注册。
   /// Enters or chooses a local/remote marketplace source and registers it.
   Future<void> _showAddMarketplace() async {
-    final source = TextEditingController();
     final selected = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('添加插件市场'),
-        content: SizedBox(
-          width: 460,
-          child: TextField(
-            controller: source,
-            autofocus: true,
-            decoration: const InputDecoration(
-              labelText: '本地目录、Git URL 或 owner/repo',
-              hintText: 'example-org/codex-plugins',
-              border: OutlineInputBorder(),
-            ),
-            onSubmitted: (value) => Navigator.of(context).pop(value),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              final path = await getDirectoryPath(
-                confirmButtonText: '选择本地 marketplace',
-              );
-              if (path != null && context.mounted) {
-                Navigator.of(context).pop(path);
-              }
-            },
-            child: const Text('选择本地目录'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(source.text),
-            child: const Text('添加'),
-          ),
-        ],
-      ),
+      builder: (context) => const _AddMarketplaceDialog(),
     );
-    source.dispose();
     if (selected?.trim().isNotEmpty == true) {
       await _controller.addPluginMarketplace(selected!);
     }
@@ -1924,120 +1969,187 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     final controller = widget.controller ?? ref.watch(codexControllerProvider)!;
     return Scaffold(
       body: SafeArea(
-        child: Column(
-          children: [
-            _TopBar(
-              controller: controller,
-              themeMode: widget.themeMode,
-              themePreset: widget.themePreset,
-              onThemeModeChanged: widget.onThemeModeChanged,
-              onThemePresetChanged: widget.onThemePresetChanged,
-              onChooseWorkspace: _showWorkspaceDirectories,
-              onAccount: _showAccount,
-              onCodexConfiguration: _showCodexConfiguration,
-              onPlugins: _showPlugins,
-            ),
-            const Divider(height: 1),
-            Expanded(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final compact = constraints.maxWidth < 980;
-                  final sidebarMaximum =
-                      (constraints.maxWidth -
-                              (compact ? 360 : _inspectorWidth + 420))
-                          .clamp(_minimumSidebarWidth, _maximumSidebarWidth)
-                          .toDouble();
-                  final inspectorMaximum =
-                      (constraints.maxWidth - _sidebarWidth - 420)
-                          .clamp(_minimumInspectorWidth, _maximumInspectorWidth)
-                          .toDouble();
-                  final sidebarWidth = _sidebarWidth
-                      .clamp(_minimumSidebarWidth, sidebarMaximum)
-                      .toDouble();
-                  final inspectorWidth = _inspectorWidth
-                      .clamp(_minimumInspectorWidth, inspectorMaximum)
-                      .toDouble();
-                  return Row(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final compact = constraints.maxWidth < 980;
+            final sidebarMaximum =
+                (constraints.maxWidth - (compact ? 360 : _inspectorWidth + 420))
+                    .clamp(_minimumSidebarWidth, _maximumSidebarWidth)
+                    .toDouble();
+            final inspectorMaximum =
+                (constraints.maxWidth - _sidebarWidth - 420)
+                    .clamp(_minimumInspectorWidth, _maximumInspectorWidth)
+                    .toDouble();
+            final sidebarWidth = _sidebarWidth
+                .clamp(_minimumSidebarWidth, sidebarMaximum)
+                .toDouble();
+            final inspectorWidth = _inspectorWidth
+                .clamp(_minimumInspectorWidth, inspectorMaximum)
+                .toDouble();
+            return Row(
+              children: [
+                SizedBox(
+                  width: sidebarWidth,
+                  child: Column(
                     children: [
-                      _Sidebar(
-                        width: sidebarWidth,
+                      _TopBar(
+                        key: const Key('workspace-column-topbar'),
                         controller: controller,
+                        themeMode: widget.themeMode,
+                        themePreset: widget.themePreset,
+                        onThemeModeChanged: widget.onThemeModeChanged,
+                        onThemePresetChanged: widget.onThemePresetChanged,
                         onChooseWorkspace: _showWorkspaceDirectories,
-                        onEditWorkspace: _showEditWorkspaceDialog,
-                        onCreateWorkspace: () => unawaited(_createWorkspace()),
-                        onConfigureRuntime: _showRuntime,
-                        onRenameThread: _renameThread,
-                        onArchiveThread: _archiveThread,
-                        onArchiveThreads: _archiveThreads,
-                        onDeleteThread: _deleteThread,
-                        onShowArchivedThreads: _showArchivedThreads,
-                        onExportHistory: _exportConversationHistory,
-                        onImportHistory: _importConversationHistory,
-                        onShowGitProject: _showGitProject,
+                        onAccount: _showAccount,
+                        onCodexConfiguration: _showCodexConfiguration,
+                        onPlugins: _showPlugins,
+                        showIdentity: true,
+                        showControls: false,
                       ),
-                      _PaneResizeHandle(
-                        key: const Key('sidebar-resize-handle'),
-                        onDragDelta: (delta) => setState(() {
-                          _sidebarWidth = (_sidebarWidth + delta)
-                              .clamp(_minimumSidebarWidth, sidebarMaximum)
-                              .toDouble();
-                        }),
-                      ),
+                      const Divider(height: 1),
                       Expanded(
-                        child: _ConversationPane(
+                        child: _Sidebar(
+                          width: sidebarWidth,
                           controller: controller,
-                          composer: _composer,
-                          timelinePages: _timelinePages,
-                          timelineScrollControllers: _timelineScrollControllers,
-                          activeTimelinePageKey: _displayedThreadKey,
-                          threadHistoryLoading: _threadHistoryLoading,
-                          fileChangeSummaryExpanded: (pageKey) =>
-                              _fileChangeSummaryExpanded[pageKey] ?? false,
-                          onFileChangeSummaryExpandedChanged:
-                              (pageKey, expanded) {
-                                setState(() {
-                                  _fileChangeSummaryExpanded[pageKey] =
-                                      expanded;
-                                });
-                              },
-                          activityExpanded: (pageKey, activityId) =>
-                              _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
-                              true,
-                          onActivityExpandedChanged:
-                              (pageKey, activityId, expanded) {
-                                setState(() {
-                                  _activityListExpanded['${pageKey.storageKey}/$activityId'] =
-                                      expanded;
-                                });
-                              },
-                          onSend: _send,
-                          onSteer: _steer,
-                          onAdjustDirection: _adjustDirection,
-                          onShowFileChanges: _showFileChanges,
-                          onReview: _showCodeReview,
+                          onChooseWorkspace: _showWorkspaceDirectories,
+                          onEditWorkspace: _showEditWorkspaceDialog,
+                          onCreateWorkspace: () =>
+                              unawaited(_createWorkspace()),
+                          onConfigureRuntime: _showRuntime,
+                          onRenameThread: _renameThread,
+                          onArchiveThread: _archiveThread,
+                          onArchiveThreads: _archiveThreads,
+                          onDeleteThread: _deleteThread,
+                          onShowArchivedThreads: _showArchivedThreads,
+                          onExportHistory: _exportConversationHistory,
+                          onImportHistory: _importConversationHistory,
+                          onShowGitProject: _showGitProject,
+                          onShowPlugins: _showPluginsPage,
+                          onShowScheduledTasks: _showScheduledTasks,
+                          onShowPullRequests: _showPullRequests,
+                          onNewConversation: _startNewConversation,
+                          destination: _destination,
                         ),
                       ),
-                      if (!compact) ...[
-                        _PaneResizeHandle(
-                          key: const Key('inspector-resize-handle'),
-                          onDragDelta: (delta) => setState(() {
-                            _inspectorWidth = (_inspectorWidth - delta)
-                                .clamp(_minimumInspectorWidth, inspectorMaximum)
-                                .toDouble();
-                          }),
-                        ),
-                        _Inspector(
-                          width: inspectorWidth,
-                          controller: controller,
-                          onShowGitProject: _showGitProject,
-                        ),
-                      ],
                     ],
-                  );
-                },
-              ),
-            ),
-          ],
+                  ),
+                ),
+                _PaneResizeHandle(
+                  key: const Key('sidebar-resize-handle'),
+                  onDragDelta: (delta) => setState(() {
+                    _sidebarWidth = (_sidebarWidth + delta)
+                        .clamp(_minimumSidebarWidth, sidebarMaximum)
+                        .toDouble();
+                  }),
+                ),
+                Expanded(
+                  child: _destination == _WorkspaceDestination.scheduledTasks
+                      ? _ScheduledTasksPage(
+                          controller: controller,
+                          onCreate: _showScheduledTaskComposer,
+                        )
+                      : _destination == _WorkspaceDestination.plugins
+                      ? _PluginsPage(
+                          controller: controller,
+                          onAddMarketplace: _showAddMarketplace,
+                          onManageMarketplaces: _showMarketplaces,
+                          onCreatePlugin: _createPluginWithCodex,
+                          onRecordSkill: _recordSkillWithCodex,
+                        )
+                      : _destination == _WorkspaceDestination.pullRequests
+                      ? _PullRequestsPage(
+                          controller: controller,
+                          onOpenGitProject: _showGitProject,
+                          onAskCodex: _askCodexAboutGitHubCli,
+                        )
+                      : Column(
+                          children: [
+                            _TopBar(
+                              key: const Key('workbench-column-topbar'),
+                              controller: controller,
+                              themeMode: widget.themeMode,
+                              themePreset: widget.themePreset,
+                              onThemeModeChanged: widget.onThemeModeChanged,
+                              onThemePresetChanged: widget.onThemePresetChanged,
+                              onChooseWorkspace: _showWorkspaceDirectories,
+                              onAccount: _showAccount,
+                              onCodexConfiguration: _showCodexConfiguration,
+                              onPlugins: _showPlugins,
+                              showIdentity: false,
+                              showControls: true,
+                              showTaskContext: true,
+                              onShowFileChanges: _showFileChanges,
+                            ),
+                            const Divider(height: 1),
+                            Expanded(
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: _ConversationPane(
+                                      controller: controller,
+                                      composer: _composer,
+                                      recordSkillRequest: _recordSkillRequest,
+                                      timelinePages: _timelinePages,
+                                      timelineScrollControllers:
+                                          _timelineScrollControllers,
+                                      activeTimelinePageKey:
+                                          _displayedThreadKey,
+                                      threadHistoryLoading:
+                                          _threadHistoryLoading,
+                                      fileChangeSummaryExpanded: (pageKey) =>
+                                          _fileChangeSummaryExpanded[pageKey] ??
+                                          false,
+                                      onFileChangeSummaryExpandedChanged:
+                                          (pageKey, expanded) {
+                                            setState(() {
+                                              _fileChangeSummaryExpanded[pageKey] =
+                                                  expanded;
+                                            });
+                                          },
+                                      activityExpanded: (pageKey, activityId) =>
+                                          _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
+                                          true,
+                                      onActivityExpandedChanged:
+                                          (pageKey, activityId, expanded) {
+                                            setState(() {
+                                              _activityListExpanded['${pageKey.storageKey}/$activityId'] =
+                                                  expanded;
+                                            });
+                                          },
+                                      onSend: _send,
+                                      onSteer: _steer,
+                                      onAdjustDirection: _adjustDirection,
+                                      onReview: _showCodeReview,
+                                    ),
+                                  ),
+                                  if (!compact) ...[
+                                    _PaneResizeHandle(
+                                      key: const Key('inspector-resize-handle'),
+                                      onDragDelta: (delta) => setState(() {
+                                        _inspectorWidth =
+                                            (_inspectorWidth - delta)
+                                                .clamp(
+                                                  _minimumInspectorWidth,
+                                                  inspectorMaximum,
+                                                )
+                                                .toDouble();
+                                      }),
+                                    ),
+                                    _Inspector(
+                                      width: inspectorWidth,
+                                      controller: controller,
+                                      onShowGitProject: _showGitProject,
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                ),
+              ],
+            );
+          },
         ),
       ),
     );
@@ -2654,6 +2766,11 @@ class _TopBar extends StatelessWidget {
     required this.onAccount,
     required this.onCodexConfiguration,
     required this.onPlugins,
+    required this.showIdentity,
+    required this.showControls,
+    this.showTaskContext = false,
+    this.onShowFileChanges,
+    super.key,
   });
 
   final CodexController controller;
@@ -2665,12 +2782,15 @@ class _TopBar extends StatelessWidget {
   final Future<void> Function() onAccount;
   final Future<void> Function() onCodexConfiguration;
   final Future<void> Function() onPlugins;
+  final bool showIdentity;
+  final bool showControls;
+  final bool showTaskContext;
+  final Future<void> Function()? onShowFileChanges;
 
-  /// 构建包含运行时、账户、Provider 和项目控制的顶部栏。
-  /// Builds the top bar with runtime, account, provider, and workspace controls.
+  /// 构建归属左侧项目列或右侧工作台列的独立顶部栏。
+  /// Builds an independent top bar for either the project or workbench column.
   @override
   Widget build(BuildContext context) {
-    final compact = MediaQuery.sizeOf(context).width < 1000;
     final palette = YeknomPalette.of(context);
     final color = switch (controller.status) {
       RuntimeStatus.ready => palette.ack,
@@ -2689,136 +2809,318 @@ class _TopBar extends StatelessWidget {
     return SizedBox(
       height: 62,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        child: Row(
-          children: [
-            Icon(Icons.auto_awesome, color: palette.ack),
-            const SizedBox(width: 10),
-            Text('Codex Desk', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(width: 16),
-            _StatusPill(label: label, color: color),
-            const Spacer(),
-            PopupMenuButton<_ThemeAction>(
-              tooltip:
-                  '主题：${_themeModeLabel(themeMode)} · ${_themePresetLabel(themePreset)}',
-              enabled:
-                  onThemeModeChanged != null || onThemePresetChanged != null,
-              icon: Icon(_themeModeIcon(themeMode)),
-              onSelected: (action) {
-                switch (action) {
-                  case _ThemeAction.system:
-                    onThemeModeChanged?.call(ThemeMode.system);
-                  case _ThemeAction.light:
-                    onThemeModeChanged?.call(ThemeMode.light);
-                  case _ThemeAction.dark:
-                    onThemeModeChanged?.call(ThemeMode.dark);
-                  case _ThemeAction.workbench:
-                    onThemePresetChanged?.call(YeknomColorPreset.workbench);
-                  case _ThemeAction.cobalt:
-                    onThemePresetChanged?.call(YeknomColorPreset.cobalt);
-                  case _ThemeAction.orchid:
-                    onThemePresetChanged?.call(YeknomColorPreset.orchid);
-                  case _ThemeAction.graphite:
-                    onThemePresetChanged?.call(YeknomColorPreset.graphite);
-                  case _ThemeAction.obsidian:
-                    onThemePresetChanged?.call(YeknomColorPreset.obsidian);
-                  case _ThemeAction.midnight:
-                    onThemePresetChanged?.call(YeknomColorPreset.midnight);
-                  case _ThemeAction.blackberry:
-                    onThemePresetChanged?.call(YeknomColorPreset.blackberry);
-                  case _ThemeAction.sage:
-                    onThemePresetChanged?.call(YeknomColorPreset.sage);
-                }
-              },
-              itemBuilder: (context) => [
-                const PopupMenuItem<_ThemeAction>(
-                  enabled: false,
-                  child: Text('显示模式'),
-                ),
-                CheckedPopupMenuItem(
-                  key: const Key('theme-mode-system'),
-                  value: _ThemeAction.system,
-                  checked: themeMode == ThemeMode.system,
-                  child: const Text('跟随系统'),
-                ),
-                CheckedPopupMenuItem(
-                  key: const Key('theme-mode-light'),
-                  value: _ThemeAction.light,
-                  checked: themeMode == ThemeMode.light,
-                  child: const Text('浅色'),
-                ),
-                CheckedPopupMenuItem(
-                  key: const Key('theme-mode-dark'),
-                  value: _ThemeAction.dark,
-                  checked: themeMode == ThemeMode.dark,
-                  child: const Text('深色'),
-                ),
-                const PopupMenuDivider(),
-                const PopupMenuItem<_ThemeAction>(
-                  enabled: false,
-                  child: Text('配色'),
-                ),
-                ..._ThemeAction.values
-                    .where((action) => action.preset != null)
-                    .map(
-                      (action) => CheckedPopupMenuItem(
-                        key: ValueKey('theme-preset-${action.preset!.name}'),
-                        value: action,
-                        checked: action.preset == themePreset,
-                        child: Text(_themePresetLabel(action.preset!)),
-                      ),
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final compact = constraints.maxWidth < 1180;
+            final showProvider = showTaskContext && constraints.maxWidth >= 740;
+            final showSandbox = showTaskContext && constraints.maxWidth >= 880;
+            return Row(
+              children: [
+                if (showIdentity) ...[
+                  Icon(Icons.auto_awesome, color: palette.ack),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Codex Desk',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleMedium,
                     ),
+                  ),
+                  const SizedBox(width: 8),
+                  _StatusPill(label: label, color: color),
+                ],
+                if (showTaskContext) ...[
+                  Flexible(child: _EditableTaskTitle(controller: controller)),
+                  if (showProvider) ...[
+                    const SizedBox(width: 12),
+                    _ProviderChip(
+                      label: '${controller.providerLabel} / App Server',
+                    ),
+                  ],
+                  if (showSandbox) ...[
+                    const SizedBox(width: 8),
+                    const _ProviderChip(label: 'workspace-write'),
+                  ],
+                  const SizedBox(width: 4),
+                  IconButton(
+                    key: const Key('workbench-file-changes-button'),
+                    tooltip: '查看文件变更',
+                    onPressed: onShowFileChanges,
+                    icon: const Icon(Icons.difference_outlined, size: 19),
+                  ),
+                ],
+                if (showControls) ...[
+                  PopupMenuButton<_ThemeAction>(
+                    tooltip:
+                        '主题：${_themeModeLabel(themeMode)} · ${_themePresetLabel(themePreset)}',
+                    enabled:
+                        onThemeModeChanged != null ||
+                        onThemePresetChanged != null,
+                    icon: Icon(_themeModeIcon(themeMode)),
+                    onSelected: (action) {
+                      switch (action) {
+                        case _ThemeAction.system:
+                          onThemeModeChanged?.call(ThemeMode.system);
+                        case _ThemeAction.light:
+                          onThemeModeChanged?.call(ThemeMode.light);
+                        case _ThemeAction.dark:
+                          onThemeModeChanged?.call(ThemeMode.dark);
+                        case _ThemeAction.workbench:
+                          onThemePresetChanged?.call(
+                            YeknomColorPreset.workbench,
+                          );
+                        case _ThemeAction.cobalt:
+                          onThemePresetChanged?.call(YeknomColorPreset.cobalt);
+                        case _ThemeAction.orchid:
+                          onThemePresetChanged?.call(YeknomColorPreset.orchid);
+                        case _ThemeAction.graphite:
+                          onThemePresetChanged?.call(
+                            YeknomColorPreset.graphite,
+                          );
+                        case _ThemeAction.obsidian:
+                          onThemePresetChanged?.call(
+                            YeknomColorPreset.obsidian,
+                          );
+                        case _ThemeAction.midnight:
+                          onThemePresetChanged?.call(
+                            YeknomColorPreset.midnight,
+                          );
+                        case _ThemeAction.blackberry:
+                          onThemePresetChanged?.call(
+                            YeknomColorPreset.blackberry,
+                          );
+                        case _ThemeAction.sage:
+                          onThemePresetChanged?.call(YeknomColorPreset.sage);
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      const PopupMenuItem<_ThemeAction>(
+                        enabled: false,
+                        child: Text('显示模式'),
+                      ),
+                      CheckedPopupMenuItem(
+                        key: const Key('theme-mode-system'),
+                        value: _ThemeAction.system,
+                        checked: themeMode == ThemeMode.system,
+                        child: const Text('跟随系统'),
+                      ),
+                      CheckedPopupMenuItem(
+                        key: const Key('theme-mode-light'),
+                        value: _ThemeAction.light,
+                        checked: themeMode == ThemeMode.light,
+                        child: const Text('浅色'),
+                      ),
+                      CheckedPopupMenuItem(
+                        key: const Key('theme-mode-dark'),
+                        value: _ThemeAction.dark,
+                        checked: themeMode == ThemeMode.dark,
+                        child: const Text('深色'),
+                      ),
+                      const PopupMenuDivider(),
+                      const PopupMenuItem<_ThemeAction>(
+                        enabled: false,
+                        child: Text('配色'),
+                      ),
+                      ..._ThemeAction.values
+                          .where((action) => action.preset != null)
+                          .map(
+                            (action) => CheckedPopupMenuItem(
+                              key: ValueKey(
+                                'theme-preset-${action.preset!.name}',
+                              ),
+                              value: action,
+                              checked: action.preset == themePreset,
+                              child: Text(_themePresetLabel(action.preset!)),
+                            ),
+                          ),
+                    ],
+                  ),
+                  const SizedBox(width: 4),
+                  if (compact)
+                    IconButton(
+                      tooltip: '账户：${controller.authLabel}',
+                      onPressed: onAccount,
+                      icon: const Icon(Icons.person_outline),
+                    )
+                  else
+                    TextButton.icon(
+                      onPressed: onAccount,
+                      icon: const Icon(Icons.person_outline),
+                      label: Text(controller.authLabel),
+                    ),
+                  const SizedBox(width: 8),
+                  if (compact)
+                    IconButton(
+                      key: const Key('codex-configuration-button'),
+                      tooltip: 'Provider：${controller.providerLabel}',
+                      onPressed: onCodexConfiguration,
+                      icon: const Icon(Icons.route_outlined),
+                    )
+                  else
+                    TextButton.icon(
+                      key: const Key('codex-configuration-button'),
+                      onPressed: onCodexConfiguration,
+                      icon: const Icon(Icons.route_outlined),
+                      label: Text(controller.providerLabel),
+                    ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    key: const Key('plugin-manager-button'),
+                    tooltip: '插件管理',
+                    onPressed: onPlugins,
+                    icon: const Icon(Icons.extension_outlined),
+                  ),
+                  const SizedBox(width: 4),
+                  if (compact)
+                    IconButton(
+                      tooltip: '管理工作区',
+                      onPressed: onChooseWorkspace,
+                      icon: const Icon(Icons.folder_copy_outlined),
+                    )
+                  else
+                    TextButton.icon(
+                      onPressed: onChooseWorkspace,
+                      icon: const Icon(Icons.folder_copy_outlined),
+                      label: const Text('工作区'),
+                    ),
+                ],
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+CodexThread? _activeThreadFor(CodexController controller) {
+  final activeThreadId = controller.activeThreadId;
+  if (activeThreadId == null) return null;
+  for (final thread in [...controller.threads, ...controller.archivedThreads]) {
+    if (thread.id == activeThreadId) return thread;
+  }
+  return null;
+}
+
+/// Displays the active task name in the workbench header and turns it into an
+/// inline editor on demand.
+/// 在工作台顶部显示当前任务名称，并按需切换为行内编辑器。
+class _EditableTaskTitle extends StatefulWidget {
+  const _EditableTaskTitle({required this.controller});
+
+  final CodexController controller;
+
+  @override
+  State<_EditableTaskTitle> createState() => _EditableTaskTitleState();
+}
+
+class _EditableTaskTitleState extends State<_EditableTaskTitle> {
+  final TextEditingController _editor = TextEditingController();
+  final FocusNode _focusNode = FocusNode();
+  String? _editingThreadId;
+
+  @override
+  void dispose() {
+    _editor.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _beginEditing(CodexThread thread) {
+    setState(() {
+      _editingThreadId = thread.id;
+      _editor.text = thread.title;
+      _editor.selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: _editor.text.length,
+      );
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _focusNode.requestFocus();
+    });
+  }
+
+  void _cancelEditing() {
+    if (_editingThreadId == null) return;
+    setState(() => _editingThreadId = null);
+  }
+
+  Future<void> _save(CodexThread thread) async {
+    final nextName = _editor.text.trim();
+    _cancelEditing();
+    if (nextName.isEmpty || nextName == thread.title) return;
+    await widget.controller.renameThread(thread, nextName);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final thread = _activeThreadFor(widget.controller);
+    final editing = thread != null && _editingThreadId == thread.id;
+    final title = thread?.title ?? '新建任务';
+    if (editing) {
+      return CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.escape): _cancelEditing,
+        },
+        child: TextField(
+          key: const Key('workbench-task-title-editor'),
+          controller: _editor,
+          focusNode: _focusNode,
+          maxLength: 120,
+          maxLines: 1,
+          textInputAction: TextInputAction.done,
+          onSubmitted: (_) => _save(thread),
+          style: Theme.of(context).textTheme.titleMedium,
+          decoration: InputDecoration(
+            counterText: '',
+            isDense: true,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 10,
+              vertical: 8,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(9),
+              borderSide: BorderSide(color: palette.controlBorder),
+            ),
+          ),
+        ),
+      );
+    }
+    return Tooltip(
+      message: thread == null ? '发送第一条消息后可命名任务' : '点击重命名任务',
+      child: Semantics(
+        button: thread != null,
+        label: '当前任务：$title',
+        child: InkWell(
+          key: const Key('workbench-task-title'),
+          onTap: thread == null ? null : () => _beginEditing(thread),
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 9),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.2,
+                    ),
+                  ),
+                ),
+                if (thread != null) ...[
+                  const SizedBox(width: 5),
+                  Icon(Icons.edit_outlined, size: 16, color: palette.muted),
+                ],
               ],
             ),
-            const SizedBox(width: 4),
-            if (compact)
-              IconButton(
-                tooltip: '账户：${controller.authLabel}',
-                onPressed: onAccount,
-                icon: const Icon(Icons.person_outline),
-              )
-            else
-              TextButton.icon(
-                onPressed: onAccount,
-                icon: const Icon(Icons.person_outline),
-                label: Text(controller.authLabel),
-              ),
-            const SizedBox(width: 8),
-            if (compact)
-              IconButton(
-                key: const Key('codex-configuration-button'),
-                tooltip: 'Provider：${controller.providerLabel}',
-                onPressed: onCodexConfiguration,
-                icon: const Icon(Icons.route_outlined),
-              )
-            else
-              TextButton.icon(
-                key: const Key('codex-configuration-button'),
-                onPressed: onCodexConfiguration,
-                icon: const Icon(Icons.route_outlined),
-                label: Text(controller.providerLabel),
-              ),
-            const SizedBox(width: 8),
-            IconButton(
-              key: const Key('plugin-manager-button'),
-              tooltip: '插件管理',
-              onPressed: onPlugins,
-              icon: const Icon(Icons.extension_outlined),
-            ),
-            const SizedBox(width: 4),
-            if (compact)
-              IconButton(
-                tooltip: '管理工作区',
-                onPressed: onChooseWorkspace,
-                icon: const Icon(Icons.folder_copy_outlined),
-              )
-            else
-              TextButton.icon(
-                onPressed: onChooseWorkspace,
-                icon: const Icon(Icons.folder_copy_outlined),
-                label: const Text('工作区'),
-              ),
-          ],
+          ),
         ),
       ),
     );
@@ -2951,6 +3253,9 @@ class _SidebarWorkspaceTile extends StatefulWidget {
     required this.onTap,
     required this.onMore,
     required this.onEdit,
+    required this.canCreateTask,
+    required this.expanded,
+    required this.onToggleExpanded,
     required this.onHoverStart,
     required this.onHoverEnd,
     super.key,
@@ -2963,6 +3268,9 @@ class _SidebarWorkspaceTile extends StatefulWidget {
   final VoidCallback onTap;
   final void Function(BuildContext context) onMore;
   final void Function(BuildContext context) onEdit;
+  final bool canCreateTask;
+  final bool expanded;
+  final VoidCallback onToggleExpanded;
   final void Function(BuildContext context) onHoverStart;
   final VoidCallback onHoverEnd;
 
@@ -3035,6 +3343,25 @@ class _SidebarWorkspaceTileState extends State<_SidebarWorkspaceTile> {
                         ),
                       ),
                     ),
+                    IconButton(
+                      key: ValueKey(
+                        'sidebar-workspace-toggle-${widget.workspace.primaryPath}',
+                      ),
+                      tooltip: widget.expanded ? '收起项目任务' : '展开项目任务',
+                      onPressed: widget.onToggleExpanded,
+                      icon: Icon(
+                        widget.expanded
+                            ? Icons.keyboard_arrow_down
+                            : Icons.keyboard_arrow_right,
+                        size: 18,
+                      ),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints.tightFor(
+                        width: 28,
+                        height: 28,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                    ),
                     if (widget.pinned)
                       Icon(Icons.push_pin, size: 13, color: palette.faint),
                     if (_hovering) ...[
@@ -3057,7 +3384,9 @@ class _SidebarWorkspaceTileState extends State<_SidebarWorkspaceTile> {
                           'sidebar-workspace-edit-${widget.workspace.primaryPath}',
                         ),
                         tooltip: '新建任务',
-                        onPressed: () => widget.onEdit(context),
+                        onPressed: widget.canCreateTask
+                            ? () => widget.onEdit(context)
+                            : null,
                         icon: const Icon(Icons.edit_outlined, size: 18),
                         padding: EdgeInsets.zero,
                         constraints: const BoxConstraints.tightFor(
@@ -3246,6 +3575,442 @@ class _WorkspaceDetailsRow extends StatelessWidget {
   }
 }
 
+class _TaskSearchResult {
+  const _TaskSearchResult({
+    required this.thread,
+    required this.workspacePath,
+    required this.workspaceName,
+  });
+
+  final CodexThread thread;
+  final String workspacePath;
+  final String workspaceName;
+
+  String get providerLabel => thread.modelProvider?.trim().isNotEmpty == true
+      ? thread.modelProvider!.trim()
+      : 'Codex';
+}
+
+/// Codex-style command surface for finding a task without permanently taking
+/// space from the project tree.
+class _TaskSearchDialog extends StatefulWidget {
+  const _TaskSearchDialog({
+    required this.results,
+    required this.canCreateTask,
+    required this.canOpenTasks,
+    required this.onOpenTask,
+    required this.onNewTask,
+    required this.onOpenWorkspace,
+    required this.onSearchFiles,
+  });
+
+  final List<_TaskSearchResult> results;
+  final bool canCreateTask;
+  final bool canOpenTasks;
+  final Future<void> Function(_TaskSearchResult result) onOpenTask;
+  final VoidCallback onNewTask;
+  final VoidCallback onOpenWorkspace;
+  final Future<void> Function() onSearchFiles;
+
+  @override
+  State<_TaskSearchDialog> createState() => _TaskSearchDialogState();
+}
+
+class _TaskSearchDialogState extends State<_TaskSearchDialog> {
+  final TextEditingController _search = TextEditingController();
+  final FocusNode _focusNode = FocusNode();
+  static const _digitKeys = [
+    LogicalKeyboardKey.digit1,
+    LogicalKeyboardKey.digit2,
+    LogicalKeyboardKey.digit3,
+    LogicalKeyboardKey.digit4,
+    LogicalKeyboardKey.digit5,
+    LogicalKeyboardKey.digit6,
+    LogicalKeyboardKey.digit7,
+    LogicalKeyboardKey.digit8,
+    LogicalKeyboardKey.digit9,
+  ];
+
+  List<_TaskSearchResult> get _filteredResults {
+    final query = _search.text.trim().toLowerCase();
+    if (query.isEmpty) return widget.results;
+    return widget.results
+        .where(
+          (result) =>
+              result.thread.title.toLowerCase().contains(query) ||
+              result.thread.preview.toLowerCase().contains(query) ||
+              result.workspaceName.toLowerCase().contains(query) ||
+              result.providerLabel.toLowerCase().contains(query),
+        )
+        .toList(growable: false);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _focusNode.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _closeThen(VoidCallback action) {
+    Navigator.of(context).pop();
+    action();
+  }
+
+  void _openResult(_TaskSearchResult result) {
+    Navigator.of(context).pop();
+    unawaited(widget.onOpenTask(result));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final results = _filteredResults;
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): () =>
+            Navigator.of(context).pop(),
+        const SingleActivator(LogicalKeyboardKey.keyN, meta: true): () =>
+            _closeThen(widget.onNewTask),
+        const SingleActivator(LogicalKeyboardKey.keyO, meta: true): () =>
+            _closeThen(widget.onOpenWorkspace),
+        const SingleActivator(LogicalKeyboardKey.keyP, meta: true): () {
+          Navigator.of(context).pop();
+          unawaited(widget.onSearchFiles());
+        },
+        for (var index = 0; index < 9; index++)
+          SingleActivator(_digitKeys[index], meta: true): () {
+            if (index < results.length && widget.canOpenTasks) {
+              _openResult(results[index]);
+            }
+          },
+      },
+      child: Dialog(
+        key: const Key('task-search-dialog'),
+        insetPadding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
+        backgroundColor: Colors.transparent,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720, maxHeight: 760),
+          child: Material(
+            color: palette.module,
+            elevation: 24,
+            shadowColor: Colors.black.withValues(alpha: 0.45),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(26),
+              side: BorderSide(color: palette.border),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    key: const Key('task-search-dialog-field'),
+                    controller: _search,
+                    focusNode: _focusNode,
+                    autofocus: true,
+                    onChanged: (_) => setState(() {}),
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: -0.45,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: '搜索聊天',
+                      hintStyle: Theme.of(context).textTheme.headlineSmall
+                          ?.copyWith(
+                            color: palette.muted,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: -0.45,
+                          ),
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 10,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const _TaskSearchSectionLabel(label: '聊天'),
+                  const SizedBox(height: 7),
+                  Flexible(
+                    child: results.isEmpty
+                        ? Center(
+                            child: Text(
+                              '没有匹配的聊天',
+                              style: TextStyle(color: palette.muted),
+                            ),
+                          )
+                        : ListView.separated(
+                            shrinkWrap: true,
+                            itemCount: results.length,
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(height: 2),
+                            itemBuilder: (context, index) => _TaskSearchResultTile(
+                              key: ValueKey(
+                                'task-search-result-${results[index].thread.id}',
+                              ),
+                              result: results[index],
+                              shortcut: index < 9 ? '⌘${index + 1}' : null,
+                              enabled: widget.canOpenTasks,
+                              onTap: () => _openResult(results[index]),
+                            ),
+                          ),
+                  ),
+                  const SizedBox(height: 14),
+                  const _TaskSearchSectionLabel(label: '快捷操作'),
+                  const SizedBox(height: 7),
+                  _TaskSearchActionTile(
+                    icon: Icons.edit_outlined,
+                    label: '新聊天',
+                    shortcut: '⌘N',
+                    enabled: widget.canCreateTask,
+                    onTap: () => _closeThen(widget.onNewTask),
+                  ),
+                  _TaskSearchActionTile(
+                    icon: Icons.folder_open_outlined,
+                    label: '打开文件夹',
+                    shortcut: '⌘O',
+                    onTap: () => _closeThen(widget.onOpenWorkspace),
+                  ),
+                  _TaskSearchActionTile(
+                    icon: Icons.search_outlined,
+                    label: '搜索文件',
+                    shortcut: '⌘P',
+                    enabled: widget.canOpenTasks,
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      unawaited(widget.onSearchFiles());
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TaskSearchSectionLabel extends StatelessWidget {
+  const _TaskSearchSectionLabel({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 8),
+    child: Text(
+      label,
+      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+        color: YeknomPalette.of(context).muted,
+        fontWeight: FontWeight.w700,
+      ),
+    ),
+  );
+}
+
+class _TaskSearchResultTile extends StatelessWidget {
+  const _TaskSearchResultTile({
+    required this.result,
+    required this.enabled,
+    required this.onTap,
+    this.shortcut,
+    super.key,
+  });
+
+  final _TaskSearchResult result;
+  final String? shortcut;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: enabled ? onTap : null,
+        borderRadius: BorderRadius.circular(14),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      result.thread.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${result.workspaceName} · ${result.providerLabel}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: palette.muted, fontSize: 13),
+                    ),
+                  ],
+                ),
+              ),
+              if (shortcut != null) _TaskSearchShortcut(label: shortcut!),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TaskSearchActionTile extends StatelessWidget {
+  const _TaskSearchActionTile({
+    required this.icon,
+    required this.label,
+    required this.shortcut,
+    required this.onTap,
+    this.enabled = true,
+  });
+
+  final IconData icon;
+  final String label;
+  final String shortcut;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: enabled ? onTap : null,
+        borderRadius: BorderRadius.circular(14),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          child: Row(
+            children: [
+              Icon(
+                icon,
+                size: 22,
+                color: enabled ? palette.trace : palette.faint,
+              ),
+              const SizedBox(width: 13),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: enabled ? palette.trace : palette.faint,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              _TaskSearchShortcut(label: shortcut),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TaskSearchShortcut extends StatelessWidget {
+  const _TaskSearchShortcut({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: palette.raised,
+        borderRadius: BorderRadius.circular(9),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: palette.muted,
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+/// A compact, text-first project-menu row matching the Codex desktop rhythm.
+class _SidebarMenuAction extends StatelessWidget {
+  const _SidebarMenuAction({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.enabled = true,
+    this.selected = false,
+    super.key,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool enabled;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final color = enabled ? palette.trace : palette.faint;
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      label: label,
+      child: Material(
+        color: selected ? palette.selected : Colors.transparent,
+        child: InkWell(
+          onTap: enabled ? onTap : null,
+          borderRadius: BorderRadius.circular(10),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Row(
+              children: [
+                Icon(icon, size: 22, color: color),
+                const SizedBox(width: 12),
+                Text(
+                  label,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: color,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: -0.2,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _Sidebar extends StatefulWidget {
   const _Sidebar({
     required this.width,
@@ -3262,6 +4027,11 @@ class _Sidebar extends StatefulWidget {
     required this.onExportHistory,
     required this.onImportHistory,
     required this.onShowGitProject,
+    required this.onShowPlugins,
+    required this.onShowScheduledTasks,
+    required this.onShowPullRequests,
+    required this.onNewConversation,
+    required this.destination,
   });
 
   final double width;
@@ -3279,6 +4049,11 @@ class _Sidebar extends StatefulWidget {
   final Future<void> Function() onExportHistory;
   final Future<void> Function() onImportHistory;
   final Future<void> Function() onShowGitProject;
+  final Future<void> Function() onShowPlugins;
+  final Future<void> Function() onShowScheduledTasks;
+  final Future<void> Function() onShowPullRequests;
+  final VoidCallback onNewConversation;
+  final _WorkspaceDestination destination;
 
   /// 创建管理侧栏搜索状态的 State 对象。
   /// Creates the State object that manages sidebar search state.
@@ -3286,21 +4061,7 @@ class _Sidebar extends StatefulWidget {
   State<_Sidebar> createState() => _SidebarState();
 }
 
-/// 缓存已访问工作区的任务列表，让切换项目只改变当前态而不会收起其他项目。
-/// Keeps visited workspace task lists mounted in the tree when the active project changes.
-class _WorkspaceThreadSnapshot {
-  const _WorkspaceThreadSnapshot({
-    required this.threads,
-    required this.pinnedIds,
-  });
-
-  final List<CodexThread> threads;
-  final Set<String> pinnedIds;
-}
-
 class _SidebarState extends State<_Sidebar> {
-  final TextEditingController _threadSearch = TextEditingController();
-  String _query = '';
   bool _batchMode = false;
   final Set<String> _selectedThreadIds = {};
 
@@ -3308,18 +4069,72 @@ class _SidebarState extends State<_Sidebar> {
   /// Completed tasks acknowledged by opening them, so the reminder is not repeated.
   final Set<String> _acknowledgedCompletedThreadIds = {};
   final Map<String, int> _workspaceTaskCounts = {};
-  final Map<String, _WorkspaceThreadSnapshot> _workspaceThreadSnapshots = {};
+  final Map<String, bool> _workspaceExpanded = {};
   OverlayEntry? _workspaceDetailsEntry;
+  Timer? _workspaceDetailsShowTimer;
   Timer? _workspaceDetailsHideTimer;
 
-  /// 释放任务搜索输入控制器。
-  /// Disposes the task-search text controller.
+  bool _isWorkspaceExpanded(String path) => _workspaceExpanded[path] ?? true;
+
+  void _toggleWorkspaceExpanded(String path) {
+    setState(() {
+      _workspaceExpanded[path] = !_isWorkspaceExpanded(path);
+    });
+  }
+
   @override
   void dispose() {
+    _workspaceDetailsShowTimer?.cancel();
     _workspaceDetailsHideTimer?.cancel();
     _workspaceDetailsEntry?.remove();
-    _threadSearch.dispose();
     super.dispose();
+  }
+
+  /// Opens the global task search surface from the project-column toolbar.
+  /// 搜索面板集中展示已加载项目中的任务，并保留常用的工作区操作。
+  void _showTaskSearch() {
+    final controller = widget.controller;
+    final configuredWorkspaces = controller.workspaceConfigurations;
+    final workspaces = configuredWorkspaces.isNotEmpty
+        ? configuredWorkspaces
+        : controller.workspacePath == null
+        ? const <WorkspaceConfiguration>[]
+        : [WorkspaceConfiguration(primaryPath: controller.workspacePath!)];
+    final results = <_TaskSearchResult>[];
+    for (final workspace in workspaces) {
+      final threads = workspace.primaryPath == controller.workspacePath
+          ? controller.threads
+          : (controller.workspaceTaskListFor(workspace.primaryPath)?.threads ??
+                const <CodexThread>[]);
+      for (final thread in threads) {
+        results.add(
+          _TaskSearchResult(
+            thread: thread,
+            workspacePath: workspace.primaryPath,
+            workspaceName:
+                workspace.name ??
+                _workspaceDirectoryName(workspace.primaryPath),
+          ),
+        );
+      }
+    }
+    showDialog<void>(
+      context: context,
+      builder: (context) => _TaskSearchDialog(
+        results: results,
+        canCreateTask: controller.canCreateThread,
+        canOpenTasks:
+            controller.canChangePrimaryWorkspace ||
+            controller.status == RuntimeStatus.ready,
+        onOpenTask: (result) => controller.openWorkspaceThread(
+          workspace: result.workspacePath,
+          thread: result.thread,
+        ),
+        onNewTask: controller.createThread,
+        onOpenWorkspace: widget.onChooseWorkspace,
+        onSearchFiles: widget.onShowGitProject,
+      ),
+    );
   }
 
   /// 将当前选中的活跃任务提交给带二次确认的批量归档操作。
@@ -3338,8 +4153,22 @@ class _SidebarState extends State<_Sidebar> {
     });
   }
 
-  /// 在项目悬停时显示详情卡片；卡片本身也是可悬停的，便于把鼠标移入查看。
-  /// Shows the hover detail card; the card keeps itself open while the pointer enters it.
+  /// 在项目停留一段时间后显示详情卡片，避免快速掠过侧栏时弹出卡片。
+  /// Shows the detail card after a pointer dwell, avoiding popups while scanning the sidebar.
+  void _scheduleWorkspaceDetailsShow(
+    BuildContext anchorContext,
+    WorkspaceConfiguration workspace,
+  ) {
+    _workspaceDetailsShowTimer?.cancel();
+    _workspaceDetailsHideTimer?.cancel();
+    _workspaceDetailsShowTimer = Timer(codexHoverPopupDelay, () {
+      _workspaceDetailsShowTimer = null;
+      if (mounted) _showWorkspaceDetails(anchorContext, workspace);
+    });
+  }
+
+  /// 显示延迟后的项目详情卡片；卡片本身也是可悬停的，便于把鼠标移入查看。
+  /// Shows the delayed detail card; the card keeps itself open while the pointer enters it.
   void _showWorkspaceDetails(
     BuildContext anchorContext,
     WorkspaceConfiguration workspace,
@@ -3397,7 +4226,10 @@ class _SidebarState extends State<_Sidebar> {
     );
     _workspaceDetailsEntry = entry;
     overlay.insert(entry);
-    if (!isActive && !_workspaceTaskCounts.containsKey(workspace.primaryPath)) {
+    // Always refresh an inactive project's count when its details are opened.
+    // The cached preview can change after the user visits that project, and a
+    // stale count is more confusing than one lightweight local-cache read.
+    if (!isActive) {
       unawaited(_loadWorkspaceTaskCount(workspace.primaryPath, entry));
     }
   }
@@ -3416,6 +4248,8 @@ class _SidebarState extends State<_Sidebar> {
   }
 
   void _scheduleWorkspaceDetailsHide() {
+    _workspaceDetailsShowTimer?.cancel();
+    _workspaceDetailsShowTimer = null;
     _workspaceDetailsHideTimer?.cancel();
     _workspaceDetailsHideTimer = Timer(
       const Duration(milliseconds: 180),
@@ -3424,6 +4258,8 @@ class _SidebarState extends State<_Sidebar> {
   }
 
   void _hideWorkspaceDetails() {
+    _workspaceDetailsShowTimer?.cancel();
+    _workspaceDetailsShowTimer = null;
     _workspaceDetailsHideTimer?.cancel();
     _workspaceDetailsEntry?.remove();
     _workspaceDetailsEntry = null;
@@ -3529,9 +4365,16 @@ class _SidebarState extends State<_Sidebar> {
 
   /// 构建树中的任务文件节点；任务操作仍沿用原有菜单和批量选择行为。
   /// Builds a task-file node in the tree while preserving the existing actions.
-  Widget _buildThreadNode(CodexController controller, CodexThread thread) {
+  Widget _buildThreadNode(
+    CodexController controller,
+    CodexThread thread, {
+    bool isActiveWorkspace = true,
+    required String workspacePath,
+    required bool pinned,
+  }) {
     final indicator = _threadStatusIndicator(thread.status);
     final currentRunningThread =
+        isActiveWorkspace &&
         controller.activeThreadId == thread.id &&
         (controller.status == RuntimeStatus.running ||
             _isRunningThreadStatus(thread.status));
@@ -3539,43 +4382,60 @@ class _SidebarState extends State<_Sidebar> {
       padding: const EdgeInsets.only(left: 25, right: 1),
       child: _HistoryThreadTile(
         thread: thread,
-        selected: controller.activeThreadId == thread.id,
-        pinned: controller.isThreadPinned(thread.id),
+        selected: isActiveWorkspace && controller.activeThreadId == thread.id,
+        pinned: pinned,
         statusIndicator:
             indicator == _ThreadStatusIndicator.completed &&
                 _acknowledgedCompletedThreadIds.contains(thread.id)
             ? null
             : indicator,
         running: currentRunningThread,
-        enabled:
-            (controller.status == RuntimeStatus.ready ||
-                currentRunningThread) &&
-            !controller.isUpdatingThread(thread.id),
-        selectionMode: _batchMode,
+        enabled: isActiveWorkspace
+            ? (controller.status == RuntimeStatus.ready ||
+                      currentRunningThread) &&
+                  !controller.isUpdatingThread(thread.id)
+            : controller.canChangePrimaryWorkspace,
+        selectionMode: isActiveWorkspace && _batchMode,
         batchSelected: _selectedThreadIds.contains(thread.id),
         onTap: () {
           // The active row remains clickable for focus/feedback while its
           // turn runs, but must not attempt to resume or replace the thread.
           if (currentRunningThread) return;
-          if (_batchMode) {
+          if (isActiveWorkspace && _batchMode) {
             setState(() {
               if (!_selectedThreadIds.add(thread.id)) {
                 _selectedThreadIds.remove(thread.id);
               }
             });
           } else {
-            if (indicator == _ThreadStatusIndicator.completed) {
-              setState(() {
-                _acknowledgedCompletedThreadIds.add(thread.id);
-              });
-            }
-            controller.resumeThread(thread);
+            // A thread refresh can deliver its completed state after this
+            // tap.  Record the visit independently of the currently rendered
+            // status so an old completion reminder cannot reappear while the
+            // user switches between tasks.
+            setState(() {
+              _acknowledgedCompletedThreadIds.add(thread.id);
+            });
+            unawaited(
+              controller.openWorkspaceThread(
+                workspace: workspacePath,
+                thread: thread,
+              ),
+            );
           }
         },
-        onRename: () => widget.onRenameThread(thread),
-        onArchive: () => widget.onArchiveThread(thread),
-        onDelete: () => widget.onDeleteThread(thread),
-        onTogglePin: () => controller.toggleThreadPinned(thread),
+        actionsEnabled: isActiveWorkspace,
+        onRename: isActiveWorkspace
+            ? () => widget.onRenameThread(thread)
+            : null,
+        onArchive: isActiveWorkspace
+            ? () => widget.onArchiveThread(thread)
+            : null,
+        onDelete: isActiveWorkspace
+            ? () => widget.onDeleteThread(thread)
+            : null,
+        onTogglePin: isActiveWorkspace
+            ? () => controller.toggleThreadPinned(thread)
+            : null,
       ),
     );
   }
@@ -3587,44 +4447,19 @@ class _SidebarState extends State<_Sidebar> {
     final palette = YeknomPalette.of(context);
     final controller = widget.controller;
     final activePath = controller.workspacePath;
-    if (activePath != null &&
-        (!controller.threadsLoading ||
-            !_workspaceThreadSnapshots.containsKey(activePath))) {
-      _workspaceThreadSnapshots[activePath] = _WorkspaceThreadSnapshot(
-        threads: List.unmodifiable(controller.threads),
-        pinnedIds: Set.unmodifiable(controller.pinnedThreadIds),
-      );
-    }
-    final query = _query.trim().toLowerCase();
-    final activeSnapshot = activePath == null
-        ? null
-        : _workspaceThreadSnapshots[activePath];
-    final filteredThreads = (activeSnapshot?.threads ?? controller.threads)
-        .where(
-          (thread) =>
-              query.isEmpty ||
-              thread.title.toLowerCase().contains(query) ||
-              thread.preview.toLowerCase().contains(query),
-        )
-        .toList(growable: false);
     final visibleThreads = [
-      ...filteredThreads.where(
+      ...controller.threads.where(
         (thread) => controller.isThreadPinned(thread.id),
       ),
-      ...filteredThreads.where(
+      ...controller.threads.where(
         (thread) => !controller.isThreadPinned(thread.id),
       ),
     ];
-    final hasPinnedThreads = filteredThreads.any((thread) {
-      return activeSnapshot?.pinnedIds.contains(thread.id) ??
-          controller.isThreadPinned(thread.id);
+    final hasPinnedThreads = controller.threads.any((thread) {
+      return controller.isThreadPinned(thread.id);
     });
     final pinnedThreads = visibleThreads
-        .where(
-          (thread) =>
-              activeSnapshot?.pinnedIds.contains(thread.id) ??
-              controller.isThreadPinned(thread.id),
-        )
+        .where((thread) => controller.isThreadPinned(thread.id))
         .toList(growable: false);
     // 保持用户创建工作区时的顺序；切换只改变选中态，不重排列表。
     // Preserve creation order; switching changes selection without reordering the list.
@@ -3640,22 +4475,22 @@ class _SidebarState extends State<_Sidebar> {
     final workspaceThreadsByPath = <String, List<CodexThread>>{};
     final workspaceProjectThreadsByPath = <String, List<CodexThread>>{};
     for (final workspace in workspaces) {
-      final snapshot = _workspaceThreadSnapshots[workspace.primaryPath];
       final threads = workspace.primaryPath == activePath
-          ? (activeSnapshot?.threads ?? controller.threads)
-          : (snapshot?.threads ?? const <CodexThread>[]);
+          ? controller.threads
+          : (controller.workspaceTaskListFor(workspace.primaryPath)?.threads ??
+                const <CodexThread>[]);
       final pinnedIds = workspace.primaryPath == activePath
-          ? (activeSnapshot?.pinnedIds ?? controller.pinnedThreadIds)
-          : (snapshot?.pinnedIds ?? const <String>{});
+          ? controller.pinnedThreadIds
+          : (controller
+                    .workspaceTaskListFor(workspace.primaryPath)
+                    ?.pinnedIds ??
+                const <String>{});
       workspaceThreadsByPath[workspace.primaryPath] = threads;
       workspaceProjectThreadsByPath[workspace.primaryPath] = threads
           .where(
             (thread) =>
                 (workspace.primaryPath != activePath ||
-                    !pinnedIds.contains(thread.id)) &&
-                (query.isEmpty ||
-                    thread.title.toLowerCase().contains(query) ||
-                    thread.preview.toLowerCase().contains(query)),
+                !pinnedIds.contains(thread.id)),
           )
           .toList(growable: false);
     }
@@ -3678,6 +4513,12 @@ class _SidebarState extends State<_Sidebar> {
                 ),
                 const Spacer(),
                 IconButton(
+                  key: const Key('task-search-button'),
+                  tooltip: '搜索聊天',
+                  onPressed: _showTaskSearch,
+                  icon: const Icon(Icons.search, size: 20),
+                ),
+                IconButton(
                   key: const Key('sidebar-create-workspace-button'),
                   tooltip: '新建工作区',
                   visualDensity: VisualDensity.compact,
@@ -3695,74 +4536,40 @@ class _SidebarState extends State<_Sidebar> {
                 ),
               ],
             ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                const Spacer(),
-                IconButton(
-                  tooltip: '新建任务',
-                  onPressed: controller.canSend
-                      ? controller.createThread
-                      : null,
-                  icon: const Icon(Icons.add, size: 20),
-                ),
-                IconButton(
-                  tooltip: '刷新任务列表',
-                  onPressed: controller.canSend && !controller.threadsLoading
-                      ? controller.refreshThreads
-                      : null,
-                  icon: const Icon(Icons.refresh, size: 20),
-                ),
-                PopupMenuButton<_HistoryAction>(
-                  tooltip: '本地历史',
-                  enabled: controller.workspacePath != null,
-                  icon: const Icon(Icons.inventory_2_outlined, size: 20),
-                  onSelected: (action) async {
-                    switch (action) {
-                      case _HistoryAction.archived:
-                        await widget.onShowArchivedThreads();
-                      case _HistoryAction.batchArchive:
-                        setState(() => _batchMode = true);
-                      case _HistoryAction.export:
-                        await widget.onExportHistory();
-                      case _HistoryAction.import:
-                        await widget.onImportHistory();
-                    }
-                  },
-                  itemBuilder: (context) => const [
-                    PopupMenuItem(
-                      value: _HistoryAction.archived,
-                      child: ListTile(
-                        leading: Icon(Icons.inventory_2_outlined),
-                        title: Text('已归档任务'),
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: _HistoryAction.batchArchive,
-                      child: ListTile(
-                        leading: Icon(Icons.checklist_outlined),
-                        title: Text('批量归档任务'),
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: _HistoryAction.export,
-                      child: ListTile(
-                        leading: Icon(Icons.file_upload_outlined),
-                        title: Text('导出本地历史'),
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: _HistoryAction.import,
-                      child: ListTile(
-                        leading: Icon(Icons.file_download_outlined),
-                        title: Text('导入到当前项目'),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
+            const SizedBox(height: 8),
+            _SidebarMenuAction(
+              key: const Key('sidebar-new-chat-button'),
+              icon: Icons.edit_outlined,
+              label: '新对话',
+              enabled: controller.canCreateThread,
+              onTap: widget.onNewConversation,
             ),
-            const SizedBox(height: 5),
+            _SidebarMenuAction(
+              key: const Key('sidebar-pull-requests-button'),
+              icon: Icons.call_merge_outlined,
+              label: '拉取请求',
+              enabled: controller.workspacePath != null,
+              selected:
+                  widget.destination == _WorkspaceDestination.pullRequests,
+              onTap: () => unawaited(widget.onShowPullRequests()),
+            ),
+            _SidebarMenuAction(
+              key: const Key('sidebar-scheduled-tasks-button'),
+              icon: Icons.schedule_outlined,
+              label: '已安排',
+              enabled: controller.workspacePath != null,
+              selected:
+                  widget.destination == _WorkspaceDestination.scheduledTasks,
+              onTap: () => unawaited(widget.onShowScheduledTasks()),
+            ),
+            _SidebarMenuAction(
+              key: const Key('sidebar-plugins-button'),
+              icon: Icons.extension_outlined,
+              label: '插件',
+              selected: widget.destination == _WorkspaceDestination.plugins,
+              onTap: () => unawaited(widget.onShowPlugins()),
+            ),
+            const SizedBox(height: 9),
             if (_batchMode) ...[
               Wrap(
                 spacing: 4,
@@ -3789,28 +4596,6 @@ class _SidebarState extends State<_Sidebar> {
               ),
               const SizedBox(height: 8),
             ],
-            TextField(
-              key: const Key('thread-search-field'),
-              controller: _threadSearch,
-              onChanged: (value) => setState(() => _query = value),
-              decoration: InputDecoration(
-                isDense: true,
-                hintText: '搜索任务',
-                prefixIcon: const Icon(Icons.search, size: 18),
-                suffixIcon: _query.isEmpty
-                    ? null
-                    : IconButton(
-                        tooltip: '清除搜索',
-                        icon: const Icon(Icons.close, size: 16),
-                        onPressed: () {
-                          _threadSearch.clear();
-                          setState(() => _query = '');
-                        },
-                      ),
-                border: const OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 6),
             if (controller.threadsLoading && controller.threads.isEmpty)
               const LinearProgressIndicator(minHeight: 2),
             if (controller.threadsLoading && controller.threads.isEmpty)
@@ -3849,95 +4634,136 @@ class _SidebarState extends State<_Sidebar> {
                             ),
                           ),
                         )
-                      : ListView(
+                      : SingleChildScrollView(
                           padding: const EdgeInsets.only(top: 2, bottom: 4),
-                          children: [
-                            if (hasPinnedThreads) ...[
-                              const _SidebarSectionLabel(label: '置顶'),
-                              const SizedBox(height: 2),
-                              for (final thread in pinnedThreads) ...[
-                                _buildThreadNode(controller, thread),
-                                const SizedBox(height: 1),
-                              ],
-                              const SizedBox(height: 12),
-                            ],
-                            for (final workspace in workspaces) ...[
-                              _SidebarWorkspaceTile(
-                                key: ValueKey(
-                                  'sidebar-workspace-${workspace.primaryPath}',
-                                ),
-                                workspace: workspace,
-                                active:
-                                    workspace.primaryPath ==
-                                    controller.workspacePath,
-                                pinned: controller.isWorkspacePinned(
-                                  workspace.primaryPath,
-                                ),
-                                enabled: controller.canChangePrimaryWorkspace,
-                                onTap: () => unawaited(
-                                  controller.selectWorkspaceAndReconnect(
-                                    workspace.primaryPath,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (hasPinnedThreads) ...[
+                                const _SidebarSectionLabel(label: '置顶'),
+                                const SizedBox(height: 2),
+                                for (final thread in pinnedThreads) ...[
+                                  _buildThreadNode(
+                                    controller,
+                                    thread,
+                                    workspacePath: activePath!,
+                                    pinned: true,
                                   ),
-                                ),
-                                onMore: (anchorContext) =>
-                                    _showWorkspaceActions(
-                                      anchorContext,
-                                      workspace,
-                                    ),
-                                onEdit: (_) => controller.createThread(),
-                                onHoverStart: (anchorContext) =>
-                                    _showWorkspaceDetails(
-                                      anchorContext,
-                                      workspace,
-                                    ),
-                                onHoverEnd: _scheduleWorkspaceDetailsHide,
-                              ),
-                              if (workspace.primaryPath == activePath) ...[
-                                if (controller.threadsError case final error?)
-                                  Padding(
-                                    padding: const EdgeInsets.only(
-                                      left: 34,
-                                      top: 4,
-                                    ),
-                                    child: _MutedText(error),
-                                  )
-                                else if (workspaceProjectThreadsByPath[workspace
-                                            .primaryPath]!
-                                        .isEmpty &&
-                                    workspaceThreadsByPath[workspace
-                                            .primaryPath]!
-                                        .isEmpty)
-                                  const Padding(
-                                    padding: EdgeInsets.only(left: 34, top: 4),
-                                    child: _MutedText('暂无历史任务；发送第一条消息后会创建。'),
-                                  )
-                                else if (workspaceProjectThreadsByPath[workspace
-                                        .primaryPath]!
-                                    .isEmpty)
-                                  const Padding(
-                                    padding: EdgeInsets.only(left: 34, top: 4),
-                                    child: _MutedText('没有匹配的任务。'),
-                                  )
-                                else
-                                  for (final thread
-                                      in workspaceProjectThreadsByPath[workspace
-                                          .primaryPath]!) ...[
-                                    _buildThreadNode(controller, thread),
-                                    const SizedBox(height: 1),
-                                  ],
-                              ] else if (_workspaceThreadSnapshots.containsKey(
-                                workspace.primaryPath,
-                              )) ...[
-                                for (final thread
-                                    in workspaceProjectThreadsByPath[workspace
-                                        .primaryPath]!) ...[
-                                  _buildThreadNode(controller, thread),
                                   const SizedBox(height: 1),
                                 ],
+                                const SizedBox(height: 12),
                               ],
-                              const SizedBox(height: 5),
+                              for (final workspace in workspaces) ...[
+                                _SidebarWorkspaceTile(
+                                  key: ValueKey(
+                                    'sidebar-workspace-${workspace.primaryPath}',
+                                  ),
+                                  workspace: workspace,
+                                  active:
+                                      workspace.primaryPath ==
+                                      controller.workspacePath,
+                                  pinned: controller.isWorkspacePinned(
+                                    workspace.primaryPath,
+                                  ),
+                                  enabled: controller.canChangePrimaryWorkspace,
+                                  onTap: () => unawaited(
+                                    controller.selectWorkspaceAndReconnect(
+                                      workspace.primaryPath,
+                                    ),
+                                  ),
+                                  onMore: (anchorContext) =>
+                                      _showWorkspaceActions(
+                                        anchorContext,
+                                        workspace,
+                                      ),
+                                  onEdit: (_) => controller.createThread(),
+                                  canCreateTask: controller.canCreateThread,
+                                  expanded: _isWorkspaceExpanded(
+                                    workspace.primaryPath,
+                                  ),
+                                  onToggleExpanded: () =>
+                                      _toggleWorkspaceExpanded(
+                                        workspace.primaryPath,
+                                      ),
+                                  onHoverStart: (anchorContext) =>
+                                      _scheduleWorkspaceDetailsShow(
+                                        anchorContext,
+                                        workspace,
+                                      ),
+                                  onHoverEnd: _scheduleWorkspaceDetailsHide,
+                                ),
+                                if (_isWorkspaceExpanded(
+                                  workspace.primaryPath,
+                                )) ...[
+                                  if (workspace.primaryPath == activePath) ...[
+                                    if (controller.threadsError
+                                        case final error?)
+                                      Padding(
+                                        padding: const EdgeInsets.only(
+                                          left: 34,
+                                          top: 4,
+                                        ),
+                                        child: _MutedText(error),
+                                      )
+                                    else if (workspaceProjectThreadsByPath[workspace
+                                                .primaryPath]!
+                                            .isEmpty &&
+                                        workspaceThreadsByPath[workspace
+                                                .primaryPath]!
+                                            .isEmpty)
+                                      const Padding(
+                                        padding: EdgeInsets.only(
+                                          left: 34,
+                                          top: 4,
+                                        ),
+                                        child: _MutedText(
+                                          '暂无历史任务；发送第一条消息后会创建。',
+                                        ),
+                                      )
+                                    else
+                                      for (final thread
+                                          in workspaceProjectThreadsByPath[workspace
+                                              .primaryPath]!) ...[
+                                        _buildThreadNode(
+                                          controller,
+                                          thread,
+                                          isActiveWorkspace: true,
+                                          workspacePath: workspace.primaryPath,
+                                          pinned: controller.isThreadPinned(
+                                            thread.id,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 1),
+                                      ],
+                                  ] else if (controller.workspaceTaskListFor(
+                                        workspace.primaryPath,
+                                      ) !=
+                                      null) ...[
+                                    for (final thread
+                                        in workspaceProjectThreadsByPath[workspace
+                                            .primaryPath]!) ...[
+                                      _buildThreadNode(
+                                        controller,
+                                        thread,
+                                        isActiveWorkspace: false,
+                                        workspacePath: workspace.primaryPath,
+                                        pinned:
+                                            (controller
+                                                .workspaceTaskListFor(
+                                                  workspace.primaryPath,
+                                                )
+                                                ?.pinnedIds
+                                                .contains(thread.id) ??
+                                            false),
+                                      ),
+                                      const SizedBox(height: 1),
+                                    ],
+                                  ],
+                                ],
+                                const SizedBox(height: 5),
+                              ],
                             ],
-                          ],
+                          ),
                         ),
                 ),
               ),
@@ -3969,6 +4795,7 @@ class _ConversationPane extends StatelessWidget {
   const _ConversationPane({
     required this.controller,
     required this.composer,
+    required this.recordSkillRequest,
     required this.timelinePages,
     required this.timelineScrollControllers,
     required this.activeTimelinePageKey,
@@ -3980,12 +4807,12 @@ class _ConversationPane extends StatelessWidget {
     required this.onSend,
     required this.onSteer,
     required this.onAdjustDirection,
-    required this.onShowFileChanges,
     required this.onReview,
   });
 
   final CodexController controller;
   final TextEditingController composer;
+  final ValueListenable<int> recordSkillRequest;
   final Map<_ThreadViewportKey, _TimelinePageData> timelinePages;
   final Map<_ThreadViewportKey, ScrollController> timelineScrollControllers;
   final _ThreadViewportKey activeTimelinePageKey;
@@ -4004,7 +4831,6 @@ class _ConversationPane extends StatelessWidget {
   final Future<bool> Function(_ComposerSubmission submission) onSend;
   final Future<bool> Function(_ComposerSubmission submission) onSteer;
   final Future<void> Function(String originalPrompt) onAdjustDirection;
-  final Future<void> Function() onShowFileChanges;
   final Future<void> Function() onReview;
 
   /// 构建时间线、审批提示和任务输入区域。
@@ -4014,42 +4840,6 @@ class _ConversationPane extends StatelessWidget {
     final palette = YeknomPalette.of(context);
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(24, 20, 24, 12),
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final showProvider = constraints.maxWidth >= 360;
-              final showSandbox = constraints.maxWidth >= 560;
-              return Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '任务控制台',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                  ),
-                  if (showProvider) ...[
-                    _ProviderChip(
-                      label: '${controller.providerLabel} / App Server',
-                    ),
-                    const SizedBox(width: 8),
-                  ],
-                  if (showSandbox) ...[
-                    const _ProviderChip(label: 'workspace-write'),
-                    const SizedBox(width: 4),
-                  ],
-                  IconButton(
-                    tooltip: '查看文件变更',
-                    onPressed: onShowFileChanges,
-                    icon: const Icon(Icons.difference_outlined, size: 19),
-                  ),
-                ],
-              );
-            },
-          ),
-        ),
         if (controller.lastError case final error?)
           Container(
             width: double.infinity,
@@ -4155,6 +4945,7 @@ class _ConversationPane extends StatelessWidget {
           key: const Key('composer-panel'),
           controller: controller,
           composer: composer,
+          recordSkillRequest: recordSkillRequest,
           onSend: onSend,
           onSteer: onSteer,
         ),
@@ -4172,6 +4963,7 @@ class _TimelinePageData {
     required this.turnDiff,
     required this.showFileChangeSummary,
     required this.canSteer,
+    required this.activeCommand,
   });
 
   final List<TimelineEntry> entries;
@@ -4179,6 +4971,7 @@ class _TimelinePageData {
   final String? turnDiff;
   final bool showFileChangeSummary;
   final bool canSteer;
+  final String? activeCommand;
 }
 
 /// A task timeline that remains mounted inside the page cache.
@@ -4218,17 +5011,28 @@ class _ConversationTimeline extends StatelessWidget {
       (entry) => entry.kind == TimelineKind.user,
     );
     final timelineItems = _conversationTimelineItems(data.entries);
+    final liveCommand = active ? data.activeCommand : null;
     return ListView.separated(
       key: PageStorageKey('conversation-timeline-${pageKey.storageKey}'),
       controller: scrollController,
       padding: EdgeInsets.fromLTRB(24, 12, 24, bottomPadding),
-      itemCount: timelineItems.length + (data.showFileChangeSummary ? 1 : 0),
+      itemCount:
+          timelineItems.length +
+          (liveCommand == null ? 0 : 1) +
+          (data.showFileChangeSummary ? 1 : 0),
       separatorBuilder: (_, _) => const Padding(
         padding: EdgeInsets.symmetric(vertical: 14),
         child: Divider(height: 1),
       ),
       itemBuilder: (context, index) {
-        if (index == timelineItems.length) {
+        if (index >= timelineItems.length) {
+          var tailIndex = index - timelineItems.length;
+          if (liveCommand != null && tailIndex-- == 0) {
+            return _LiveCommandRow(command: liveCommand);
+          }
+          if (!data.showFileChangeSummary || tailIndex != 0) {
+            throw StateError('Unexpected conversation timeline item index.');
+          }
           return _FileChangeSummaryCard(
             key: ValueKey('file-change-summary-${pageKey.storageKey}'),
             changes: data.fileChanges,
@@ -4344,6 +5148,20 @@ _DiffStats _diffStats(String diff) {
 String _diffCountLabel(String prefix, int count, {required bool unknown}) =>
     unknown ? '$prefix?' : '$prefix$count';
 
+/// Reports whether the available Diff can support an honest line-count total.
+/// A header-only, binary, or metadata-only Diff describes a file change but
+/// does not provide countable added or deleted lines.
+bool _fileChangeStatsUnknown(List<CodexFileChange> changes, String? turnDiff) {
+  final hasMissingDiff = changes.any((change) => change.diff.trim().isEmpty);
+  final fallback = turnDiff?.trim();
+  if (hasMissingDiff && (fallback == null || fallback.isEmpty)) return true;
+  final source = hasMissingDiff
+      ? fallback!
+      : changes.map((change) => change.diff).join('\n');
+  final stats = _diffStats(source);
+  return stats.additions == 0 && stats.deletions == 0;
+}
+
 class _FileChangeSummaryCard extends StatelessWidget {
   const _FileChangeSummaryCard({
     required this.changes,
@@ -4372,9 +5190,7 @@ class _FileChangeSummaryCard extends StatelessWidget {
         : stats;
   }
 
-  bool get _statsUnknown =>
-      changes.any((change) => change.diff.trim().isEmpty) &&
-      (turnDiff == null || turnDiff!.isEmpty);
+  bool get _statsUnknown => _fileChangeStatsUnknown(changes, turnDiff);
 
   @override
   Widget build(BuildContext context) {
@@ -4414,11 +5230,17 @@ class _FileChangeSummaryCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
+                        key: const Key('file-change-summary-title'),
                         '已编辑 ${changes.length} 个文件',
-                        style: Theme.of(context).textTheme.titleMedium,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          fontSize: 14,
+                          height: 1.2,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                       const SizedBox(height: 4),
                       Text.rich(
+                        key: const Key('file-change-summary-stats'),
                         TextSpan(
                           children: [
                             TextSpan(
@@ -4439,6 +5261,10 @@ class _FileChangeSummaryCard extends StatelessWidget {
                               style: TextStyle(color: palette.fault),
                             ),
                           ],
+                        ),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          fontSize: 13,
+                          height: 1.2,
                         ),
                       ),
                     ],
@@ -4504,6 +5330,7 @@ class _FileChangeSummaryRowState extends State<_FileChangeSummaryRow> {
   final LayerLink _layerLink = LayerLink();
   final ValueNotifier<int> _previewVersion = ValueNotifier(0);
   OverlayEntry? _previewEntry;
+  Timer? _showTimer;
   Timer? _hideTimer;
   bool _hovering = false;
   Offset _previewOffset = Offset.zero;
@@ -4596,7 +5423,18 @@ class _FileChangeSummaryRowState extends State<_FileChangeSummaryRow> {
     overlay.insert(entry);
   }
 
+  void _schedulePreviewShow() {
+    _hideTimer?.cancel();
+    _showTimer?.cancel();
+    _showTimer = Timer(codexHoverPopupDelay, () {
+      _showTimer = null;
+      if (mounted && _hovering) _showPreview();
+    });
+  }
+
   void _scheduleHide() {
+    _showTimer?.cancel();
+    _showTimer = null;
     _hideTimer?.cancel();
     _hideTimer = Timer(const Duration(milliseconds: 120), () {
       _previewEntry?.remove();
@@ -4606,6 +5444,7 @@ class _FileChangeSummaryRowState extends State<_FileChangeSummaryRow> {
 
   @override
   void dispose() {
+    _showTimer?.cancel();
     _hideTimer?.cancel();
     _previewEntry?.remove();
     _previewVersion.dispose();
@@ -4642,7 +5481,7 @@ class _FileChangeSummaryRowState extends State<_FileChangeSummaryRow> {
         key: ValueKey('file-change-row-${widget.change.path}'),
         onEnter: (_) {
           setState(() => _hovering = true);
-          _showPreview();
+          _schedulePreviewShow();
         },
         onExit: (_) {
           setState(() => _hovering = false);
@@ -4929,8 +5768,7 @@ class _CodeReviewDialogState extends State<_CodeReviewDialog> {
   }
 
   bool get _statsUnknown =>
-      widget.changes.any((change) => change.diff.trim().isEmpty) &&
-      (widget.turnDiff == null || widget.turnDiff!.isEmpty);
+      _fileChangeStatsUnknown(widget.changes, widget.turnDiff);
 
   @override
   Widget build(BuildContext context) {
@@ -5662,9 +6500,7 @@ class _ComposerFileChangePill extends StatelessWidget {
         : stats;
   }
 
-  bool get _statsUnknown =>
-      changes.any((change) => change.diff.trim().isEmpty) &&
-      (turnDiff == null || turnDiff!.isEmpty);
+  bool get _statsUnknown => _fileChangeStatsUnknown(changes, turnDiff);
 
   @override
   Widget build(BuildContext context) {
@@ -5715,12 +6551,14 @@ class _ComposerPanel extends StatefulWidget {
     super.key,
     required this.controller,
     required this.composer,
+    required this.recordSkillRequest,
     required this.onSend,
     required this.onSteer,
   });
 
   final CodexController controller;
   final TextEditingController composer;
+  final ValueListenable<int> recordSkillRequest;
   final Future<bool> Function(_ComposerSubmission submission) onSend;
   final Future<bool> Function(_ComposerSubmission submission) onSteer;
 
@@ -5739,14 +6577,13 @@ class _ComposerPanelState extends State<_ComposerPanel> {
   bool _includeWorkspace = false;
   bool _planMode = false;
   bool _recordSkill = false;
+  late int _handledRecordSkillRequest;
   String? _goal;
 
   CodexController get controller => widget.controller;
   TextEditingController get composer => widget.composer;
 
-  int get _fileChangeCount => controller.entries
-      .where((entry) => entry.title == '文件变更')
-      .fold(0, (total, entry) => total + entry.detail.split('\n').length);
+  int get _fileChangeCount => controller.fileChanges.length;
 
   List<CodexSkill> get _selectedSkills => controller.skills
       .where((skill) => _selectedSkillPaths.contains(skill.path))
@@ -5764,24 +6601,39 @@ class _ComposerPanelState extends State<_ComposerPanel> {
   void initState() {
     super.initState();
     _lastRuntimeStatus = controller.status;
+    _handledRecordSkillRequest = widget.recordSkillRequest.value;
     controller.addListener(_handleControllerChanged);
+    widget.recordSkillRequest.addListener(_handleRecordSkillRequest);
   }
 
   @override
   void didUpdateWidget(covariant _ComposerPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.controller == controller) return;
-    oldWidget.controller.removeListener(_handleControllerChanged);
-    _lastRuntimeStatus = controller.status;
-    controller.addListener(_handleControllerChanged);
-    _releaseDetachedAttachmentResources();
+    if (oldWidget.controller != controller) {
+      oldWidget.controller.removeListener(_handleControllerChanged);
+      _lastRuntimeStatus = controller.status;
+      controller.addListener(_handleControllerChanged);
+      _releaseDetachedAttachmentResources();
+    }
+    if (oldWidget.recordSkillRequest != widget.recordSkillRequest) {
+      oldWidget.recordSkillRequest.removeListener(_handleRecordSkillRequest);
+      _handledRecordSkillRequest = widget.recordSkillRequest.value;
+      widget.recordSkillRequest.addListener(_handleRecordSkillRequest);
+    }
   }
 
   @override
   void dispose() {
     controller.removeListener(_handleControllerChanged);
+    widget.recordSkillRequest.removeListener(_handleRecordSkillRequest);
     _releaseAllAttachmentResources();
     super.dispose();
+  }
+
+  void _handleRecordSkillRequest() {
+    if (_handledRecordSkillRequest == widget.recordSkillRequest.value) return;
+    _handledRecordSkillRequest = widget.recordSkillRequest.value;
+    if (mounted) setState(() => _recordSkill = true);
   }
 
   void _handleControllerChanged() {
@@ -6373,7 +7225,10 @@ class _ComposerPanelState extends State<_ComposerPanel> {
                                 minLines: 2,
                                 maxLines: 5,
                                 textInputAction: TextInputAction.newline,
-                                style: TextStyle(color: palette.trace),
+                                style: TextStyle(
+                                  color: palette.trace,
+                                  fontSize: 14,
+                                ),
                                 decoration: InputDecoration(
                                   hintText: '随心输入',
                                   hintStyle: TextStyle(color: palette.muted),
@@ -6597,10 +7452,13 @@ class _ComposerPanelState extends State<_ComposerPanel> {
                                       style: IconButton.styleFrom(
                                         backgroundColor: scheme.primary,
                                         foregroundColor: scheme.onPrimary,
+                                        fixedSize: const Size.square(36),
+                                        padding: EdgeInsets.zero,
+                                        shape: const CircleBorder(),
                                       ),
                                       icon: const Icon(
                                         Icons.arrow_upward,
-                                        size: 19,
+                                        size: 18,
                                       ),
                                     ),
                                 ],
@@ -7066,8 +7924,9 @@ class _Inspector extends StatelessWidget {
                 children: [
                   Text(
                     '环境信息',
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
                       color: palette.muted,
+                      fontSize: 18,
                       fontWeight: FontWeight.w700,
                       letterSpacing: -0.35,
                     ),
@@ -7078,9 +7937,10 @@ class _Inspector extends StatelessWidget {
                     label: '变更',
                     trailing: Text(
                       _fileChangeCountLabel(controller.fileChanges.length),
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         color: palette.active,
-                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                     onTap: onShowGitProject,
@@ -7125,9 +7985,11 @@ class _Inspector extends StatelessWidget {
                     label: '任务文件',
                     trailing: Text(
                       _fileChangeCountLabel(controller.fileChanges.length),
-                      style: Theme.of(
-                        context,
-                      ).textTheme.labelLarge?.copyWith(color: palette.muted),
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        color: palette.muted,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                   const SizedBox(height: 6),
@@ -7171,13 +8033,14 @@ class _InspectorSectionHeader extends StatelessWidget {
     final palette = YeknomPalette.of(context);
     return Row(
       children: [
-        Icon(icon, size: 22, color: palette.trace),
-        const SizedBox(width: 14),
+        Icon(icon, size: 19, color: palette.trace),
+        const SizedBox(width: 12),
         Expanded(
           child: Text(
             label,
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w700,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
               letterSpacing: -0.2,
             ),
           ),
@@ -7210,19 +8073,20 @@ class _InspectorActionRow extends StatelessWidget {
       onTap: () => unawaited(onTap()),
       borderRadius: BorderRadius.circular(12),
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 3),
+        padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 3),
         child: Row(
           children: [
-            Icon(icon, size: 22, color: palette.trace),
-            const SizedBox(width: 14),
+            Icon(icon, size: 19, color: palette.trace),
+            const SizedBox(width: 12),
             Expanded(
               child: Text(
                 label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
             ?trailing,
@@ -7341,14 +8205,22 @@ class _InspectorDiffExpansionTile extends StatelessWidget {
           size: 19,
           color: palette.trace,
         ),
-        title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+        title: Text(
+          title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
         subtitle: Text(
           subtitle,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: Theme.of(
             context,
-          ).textTheme.bodySmall?.copyWith(color: palette.muted),
+          ).textTheme.bodySmall?.copyWith(color: palette.muted, fontSize: 12),
         ),
         children: [
           Container(
@@ -7505,6 +8377,1453 @@ class _DiffExpansionTile extends StatelessWidget {
           );
         })
         .toList(growable: false);
+  }
+}
+
+/// Full-screen scheduled-task hub modeled after the Codex desktop library.
+class _ScheduledTasksPage extends StatefulWidget {
+  const _ScheduledTasksPage({required this.controller, required this.onCreate});
+
+  final CodexController controller;
+  final Future<void> Function([String? initialPrompt]) onCreate;
+
+  @override
+  State<_ScheduledTasksPage> createState() => _ScheduledTasksPageState();
+}
+
+class _ScheduledTasksPageState extends State<_ScheduledTasksPage> {
+  final TextEditingController _search = TextEditingController();
+
+  static const _suggestions = [
+    _ScheduledTaskSuggestion(
+      icon: Icons.notifications_none_outlined,
+      color: Color(0xFF42A5F5),
+      title: '每日简报',
+      schedule: '工作日 8:00',
+      prompt: '整理今天的日历、未读邮件和优先事项，给我一份每日简报。',
+    ),
+    _ScheduledTaskSuggestion(
+      icon: Icons.article_outlined,
+      color: Color(0xFFB779FF),
+      title: '每周回顾',
+      schedule: '星期五 16:00',
+      prompt: '每周五整理我最近的工作，生成一份清晰的状态更新。',
+    ),
+    _ScheduledTaskSuggestion(
+      icon: Icons.manage_search_outlined,
+      color: Color(0xFF32C887),
+      title: '跟进监控',
+      schedule: '工作日 9:00',
+      prompt: '检查待跟进事项，整理需要我注意的更新和下一步。',
+    ),
+  ];
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  bool _matches(String value) =>
+      value.toLowerCase().contains(_search.text.trim().toLowerCase());
+
+  String _timeLabel(DateTime value) =>
+      '${value.year}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')} '
+      '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}';
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final tasks = widget.controller.scheduledTasks
+        .where((task) => _matches(task.prompt))
+        .toList(growable: false);
+    final suggestions = _suggestions
+        .where((item) => _matches('${item.title} ${item.prompt}'))
+        .toList(growable: false);
+    return Column(
+      children: [
+        _LibraryTopBar(createLabel: '创建', onCreate: () => widget.onCreate()),
+        const Divider(height: 1),
+        Expanded(
+          child: ListView(
+            key: const Key('scheduled-tasks-page'),
+            padding: const EdgeInsets.fromLTRB(72, 42, 72, 64),
+            children: [
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 1036),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '已安排的任务',
+                      style: Theme.of(context).textTheme.headlineMedium
+                          ?.copyWith(
+                            fontSize: 38,
+                            fontWeight: FontWeight.w500,
+                            letterSpacing: -1,
+                          ),
+                    ),
+                    const SizedBox(height: 7),
+                    Text(
+                      '让 ChatGPT 安排任务、设置提醒或监测更新',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        color: palette.muted,
+                        fontWeight: FontWeight.w400,
+                      ),
+                    ),
+                    const SizedBox(height: 28),
+                    TextField(
+                      key: const Key('scheduled-tasks-search'),
+                      controller: _search,
+                      onChanged: (_) => setState(() {}),
+                      decoration: InputDecoration(
+                        hintText: '搜索已安排任务',
+                        prefixIcon: const Icon(Icons.search_outlined),
+                        filled: true,
+                        fillColor: palette.field,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(24),
+                        ),
+                      ),
+                    ),
+                    if (tasks.isNotEmpty) ...[
+                      const SizedBox(height: 42),
+                      _LibrarySectionHeader(label: '待执行'),
+                      for (final task in tasks)
+                        _ScheduledTaskRow(
+                          task: task,
+                          timeLabel: _timeLabel(task.runAt),
+                          onCancel: () =>
+                              widget.controller.cancelScheduledTask(task.id),
+                        ),
+                    ],
+                    const SizedBox(height: 42),
+                    _LibrarySectionHeader(label: '建议'),
+                    const SizedBox(height: 10),
+                    for (final suggestion in suggestions)
+                      _ScheduledSuggestionRow(
+                        suggestion: suggestion,
+                        onTap: () => widget.onCreate(suggestion.prompt),
+                      ),
+                    if (tasks.isEmpty && suggestions.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 28),
+                        child: Text(
+                          '没有匹配的已安排任务。',
+                          style: TextStyle(color: palette.muted),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ScheduledTaskSuggestion {
+  const _ScheduledTaskSuggestion({
+    required this.icon,
+    required this.color,
+    required this.title,
+    required this.schedule,
+    required this.prompt,
+  });
+
+  final IconData icon;
+  final Color color;
+  final String title;
+  final String schedule;
+  final String prompt;
+}
+
+class _ScheduledSuggestionRow extends StatelessWidget {
+  const _ScheduledSuggestionRow({
+    required this.suggestion,
+    required this.onTap,
+  });
+
+  final _ScheduledTaskSuggestion suggestion;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 13),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(suggestion.icon, color: suggestion.color, size: 23),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text.rich(
+                      TextSpan(
+                        text: suggestion.title,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                        children: [
+                          TextSpan(
+                            text: '  ${suggestion.schedule}',
+                            style: TextStyle(
+                              color: palette.muted,
+                              fontWeight: FontWeight.w400,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      suggestion.prompt,
+                      style: TextStyle(color: palette.muted),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ScheduledTaskRow extends StatelessWidget {
+  const _ScheduledTaskRow({
+    required this.task,
+    required this.timeLabel,
+    required this.onCancel,
+  });
+
+  final ScheduledTask task;
+  final String timeLabel;
+  final VoidCallback onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 10),
+      leading: Icon(Icons.schedule_outlined, color: palette.active),
+      title: Text(task.prompt, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(timeLabel, style: TextStyle(color: palette.muted)),
+      trailing: IconButton(
+        tooltip: '取消安排',
+        onPressed: onCancel,
+        icon: const Icon(Icons.close, size: 19),
+      ),
+    );
+  }
+}
+
+/// Matches Codex's compact source form while keeping the one supported input
+/// contract explicit: the local CLI resolves the marketplace's default ref.
+class _AddMarketplaceDialog extends StatefulWidget {
+  const _AddMarketplaceDialog();
+
+  @override
+  State<_AddMarketplaceDialog> createState() => _AddMarketplaceDialogState();
+}
+
+class _AddMarketplaceDialogState extends State<_AddMarketplaceDialog> {
+  final TextEditingController _source = TextEditingController();
+
+  @override
+  void dispose() {
+    _source.dispose();
+    super.dispose();
+  }
+
+  Future<void> _chooseDirectory() async {
+    final path = await getDirectoryPath(confirmButtonText: '选择插件市场');
+    if (!mounted || path == null || path.trim().isEmpty) return;
+    _source.text = path;
+    _source.selection = TextSelection.collapsed(offset: path.length);
+    setState(() {});
+  }
+
+  void _submit() {
+    final value = _source.text.trim();
+    if (value.isNotEmpty) Navigator.of(context).pop(value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final canSubmit = _source.text.trim().isNotEmpty;
+    return AlertDialog(
+      key: const Key('add-marketplace-dialog'),
+      titlePadding: const EdgeInsets.fromLTRB(28, 25, 14, 0),
+      title: Row(
+        children: [
+          const Expanded(
+            child: Text(
+              '添加插件市场',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ),
+          IconButton(
+            tooltip: '关闭',
+            onPressed: () => Navigator.of(context).pop(),
+            icon: const Icon(Icons.close),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 480,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '从 GitHub 仓库、Git URL 或本地文件夹添加。',
+              style: TextStyle(color: palette.muted),
+            ),
+            const SizedBox(height: 24),
+            const Text('来源', style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            TextField(
+              key: const Key('marketplace-source-field'),
+              controller: _source,
+              autofocus: true,
+              onChanged: (_) => setState(() {}),
+              onSubmitted: (_) => _submit(),
+              decoration: InputDecoration(
+                hintText: 'openai/plugins 或 git@github.com:org/repo.git',
+                prefixIcon: const Icon(Icons.storefront_outlined),
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 11),
+            Text(
+              '也可选择包含 marketplace 的本地文件夹。Git 引用由 Codex CLI 按市场默认设置解析。',
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: palette.muted),
+            ),
+          ],
+        ),
+      ),
+      actionsPadding: const EdgeInsets.fromLTRB(22, 0, 22, 20),
+      actions: [
+        TextButton.icon(
+          onPressed: _chooseDirectory,
+          icon: const Icon(Icons.folder_open_outlined, size: 18),
+          label: const Text('选择本地目录'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: canSubmit ? _submit : null,
+          child: const Text('添加市场'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Plugin library keeps CLI-backed plugin actions in a full workspace instead
+/// of obscuring the current project with a modal.
+class _PluginsPage extends StatefulWidget {
+  const _PluginsPage({
+    required this.controller,
+    required this.onAddMarketplace,
+    required this.onManageMarketplaces,
+    required this.onCreatePlugin,
+    required this.onRecordSkill,
+  });
+
+  final CodexController controller;
+  final Future<void> Function() onAddMarketplace;
+  final Future<void> Function() onManageMarketplaces;
+  final VoidCallback onCreatePlugin;
+  final VoidCallback onRecordSkill;
+
+  @override
+  State<_PluginsPage> createState() => _PluginsPageState();
+}
+
+class _PluginsPageState extends State<_PluginsPage> {
+  final TextEditingController _search = TextEditingController();
+  bool _personalOnly = false;
+  _PluginLibraryTab _tab = _PluginLibraryTab.plugins;
+
+  void _selectTab(_PluginLibraryTab tab) {
+    if (_tab == tab) return;
+    setState(() => _tab = tab);
+    if (tab == _PluginLibraryTab.skills) {
+      unawaited(widget.controller.refreshSkills());
+    }
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final query = _search.text.trim().toLowerCase();
+    final plugins = widget.controller.plugins
+        .where((plugin) {
+          if (_personalOnly && plugin.marketplaceName.isNotEmpty) return false;
+          return query.isEmpty ||
+              plugin.name.toLowerCase().contains(query) ||
+              plugin.sourceLabel.toLowerCase().contains(query);
+        })
+        .toList(growable: false);
+    final installed = plugins.where((plugin) => plugin.installed).toList();
+    final available = plugins.where((plugin) => !plugin.installed).toList();
+    return Column(
+      children: [
+        _LibraryTopBar(
+          createLabel: '添加',
+          onCreate: () => widget.onAddMarketplace(),
+          leading: [
+            _LibraryTabButton(
+              key: const Key('plugins-tab'),
+              label: '插件',
+              selected: _tab == _PluginLibraryTab.plugins,
+              onTap: () => _selectTab(_PluginLibraryTab.plugins),
+            ),
+            _LibraryTabButton(
+              key: const Key('plugins-skills-tab'),
+              label: '技能',
+              selected: _tab == _PluginLibraryTab.skills,
+              onTap: () => _selectTab(_PluginLibraryTab.skills),
+            ),
+          ],
+          createControl: _PluginAddMenu(
+            onCreatePlugin: widget.onCreatePlugin,
+            onAddMarketplace: widget.onAddMarketplace,
+            onRecordSkill: widget.onRecordSkill,
+          ),
+          actions: [
+            IconButton(
+              key: const Key('plugins-page-refresh'),
+              tooltip: _tab == _PluginLibraryTab.plugins ? '刷新插件' : '刷新技能',
+              onPressed:
+                  widget.controller.pluginsLoading ||
+                      widget.controller.pluginSaving
+                  ? null
+                  : _tab == _PluginLibraryTab.plugins
+                  ? widget.controller.refreshPlugins
+                  : widget.controller.refreshSkills,
+              icon: const Icon(Icons.refresh),
+            ),
+            IconButton(
+              tooltip: '管理市场',
+              onPressed: widget.controller.pluginSaving
+                  ? null
+                  : () => widget.onManageMarketplaces(),
+              icon: const Icon(Icons.settings_outlined),
+            ),
+          ],
+        ),
+        const Divider(height: 1),
+        if (_tab == _PluginLibraryTab.skills)
+          Expanded(
+            child: _SkillsLibraryPage(
+              controller: widget.controller,
+              search: _search,
+              onChanged: () => setState(() {}),
+            ),
+          )
+        else
+          Expanded(
+            child: ListView(
+              key: const Key('plugins-page'),
+              padding: const EdgeInsets.fromLTRB(72, 42, 72, 64),
+              children: [
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 1036),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '插件',
+                        style: Theme.of(context).textTheme.headlineMedium
+                            ?.copyWith(
+                              fontSize: 38,
+                              fontWeight: FontWeight.w500,
+                              letterSpacing: -1,
+                            ),
+                      ),
+                      const SizedBox(height: 7),
+                      Text(
+                        '在你常用的工具中使用 Codex',
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(
+                              color: palette.muted,
+                              fontWeight: FontWeight.w400,
+                            ),
+                      ),
+                      const SizedBox(height: 28),
+                      TextField(
+                        key: const Key('plugins-search'),
+                        controller: _search,
+                        onChanged: (_) => setState(() {}),
+                        decoration: InputDecoration(
+                          hintText: '搜索插件',
+                          prefixIcon: const Icon(Icons.search_outlined),
+                          filled: true,
+                          fillColor: palette.field,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(24),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 42),
+                      _LibrarySectionHeader(label: '已安装'),
+                      const SizedBox(height: 14),
+                      installed.isEmpty
+                          ? Text(
+                              '尚未安装插件。添加 marketplace 后可在此安装和管理插件。',
+                              style: TextStyle(color: palette.muted),
+                            )
+                          : Wrap(
+                              spacing: 18,
+                              runSpacing: 18,
+                              children: installed
+                                  .map(
+                                    (plugin) =>
+                                        _InstalledPluginChip(plugin: plugin),
+                                  )
+                                  .toList(growable: false),
+                            ),
+                      const SizedBox(height: 34),
+                      Wrap(
+                        spacing: 8,
+                        children: [
+                          ChoiceChip(
+                            label: const Text('公开'),
+                            selected: !_personalOnly,
+                            onSelected: (_) =>
+                                setState(() => _personalOnly = false),
+                          ),
+                          ChoiceChip(
+                            label: const Text('个人'),
+                            selected: _personalOnly,
+                            onSelected: (_) =>
+                                setState(() => _personalOnly = true),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 42),
+                      _LibrarySectionHeader(label: '精选'),
+                      const SizedBox(height: 18),
+                      if (widget.controller.pluginsLoading)
+                        const Center(
+                          child: Padding(
+                            padding: EdgeInsets.all(32),
+                            child: CircularProgressIndicator(),
+                          ),
+                        )
+                      else if (available.isEmpty)
+                        Text(
+                          '没有可安装的插件。使用右上角“添加”连接一个插件市场。',
+                          style: TextStyle(color: palette.muted),
+                        )
+                      else
+                        LayoutBuilder(
+                          builder: (context, constraints) {
+                            final twoColumns = constraints.maxWidth >= 700;
+                            return Wrap(
+                              spacing: 28,
+                              runSpacing: 4,
+                              children: available
+                                  .map(
+                                    (plugin) => SizedBox(
+                                      width: twoColumns
+                                          ? (constraints.maxWidth - 28) / 2
+                                          : constraints.maxWidth,
+                                      child: _PluginLibraryRow(
+                                        plugin: plugin,
+                                        busy: widget.controller.pluginSaving,
+                                        onInstall: () => widget.controller
+                                            .installPlugin(plugin),
+                                      ),
+                                    ),
+                                  )
+                                  .toList(growable: false),
+                            );
+                          },
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _SkillsLibraryPage extends StatelessWidget {
+  const _SkillsLibraryPage({
+    required this.controller,
+    required this.search,
+    required this.onChanged,
+  });
+
+  final CodexController controller;
+  final TextEditingController search;
+  final VoidCallback onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final query = search.text.trim().toLowerCase();
+    final skills = controller.skills
+        .where((skill) {
+          return query.isEmpty ||
+              skill.name.toLowerCase().contains(query) ||
+              skill.label.toLowerCase().contains(query) ||
+              skill.summary.toLowerCase().contains(query);
+        })
+        .toList(growable: false);
+    final personal = skills
+        .where((skill) => skill.scope.toLowerCase() != 'system')
+        .toList(growable: false);
+    final system = skills
+        .where((skill) => skill.scope.toLowerCase() == 'system')
+        .toList(growable: false);
+
+    return ListView(
+      key: const Key('skills-page'),
+      padding: const EdgeInsets.fromLTRB(72, 42, 72, 64),
+      children: [
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1036),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '技能',
+                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                  fontSize: 38,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: -1,
+                ),
+              ),
+              const SizedBox(height: 7),
+              Text(
+                '通过任务专用技能扩展 Codex',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: palette.muted,
+                  fontWeight: FontWeight.w400,
+                ),
+              ),
+              const SizedBox(height: 28),
+              TextField(
+                key: const Key('skills-search'),
+                controller: search,
+                onChanged: (_) => onChanged(),
+                decoration: InputDecoration(
+                  hintText: '搜索技能',
+                  prefixIcon: const Icon(Icons.search_outlined),
+                  filled: true,
+                  fillColor: palette.field,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 42),
+              _LibrarySectionHeader(label: '已安装'),
+              const SizedBox(height: 12),
+              if (controller.skillsLoading && controller.skills.isEmpty)
+                const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(32),
+                    child: CircularProgressIndicator(),
+                  ),
+                )
+              else if (controller.skillsError case final error?)
+                _SkillsLibraryMessage(
+                  icon: Icons.error_outline,
+                  message: error,
+                  actionLabel: '重试',
+                  onAction: controller.refreshSkills,
+                )
+              else if (skills.isEmpty)
+                _SkillsLibraryMessage(
+                  icon: Icons.auto_awesome_outlined,
+                  message: query.isEmpty
+                      ? '当前项目没有可用技能。可从右上角“添加”录制一个技能。'
+                      : '没有与“${search.text.trim()}”匹配的技能。',
+                  actionLabel: query.isEmpty ? '刷新' : null,
+                  onAction: query.isEmpty ? controller.refreshSkills : null,
+                )
+              else ...[
+                if (personal.isNotEmpty) ...[
+                  _SkillScopeLabel(label: '个人与项目'),
+                  const SizedBox(height: 3),
+                  _SkillsLibraryGrid(skills: personal),
+                ],
+                if (personal.isNotEmpty && system.isNotEmpty)
+                  const SizedBox(height: 28),
+                if (system.isNotEmpty) ...[
+                  _SkillScopeLabel(label: '系统技能'),
+                  const SizedBox(height: 3),
+                  _SkillsLibraryGrid(skills: system),
+                ],
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SkillsLibraryGrid extends StatelessWidget {
+  const _SkillsLibraryGrid({required this.skills});
+  final List<CodexSkill> skills;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final twoColumns = constraints.maxWidth >= 700;
+      return Wrap(
+        spacing: 28,
+        runSpacing: 4,
+        children: skills
+            .map(
+              (skill) => SizedBox(
+                width: twoColumns
+                    ? (constraints.maxWidth - 28) / 2
+                    : constraints.maxWidth,
+                child: _SkillLibraryRow(skill: skill),
+              ),
+            )
+            .toList(growable: false),
+      );
+    },
+  );
+}
+
+class _SkillScopeLabel extends StatelessWidget {
+  const _SkillScopeLabel({required this.label});
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(left: 10, bottom: 4),
+    child: Text(
+      label,
+      style: Theme.of(
+        context,
+      ).textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w600),
+    ),
+  );
+}
+
+class _SkillsLibraryMessage extends StatelessWidget {
+  const _SkillsLibraryMessage({
+    required this.icon,
+    required this.message,
+    this.actionLabel,
+    this.onAction,
+  });
+
+  final IconData icon;
+  final String message;
+  final String? actionLabel;
+  final VoidCallback? onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 18),
+      child: Row(
+        children: [
+          Icon(icon, color: palette.muted),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(message, style: TextStyle(color: palette.muted)),
+          ),
+          if (actionLabel != null)
+            TextButton(onPressed: onAction, child: Text(actionLabel!)),
+        ],
+      ),
+    );
+  }
+}
+
+class _SkillLibraryRow extends StatelessWidget {
+  const _SkillLibraryRow({required this.skill});
+  final CodexSkill skill;
+
+  IconData get _icon {
+    final name = skill.name.toLowerCase();
+    if (name.contains('plugin')) return Icons.extension_outlined;
+    if (name.contains('image')) return Icons.image_outlined;
+    if (name.contains('doc') || name.contains('pdf')) {
+      return Icons.description_outlined;
+    }
+    return Icons.auto_awesome_outlined;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 11),
+      child: Row(
+        children: [
+          Container(
+            width: 42,
+            height: 42,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: palette.raised,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: palette.border),
+            ),
+            child: Icon(_icon, size: 21, color: palette.trace),
+          ),
+          const SizedBox(width: 13),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  skill.label,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  skill.summary.isEmpty ? skill.path : skill.summary,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: palette.muted),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Icon(Icons.check, size: 19, color: palette.ack),
+        ],
+      ),
+    );
+  }
+}
+
+class _InstalledPluginChip extends StatelessWidget {
+  const _InstalledPluginChip({required this.plugin});
+  final CodexPlugin plugin;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 92,
+    child: Column(
+      children: [
+        _PluginGlyph(name: plugin.name, active: plugin.enabled),
+        const SizedBox(height: 7),
+        Text(
+          plugin.name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          textAlign: TextAlign.center,
+        ),
+      ],
+    ),
+  );
+}
+
+class _PluginLibraryRow extends StatelessWidget {
+  const _PluginLibraryRow({
+    required this.plugin,
+    required this.busy,
+    required this.onInstall,
+  });
+  final CodexPlugin plugin;
+  final bool busy;
+  final VoidCallback onInstall;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(
+        children: [
+          _PluginGlyph(name: plugin.name, active: false),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  plugin.name,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  plugin.sourceLabel,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: palette.muted),
+                ),
+              ],
+            ),
+          ),
+          OutlinedButton(
+            onPressed: busy ? null : onInstall,
+            child: const Text('安装'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PluginGlyph extends StatelessWidget {
+  const _PluginGlyph({required this.name, required this.active});
+  final String name;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final hue = name.hashCode.abs() % 360;
+    return Container(
+      width: 48,
+      height: 48,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: HSVColor.fromAHSV(
+          1,
+          hue.toDouble(),
+          .58,
+          .8,
+        ).toColor().withValues(alpha: .18),
+        borderRadius: BorderRadius.circular(13),
+        border: Border.all(color: active ? palette.active : palette.border),
+      ),
+      child: Icon(
+        Icons.extension_outlined,
+        color: HSVColor.fromAHSV(1, hue.toDouble(), .58, .96).toColor(),
+      ),
+    );
+  }
+}
+
+class _PullRequestsPage extends StatelessWidget {
+  const _PullRequestsPage({
+    required this.controller,
+    required this.onOpenGitProject,
+    required this.onAskCodex,
+  });
+  final CodexController controller;
+  final Future<void> Function() onOpenGitProject;
+  final VoidCallback onAskCodex;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final status = controller.gitProjectStatus;
+    return Column(
+      children: [
+        const SizedBox(
+          height: 56,
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: EdgeInsets.symmetric(horizontal: 32),
+              child: Text(
+                'Pull Request',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+              ),
+            ),
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: Row(
+            children: [
+              Expanded(
+                flex: 7,
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 470),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.code, size: 38, color: palette.trace),
+                        const SizedBox(height: 22),
+                        Text(
+                          status?.isRepository == true
+                              ? '管理 Pull Request'
+                              : '安装 GitHub CLI',
+                          style: Theme.of(context).textTheme.titleLarge
+                              ?.copyWith(fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          status?.isRepository == true
+                              ? '查看当前项目的分支、变更和拉取请求创建流程。'
+                              : '安装 GitHub CLI 以查看和管理你的 Pull Request',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: palette.muted),
+                        ),
+                        const SizedBox(height: 20),
+                        _CopyCommand(command: 'brew install gh'),
+                        const SizedBox(height: 18),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            IconButton(
+                              tooltip: '刷新',
+                              onPressed: controller.refreshGitProject,
+                              icon: const Icon(Icons.refresh),
+                            ),
+                            const SizedBox(width: 8),
+                            FilledButton(
+                              key: const Key('pull-requests-open-git-project'),
+                              onPressed: status?.isRepository == true
+                                  ? () => onOpenGitProject()
+                                  : onAskCodex,
+                              child: Text(
+                                status?.isRepository == true
+                                    ? '打开 Git 项目'
+                                    : '询问 Codex',
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              VerticalDivider(width: 1, color: palette.border),
+              const Expanded(
+                flex: 3,
+                child: Center(
+                  child: Text(
+                    '选择要查看的 Pull Request',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _CopyCommand extends StatelessWidget {
+  const _CopyCommand({required this.command});
+  final String command;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Container(
+      padding: const EdgeInsets.only(left: 16, right: 5),
+      decoration: BoxDecoration(
+        border: Border.all(color: palette.border),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(command, style: const TextStyle(fontFamily: 'monospace')),
+          const SizedBox(width: 28),
+          IconButton(
+            tooltip: '复制命令',
+            onPressed: () => Clipboard.setData(ClipboardData(text: command)),
+            icon: const Icon(Icons.content_copy_outlined, size: 19),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LibraryTopBar extends StatelessWidget {
+  const _LibraryTopBar({
+    required this.createLabel,
+    required this.onCreate,
+    this.actions = const [],
+    this.leading = const [],
+    this.createControl,
+  });
+  final String createLabel;
+  final VoidCallback onCreate;
+  final List<Widget> actions;
+  final List<Widget> leading;
+  final Widget? createControl;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    height: 56,
+    child: Row(
+      children: [
+        const SizedBox(width: 20),
+        ...leading,
+        const Spacer(),
+        ...actions,
+        const SizedBox(width: 8),
+        Padding(
+          padding: const EdgeInsets.only(right: 20),
+          child:
+              createControl ??
+              FilledButton.icon(
+                onPressed: onCreate,
+                icon: const Icon(Icons.add, size: 18),
+                label: Text(createLabel),
+              ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _LibraryTabButton extends StatelessWidget {
+  const _LibraryTabButton({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    super.key,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Material(
+      color: selected ? palette.raised : Colors.transparent,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? palette.trace : palette.muted,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+enum _PluginAddAction { createPlugin, addMarketplace, recordSkill }
+
+class _PluginAddMenu extends StatelessWidget {
+  const _PluginAddMenu({
+    required this.onCreatePlugin,
+    required this.onAddMarketplace,
+    required this.onRecordSkill,
+  });
+
+  final VoidCallback onCreatePlugin;
+  final Future<void> Function() onAddMarketplace;
+  final VoidCallback onRecordSkill;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return PopupMenuButton<_PluginAddAction>(
+      key: const Key('plugins-add-menu'),
+      tooltip: '添加',
+      color: palette.module,
+      offset: const Offset(0, 42),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: BorderSide(color: palette.border),
+      ),
+      onSelected: (action) {
+        switch (action) {
+          case _PluginAddAction.createPlugin:
+            onCreatePlugin();
+          case _PluginAddAction.addMarketplace:
+            unawaited(onAddMarketplace());
+          case _PluginAddAction.recordSkill:
+            onRecordSkill();
+        }
+      },
+      itemBuilder: (context) => const [
+        PopupMenuItem(
+          value: _PluginAddAction.createPlugin,
+          child: _PluginAddMenuRow(
+            icon: Icons.extension_outlined,
+            label: '创建插件',
+          ),
+        ),
+        PopupMenuItem(
+          value: _PluginAddAction.addMarketplace,
+          child: _PluginAddMenuRow(icon: Icons.add, label: '添加插件市场'),
+        ),
+        PopupMenuDivider(),
+        PopupMenuItem(
+          value: _PluginAddAction.recordSkill,
+          child: _PluginAddMenuRow(
+            icon: Icons.radio_button_unchecked,
+            label: '录制技能',
+          ),
+        ),
+      ],
+      child: FilledButton.icon(
+        onPressed: null,
+        icon: const Icon(Icons.add, size: 18),
+        label: const Text('添加'),
+      ),
+    );
+  }
+}
+
+class _PluginAddMenuRow extends StatelessWidget {
+  const _PluginAddMenuRow({required this.icon, required this.label});
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 190,
+    child: Row(
+      children: [
+        Icon(icon, size: 23),
+        const SizedBox(width: 13),
+        Text(
+          label,
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+        ),
+      ],
+    ),
+  );
+}
+
+class _LibrarySectionHeader extends StatelessWidget {
+  const _LibrarySectionHeader({required this.label});
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.only(left: 10, bottom: 13),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: palette.border)),
+      ),
+      child: Text(
+        label,
+        style: Theme.of(
+          context,
+        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+      ),
+    );
+  }
+}
+
+/// Manages prompts that Codex Desk will send later while the app is running.
+class _ScheduledTasksDialog extends StatefulWidget {
+  const _ScheduledTasksDialog({required this.controller, this.initialPrompt});
+
+  final CodexController controller;
+  final String? initialPrompt;
+
+  @override
+  State<_ScheduledTasksDialog> createState() => _ScheduledTasksDialogState();
+}
+
+class _ScheduledTasksDialogState extends State<_ScheduledTasksDialog> {
+  final TextEditingController _prompt = TextEditingController();
+  late DateTime _runAt;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _prompt.text = widget.initialPrompt ?? '';
+    _runAt = DateTime.now().add(const Duration(hours: 1));
+  }
+
+  @override
+  void dispose() {
+    _prompt.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickRunAt() async {
+    final date = await showDatePicker(
+      context: context,
+      initialDate: _runAt,
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+      helpText: '选择执行日期',
+    );
+    if (date == null || !mounted) return;
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(_runAt),
+      helpText: '选择执行时间',
+    );
+    if (time == null || !mounted) return;
+    setState(() {
+      _runAt = DateTime(
+        date.year,
+        date.month,
+        date.day,
+        time.hour,
+        time.minute,
+      );
+    });
+  }
+
+  Future<void> _schedule() async {
+    if (_prompt.text.trim().isEmpty || !_runAt.isAfter(DateTime.now())) return;
+    setState(() => _saving = true);
+    final saved = await widget.controller.schedulePrompt(
+      prompt: _prompt.text,
+      runAt: _runAt,
+    );
+    if (!mounted) return;
+    if (saved) {
+      _prompt.clear();
+      setState(() {
+        _runAt = DateTime.now().add(const Duration(hours: 1));
+        _saving = false;
+      });
+    } else {
+      setState(() => _saving = false);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请填写提示词，并选择未来的执行时间。')));
+    }
+  }
+
+  String _timeLabel(DateTime value) =>
+      '${value.year}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')} '
+      '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}';
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final tasks = widget.controller.scheduledTasks;
+    return AlertDialog(
+      key: const Key('scheduled-tasks-dialog'),
+      title: const Text('已安排'),
+      content: SizedBox(
+        width: 600,
+        height: 510,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '任务会在设定时间创建一条新对话并发送提示词。仅在 Codex Desk 保持打开时执行。',
+              style: TextStyle(color: palette.muted),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              key: const Key('scheduled-task-prompt-field'),
+              controller: _prompt,
+              minLines: 2,
+              maxLines: 4,
+              decoration: const InputDecoration(
+                labelText: '到点后发送的提示词',
+                hintText: '例如：检查当前分支的测试结果并汇总风险',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                OutlinedButton.icon(
+                  key: const Key('scheduled-task-time-picker'),
+                  onPressed: _saving ? null : _pickRunAt,
+                  icon: const Icon(Icons.schedule_outlined, size: 18),
+                  label: Text(_timeLabel(_runAt)),
+                ),
+                const Spacer(),
+                FilledButton.icon(
+                  key: const Key('schedule-task-confirm'),
+                  onPressed: _saving ? null : _schedule,
+                  icon: const Icon(Icons.add, size: 18),
+                  label: Text(_saving ? '安排中…' : '安排任务'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Text(
+              '待执行',
+              style: Theme.of(
+                context,
+              ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 6),
+            Expanded(
+              child: tasks.isEmpty
+                  ? Center(
+                      child: Text(
+                        '没有已安排的任务。',
+                        style: TextStyle(color: palette.muted),
+                      ),
+                    )
+                  : ListView.separated(
+                      itemCount: tasks.length,
+                      separatorBuilder: (_, _) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final task = tasks[index];
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const Icon(Icons.schedule_outlined),
+                          title: Text(
+                            task.prompt,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(_timeLabel(task.runAt)),
+                          trailing: IconButton(
+                            tooltip: '取消安排',
+                            onPressed: () =>
+                                widget.controller.cancelScheduledTask(task.id),
+                            icon: const Icon(Icons.close, size: 19),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('关闭'),
+        ),
+      ],
+    );
   }
 }
 
@@ -7912,6 +10231,14 @@ List<_ConversationTimelineItem> _conversationTimelineItems(
   var index = 0;
   while (index < entries.length) {
     final entry = entries[index];
+    // 旧版缓存可能仍含逐文件的协议记录。文件变更会由专用摘要卡片
+    // 和审查入口呈现，不应占据会话流。
+    // Older caches may retain per-file protocol records. File changes are
+    // presented by the dedicated summary card and review entry instead.
+    if (entry.title == '文件变更') {
+      index++;
+      continue;
+    }
     if (!_isActivityEntry(entry)) {
       items.add(_ConversationTimelineItem.entry(entry, index));
       index++;
@@ -7920,17 +10247,20 @@ List<_ConversationTimelineItem> _conversationTimelineItems(
     final activities = <TimelineEntry>[];
     final firstIndex = index;
     while (index < entries.length && _isActivityEntry(entries[index])) {
-      activities.add(entries[index]);
+      if (entries[index].title != '文件变更') {
+        activities.add(entries[index]);
+      }
       index++;
     }
-    items.add(_ConversationTimelineItem.activities(activities, firstIndex));
+    if (activities.isNotEmpty) {
+      items.add(_ConversationTimelineItem.activities(activities, firstIndex));
+    }
   }
   return items;
 }
 
 bool _isActivityEntry(TimelineEntry entry) =>
-    entry.kind == TimelineKind.tool ||
-    (entry.kind == TimelineKind.command && entry.title != '文件变更');
+    entry.kind == TimelineKind.tool || entry.kind == TimelineKind.command;
 
 class _ConversationTimelineItem {
   const _ConversationTimelineItem.entry(this.entry, this.entryIndex)
@@ -8042,7 +10372,7 @@ class _TimelineActivityRow extends StatelessWidget {
     final label = _activityLabel(entry);
     return Tooltip(
       message: entry.detail,
-      waitDuration: const Duration(milliseconds: 450),
+      waitDuration: codexHoverPopupDelay,
       child: Semantics(
         label: '$label。${entry.detail}',
         child: Padding(
@@ -8103,6 +10433,21 @@ class _TimelineEntry extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
+    if (entry.kind == TimelineKind.elapsed) {
+      return Semantics(
+        label: entry.title,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: Text(
+            entry.title,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: palette.muted,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      );
+    }
     if (entry.kind == TimelineKind.user) {
       return Align(
         alignment: Alignment.centerRight,
@@ -8164,6 +10509,7 @@ class _TimelineEntry extends StatelessWidget {
       TimelineKind.approval => palette.signal,
       TimelineKind.error => palette.fault,
       TimelineKind.system => palette.muted,
+      TimelineKind.elapsed => palette.muted,
       TimelineKind.user => throw StateError('Handled above.'),
     };
     return Column(
@@ -8181,6 +10527,58 @@ class _TimelineEntry extends StatelessWidget {
             SelectionArea(child: Text(entry.detail)),
         ],
       ],
+    );
+  }
+}
+
+/// A quiet, temporary command indicator matching Codex's activity stream.
+/// It is replaced by the existing collapsible command history once complete.
+class _LiveCommandRow extends StatelessWidget {
+  const _LiveCommandRow({required this.command});
+
+  final String command;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Semantics(
+      key: const Key('live-command-row'),
+      liveRegion: true,
+      label: '正在运行命令：$command',
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(2, 3, 6, 3),
+        child: Row(
+          children: [
+            Icon(Icons.terminal_outlined, size: 18, color: palette.muted),
+            const SizedBox(width: 9),
+            Expanded(
+              child: SelectionArea(
+                child: Text.rich(
+                  TextSpan(
+                    children: [
+                      TextSpan(
+                        text: '正在运行 ',
+                        style: Theme.of(
+                          context,
+                        ).textTheme.bodyMedium?.copyWith(color: palette.muted),
+                      ),
+                      TextSpan(
+                        text: command,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: palette.trace,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                    ],
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -8351,13 +10749,14 @@ class _HistoryThreadTile extends StatelessWidget {
     required this.statusIndicator,
     required this.running,
     required this.enabled,
+    required this.actionsEnabled,
     required this.selectionMode,
     required this.batchSelected,
     required this.onTap,
-    required this.onRename,
-    required this.onArchive,
-    required this.onDelete,
-    required this.onTogglePin,
+    this.onRename,
+    this.onArchive,
+    this.onDelete,
+    this.onTogglePin,
   });
 
   final CodexThread thread;
@@ -8366,13 +10765,14 @@ class _HistoryThreadTile extends StatelessWidget {
   final _ThreadStatusIndicator? statusIndicator;
   final bool running;
   final bool enabled;
+  final bool actionsEnabled;
   final bool selectionMode;
   final bool batchSelected;
   final VoidCallback onTap;
-  final VoidCallback onRename;
-  final VoidCallback onArchive;
-  final VoidCallback onDelete;
-  final VoidCallback onTogglePin;
+  final VoidCallback? onRename;
+  final VoidCallback? onArchive;
+  final VoidCallback? onDelete;
+  final VoidCallback? onTogglePin;
 
   /// 构建带有恢复、重命名和归档操作的历史线程项。
   /// Builds a history-thread item with resume, rename, and archive actions.
@@ -8380,13 +10780,16 @@ class _HistoryThreadTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
     return Material(
+      key: ValueKey('sidebar-thread-tile-${thread.id}'),
       color: selected ? palette.selected : Colors.transparent,
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         onTap: enabled ? onTap : null,
         borderRadius: BorderRadius.circular(12),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(9, 6, 1, 6),
+          // The left inset preserves the project-tree hierarchy; the compact
+          // vertical inset keeps a selected task from reading as a large card.
+          padding: const EdgeInsets.fromLTRB(9, 2, 1, 2),
           child: Row(
             children: [
               if (selectionMode)
@@ -8432,42 +10835,55 @@ class _HistoryThreadTile extends StatelessWidget {
                   children: [
                     if (statusIndicator case final indicator?)
                       _ThreadStatusMark(indicator: indicator),
-                    PopupMenuButton<_ThreadAction>(
-                      tooltip: '任务选项',
-                      enabled: enabled && !selectionMode,
-                      padding: EdgeInsets.zero,
-                      iconSize: 16,
-                      onSelected: (action) {
-                        switch (action) {
-                          case _ThreadAction.rename:
-                            onRename();
-                          case _ThreadAction.archive:
-                            onArchive();
-                          case _ThreadAction.delete:
-                            onDelete();
-                          case _ThreadAction.pin:
-                            onTogglePin();
-                        }
-                      },
-                      itemBuilder: (context) => [
-                        PopupMenuItem(
-                          value: _ThreadAction.pin,
-                          child: Text(pinned ? '取消置顶' : '置顶'),
+                    if (actionsEnabled)
+                      Theme(
+                        data: Theme.of(context).copyWith(
+                          iconButtonTheme: IconButtonThemeData(
+                            style: IconButton.styleFrom(
+                              minimumSize: const Size(24, 24),
+                              maximumSize: const Size(24, 24),
+                              padding: EdgeInsets.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                          ),
                         ),
-                        const PopupMenuItem(
-                          value: _ThreadAction.rename,
-                          child: Text('重命名'),
+                        child: PopupMenuButton<_ThreadAction>(
+                          tooltip: '任务选项',
+                          enabled: enabled && !selectionMode,
+                          padding: EdgeInsets.zero,
+                          iconSize: 16,
+                          onSelected: (action) {
+                            switch (action) {
+                              case _ThreadAction.rename:
+                                onRename?.call();
+                              case _ThreadAction.archive:
+                                onArchive?.call();
+                              case _ThreadAction.delete:
+                                onDelete?.call();
+                              case _ThreadAction.pin:
+                                onTogglePin?.call();
+                            }
+                          },
+                          itemBuilder: (context) => [
+                            PopupMenuItem(
+                              value: _ThreadAction.pin,
+                              child: Text(pinned ? '取消置顶' : '置顶'),
+                            ),
+                            const PopupMenuItem(
+                              value: _ThreadAction.rename,
+                              child: Text('重命名'),
+                            ),
+                            const PopupMenuItem(
+                              value: _ThreadAction.archive,
+                              child: Text('归档'),
+                            ),
+                            const PopupMenuItem(
+                              value: _ThreadAction.delete,
+                              child: Text('永久删除'),
+                            ),
+                          ],
                         ),
-                        const PopupMenuItem(
-                          value: _ThreadAction.archive,
-                          child: Text('归档'),
-                        ),
-                        const PopupMenuItem(
-                          value: _ThreadAction.delete,
-                          child: Text('永久删除'),
-                        ),
-                      ],
-                    ),
+                      ),
                   ],
                 ),
             ],
@@ -8539,8 +10955,6 @@ class _ThreadStatusMark extends StatelessWidget {
 }
 
 enum _ThreadAction { pin, rename, archive, delete }
-
-enum _HistoryAction { archived, batchArchive, export, import }
 
 enum _ThemeAction {
   system,
