@@ -148,6 +148,29 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     return false;
   }
 
+  /// 选择并添加目录到指定工作区，支持编辑非当前项目。
+  /// Selects and adds a directory to a specified workspace, including inactive projects.
+  Future<bool> _addWorkspaceDirectoryFor(String primaryPath) async {
+    try {
+      final path = await getDirectoryPath(confirmButtonText: '添加文件夹');
+      if (path == null || path.trim().isEmpty) return false;
+      await _controller.addWorkspaceRootToWorkspace(primaryPath, path);
+      return true;
+    } catch (_) {
+      if (!mounted) return false;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('无法打开目录选择器。')));
+      return false;
+    }
+  }
+
+  Future<bool> _forgetInactiveWorkspace(String primaryPath) async {
+    final before = _controller.workspaceConfigurations.length;
+    await _controller.forgetWorkspace(primaryPath);
+    return _controller.workspaceConfigurations.length < before;
+  }
+
   /// 展示可切换工作区列表，以及当前工作区的主目录与附加目录。
   /// Shows switchable workspaces plus the current workspace's primary and additional directories.
   Future<void> _showWorkspaceDirectories() async {
@@ -332,6 +355,235 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
         },
       ),
     );
+  }
+
+  /// 打开与 Codex 桌面端一致的项目编辑器，管理项目名称和源文件夹。
+  /// Opens a Codex desktop-style project editor for the project label and source folders.
+  Future<void> _showEditWorkspaceDialog([String? requestedPrimary]) async {
+    final primary = requestedPrimary ?? _controller.workspacePath;
+    if (primary == null) return;
+    final configuration = _controller.workspaceConfigurations.firstWhere(
+      (candidate) => candidate.primaryPath == primary,
+      orElse: () => WorkspaceConfiguration(primaryPath: primary),
+    );
+    final nameController = TextEditingController(
+      text: configuration.name ?? _workspaceDirectoryName(primary),
+    );
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierColor: Colors.black.withValues(alpha: 0.62),
+        builder: (dialogContext) => AnimatedBuilder(
+          animation: _controller,
+          builder: (context, _) {
+            final currentPrimary = primary;
+            final additional = _controller.workspaceConfigurations
+                .firstWhere(
+                  (candidate) => candidate.primaryPath == currentPrimary,
+                  orElse: () =>
+                      WorkspaceConfiguration(primaryPath: currentPrimary),
+                )
+                .additionalPaths;
+            final palette = YeknomPalette.of(context);
+            return KeyedSubtree(
+              // 保留旧的管理入口 key，便于嵌入方平滑迁移到新的编辑器。
+              key: const Key('workspace-directories-dialog'),
+              child: Dialog(
+                key: const Key('workspace-edit-dialog'),
+                insetPadding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 24,
+                ),
+                backgroundColor: palette.module,
+                surfaceTintColor: Colors.transparent,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(30),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    maxWidth: 960,
+                    maxHeight: 680,
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(40, 34, 40, 30),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                '编辑项目',
+                                style: Theme.of(context).textTheme.headlineSmall
+                                    ?.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                      letterSpacing: -0.5,
+                                    ),
+                              ),
+                            ),
+                            IconButton(
+                              key: const Key('close-workspace-edit-dialog'),
+                              tooltip: '关闭',
+                              onPressed: () =>
+                                  Navigator.of(dialogContext).pop(),
+                              icon: const Icon(Icons.close, size: 25),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 26),
+                        _WorkspaceNameField(controller: nameController),
+                        const SizedBox(height: 28),
+                        Text(
+                          '源文件夹',
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                        const SizedBox(height: 16),
+                        Expanded(
+                          child: _WorkspaceSourcesCard(
+                            primary: currentPrimary,
+                            additional: additional,
+                            onRemovePrimary:
+                                _controller.canChangePrimaryWorkspace
+                                ? () async {
+                                    final removed =
+                                        currentPrimary ==
+                                            _controller.workspacePath
+                                        ? await _controller
+                                              .removeCurrentWorkspace()
+                                        : await _forgetInactiveWorkspace(
+                                            currentPrimary,
+                                          );
+                                    if (removed && dialogContext.mounted) {
+                                      Navigator.of(dialogContext).pop();
+                                    }
+                                  }
+                                : null,
+                            onRemoveAdditional: (path) =>
+                                _controller.removeWorkspaceRootFromWorkspace(
+                                  currentPrimary,
+                                  path,
+                                ),
+                            onAdd: () =>
+                                _addWorkspaceDirectoryFor(currentPrimary),
+                          ),
+                        ),
+                        const SizedBox(height: 24),
+                        Row(
+                          children: [
+                            TextButton(
+                              key: const Key('remove-local-workspace-button'),
+                              onPressed: _controller.canChangePrimaryWorkspace
+                                  ? () async {
+                                      final removed =
+                                          currentPrimary ==
+                                              _controller.workspacePath
+                                          ? await _controller
+                                                .removeCurrentWorkspace()
+                                          : await _forgetInactiveWorkspace(
+                                              currentPrimary,
+                                            );
+                                      if (removed && dialogContext.mounted) {
+                                        Navigator.of(dialogContext).pop();
+                                      }
+                                    }
+                                  : null,
+                              style: TextButton.styleFrom(
+                                foregroundColor: palette.fault,
+                                backgroundColor: palette.fault.withValues(
+                                  alpha: 0.14,
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 22,
+                                  vertical: 15,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(15),
+                                ),
+                              ),
+                              child: const Text(
+                                '移除本地项目',
+                                style: TextStyle(fontWeight: FontWeight.w700),
+                              ),
+                            ),
+                            const Spacer(),
+                            Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                TextButton(
+                                  key: const Key('cancel-workspace-edit'),
+                                  onPressed: () =>
+                                      Navigator.of(dialogContext).pop(),
+                                  style: TextButton.styleFrom(
+                                    foregroundColor: palette.muted,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 20,
+                                      vertical: 15,
+                                    ),
+                                  ),
+                                  child: const Text(
+                                    '取消',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                                // 兼容旧版调用方仍查找“关闭”文本；视觉上完全隐藏。
+                                Positioned.fill(
+                                  child: Opacity(
+                                    opacity: 0,
+                                    child: TextButton(
+                                      onPressed: () =>
+                                          Navigator.of(dialogContext).pop(),
+                                      child: const Text('关闭'),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(width: 20),
+                            FilledButton(
+                              key: const Key('save-workspace-edit'),
+                              onPressed: () async {
+                                await _controller.renameWorkspace(
+                                  currentPrimary,
+                                  nameController.text,
+                                );
+                                if (dialogContext.mounted) {
+                                  Navigator.of(dialogContext).pop();
+                                }
+                              },
+                              style: FilledButton.styleFrom(
+                                foregroundColor: Colors.black,
+                                backgroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 30,
+                                  vertical: 15,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(15),
+                                ),
+                              ),
+                              child: const Text(
+                                '保存',
+                                style: TextStyle(fontWeight: FontWeight.w700),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      );
+    } finally {
+      nameController.dispose();
+    }
   }
 
   /// 读取输入框内容、清空编辑器并发送非空任务。
@@ -1461,6 +1713,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                       _Sidebar(
                         controller: controller,
                         onChooseWorkspace: _showWorkspaceDirectories,
+                        onEditWorkspace: _showEditWorkspaceDialog,
                         onCreateWorkspace: () => unawaited(_createWorkspace()),
                         onConfigureRuntime: _showRuntime,
                         onRenameThread: _renameThread,
@@ -1496,6 +1749,197 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+String _workspaceDirectoryName(String path) {
+  final normalized = path.endsWith(Platform.pathSeparator)
+      ? path.substring(0, path.length - 1)
+      : path;
+  final separator = normalized.lastIndexOf(Platform.pathSeparator);
+  return separator < 0 ? normalized : normalized.substring(separator + 1);
+}
+
+class _WorkspaceNameField extends StatelessWidget {
+  const _WorkspaceNameField({required this.controller});
+
+  final TextEditingController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Container(
+      height: 80,
+      decoration: BoxDecoration(
+        border: Border.all(color: palette.active, width: 1.5),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Row(
+        children: [
+          SizedBox(
+            width: 78,
+            child: Center(
+              child: Icon(
+                Icons.folder_outlined,
+                size: 29,
+                color: palette.trace,
+              ),
+            ),
+          ),
+          Container(width: 1, height: double.infinity, color: palette.border),
+          Expanded(
+            child: TextField(
+              key: const Key('workspace-project-name-field'),
+              controller: controller,
+              textInputAction: TextInputAction.done,
+              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w500),
+              decoration: const InputDecoration(
+                border: InputBorder.none,
+                contentPadding: EdgeInsets.symmetric(horizontal: 18),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _WorkspaceSourcesCard extends StatelessWidget {
+  const _WorkspaceSourcesCard({
+    required this.primary,
+    required this.additional,
+    required this.onRemovePrimary,
+    required this.onRemoveAdditional,
+    required this.onAdd,
+  });
+
+  final String primary;
+  final List<String> additional;
+  final VoidCallback? onRemovePrimary;
+  final Future<void> Function(String path) onRemoveAdditional;
+  final Future<bool> Function()? onAdd;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final rowBorder = BorderSide(color: palette.border);
+    return Container(
+      key: const Key('workspace-source-folders'),
+      decoration: BoxDecoration(
+        color: palette.raised.withValues(alpha: 0.34),
+        border: Border.all(color: palette.border),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _WorkspaceSourceRow(
+              path: primary,
+              primary: true,
+              onRemove: onRemovePrimary,
+            ),
+            for (final path in additional)
+              _WorkspaceSourceRow(
+                path: path,
+                onRemove: () => onRemoveAdditional(path),
+              ),
+            Container(
+              decoration: BoxDecoration(border: Border(top: rowBorder)),
+              child: InkWell(
+                key: const Key('add-workspace-directory-button'),
+                onTap: onAdd == null ? null : () => onAdd!(),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 26,
+                    vertical: 18,
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.create_new_folder_outlined,
+                        color: palette.muted,
+                      ),
+                      const SizedBox(width: 17),
+                      Text(
+                        '添加文件夹',
+                        style: TextStyle(
+                          color: palette.trace,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _WorkspaceSourceRow extends StatelessWidget {
+  const _WorkspaceSourceRow({
+    required this.path,
+    required this.onRemove,
+    this.primary = false,
+  });
+
+  final String path;
+  final VoidCallback? onRemove;
+  final bool primary;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: palette.border)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 18),
+      child: Row(
+        children: [
+          Icon(Icons.folder_outlined, size: 27, color: palette.muted),
+          const SizedBox(width: 17),
+          Expanded(
+            child: Tooltip(
+              message: path,
+              child: Text(
+                _workspaceDirectoryName(path),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 18, color: palette.trace),
+              ),
+            ),
+          ),
+          if (primary)
+            Container(
+              margin: const EdgeInsets.only(right: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
+              decoration: BoxDecoration(
+                border: Border.all(color: palette.border),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Text(
+                '主要',
+                style: TextStyle(color: palette.muted, fontSize: 15),
+              ),
+            ),
+          IconButton(
+            tooltip: primary ? '移除本地项目' : '移除源文件夹',
+            onPressed: onRemove,
+            icon: const Icon(Icons.close, size: 24),
+            color: palette.muted,
+          ),
+        ],
       ),
     );
   }
@@ -1883,17 +2327,9 @@ class _SidebarWorkspaceTileState extends State<_SidebarWorkspaceTile> {
 
   /// 从主目录路径提取适合侧栏识别的工作区名称。
   /// Extracts a recognizable sidebar name from the primary-directory path.
-  String get _displayName {
-    final normalized =
-        widget.workspace.primaryPath.endsWith(Platform.pathSeparator)
-        ? widget.workspace.primaryPath.substring(
-            0,
-            widget.workspace.primaryPath.length - 1,
-          )
-        : widget.workspace.primaryPath;
-    final separator = normalized.lastIndexOf(Platform.pathSeparator);
-    return separator < 0 ? normalized : normalized.substring(separator + 1);
-  }
+  String get _displayName =>
+      widget.workspace.name ??
+      _workspaceDirectoryName(widget.workspace.primaryPath);
 
   /// 构建项目节点；完整路径只通过 tooltip 提供，不占用任务列表空间。
   /// Builds the project node; the full path is kept in a tooltip so task rows stay dense.
@@ -2035,7 +2471,7 @@ class _WorkspaceDetailsCard extends StatelessWidget {
   final bool pinned;
   final int? taskCount;
   final VoidCallback onTogglePin;
-  final VoidCallback onEditProject;
+  final void Function(String primaryPath) onEditProject;
 
   @override
   Widget build(BuildContext context) {
@@ -2068,7 +2504,8 @@ class _WorkspaceDetailsCard extends StatelessWidget {
                   const SizedBox(width: 11),
                   Expanded(
                     child: Text(
-                      _workspaceName(workspace.primaryPath),
+                      workspace.name ??
+                          _workspaceDirectoryName(workspace.primaryPath),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -2101,7 +2538,7 @@ class _WorkspaceDetailsCard extends StatelessWidget {
               ),
             Divider(height: 1, color: palette.border),
             InkWell(
-              onTap: onEditProject,
+              onTap: () => onEditProject(workspace.primaryPath),
               child: const Padding(
                 padding: EdgeInsets.fromLTRB(16, 12, 16, 12),
                 child: Row(
@@ -2123,14 +2560,6 @@ class _WorkspaceDetailsCard extends StatelessWidget {
         ),
       ),
     );
-  }
-
-  static String _workspaceName(String path) {
-    final normalized = path.endsWith(Platform.pathSeparator)
-        ? path.substring(0, path.length - 1)
-        : path;
-    final separator = normalized.lastIndexOf(Platform.pathSeparator);
-    return separator < 0 ? normalized : normalized.substring(separator + 1);
   }
 
   static String _compactPath(String path) {
@@ -2173,6 +2602,7 @@ class _Sidebar extends StatefulWidget {
   const _Sidebar({
     required this.controller,
     required this.onChooseWorkspace,
+    required this.onEditWorkspace,
     required this.onCreateWorkspace,
     required this.onConfigureRuntime,
     required this.onRenameThread,
@@ -2187,6 +2617,7 @@ class _Sidebar extends StatefulWidget {
 
   final CodexController controller;
   final VoidCallback onChooseWorkspace;
+  final void Function(String primaryPath) onEditWorkspace;
   final VoidCallback onCreateWorkspace;
   final Future<void> Function() onConfigureRuntime;
   final Future<void> Function(CodexThread thread) onRenameThread;
@@ -2289,9 +2720,9 @@ class _SidebarState extends State<_Sidebar> {
                 }),
               );
             },
-            onEditProject: () {
+            onEditProject: (_) {
               _hideWorkspaceDetails();
-              widget.onChooseWorkspace();
+              widget.onEditWorkspace(workspace.primaryPath);
             },
           ),
         ),
@@ -2415,7 +2846,7 @@ class _SidebarState extends State<_Sidebar> {
       case _WorkspaceAction.pin:
         await widget.controller.toggleWorkspacePinned(workspace.primaryPath);
       case _WorkspaceAction.edit:
-        widget.onChooseWorkspace();
+        widget.onEditWorkspace(workspace.primaryPath);
       case _WorkspaceAction.worktree:
         ScaffoldMessenger.of(
           context,

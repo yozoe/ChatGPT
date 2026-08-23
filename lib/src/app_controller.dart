@@ -843,6 +843,64 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 更新工作区显示名称并持久化；名称为空时恢复为主目录名称。
+  /// Renames a workspace label and persists it; an empty name restores the directory name.
+  Future<void> renameWorkspace(String primaryPath, String name) async {
+    final index = _workspaceConfigurations.indexWhere(
+      (configuration) => configuration.primaryPath == primaryPath,
+    );
+    if (index < 0) return;
+    final trimmed = name.trim();
+    final current = _workspaceConfigurations[index];
+    _workspaceConfigurations[index] = WorkspaceConfiguration(
+      primaryPath: current.primaryPath,
+      additionalPaths: current.additionalPaths,
+      name: trimmed.isEmpty ? null : trimmed,
+    );
+    notifyListeners();
+    try {
+      await _saveAdditionalWorkspacePaths();
+    } catch (error) {
+      lastError = '无法保存项目名称：${_messageOf(error)}';
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  /// 移除当前项目记录并清空活动工作区，不删除磁盘目录或历史缓存文件。
+  /// Removes the current project record and clears the active workspace without deleting its directory or history.
+  Future<bool> removeCurrentWorkspace() async {
+    final primary = workspacePath;
+    if (primary == null || !canChangePrimaryWorkspace) return false;
+    await stopRuntime();
+    _workspaceConfigurations.removeWhere(
+      (configuration) => configuration.primaryPath == primary,
+    );
+    _pinnedWorkspacePaths.remove(primary);
+    workspacePath = null;
+    _additionalWorkspacePaths.clear();
+    activeThreadId = null;
+    _activeThreadAttached = false;
+    threads = const [];
+    archivedThreads = const [];
+    _resetConversationTimeline();
+    _clearFileChanges();
+    _clearStreamingState();
+    _add(TimelineKind.system, '已移除本地项目', primary);
+    notifyListeners();
+    try {
+      await _runtimeConfigurationStore.clearWorkspace();
+      await _runtimeConfigurationStore.saveWorkspaces(_workspaceConfigurations);
+      await _runtimeConfigurationStore.saveAdditionalWorkspaces(const []);
+      await _runtimeConfigurationStore.savePinnedWorkspaces(
+        _pinnedWorkspacePaths,
+      );
+    } catch (error) {
+      lastError = '无法保存项目移除状态：${_messageOf(error)}';
+      if (!_disposed) notifyListeners();
+    }
+    return true;
+  }
+
   /// 验证并添加一个供后续新任务访问的附加工作区目录；首个目录会成为主目录。
   /// Validates and adds an additional workspace directory for future tasks; the first directory becomes primary.
   Future<void> addWorkspaceRoot(String path) async {
@@ -876,6 +934,43 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 为指定工作区添加一个附加源文件夹；编辑非当前项目时也可安全使用。
+  /// Adds an additional source folder to a specified workspace, including when editing an inactive project.
+  Future<void> addWorkspaceRootToWorkspace(
+    String primaryPath,
+    String path,
+  ) async {
+    final normalized = path.trim();
+    if (normalized.isEmpty) return;
+    final directory = Directory(normalized);
+    if (!await directory.exists()) {
+      lastError = '该目录不存在：$normalized';
+      notifyListeners();
+      return;
+    }
+    final canonicalPath = await directory.resolveSymbolicLinks();
+    final index = _workspaceConfigurations.indexWhere(
+      (configuration) => configuration.primaryPath == primaryPath,
+    );
+    if (index < 0) return;
+    final configuration = _workspaceConfigurations[index];
+    if (canonicalPath == primaryPath ||
+        configuration.additionalPaths.contains(canonicalPath)) {
+      return;
+    }
+    _workspaceConfigurations[index] = WorkspaceConfiguration(
+      primaryPath: configuration.primaryPath,
+      additionalPaths: [...configuration.additionalPaths, canonicalPath],
+      name: configuration.name,
+    );
+    if (primaryPath == workspacePath) {
+      _additionalWorkspacePaths.add(canonicalPath);
+    }
+    _add(TimelineKind.system, '已添加工作区目录', canonicalPath);
+    notifyListeners();
+    await _saveAdditionalWorkspacePaths();
+  }
+
   /// 删除当前工作区的一个附加目录；主目录由工作区记录确定。
   /// Removes an additional directory from the current workspace; its saved entry determines the primary directory.
   Future<void> removeWorkspaceRoot(String path) async {
@@ -889,6 +984,34 @@ class CodexController extends ChangeNotifier {
       _add(TimelineKind.error, '无法保存附加目录', _messageOf(error));
       if (!_disposed) notifyListeners();
     }
+  }
+
+  /// 从指定工作区移除附加源文件夹；不会删除磁盘目录。
+  /// Removes an additional source folder from a specified workspace without deleting its directory.
+  Future<void> removeWorkspaceRootFromWorkspace(
+    String primaryPath,
+    String path,
+  ) async {
+    if (primaryPath == workspacePath) {
+      await removeWorkspaceRoot(path);
+      return;
+    }
+    final index = _workspaceConfigurations.indexWhere(
+      (configuration) => configuration.primaryPath == primaryPath,
+    );
+    if (index < 0) return;
+    final configuration = _workspaceConfigurations[index];
+    if (!configuration.additionalPaths.contains(path)) return;
+    _workspaceConfigurations[index] = WorkspaceConfiguration(
+      primaryPath: configuration.primaryPath,
+      additionalPaths: configuration.additionalPaths
+          .where((candidate) => candidate != path)
+          .toList(growable: false),
+      name: configuration.name,
+    );
+    _add(TimelineKind.system, '已移除工作区目录', path);
+    notifyListeners();
+    await _saveAdditionalWorkspacePaths();
   }
 
   /// 清空当前任务状态，使下一条消息创建新的服务器线程。
@@ -2753,19 +2876,23 @@ class CodexController extends ChangeNotifier {
   void _updateCurrentWorkspaceConfiguration() {
     final primary = workspacePath;
     if (primary == null) return;
+    final existingIndex = _workspaceConfigurations.indexWhere(
+      (candidate) => candidate.primaryPath == primary,
+    );
+    final existingName = existingIndex < 0
+        ? null
+        : _workspaceConfigurations[existingIndex].name;
     final configuration = WorkspaceConfiguration(
       primaryPath: primary,
       additionalPaths: _additionalWorkspacePaths
           .where((path) => path != primary)
           .toList(growable: false),
+      name: existingName,
     );
-    final index = _workspaceConfigurations.indexWhere(
-      (candidate) => candidate.primaryPath == primary,
-    );
-    if (index < 0) {
+    if (existingIndex < 0) {
       _workspaceConfigurations.add(configuration);
     } else {
-      _workspaceConfigurations[index] = configuration;
+      _workspaceConfigurations[existingIndex] = configuration;
     }
   }
 
@@ -2779,6 +2906,7 @@ class CodexController extends ChangeNotifier {
         (configuration) => WorkspaceConfiguration(
           primaryPath: configuration.primaryPath,
           additionalPaths: configuration.additionalPaths,
+          name: configuration.name,
         ),
       ),
     );
@@ -2868,6 +2996,7 @@ class CodexController extends ChangeNotifier {
       return WorkspaceConfiguration(
         primaryPath: primaryPath,
         additionalPaths: additionalPaths,
+        name: stored.name,
       );
     } on FileSystemException {
       return null;
