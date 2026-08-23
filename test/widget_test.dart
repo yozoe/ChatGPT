@@ -24,6 +24,7 @@ import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'package:chatgpt/src/services/theme_preferences_store.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:yeknom_ui_kit/yeknom_workbench.dart';
@@ -768,6 +769,24 @@ class _ProtocolCaptureCodexAppServer extends CodexAppServer {
   }
 }
 
+final class _InjectedCodexControllerNotifier extends CodexControllerNotifier {
+  _InjectedCodexControllerNotifier(this.controller);
+
+  final CodexController controller;
+
+  @override
+  CodexController build() {
+    controller.addListener(_publishControllerChange);
+    ref.onDispose(() {
+      controller.removeListener(_publishControllerChange);
+      controller.dispose();
+    });
+    return controller;
+  }
+
+  void _publishControllerChange() => state = controller;
+}
+
 void main() {
   late _MemoryConversationHistoryStore historyStore;
 
@@ -790,6 +809,59 @@ void main() {
     expect(find.byTooltip('停止运行时'), findsNothing);
     expect(find.text('任务控制台'), findsOneWidget);
   });
+
+  testWidgets(
+    'provider updates keep the conversation timeline at the latest item',
+    (tester) async {
+      final controller = CodexController(
+        server: _FakeCodexAppServer(),
+        runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+      );
+      await controller.waitForInitialConfiguration();
+      final initialEntries = List<TimelineEntry>.generate(
+        30,
+        (index) => TimelineEntry(
+          kind: TimelineKind.agent,
+          title: 'Codex',
+          detail: '历史消息 $index\n${'内容 ' * 12}',
+          createdAt: DateTime(2026, 1, 1, 0, 0, index),
+        ),
+      );
+      controller.replaceTimelineEntriesForTesting(initialEntries);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            codexControllerProvider.overrideWith(
+              () => _InjectedCodexControllerNotifier(controller),
+            ),
+          ],
+          child: const MaterialApp(home: CodexWorkspace()),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.byType(ListView), findsOneWidget);
+      final timeline = tester.widget<ListView>(find.byType(ListView));
+      expect(timeline.controller!.offset, 0);
+      expect(timeline.controller!.position.maxScrollExtent, greaterThan(0));
+
+      controller.replaceTimelineEntriesForTesting([
+        ...initialEntries,
+        TimelineEntry(
+          kind: TimelineKind.agent,
+          title: 'Codex',
+          detail: '最新消息\n${'新内容 ' * 12}',
+          createdAt: DateTime(2026, 1, 1, 0, 1),
+        ),
+      ]);
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(timeline.controller!.position.extentAfter, lessThan(20));
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   testWidgets('switches the UI Kit display mode from the theme menu', (
     tester,
@@ -1545,9 +1617,7 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('pastes clipboard screenshots and deletes the temporary image', (
-    tester,
-  ) async {
+  testWidgets('retains pasted screenshots for the timeline', (tester) async {
     const channel = MethodChannel('codex_desk/clipboard');
     const imagePath = '/tmp/CodexDeskClipboard/clipboard-image-42.png';
     final messenger =
@@ -1606,7 +1676,13 @@ void main() {
       findsOneWidget,
     );
     expect(find.byKey(const Key('composer-image-preview')), findsOneWidget);
-    await tester.tap(find.byTooltip('关闭预览'));
+    tester
+        .widget<IconButton>(
+          find.byWidgetPredicate(
+            (widget) => widget is IconButton && widget.tooltip == '关闭预览',
+          ),
+        )
+        .onPressed!();
     await tester.pumpAndSettle();
     expect(
       find.byKey(const Key('composer-image-preview-dialog')),
@@ -1637,9 +1713,15 @@ void main() {
     );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
-    expect(deleteCalls, 1);
+    expect(deleteCalls, 0);
+    expect(
+      find.byKey(const ValueKey('timeline-image-$imagePath')),
+      findsOneWidget,
+    );
 
     await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    expect(deleteCalls, 1);
   });
 
   testWidgets('falls back to normal text paste when no file is copied', (

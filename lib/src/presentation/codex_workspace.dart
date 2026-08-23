@@ -188,12 +188,12 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       context: context,
       // 运行时切换与目录保存都可能在弹窗打开期间完成，按钮状态必须随控制器实时更新。
       // Runtime transitions and directory saves may finish while open, so actions must rebuild live.
-      builder: (dialogContext) => AnimatedBuilder(
-        animation: _controller,
-        builder: (context, _) {
-          final primary = _controller.workspacePath;
-          final additional = _controller.additionalWorkspacePaths;
-          final workspaces = _controller.workspaceConfigurations;
+      builder: (dialogContext) => _ControllerBuilder(
+        overrideController: widget.controller,
+        builder: (context, controller) {
+          final primary = controller.workspacePath;
+          final additional = controller.additionalWorkspacePaths;
+          final workspaces = controller.workspaceConfigurations;
           return AlertDialog(
             key: const Key('workspace-directories-dialog'),
             title: const Text('工作区'),
@@ -205,7 +205,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text('每个工作区会独立保存主目录、附加目录和本地历史。新建或切换后会自动连接运行时。'),
-                    if (!_controller.canChangePrimaryWorkspace) ...[
+                    if (!controller.canChangePrimaryWorkspace) ...[
                       const SizedBox(height: 8),
                       const _MutedText('当前任务执行完成后可以新建或切换工作区；附加目录仍可直接调整。'),
                     ],
@@ -257,9 +257,8 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                                           'switch-workspace-${workspace.primaryPath}',
                                         ),
                                         onPressed:
-                                            _controller
-                                                .canChangePrimaryWorkspace
-                                            ? () => _controller
+                                            controller.canChangePrimaryWorkspace
+                                            ? () => controller
                                                   .selectWorkspaceAndReconnect(
                                                     workspace.primaryPath,
                                                   )
@@ -272,7 +271,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                                         ),
                                         tooltip: '从列表移除（不会删除目录或历史）',
                                         onPressed: () =>
-                                            _controller.forgetWorkspace(
+                                            controller.forgetWorkspace(
                                               workspace.primaryPath,
                                             ),
                                         icon: const Icon(Icons.close),
@@ -326,7 +325,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                             trailing: IconButton(
                               tooltip: '移除附加目录',
                               onPressed: () async {
-                                await _controller.removeWorkspaceRoot(path);
+                                await controller.removeWorkspaceRoot(path);
                               },
                               icon: const Icon(Icons.close),
                             ),
@@ -354,7 +353,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
               ),
               FilledButton.icon(
                 key: const Key('create-workspace-button'),
-                onPressed: _controller.canChangePrimaryWorkspace
+                onPressed: controller.canChangePrimaryWorkspace
                     ? _createWorkspace
                     : null,
                 icon: const Icon(Icons.add),
@@ -383,11 +382,11 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       await showDialog<void>(
         context: context,
         barrierColor: Colors.black.withValues(alpha: 0.62),
-        builder: (dialogContext) => AnimatedBuilder(
-          animation: _controller,
-          builder: (context, _) {
+        builder: (dialogContext) => _ControllerBuilder(
+          overrideController: widget.controller,
+          builder: (context, controller) {
             final currentPrimary = primary;
-            final additional = _controller.workspaceConfigurations
+            final additional = controller.workspaceConfigurations
                 .firstWhere(
                   (candidate) => candidate.primaryPath == currentPrimary,
                   orElse: () =>
@@ -455,12 +454,12 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                             primary: currentPrimary,
                             additional: additional,
                             onRemovePrimary:
-                                _controller.canChangePrimaryWorkspace
+                                controller.canChangePrimaryWorkspace
                                 ? () async {
                                     final removed =
                                         currentPrimary ==
-                                            _controller.workspacePath
-                                        ? await _controller
+                                            controller.workspacePath
+                                        ? await controller
                                               .removeCurrentWorkspace()
                                         : await _forgetInactiveWorkspace(
                                             currentPrimary,
@@ -471,7 +470,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                                   }
                                 : null,
                             onRemoveAdditional: (path) =>
-                                _controller.removeWorkspaceRootFromWorkspace(
+                                controller.removeWorkspaceRootFromWorkspace(
                                   currentPrimary,
                                   path,
                                 ),
@@ -484,12 +483,12 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                           children: [
                             TextButton(
                               key: const Key('remove-local-workspace-button'),
-                              onPressed: _controller.canChangePrimaryWorkspace
+                              onPressed: controller.canChangePrimaryWorkspace
                                   ? () async {
                                       final removed =
                                           currentPrimary ==
-                                              _controller.workspacePath
-                                          ? await _controller
+                                              controller.workspacePath
+                                          ? await controller
                                                 .removeCurrentWorkspace()
                                           : await _forgetInactiveWorkspace(
                                               currentPrimary,
@@ -556,7 +555,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                             FilledButton(
                               key: const Key('save-workspace-edit'),
                               onPressed: () async {
-                                await _controller.renameWorkspace(
+                                await controller.renameWorkspace(
                                   currentPrimary,
                                   nameController.text,
                                 );
@@ -830,10 +829,9 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     final apiKey = TextEditingController();
     await showDialog<void>(
       context: context,
-      builder: (context) => AnimatedBuilder(
-        animation: _controller,
-        builder: (context, _) {
-          final controller = _controller;
+      builder: (context) => _ControllerBuilder(
+        overrideController: widget.controller,
+        builder: (context, controller) {
           return AlertDialog(
             title: const Text('账户与登录'),
             content: SizedBox(
@@ -936,94 +934,100 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        key: const Key('codex-configuration-dialog'),
-        title: const Text('Codex 配置'),
-        content: SizedBox(
-          width: 520,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  '模型、Provider、Base URL 和凭据由本地 Codex App Server 按配置优先级直接读取，本应用不再单独收集或保存这些字段。',
-                ),
-                const SizedBox(height: 16),
-                Text('读取状态', style: Theme.of(context).textTheme.labelMedium),
-                const SizedBox(height: 4),
-                Text(
-                  _controller.codexConfigurationStatusLabel,
-                  key: const Key('codex-configuration-status'),
-                ),
-                if (_controller.codexConfigurationError case final error?) ...[
+      builder: (context) => _ControllerBuilder(
+        overrideController: widget.controller,
+        builder: (context, controller) => AlertDialog(
+          key: const Key('codex-configuration-dialog'),
+          title: const Text('Codex 配置'),
+          content: SizedBox(
+            width: 520,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '模型、Provider、Base URL 和凭据由本地 Codex App Server 按配置优先级直接读取，本应用不再单独收集或保存这些字段。',
+                  ),
+                  const SizedBox(height: 16),
+                  Text('读取状态', style: Theme.of(context).textTheme.labelMedium),
                   const SizedBox(height: 4),
                   Text(
-                    error,
-                    key: const Key('codex-configuration-error'),
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
+                    controller.codexConfigurationStatusLabel,
+                    key: const Key('codex-configuration-status'),
+                  ),
+                  if (controller.codexConfigurationError case final error?) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      error,
+                      key: const Key('codex-configuration-error'),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
                     ),
+                  ],
+                  const SizedBox(height: 14),
+                  Text('当前模型', style: Theme.of(context).textTheme.labelMedium),
+                  const SizedBox(height: 4),
+                  SelectableText(
+                    controller.configuredModelLabel,
+                    key: const Key('codex-configured-model'),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '来源：${controller.configuredModelSourceLabel}',
+                    key: const Key('codex-configured-model-source'),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    'Provider',
+                    style: Theme.of(context).textTheme.labelMedium,
+                  ),
+                  const SizedBox(height: 4),
+                  SelectableText(
+                    controller.providerLabel,
+                    key: const Key('codex-configured-provider'),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '来源：${controller.configuredProviderSourceLabel}',
+                    key: const Key('codex-configured-provider-source'),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    '用户配置文件',
+                    style: Theme.of(context).textTheme.labelMedium,
+                  ),
+                  const SizedBox(height: 4),
+                  SelectableText(
+                    controller.codexUserConfigPath,
+                    key: const Key('codex-configuration-path'),
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    '“已读取”表示模型和 Provider 已由 Codex 运行时解析；凭据、网络和 Base URL 是否可用，仍需成功创建一次任务才能确认。',
+                    key: const Key('codex-configuration-verification-note'),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '输入框右下角的模型和推理强度选择只影响后续新建任务，不会改写 Codex 配置，也不会覆盖历史任务原有模型。',
+                    key: const Key('codex-model-selection-scope-note'),
+                    style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
-                const SizedBox(height: 14),
-                Text('当前模型', style: Theme.of(context).textTheme.labelMedium),
-                const SizedBox(height: 4),
-                SelectableText(
-                  _controller.configuredModelLabel,
-                  key: const Key('codex-configured-model'),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '来源：${_controller.configuredModelSourceLabel}',
-                  key: const Key('codex-configured-model-source'),
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-                const SizedBox(height: 14),
-                Text(
-                  'Provider',
-                  style: Theme.of(context).textTheme.labelMedium,
-                ),
-                const SizedBox(height: 4),
-                SelectableText(
-                  _controller.providerLabel,
-                  key: const Key('codex-configured-provider'),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '来源：${_controller.configuredProviderSourceLabel}',
-                  key: const Key('codex-configured-provider-source'),
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-                const SizedBox(height: 14),
-                Text('用户配置文件', style: Theme.of(context).textTheme.labelMedium),
-                const SizedBox(height: 4),
-                SelectableText(
-                  _controller.codexUserConfigPath,
-                  key: const Key('codex-configuration-path'),
-                ),
-                const SizedBox(height: 14),
-                Text(
-                  '“已读取”表示模型和 Provider 已由 Codex 运行时解析；凭据、网络和 Base URL 是否可用，仍需成功创建一次任务才能确认。',
-                  key: const Key('codex-configuration-verification-note'),
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  '输入框右下角的模型和推理强度选择只影响后续新建任务，不会改写 Codex 配置，也不会覆盖历史任务原有模型。',
-                  key: const Key('codex-model-selection-scope-note'),
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
+              ),
             ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('关闭'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('关闭'),
-          ),
-        ],
       ),
     );
   }
@@ -1035,10 +1039,9 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (context) => AnimatedBuilder(
-        animation: _controller,
-        builder: (context, _) {
-          final controller = _controller;
+      builder: (context) => _ControllerBuilder(
+        overrideController: widget.controller,
+        builder: (context, controller) {
           final probe = controller.runtimeProbe;
           return AlertDialog(
             title: const Text('Codex CLI 运行时'),
@@ -1323,10 +1326,9 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (context) => AnimatedBuilder(
-        animation: _controller,
-        builder: (context, _) {
-          final controller = _controller;
+      builder: (context) => _ControllerBuilder(
+        overrideController: widget.controller,
+        builder: (context, controller) {
           return AlertDialog(
             title: const Text('已归档任务'),
             content: SizedBox(
@@ -1379,16 +1381,16 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   Future<void> _showFileChanges() async {
     await showDialog<void>(
       context: context,
-      builder: (context) => AnimatedBuilder(
-        animation: _controller,
-        builder: (context, _) => AlertDialog(
+      builder: (context) => _ControllerBuilder(
+        overrideController: widget.controller,
+        builder: (context, controller) => AlertDialog(
           title: const Text('文件变更'),
           content: SizedBox(
             width: 760,
             height: 520,
             child: _FileChangesList(
-              changes: _controller.fileChanges,
-              turnDiff: _controller.turnDiff,
+              changes: controller.fileChanges,
+              turnDiff: controller.turnDiff,
             ),
           ),
           actions: [
@@ -1409,11 +1411,11 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (context) => AnimatedBuilder(
-        animation: _controller,
-        builder: (context, _) => _CodeReviewDialog(
-          changes: _controller.fileChanges,
-          turnDiff: _controller.turnDiff,
+      builder: (context) => _ControllerBuilder(
+        overrideController: widget.controller,
+        builder: (context, controller) => _CodeReviewDialog(
+          changes: controller.fileChanges,
+          turnDiff: controller.turnDiff,
         ),
       ),
     );
@@ -1426,7 +1428,11 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (context) => _GitProjectDialog(controller: _controller),
+      builder: (context) => _ControllerBuilder(
+        overrideController: widget.controller,
+        builder: (context, controller) =>
+            _GitProjectDialog(controller: controller),
+      ),
     );
   }
 
@@ -1437,10 +1443,9 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (context) => AnimatedBuilder(
-        animation: _controller,
-        builder: (context, _) {
-          final controller = _controller;
+      builder: (context) => _ControllerBuilder(
+        overrideController: widget.controller,
+        builder: (context, controller) {
           final palette = YeknomPalette.of(context);
           return AlertDialog(
             key: const Key('plugin-manager-dialog'),
@@ -1615,10 +1620,9 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (context) => AnimatedBuilder(
-        animation: _controller,
-        builder: (context, _) {
-          final controller = _controller;
+      builder: (context) => _ControllerBuilder(
+        overrideController: widget.controller,
+        builder: (context, controller) {
           final error = controller.marketplacesError;
           return AlertDialog(
             title: const Text('插件市场'),
@@ -3941,6 +3945,7 @@ class _ConversationPane extends StatelessWidget {
           ),
         ),
         _ComposerPanel(
+          key: const Key('composer-panel'),
           controller: controller,
           composer: composer,
           onSend: onSend,
@@ -5341,6 +5346,7 @@ class _ComposerFileChangePill extends StatelessWidget {
 
 class _ComposerPanel extends StatefulWidget {
   const _ComposerPanel({
+    super.key,
     required this.controller,
     required this.composer,
     required this.onSend,
@@ -7221,201 +7227,194 @@ class _GitProjectDialogState extends State<_GitProjectDialog> {
   /// Builds filters, file-level Git actions, and the current Diff preview.
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: widget.controller,
-      builder: (context, _) {
-        final controller = widget.controller;
-        final status = controller.gitProjectStatus;
-        final palette = YeknomPalette.of(context);
-        final counts = status?.changeCounts;
-        final changes =
-            status?.filteredChanges(filter: _filter, query: _search.text) ??
-            const <GitProjectChange>[];
-        return AlertDialog(
-          key: const Key('git-project-dialog'),
-          title: const Text('Git 项目'),
-          content: SizedBox(
-            width: 920,
-            height: 590,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('选择文件可查看 Diff、暂存或还原；提交、推送和创建 PR 均需显式确认。'),
-                const SizedBox(height: 12),
-                if (controller.gitOperationError case final error?) ...[
-                  Text(error, style: TextStyle(color: palette.fault)),
-                  const SizedBox(height: 8),
+    final controller = widget.controller;
+    final status = controller.gitProjectStatus;
+    final palette = YeknomPalette.of(context);
+    final counts = status?.changeCounts;
+    final changes =
+        status?.filteredChanges(filter: _filter, query: _search.text) ??
+        const <GitProjectChange>[];
+    return AlertDialog(
+      key: const Key('git-project-dialog'),
+      title: const Text('Git 项目'),
+      content: SizedBox(
+        width: 920,
+        height: 590,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('选择文件可查看 Diff、暂存或还原；提交、推送和创建 PR 均需显式确认。'),
+            const SizedBox(height: 12),
+            if (controller.gitOperationError case final error?) ...[
+              Text(error, style: TextStyle(color: palette.fault)),
+              const SizedBox(height: 8),
+            ],
+            if (controller.gitProjectLoading)
+              const LinearProgressIndicator()
+            else if (controller.gitProjectError case final error?)
+              Text(error, style: TextStyle(color: palette.fault))
+            else if (status == null || !status.isRepository)
+              const Expanded(child: Center(child: Text('当前项目不是 Git 仓库。')))
+            else ...[
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  Chip(label: Text('分支：${status.branch ?? 'DETACHED'}')),
+                  Chip(label: Text('暂存：${counts!.staged}')),
+                  Chip(label: Text('未暂存：${counts.unstaged}')),
+                  Chip(label: Text('未跟踪：${counts.untracked}')),
                 ],
-                if (controller.gitProjectLoading)
-                  const LinearProgressIndicator()
-                else if (controller.gitProjectError case final error?)
-                  Text(error, style: TextStyle(color: palette.fault))
-                else if (status == null || !status.isRepository)
-                  const Expanded(child: Center(child: Text('当前项目不是 Git 仓库。')))
-                else ...[
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      Chip(label: Text('分支：${status.branch ?? 'DETACHED'}')),
-                      Chip(label: Text('暂存：${counts!.staged}')),
-                      Chip(label: Text('未暂存：${counts.unstaged}')),
-                      Chip(label: Text('未跟踪：${counts.untracked}')),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          key: const Key('git-change-search'),
-                          controller: _search,
-                          decoration: const InputDecoration(
-                            isDense: true,
-                            prefixIcon: Icon(Icons.search, size: 19),
-                            hintText: '搜索文件路径',
-                            border: OutlineInputBorder(),
-                          ),
-                          onChanged: (_) => setState(() {}),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      DropdownButton<GitChangeFilter>(
-                        key: const Key('git-change-filter'),
-                        value: _filter,
-                        onChanged: (value) {
-                          if (value != null) setState(() => _filter = value);
-                        },
-                        items: GitChangeFilter.values
-                            .map(
-                              (value) => DropdownMenuItem(
-                                value: value,
-                                child: Text(value.label),
-                              ),
-                            )
-                            .toList(growable: false),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
                   Expanded(
-                    child: Row(
-                      children: [
-                        SizedBox(
-                          width: 320,
-                          child: status.changes.isEmpty
-                              ? const Center(child: Text('工作区没有未提交改动。'))
-                              : changes.isEmpty
-                              ? const Center(child: Text('没有符合筛选条件的文件。'))
-                              : ListView.separated(
-                                  key: const Key('git-change-list'),
-                                  itemCount: changes.length,
-                                  separatorBuilder: (_, _) =>
-                                      const Divider(height: 1),
-                                  itemBuilder: (context, index) {
-                                    final change = changes[index];
-                                    final selected =
-                                        controller.gitDiffChange == change;
-                                    return ListTile(
-                                      selected: selected,
-                                      selectedTileColor: palette.selected,
-                                      dense: true,
-                                      leading: Icon(
-                                        change.isUntracked
-                                            ? Icons.note_add_outlined
-                                            : Icons.description_outlined,
-                                        size: 18,
-                                      ),
-                                      title: Text(
-                                        change.path,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                      subtitle: Text(
-                                        change.previousPath == null
-                                            ? '${change.label} · ${change.code}'
-                                            : '${change.label}：${change.previousPath} → ${change.path}',
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                      trailing: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          if (!change.isStaged)
-                                            IconButton(
-                                              tooltip: '暂存文件',
-                                              onPressed:
-                                                  controller.gitOperationRunning
-                                                  ? null
-                                                  : () => controller
-                                                        .stageGitChange(change),
-                                              icon: const Icon(
-                                                Icons.add_box_outlined,
-                                                size: 18,
-                                              ),
-                                            ),
-                                          IconButton(
-                                            tooltip: '还原文件改动',
-                                            onPressed:
-                                                controller.gitOperationRunning
-                                                ? null
-                                                : () => _revertChange(change),
-                                            icon: const Icon(
-                                              Icons.restore_outlined,
-                                              size: 18,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      onTap: () =>
-                                          controller.showGitDiff(change),
-                                    );
-                                  },
-                                ),
-                        ),
-                        const VerticalDivider(width: 24),
-                        Expanded(
-                          child: _GitDiffViewer(
-                            change: controller.gitDiffChange,
-                            diff: controller.gitDiff,
-                            loading: controller.gitDiffLoading,
-                            truncated: controller.gitDiffTruncated,
-                          ),
-                        ),
-                      ],
+                    child: TextField(
+                      key: const Key('git-change-search'),
+                      controller: _search,
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        prefixIcon: Icon(Icons.search, size: 19),
+                        hintText: '搜索文件路径',
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (_) => setState(() {}),
                     ),
                   ),
+                  const SizedBox(width: 10),
+                  DropdownButton<GitChangeFilter>(
+                    key: const Key('git-change-filter'),
+                    value: _filter,
+                    onChanged: (value) {
+                      if (value != null) setState(() => _filter = value);
+                    },
+                    items: GitChangeFilter.values
+                        .map(
+                          (value) => DropdownMenuItem(
+                            value: value,
+                            child: Text(value.label),
+                          ),
+                        )
+                        .toList(growable: false),
+                  ),
                 ],
-              ],
-            ),
-          ),
-          actions: [
-            TextButton.icon(
-              onPressed: controller.gitOperationRunning ? null : _commitOrPush,
-              icon: const Icon(Icons.upload_outlined, size: 18),
-              label: const Text('提交或推送'),
-            ),
-            TextButton.icon(
-              onPressed: controller.gitOperationRunning
-                  ? null
-                  : _createPullRequest,
-              icon: const Icon(Icons.call_merge_outlined, size: 18),
-              label: const Text('创建拉取请求'),
-            ),
-            TextButton.icon(
-              onPressed: controller.gitProjectLoading
-                  ? null
-                  : controller.refreshGitProject,
-              icon: const Icon(Icons.refresh, size: 18),
-              label: const Text('刷新'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('关闭'),
-            ),
+              ),
+              const SizedBox(height: 10),
+              Expanded(
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 320,
+                      child: status.changes.isEmpty
+                          ? const Center(child: Text('工作区没有未提交改动。'))
+                          : changes.isEmpty
+                          ? const Center(child: Text('没有符合筛选条件的文件。'))
+                          : ListView.separated(
+                              key: const Key('git-change-list'),
+                              itemCount: changes.length,
+                              separatorBuilder: (_, _) =>
+                                  const Divider(height: 1),
+                              itemBuilder: (context, index) {
+                                final change = changes[index];
+                                final selected =
+                                    controller.gitDiffChange == change;
+                                return ListTile(
+                                  selected: selected,
+                                  selectedTileColor: palette.selected,
+                                  dense: true,
+                                  leading: Icon(
+                                    change.isUntracked
+                                        ? Icons.note_add_outlined
+                                        : Icons.description_outlined,
+                                    size: 18,
+                                  ),
+                                  title: Text(
+                                    change.path,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  subtitle: Text(
+                                    change.previousPath == null
+                                        ? '${change.label} · ${change.code}'
+                                        : '${change.label}：${change.previousPath} → ${change.path}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  trailing: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      if (!change.isStaged)
+                                        IconButton(
+                                          tooltip: '暂存文件',
+                                          onPressed:
+                                              controller.gitOperationRunning
+                                              ? null
+                                              : () => controller.stageGitChange(
+                                                  change,
+                                                ),
+                                          icon: const Icon(
+                                            Icons.add_box_outlined,
+                                            size: 18,
+                                          ),
+                                        ),
+                                      IconButton(
+                                        tooltip: '还原文件改动',
+                                        onPressed:
+                                            controller.gitOperationRunning
+                                            ? null
+                                            : () => _revertChange(change),
+                                        icon: const Icon(
+                                          Icons.restore_outlined,
+                                          size: 18,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  onTap: () => controller.showGitDiff(change),
+                                );
+                              },
+                            ),
+                    ),
+                    const VerticalDivider(width: 24),
+                    Expanded(
+                      child: _GitDiffViewer(
+                        change: controller.gitDiffChange,
+                        diff: controller.gitDiff,
+                        loading: controller.gitDiffLoading,
+                        truncated: controller.gitDiffTruncated,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ],
-        );
-      },
+        ),
+      ),
+      actions: [
+        TextButton.icon(
+          onPressed: controller.gitOperationRunning ? null : _commitOrPush,
+          icon: const Icon(Icons.upload_outlined, size: 18),
+          label: const Text('提交或推送'),
+        ),
+        TextButton.icon(
+          onPressed: controller.gitOperationRunning ? null : _createPullRequest,
+          icon: const Icon(Icons.call_merge_outlined, size: 18),
+          label: const Text('创建拉取请求'),
+        ),
+        TextButton.icon(
+          onPressed: controller.gitProjectLoading
+              ? null
+              : controller.refreshGitProject,
+          icon: const Icon(Icons.refresh, size: 18),
+          label: const Text('刷新'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('关闭'),
+        ),
+      ],
     );
   }
 }
@@ -7918,6 +7917,28 @@ class _ProviderChip extends StatelessWidget {
       visualDensity: VisualDensity.compact,
       label: Text(label, style: const TextStyle(fontSize: 12)),
     );
+  }
+}
+
+/// 在保留测试控制器注入能力的同时，从 Riverpod 读取应用级控制器。
+/// Reads the app controller from Riverpod while preserving explicit test injection.
+class _ControllerBuilder extends ConsumerWidget {
+  const _ControllerBuilder({required this.builder, this.overrideController});
+
+  final CodexController? overrideController;
+  final Widget Function(BuildContext context, CodexController controller)
+  builder;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final controller = overrideController;
+    if (controller != null) {
+      return AnimatedBuilder(
+        animation: controller,
+        builder: (context, _) => builder(context, controller),
+      );
+    }
+    return builder(context, ref.watch(codexControllerProvider)!);
   }
 }
 
