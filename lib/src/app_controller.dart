@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 
@@ -28,6 +29,20 @@ enum RuntimeStatus { stopped, starting, ready, running, failed }
 enum AuthStatus { checking, signedOut, chatgpt, apiKey, external }
 
 enum ApprovalMode { manual, autoApprove }
+
+/// In-memory view state for a previously opened task.
+/// 已打开任务的内存视图缓存。
+class _ThreadViewSnapshot {
+  const _ThreadViewSnapshot({
+    required this.entries,
+    required this.fileChanges,
+    required this.turnDiff,
+  });
+
+  final List<TimelineEntry> entries;
+  final List<CodexFileChange> fileChanges;
+  final String? turnDiff;
+}
 
 /// 将本地存储的审批模式转换为受支持的安全值。
 /// Converts a locally stored approval mode into a supported safe value.
@@ -206,6 +221,10 @@ class CodexController extends ChangeNotifier {
   bool _historySaveFailed = false;
   bool _disposed = false;
   bool _startingRuntime = false;
+  // Thread history restoration should not be treated as live conversation
+  // output by the presentation layer.  The workspace uses this to position
+  // the restored timeline without playing a smooth scroll animation.
+  bool _resumingThread = false;
   // 每次显式停止、重连或释放都会推进代次，使仍在 await 的旧启动流程失效。
   // Explicit stops, reconnects, and disposal advance this epoch to invalidate stale awaited startup work.
   int _runtimeConnectionEpoch = 0;
@@ -218,6 +237,7 @@ class CodexController extends ChangeNotifier {
   final Set<String> _archivingThreadIds = {};
   final Set<String> _deletingThreadIds = {};
   static const _maximumRuntimeLogEntries = 200;
+  static const _maximumThreadViewCacheEntries = 8;
   static const _runtimeReconnectDelays = [
     Duration(seconds: 1),
     Duration(seconds: 2),
@@ -246,6 +266,8 @@ class CodexController extends ChangeNotifier {
   final Set<String> _ownedThreadIds = {};
   bool _threadHistoryInitialized = false;
   final Set<String> _legacyWorkspaceHistoryPaths = {};
+  final LinkedHashMap<String, _ThreadViewSnapshot> _threadViewCache =
+      LinkedHashMap();
   String? activeThreadId;
   // A thread ID restored from local history must be resumed on the new
   // app-server connection before it can receive a turn.
@@ -378,6 +400,20 @@ class CodexController extends ChangeNotifier {
   /// 返回不可修改的当前时间线副本视图。
   /// Returns an unmodifiable view of the current timeline.
   List<TimelineEntry> get entries => List.unmodifiable(_entries);
+
+  /// 是否正在加载切换后任务的历史记录。
+  /// Whether the selected thread's history is currently being restored.
+  bool get isResumingThread => _resumingThread;
+
+  /// Whether the currently selected task already has an in-memory view cache.
+  /// 当前选中任务是否已有内存视图缓存。
+  bool get hasCachedActiveThreadView =>
+      activeThreadId != null && _threadViewCache.containsKey(activeThreadId);
+
+  /// Thread IDs with a retained in-memory page snapshot for this workspace.
+  /// 当前项目中已保留内存页面快照的任务 ID。
+  Set<String> get cachedThreadViewIds =>
+      Set.unmodifiable(_threadViewCache.keys);
 
   /// 返回不可修改的已记录文件变更视图。
   /// Returns an unmodifiable view of recorded file changes.
@@ -825,6 +861,7 @@ class CodexController extends ChangeNotifier {
       ..addAll(nextAdditionalPaths.where((path) => path != canonicalPath));
     _updateCurrentWorkspaceConfiguration();
     _clearRuntimeResolvedConfiguration();
+    _threadViewCache.clear();
     activeThreadId = null;
     _activeThreadAttached = false;
     threads = const [];
@@ -975,6 +1012,7 @@ class CodexController extends ChangeNotifier {
       (configuration) => configuration.primaryPath == primary,
     );
     _pinnedWorkspacePaths.remove(primary);
+    _threadViewCache.clear();
     workspacePath = null;
     _additionalWorkspacePaths.clear();
     activeThreadId = null;
@@ -1587,6 +1625,7 @@ class CodexController extends ChangeNotifier {
     final imported = PortableConversationHistory.fromJson(decoded);
     final snapshot = imported.snapshot;
     _invalidateThreadRefreshes();
+    _threadViewCache.clear();
     activeThreadId = null;
     _activeThreadAttached = false;
     threads = List.of(snapshot.threads);
@@ -1769,12 +1808,25 @@ class CodexController extends ChangeNotifier {
   Future<void> resumeThread(CodexThread thread) async {
     if (status != RuntimeStatus.ready || !_server.isRunning) return;
     if (activeThreadId == thread.id && _activeThreadAttached) return;
-    status = RuntimeStatus.starting;
+    _cacheActiveThreadView();
+    final cachedView = _cachedThreadView(thread.id);
+    _resumingThread = true;
     final previousThreadId = activeThreadId;
     final previousThreadAttached = _activeThreadAttached;
+    final previousView = previousThreadId == null
+        ? null
+        : _currentThreadViewSnapshot();
+    var viewLoaded = cachedView != null;
+    activeThreadId = thread.id;
+    _activeThreadAttached = false;
+    status = RuntimeStatus.starting;
     lastError = null;
     _clearStreamingState();
-    _add(TimelineKind.system, '正在恢复任务', thread.title);
+    if (cachedView != null) {
+      _restoreThreadView(cachedView);
+    } else {
+      _clearThreadTimelineForRestoration();
+    }
     notifyListeners();
     try {
       final resumeResult = await _server.resumeThread(
@@ -1787,22 +1839,26 @@ class CodexController extends ChangeNotifier {
       _activeThreadAttached = true;
       status = RuntimeStatus.ready;
       try {
-        final history = await _loadThreadHistory(
-          threadId: thread.id,
-          resumeResult: resumeResult,
-        );
-        _resetConversationTimeline();
-        _appendThreadHistory(history);
-        final incompleteItemTurnCount =
-            history['incompleteItemTurnCount'] as int? ?? 0;
-        final incompleteTurnHistory = history['incompleteTurnHistory'] == true;
-        if (incompleteTurnHistory || incompleteItemTurnCount > 0) {
-          final detail = [
-            if (incompleteTurnHistory) '部分历史 turns',
-            if (incompleteItemTurnCount > 0)
-              '$incompleteItemTurnCount 个 turn 的 items',
-          ].join('和');
-          _add(TimelineKind.system, '历史内容未完全加载', '$detail 超出安全页数限制。');
+        if (cachedView == null) {
+          final history = await _loadThreadHistory(
+            threadId: thread.id,
+            resumeResult: resumeResult,
+          );
+          _resetConversationTimeline();
+          _appendThreadHistory(history);
+          viewLoaded = true;
+          final incompleteItemTurnCount =
+              history['incompleteItemTurnCount'] as int? ?? 0;
+          final incompleteTurnHistory =
+              history['incompleteTurnHistory'] == true;
+          if (incompleteTurnHistory || incompleteItemTurnCount > 0) {
+            final detail = [
+              if (incompleteTurnHistory) '部分历史 turns',
+              if (incompleteItemTurnCount > 0)
+                '$incompleteItemTurnCount 个 turn 的 items',
+            ].join('和');
+            _add(TimelineKind.system, '历史内容未完全加载', '$detail 超出安全页数限制。');
+          }
         }
       } catch (error) {
         // Resuming the remote thread succeeded. A history page may still be
@@ -1810,15 +1866,20 @@ class CodexController extends ChangeNotifier {
         // thread.
         _add(TimelineKind.error, '历史内容加载不完整', _messageOf(error));
       }
-      _add(TimelineKind.system, '任务已恢复', '可以继续在此任务中追问。');
+      if (cachedView == null) {
+        _add(TimelineKind.system, '任务已恢复', '可以继续在此任务中追问。');
+      }
+      if (viewLoaded) _cacheActiveThreadView();
       await refreshThreads();
     } catch (error) {
       activeThreadId = previousThreadId;
       _activeThreadAttached = previousThreadAttached;
       status = RuntimeStatus.ready;
+      if (previousView != null) _restoreThreadView(previousView);
       lastError = _messageOf(error);
       _add(TimelineKind.error, '无法恢复任务', lastError!);
     }
+    _resumingThread = false;
     notifyListeners();
   }
 
@@ -1904,6 +1965,7 @@ class CodexController extends ChangeNotifier {
         }
         archivedIds.add(thread.id);
         _localThreadStatuses.remove(thread.id);
+        _threadViewCache.remove(thread.id);
         threads = threads
             .where((value) => value.id != thread.id)
             .toList(growable: false);
@@ -1960,6 +2022,7 @@ class CodexController extends ChangeNotifier {
           .where((value) => value.id != thread.id)
           .toList(growable: false);
       _localThreadStatuses.remove(thread.id);
+      _threadViewCache.remove(thread.id);
       _pinnedThreadIds.remove(thread.id);
       if (activeThreadId == thread.id) {
         activeThreadId = null;
@@ -3558,6 +3621,54 @@ class CodexController extends ChangeNotifier {
   void _clearFileChanges() {
     _fileChangesByPath.clear();
     turnDiff = null;
+  }
+
+  /// Caches the current attached task before switching to another task.
+  /// 切换任务前缓存当前已连接任务的页面状态。
+  void _cacheActiveThreadView() {
+    final id = activeThreadId;
+    if (id == null || !_activeThreadAttached) return;
+    _threadViewCache
+      ..remove(id)
+      ..[id] = _currentThreadViewSnapshot();
+    while (_threadViewCache.length > _maximumThreadViewCacheEntries) {
+      _threadViewCache.remove(_threadViewCache.keys.first);
+    }
+  }
+
+  /// Promotes a cached task page so recently revisited tasks remain retained.
+  /// 提升刚访问的任务页面，优先保留近期重新打开的任务。
+  _ThreadViewSnapshot? _cachedThreadView(String id) {
+    final snapshot = _threadViewCache.remove(id);
+    if (snapshot != null) _threadViewCache[id] = snapshot;
+    return snapshot;
+  }
+
+  _ThreadViewSnapshot _currentThreadViewSnapshot() => _ThreadViewSnapshot(
+    entries: List.unmodifiable(_entries),
+    fileChanges: List.unmodifiable(fileChanges),
+    turnDiff: turnDiff,
+  );
+
+  /// Clears any previous task content before first-time history hydration.
+  /// 首次加载任务历史前清除前一任务内容，避免在失败时串到新任务。
+  void _clearThreadTimelineForRestoration() {
+    _entries.clear();
+    _clearFileChanges();
+  }
+
+  /// Restores a cached task view into the shared controller state.
+  /// 将缓存的任务页面恢复到共享控制器状态。
+  void _restoreThreadView(_ThreadViewSnapshot snapshot) {
+    _entries
+      ..clear()
+      ..addAll(snapshot.entries);
+    _fileChangesByPath
+      ..clear()
+      ..addEntries(
+        snapshot.fileChanges.map((change) => MapEntry(change.path, change)),
+      );
+    turnDiff = snapshot.turnDiff;
   }
 
   /// 保留欢迎项并清空与当前线程相关的时间线内容。

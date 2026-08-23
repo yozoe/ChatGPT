@@ -1304,12 +1304,16 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('shows file change stats above the composer', (tester) async {
+  testWidgets('floats file change stats without moving the composer', (
+    tester,
+  ) async {
     final controller = CodexController(server: CodexAppServer())
       ..status = RuntimeStatus.ready;
     await tester.pumpWidget(
       MaterialApp(home: CodexWorkspace(controller: controller)),
     );
+    final composerField = find.byKey(const Key('composer-field'));
+    final composerFieldTopBefore = tester.getTopLeft(composerField).dy;
 
     controller.handleServerEventForTesting(
       const ServerEvent(
@@ -1331,7 +1335,17 @@ void main() {
     await tester.pump();
 
     final pill = find.byKey(const Key('composer-file-change-pill'));
+    final overlay = find.byKey(const Key('composer-file-change-overlay'));
     expect(pill, findsOneWidget);
+    expect(overlay, findsOneWidget);
+    expect(
+      tester.getTopLeft(composerField).dy,
+      moreOrLessEquals(composerFieldTopBefore),
+    );
+    expect(
+      tester.getTopLeft(pill).dy,
+      lessThan(tester.getTopLeft(composerField).dy),
+    );
     expect(
       find.descendant(of: pill, matching: find.text('1 个文件已更改')),
       findsOneWidget,
@@ -4919,6 +4933,77 @@ void main() {
     },
   );
 
+  test(
+    'marks thread history restoration separately from live output',
+    () async {
+      final controller = CodexController(server: _FakeCodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      final restorationStates = <bool>[];
+      controller.addListener(
+        () => restorationStates.add(controller.isResumingThread),
+      );
+
+      await controller.resumeThread(_thread(id: 'history-thread'));
+
+      expect(restorationStates, contains(true));
+      expect(restorationStates.last, isFalse);
+      expect(controller.isResumingThread, isFalse);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'restores a previously opened task view from the in-memory cache',
+    () async {
+      final controller = CodexController(server: _FakeCodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      final first = _thread(id: 'first-thread');
+      final second = _thread(id: 'second-thread');
+
+      await controller.resumeThread(first);
+      controller.replaceTimelineEntriesForTesting([
+        TimelineEntry(
+          kind: TimelineKind.user,
+          title: '你',
+          detail: 'first cached page',
+          createdAt: DateTime(2026),
+        ),
+      ]);
+      await controller.resumeThread(second);
+      controller.replaceTimelineEntriesForTesting([
+        TimelineEntry(
+          kind: TimelineKind.user,
+          title: '你',
+          detail: 'second page',
+          createdAt: DateTime(2026, 1, 1, 0, 0, 1),
+        ),
+      ]);
+
+      await controller.resumeThread(first);
+
+      expect(controller.entries.single.detail, 'first cached page');
+      expect(controller.hasCachedActiveThreadView, isTrue);
+      controller.dispose();
+    },
+  );
+
+  test('retains only the most recently opened task views in memory', () async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+
+    for (var index = 0; index < 9; index++) {
+      await controller.resumeThread(_thread(id: 'thread-$index'));
+    }
+
+    expect(controller.cachedThreadViewIds, hasLength(8));
+    expect(controller.cachedThreadViewIds, isNot(contains('thread-0')));
+    expect(controller.cachedThreadViewIds, contains('thread-8'));
+    controller.dispose();
+  });
+
   testWidgets(
     'groups consecutive command and tool history into an activity list',
     (tester) async {
@@ -4954,6 +5039,46 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets('keeps separate activity groups with matching timestamps', (
+    tester,
+  ) async {
+    final timestamp = DateTime(2026);
+    final controller = CodexController(server: CodexAppServer());
+    controller.replaceTimelineEntriesForTesting([
+      TimelineEntry(
+        kind: TimelineKind.command,
+        title: '执行命令',
+        detail: 'first command',
+        createdAt: timestamp,
+      ),
+      TimelineEntry(
+        kind: TimelineKind.user,
+        title: '你',
+        detail: 'separates activity groups',
+        createdAt: timestamp,
+      ),
+      TimelineEntry(
+        kind: TimelineKind.command,
+        title: '执行命令',
+        detail: 'second command',
+        createdAt: timestamp,
+      ),
+    ]);
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final summaries = find.text('已运行了命令');
+    expect(summaries, findsNWidgets(2));
+    await tester.tap(summaries.first);
+    await tester.pump();
+
+    expect(find.text('已运行 first command'), findsNothing);
+    expect(find.text('已运行 second command'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   test('restores the previous active thread when resume fails', () async {
     final server = _FakeCodexAppServer()..resumeError = StateError('offline');
@@ -5063,38 +5188,48 @@ void main() {
     },
   );
 
-  test('keeps the prior timeline when item history hydration fails', () async {
-    final server = _FakeCodexAppServer()
-      ..resumeResult = {
-        'thread': {
-          'turns': [
-            {
-              'id': 'unavailable-turn',
-              'itemsView': 'notLoaded',
-              'items': <JsonMap>[],
-            },
-          ],
-        },
-      }
-      ..itemPageError = StateError('items unavailable');
-    final controller = CodexController(server: server)
-      ..workspacePath = '/workspace'
-      ..status = RuntimeStatus.ready
-      ..activeThreadId = 'old-thread';
-    controller.handleServerEventForTesting(
-      const ServerEvent(
-        method: 'item/agentMessage/delta',
-        params: {'itemId': 'old-message', 'delta': '旧线程回答'},
-      ),
-    );
+  test(
+    'does not show the prior timeline when item history hydration fails',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..resumeResult = {
+          'thread': {
+            'turns': [
+              {
+                'id': 'unavailable-turn',
+                'itemsView': 'notLoaded',
+                'items': <JsonMap>[],
+              },
+            ],
+          },
+        }
+        ..itemPageError = StateError('items unavailable');
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready
+        ..activeThreadId = 'old-thread';
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/agentMessage/delta',
+          params: {'itemId': 'old-message', 'delta': '旧线程回答'},
+        ),
+      );
 
-    await controller.resumeThread(_thread(id: 'target-thread'));
+      await controller.resumeThread(_thread(id: 'target-thread'));
 
-    expect(controller.activeThreadId, 'target-thread');
-    expect(server.resumedThreadId, 'target-thread');
-    expect(controller.entries.map((entry) => entry.detail), contains('旧线程回答'));
-    controller.dispose();
-  });
+      expect(controller.activeThreadId, 'target-thread');
+      expect(server.resumedThreadId, 'target-thread');
+      expect(
+        controller.entries.map((entry) => entry.detail),
+        isNot(contains('旧线程回答')),
+      );
+      expect(
+        controller.entries.map((entry) => entry.title),
+        contains('历史内容加载不完整'),
+      );
+      controller.dispose();
+    },
+  );
 
   test(
     'keeps partial item history when a turn exceeds the page limit',

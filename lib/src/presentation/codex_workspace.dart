@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
@@ -36,6 +37,27 @@ bool _isImagePath(String path) {
   ].any(lower.endsWith);
 }
 
+/// Identifies a retained timeline viewport within its owning workspace.
+/// 在所属项目范围内标识保留的时间线视口。
+class _ThreadViewportKey {
+  const _ThreadViewportKey({required this.workspace, required this.threadId});
+
+  final String? workspace;
+  final String? threadId;
+
+  String get storageKey =>
+      '${workspace ?? 'no-workspace'}:${threadId ?? 'draft'}';
+
+  @override
+  bool operator ==(Object other) =>
+      other is _ThreadViewportKey &&
+      workspace == other.workspace &&
+      threadId == other.threadId;
+
+  @override
+  int get hashCode => Object.hash(workspace, threadId);
+}
+
 class CodexWorkspace extends ConsumerStatefulWidget {
   const CodexWorkspace({
     this.controller,
@@ -62,8 +84,15 @@ class CodexWorkspace extends ConsumerStatefulWidget {
 
 class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   final TextEditingController _composer = TextEditingController();
-  final ScrollController _timelineScrollController = ScrollController();
+  final Map<_ThreadViewportKey, ScrollController> _timelineScrollControllers =
+      {};
+  final Map<_ThreadViewportKey, bool> _fileChangeSummaryExpanded = {};
+  final Map<String, bool> _activityListExpanded = {};
+  late ScrollController _timelineScrollController;
+  late _ThreadViewportKey _displayedThreadKey;
   bool _timelineScrollScheduled = false;
+  bool _threadHistoryLoading = false;
+  int _timelineScrollGeneration = 0;
   static const _minimumSidebarWidth = 210.0;
   static const _maximumSidebarWidth = 420.0;
   static const _minimumInspectorWidth = 280.0;
@@ -78,6 +107,11 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   void initState() {
     super.initState();
     _controller = widget.controller ?? ref.read(codexControllerProvider)!;
+    _displayedThreadKey = _viewportKey(_controller.activeThreadId);
+    _timelineScrollController = _timelineScrollControllers.putIfAbsent(
+      _displayedThreadKey,
+      ScrollController.new,
+    );
     _controller.addListener(_handleControllerUpdate);
   }
 
@@ -87,7 +121,9 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   void dispose() {
     _controller.removeListener(_handleControllerUpdate);
     _composer.dispose();
-    _timelineScrollController.dispose();
+    for (final controller in _timelineScrollControllers.values.toSet()) {
+      controller.dispose();
+    }
     // 显式注入的控制器沿用原有由工作区释放的约定；Provider 创建的
     // 控制器由 ProviderScope 统一释放。
     // Explicitly injected controllers retain the original workspace ownership;
@@ -99,8 +135,77 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   /// 响应控制器更新；显式注入时由工作区重建，Provider 场景仍由 ref.watch 重建。
   /// Responds to controller updates; the workspace rebuilds explicit injections while ref.watch rebuilds provider state.
   void _handleControllerUpdate() {
+    if (_controller.isResumingThread) {
+      _timelineScrollGeneration++;
+      _timelineScrollScheduled = false;
+      // Cancel an animation that may still be finishing from the previous
+      // task before the newly restored timeline is laid out.
+      if (_timelineScrollController.hasClients) {
+        final position = _timelineScrollController.position;
+        if (position.hasPixels) position.jumpTo(position.pixels);
+      }
+      _activateTimelineViewport(_controller.activeThreadId);
+      if (!_controller.hasCachedActiveThreadView) {
+        _threadHistoryLoading = true;
+      }
+      if (widget.controller != null && mounted) setState(() {});
+      return;
+    }
+    _activateTimelineViewport(_controller.activeThreadId);
+    _pruneTimelineViewports();
     if (widget.controller != null && mounted) setState(() {});
+    if (_threadHistoryLoading) {
+      _finishFirstThreadViewport();
+      return;
+    }
     _scheduleTimelineScroll();
+  }
+
+  /// Switches to a task-specific viewport, preserving every visited task's
+  /// exact scroll position rather than reusing one shared list controller.
+  /// 切换到任务专属视口，保留每个已访问任务的精确滚动位置。
+  void _activateTimelineViewport(String? threadId) {
+    final key = _viewportKey(threadId);
+    if (_displayedThreadKey == key) return;
+    _displayedThreadKey = key;
+    _timelineScrollController = _timelineScrollControllers.putIfAbsent(
+      key,
+      ScrollController.new,
+    );
+  }
+
+  _ThreadViewportKey _viewportKey(String? threadId) => _ThreadViewportKey(
+    workspace: _controller.workspacePath,
+    threadId: threadId,
+  );
+
+  /// Releases viewports whose controller-side page caches were removed by a
+  /// project switch, history import, archive, or deletion.
+  /// 释放已因项目切换、导入、归档或删除而失效的任务视口。
+  void _pruneTimelineViewports() {
+    final workspace = _controller.workspacePath;
+    final activeThreadId = _controller.activeThreadId;
+    final cachedThreadIds = _controller.cachedThreadViewIds;
+    final staleKeys = _timelineScrollControllers.keys
+        .where(
+          (key) =>
+              key.workspace != workspace ||
+              (key.threadId != null &&
+                  key.threadId != activeThreadId &&
+                  !cachedThreadIds.contains(key.threadId)),
+        )
+        .toList(growable: false);
+    for (final key in staleKeys) {
+      final controller = _timelineScrollControllers.remove(key);
+      _fileChangeSummaryExpanded.remove(key);
+      _activityListExpanded.removeWhere(
+        (activityKey, _) => activityKey.startsWith('${key.storageKey}/'),
+      );
+      if (controller == null) continue;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!controller.hasClients) controller.dispose();
+      });
+    }
   }
 
   /// 在下一帧将时间线平滑滚动到最新内容。
@@ -108,15 +213,36 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   void _scheduleTimelineScroll() {
     if (!mounted || _timelineScrollScheduled) return;
     _timelineScrollScheduled = true;
+    final generation = _timelineScrollGeneration;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _timelineScrollScheduled = false;
-      if (!mounted || !_timelineScrollController.hasClients) return;
+      if (!mounted ||
+          generation != _timelineScrollGeneration ||
+          !_timelineScrollController.hasClients) {
+        return;
+      }
       final position = _timelineScrollController.position;
       position.animateTo(
         position.maxScrollExtent,
         duration: const Duration(milliseconds: 180),
         curve: Curves.easeOut,
       );
+    });
+  }
+
+  /// Positions a first-time task history while the loading surface is still
+  /// visible, then reveals the fully laid-out page without visible scrolling.
+  /// 首次任务历史仍被加载画面覆盖时完成定位，随后直接显示完整页面。
+  void _finishFirstThreadViewport() {
+    if (!mounted) return;
+    final threadId = _controller.activeThreadId;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || threadId != _controller.activeThreadId) return;
+      if (_timelineScrollController.hasClients) {
+        final position = _timelineScrollController.position;
+        position.jumpTo(position.maxScrollExtent);
+      }
+      if (mounted) setState(() => _threadHistoryLoading = false);
     });
   }
 
@@ -1821,6 +1947,26 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                           controller: controller,
                           composer: _composer,
                           timelineScrollController: _timelineScrollController,
+                          timelinePageKey: _displayedThreadKey.storageKey,
+                          threadHistoryLoading: _threadHistoryLoading,
+                          fileChangeSummaryExpanded:
+                              _fileChangeSummaryExpanded[_displayedThreadKey] ??
+                              false,
+                          onFileChangeSummaryExpandedChanged: (expanded) {
+                            setState(() {
+                              _fileChangeSummaryExpanded[_displayedThreadKey] =
+                                  expanded;
+                            });
+                          },
+                          activityExpanded: (activityId) =>
+                              _activityListExpanded['${_displayedThreadKey.storageKey}/$activityId'] ??
+                              true,
+                          onActivityExpandedChanged: (activityId, expanded) {
+                            setState(() {
+                              _activityListExpanded['${_displayedThreadKey.storageKey}/$activityId'] =
+                                  expanded;
+                            });
+                          },
                           onSend: _send,
                           onSteer: _steer,
                           onAdjustDirection: _adjustDirection,
@@ -3781,6 +3927,12 @@ class _ConversationPane extends StatelessWidget {
     required this.controller,
     required this.composer,
     required this.timelineScrollController,
+    required this.timelinePageKey,
+    required this.threadHistoryLoading,
+    required this.fileChangeSummaryExpanded,
+    required this.onFileChangeSummaryExpandedChanged,
+    required this.activityExpanded,
+    required this.onActivityExpandedChanged,
     required this.onSend,
     required this.onSteer,
     required this.onAdjustDirection,
@@ -3791,6 +3943,13 @@ class _ConversationPane extends StatelessWidget {
   final CodexController controller;
   final TextEditingController composer;
   final ScrollController timelineScrollController;
+  final String timelinePageKey;
+  final bool threadHistoryLoading;
+  final bool fileChangeSummaryExpanded;
+  final ValueChanged<bool> onFileChangeSummaryExpandedChanged;
+  final bool Function(String activityId) activityExpanded;
+  final void Function(String activityId, bool expanded)
+  onActivityExpandedChanged;
   final Future<bool> Function(_ComposerSubmission submission) onSend;
   final Future<bool> Function(_ComposerSubmission submission) onSteer;
   final Future<void> Function(String originalPrompt) onAdjustDirection;
@@ -3877,6 +4036,7 @@ class _ConversationPane extends StatelessWidget {
               return Stack(
                 children: [
                   ListView.separated(
+                    key: const Key('conversation-timeline'),
                     controller: timelineScrollController,
                     padding: EdgeInsets.fromLTRB(
                       24,
@@ -3897,18 +4057,25 @@ class _ConversationPane extends StatelessWidget {
                     itemBuilder: (context, index) {
                       if (index == timelineItems.length) {
                         return _FileChangeSummaryCard(
+                          key: ValueKey('file-change-summary-$timelinePageKey'),
                           changes: controller.fileChanges,
                           turnDiff: controller.turnDiff,
+                          expanded: fileChangeSummaryExpanded,
+                          onExpandedChanged: onFileChangeSummaryExpandedChanged,
                           onReview: onReview,
                         );
                       }
                       final item = timelineItems[index];
                       if (item.activities case final activities?) {
+                        final activityId = item.entryIndex.toString();
                         return _TimelineActivityList(
                           key: ValueKey(
-                            'timeline-activity-${activities.first.createdAt.microsecondsSinceEpoch}',
+                            'timeline-activity-$timelinePageKey-$activityId',
                           ),
                           entries: activities,
+                          expanded: activityExpanded(activityId),
+                          onExpandedChanged: (expanded) =>
+                              onActivityExpandedChanged(activityId, expanded),
                         );
                       }
                       final entry = item.entry!;
@@ -3939,6 +4106,14 @@ class _ConversationPane extends StatelessWidget {
                         ),
                       ),
                     ),
+                  if (threadHistoryLoading)
+                    Positioned.fill(
+                      child: ColoredBox(
+                        key: const Key('thread-history-loading'),
+                        color: palette.module,
+                        child: const Center(child: _CodexLoadingMark()),
+                      ),
+                    ),
                 ],
               );
             },
@@ -3954,6 +4129,59 @@ class _ConversationPane extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Codex-style quiet loading surface: a centered, monochrome knot with no
+/// text or animated layout movement while a task history is being restored.
+/// Codex 风格的安静加载画面：居中的单色结标志，不引入文字或布局动画。
+class _CodexLoadingMark extends StatelessWidget {
+  const _CodexLoadingMark();
+
+  @override
+  Widget build(BuildContext context) => const SizedBox(
+    width: 62,
+    height: 62,
+    child: CustomPaint(painter: _CodexLoadingMarkPainter()),
+  );
+}
+
+class _CodexLoadingMarkPainter extends CustomPainter {
+  const _CodexLoadingMarkPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = size.center(Offset.zero);
+    final radius = size.shortestSide * 0.29;
+    final stroke = Paint()
+      ..color = const Color(0xFF9B9B9B)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = size.shortestSide * 0.105
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    for (var index = 0; index < 6; index++) {
+      final angle = index * 3.141592653589793 / 3;
+      final start = Offset(
+        center.dx + radius * 0.55 * _cos(angle),
+        center.dy + radius * 0.55 * _sin(angle),
+      );
+      final path = Path()..moveTo(start.dx, start.dy);
+      path.cubicTo(
+        center.dx + radius * 1.26 * _cos(angle - 0.65),
+        center.dy + radius * 1.26 * _sin(angle - 0.65),
+        center.dx + radius * 1.26 * _cos(angle + 0.65),
+        center.dy + radius * 1.26 * _sin(angle + 0.65),
+        start.dx,
+        start.dy,
+      );
+      canvas.drawPath(path, stroke);
+    }
+  }
+
+  double _cos(double value) => math.cos(value);
+  double _sin(double value) => math.sin(value);
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class _DiffStats {
@@ -3980,50 +4208,46 @@ _DiffStats _diffStats(String diff) {
 String _diffCountLabel(String prefix, int count, {required bool unknown}) =>
     unknown ? '$prefix?' : '$prefix$count';
 
-class _FileChangeSummaryCard extends StatefulWidget {
+class _FileChangeSummaryCard extends StatelessWidget {
   const _FileChangeSummaryCard({
     required this.changes,
     required this.turnDiff,
+    required this.expanded,
+    required this.onExpandedChanged,
     required this.onReview,
+    super.key,
   });
 
   final List<CodexFileChange> changes;
   final String? turnDiff;
+  final bool expanded;
+  final ValueChanged<bool> onExpandedChanged;
   final Future<void> Function() onReview;
 
-  @override
-  State<_FileChangeSummaryCard> createState() => _FileChangeSummaryCardState();
-}
-
-class _FileChangeSummaryCardState extends State<_FileChangeSummaryCard> {
-  bool _expanded = false;
-
   _DiffStats get _stats {
-    final stats = widget.changes.fold(
+    final stats = changes.fold(
       const _DiffStats(0, 0),
       (total, change) => total + _diffStats(change.diff),
     );
-    final fallback = widget.turnDiff;
-    final hasMissingDiff = widget.changes.any(
-      (change) => change.diff.trim().isEmpty,
-    );
+    final fallback = turnDiff;
+    final hasMissingDiff = changes.any((change) => change.diff.trim().isEmpty);
     return hasMissingDiff && fallback != null && fallback.isNotEmpty
         ? _diffStats(fallback)
         : stats;
   }
 
   bool get _statsUnknown =>
-      widget.changes.any((change) => change.diff.trim().isEmpty) &&
-      (widget.turnDiff == null || widget.turnDiff!.isEmpty);
+      changes.any((change) => change.diff.trim().isEmpty) &&
+      (turnDiff == null || turnDiff!.isEmpty);
 
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
     final stats = _stats;
-    final visibleChanges = _expanded
-        ? widget.changes
-        : widget.changes.take(3).toList(growable: false);
-    final hiddenCount = widget.changes.length - visibleChanges.length;
+    final visibleChanges = expanded
+        ? changes
+        : changes.take(3).toList(growable: false);
+    final hiddenCount = changes.length - visibleChanges.length;
     return Container(
       key: const Key('file-change-summary-card'),
       decoration: BoxDecoration(
@@ -4054,7 +4278,7 @@ class _FileChangeSummaryCardState extends State<_FileChangeSummaryCard> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        '已编辑 ${widget.changes.length} 个文件',
+                        '已编辑 ${changes.length} 个文件',
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
                       const SizedBox(height: 4),
@@ -4086,7 +4310,7 @@ class _FileChangeSummaryCardState extends State<_FileChangeSummaryCard> {
                 ),
                 OutlinedButton(
                   key: const Key('review-file-changes-button'),
-                  onPressed: () => unawaited(widget.onReview()),
+                  onPressed: () => unawaited(onReview()),
                   child: const Text('审核'),
                 ),
               ],
@@ -4096,22 +4320,22 @@ class _FileChangeSummaryCardState extends State<_FileChangeSummaryCard> {
           for (final change in visibleChanges)
             _FileChangeSummaryRow(
               change: change,
-              fallbackDiff: widget.changes.length == 1 ? widget.turnDiff : null,
+              fallbackDiff: changes.length == 1 ? turnDiff : null,
             ),
-          if (hiddenCount > 0 || _expanded && widget.changes.length > 3)
+          if (hiddenCount > 0 || expanded && changes.length > 3)
             InkWell(
-              onTap: () => setState(() => _expanded = !_expanded),
+              onTap: () => onExpandedChanged(!expanded),
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
                 child: Row(
                   children: [
                     Text(
-                      _expanded ? '收起文件' : '再显示 $hiddenCount 个文件',
+                      expanded ? '收起文件' : '再显示 $hiddenCount 个文件',
                       style: TextStyle(color: palette.muted),
                     ),
                     const SizedBox(width: 6),
                     Icon(
-                      _expanded ? Icons.expand_less : Icons.expand_more,
+                      expanded ? Icons.expand_less : Icons.expand_more,
                       size: 18,
                       color: palette.muted,
                     ),
@@ -5312,12 +5536,18 @@ class _ComposerFileChangePill extends StatelessWidget {
     final stats = _stats;
     return Container(
       key: const Key('composer-file-change-pill'),
-      margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
       decoration: BoxDecoration(
         color: palette.raised,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: palette.border),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.16),
+            blurRadius: 12,
+            offset: const Offset(0, 3),
+          ),
+        ],
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -5925,372 +6155,405 @@ class _ComposerPanelState extends State<_ComposerPanel> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (controller.fileChanges.isNotEmpty)
-            _ComposerFileChangePill(
-              changes: controller.fileChanges,
-              turnDiff: controller.turnDiff,
-            )
-          else if (controller.activeThreadId != null ||
-              controller.status == RuntimeStatus.running)
+          if (controller.fileChanges.isEmpty &&
+              (controller.activeThreadId != null ||
+                  controller.status == RuntimeStatus.running))
             _ComposerActivityPill(
               label: _activityLabel,
               active: controller.status == RuntimeStatus.running,
             ),
-          DropTarget(
-            onDragEntered: (_) {
-              if ((controller.canSend || controller.canSteer) && mounted) {
-                setState(() => _draggingFiles = true);
-              }
-            },
-            onDragExited: (_) {
-              if (mounted) setState(() => _draggingFiles = false);
-            },
-            onDragDone: (details) {
-              if (mounted) setState(() => _draggingFiles = false);
-              if (!controller.canSend && !controller.canSteer) return;
-              unawaited(_handleDroppedFiles(details.files));
-            },
-            child: Stack(
-              children: [
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 140),
-                  curve: Curves.easeOut,
-                  constraints: const BoxConstraints(minHeight: 126),
-                  padding: const EdgeInsets.fromLTRB(16, 13, 12, 10),
-                  decoration: BoxDecoration(
-                    color: _draggingFiles
-                        ? Color.alphaBlend(
-                            palette.active.withValues(alpha: 0.08),
-                            palette.field,
-                          )
-                        : palette.field,
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                      color: _draggingFiles
-                          ? palette.active
-                          : palette.controlBorder,
-                      width: _draggingFiles ? 1.5 : 1,
-                    ),
-                  ),
-                  child: Column(
-                    children: [
-                      ConstrainedBox(
-                        constraints: const BoxConstraints(
-                          minHeight: 64,
-                          maxHeight: 124,
+          Stack(
+            clipBehavior: Clip.none,
+            children: [
+              DropTarget(
+                onDragEntered: (_) {
+                  if ((controller.canSend || controller.canSteer) && mounted) {
+                    setState(() => _draggingFiles = true);
+                  }
+                },
+                onDragExited: (_) {
+                  if (mounted) setState(() => _draggingFiles = false);
+                },
+                onDragDone: (details) {
+                  if (mounted) setState(() => _draggingFiles = false);
+                  if (!controller.canSend && !controller.canSteer) return;
+                  unawaited(_handleDroppedFiles(details.files));
+                },
+                child: Stack(
+                  children: [
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 140),
+                      curve: Curves.easeOut,
+                      constraints: const BoxConstraints(minHeight: 126),
+                      padding: const EdgeInsets.fromLTRB(16, 13, 12, 10),
+                      decoration: BoxDecoration(
+                        color: _draggingFiles
+                            ? Color.alphaBlend(
+                                palette.active.withValues(alpha: 0.08),
+                                palette.field,
+                              )
+                            : palette.field,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: _draggingFiles
+                              ? palette.active
+                              : palette.controlBorder,
+                          width: _draggingFiles ? 1.5 : 1,
                         ),
-                        child: CallbackShortcuts(
-                          bindings: {
-                            const SingleActivator(
-                              LogicalKeyboardKey.enter,
-                            ): () {
-                              unawaited(_submit());
+                      ),
+                      child: Column(
+                        children: [
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(
+                              minHeight: 64,
+                              maxHeight: 124,
+                            ),
+                            child: CallbackShortcuts(
+                              bindings: {
+                                const SingleActivator(
+                                  LogicalKeyboardKey.enter,
+                                ): () {
+                                  unawaited(_submit());
+                                },
+                                const SingleActivator(
+                                  LogicalKeyboardKey.keyV,
+                                  meta: true,
+                                ): () {
+                                  unawaited(_pasteFromClipboard());
+                                },
+                                const SingleActivator(
+                                  LogicalKeyboardKey.keyV,
+                                  control: true,
+                                ): () {
+                                  unawaited(_pasteFromClipboard());
+                                },
+                              },
+                              child: TextField(
+                                key: const Key('composer-field'),
+                                controller: composer,
+                                enabled:
+                                    controller.canSend || controller.canSteer,
+                                contextMenuBuilder: _buildComposerContextMenu,
+                                minLines: 2,
+                                maxLines: 5,
+                                textInputAction: TextInputAction.newline,
+                                style: TextStyle(color: palette.trace),
+                                decoration: InputDecoration(
+                                  hintText: '随心输入',
+                                  hintStyle: TextStyle(color: palette.muted),
+                                  filled: false,
+                                  isCollapsed: true,
+                                  border: InputBorder.none,
+                                  enabledBorder: InputBorder.none,
+                                  focusedBorder: InputBorder.none,
+                                  disabledBorder: InputBorder.none,
+                                  errorBorder: InputBorder.none,
+                                  focusedErrorBorder: InputBorder.none,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          if (_hasComposerContext) ...[
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: Wrap(
+                                spacing: 7,
+                                runSpacing: 7,
+                                children: [
+                                  for (final attachment in _attachments)
+                                    _ComposerContextChip(
+                                      key: ValueKey(
+                                        'composer-attachment-${attachment.path}',
+                                      ),
+                                      icon:
+                                          !attachment.isDirectory &&
+                                              _isImagePath(attachment.path)
+                                          ? Icons.image_outlined
+                                          : Icons.attach_file,
+                                      thumbnailPath:
+                                          !attachment.isDirectory &&
+                                              _isImagePath(attachment.path)
+                                          ? attachment.path
+                                          : null,
+                                      label: _pathLabel(attachment.path),
+                                      onRemove: () =>
+                                          _removeAttachment(attachment.path),
+                                      onPreview:
+                                          !attachment.isDirectory &&
+                                              _isImagePath(attachment.path)
+                                          ? () => _showImagePreview(
+                                              attachment.path,
+                                            )
+                                          : null,
+                                    ),
+                                  if (_includeWorkspace)
+                                    _ComposerContextChip(
+                                      key: const Key('composer-workspace-chip'),
+                                      icon: Icons.terminal_outlined,
+                                      label: controller.workspacePath == null
+                                          ? '当前项目'
+                                          : _pathLabel(
+                                              controller.workspacePath!,
+                                            ),
+                                      onRemove: () => setState(
+                                        () => _includeWorkspace = false,
+                                      ),
+                                    ),
+                                  if (_goal case final goal?)
+                                    _ComposerContextChip(
+                                      key: const Key('composer-goal-chip'),
+                                      icon: Icons.track_changes_outlined,
+                                      label: goal,
+                                      onRemove: () =>
+                                          setState(() => _goal = null),
+                                    ),
+                                  if (_planMode)
+                                    _ComposerContextChip(
+                                      key: const Key('composer-plan-mode-chip'),
+                                      icon: Icons.lightbulb_outline,
+                                      label: '计划模式',
+                                      onRemove: () =>
+                                          setState(() => _planMode = false),
+                                    ),
+                                  if (_recordSkill)
+                                    _ComposerContextChip(
+                                      key: const Key(
+                                        'composer-record-skill-chip',
+                                      ),
+                                      icon: Icons.radio_button_checked,
+                                      label: '录制技能',
+                                      onRemove: () =>
+                                          setState(() => _recordSkill = false),
+                                    ),
+                                  for (final skill in _selectedSkills)
+                                    _ComposerContextChip(
+                                      key: ValueKey(
+                                        'composer-skill-chip-${skill.name}',
+                                      ),
+                                      icon: _skillIcon(skill.name),
+                                      label: skill.label,
+                                      onRemove: () => setState(
+                                        () => _selectedSkillPaths.remove(
+                                          skill.path,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 9),
+                          ],
+                          LayoutBuilder(
+                            builder: (context, constraints) {
+                              final showAttachment =
+                                  constraints.maxWidth >= 420;
+                              final showApproval = constraints.maxWidth >= 340;
+                              final showApprovalLabel =
+                                  constraints.maxWidth >= 460;
+                              final showModel = constraints.maxWidth >= 240;
+                              return Row(
+                                children: [
+                                  if (showAttachment)
+                                    PopupMenuButton<_AddMenuAction>(
+                                      key: const Key('composer-add-button'),
+                                      enabled:
+                                          controller.canSend ||
+                                          controller.canSteer,
+                                      tooltip: '添加上下文',
+                                      icon: const Icon(Icons.add, size: 20),
+                                      constraints: const BoxConstraints(
+                                        minWidth: 390,
+                                        maxWidth: 470,
+                                        maxHeight: 620,
+                                      ),
+                                      color: palette.field,
+                                      surfaceTintColor: Colors.transparent,
+                                      elevation: 10,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(18),
+                                        side: BorderSide(
+                                          color: palette.controlBorder,
+                                        ),
+                                      ),
+                                      menuPadding: const EdgeInsets.fromLTRB(
+                                        8,
+                                        8,
+                                        8,
+                                        10,
+                                      ),
+                                      onOpened: () {
+                                        if (controller.skills.isEmpty &&
+                                            !controller.skillsLoading) {
+                                          unawaited(controller.refreshSkills());
+                                        }
+                                      },
+                                      onSelected: (action) =>
+                                          unawaited(_handleAddAction(action)),
+                                      itemBuilder: _buildAddMenu,
+                                    ),
+                                  if (showApproval)
+                                    PopupMenuButton<ApprovalMode>(
+                                      tooltip:
+                                          '审批模式：${controller.approvalMode.label}',
+                                      onSelected: controller.setApprovalMode,
+                                      itemBuilder: (context) => ApprovalMode
+                                          .values
+                                          .map(
+                                            (mode) => CheckedPopupMenuItem(
+                                              value: mode,
+                                              checked:
+                                                  controller.approvalMode ==
+                                                  mode,
+                                              child: Text(mode.label),
+                                            ),
+                                          )
+                                          .toList(growable: false),
+                                      child: Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 6,
+                                          vertical: 8,
+                                        ),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(
+                                              Icons.verified_user_outlined,
+                                              size: 16,
+                                            ),
+                                            if (showApprovalLabel) ...[
+                                              const SizedBox(width: 5),
+                                              Text(
+                                                controller.approvalMode.label,
+                                                style: Theme.of(
+                                                  context,
+                                                ).textTheme.bodySmall,
+                                              ),
+                                            ],
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  const Spacer(),
+                                  if (showModel) ...[
+                                    _ComposerModelControls(
+                                      controller: controller,
+                                      compact: constraints.maxWidth < 430,
+                                    ),
+                                    const SizedBox(width: 8),
+                                  ],
+                                  if (controller.canStop)
+                                    IconButton.filled(
+                                      tooltip: '停止当前任务',
+                                      onPressed: controller.stopCurrentTurn,
+                                      style: IconButton.styleFrom(
+                                        backgroundColor: scheme.primary,
+                                        foregroundColor: scheme.onPrimary,
+                                      ),
+                                      icon: const Icon(Icons.stop, size: 19),
+                                    )
+                                  else
+                                    IconButton.filled(
+                                      tooltip: '发送任务',
+                                      onPressed: controller.canSend
+                                          ? _submit
+                                          : null,
+                                      style: IconButton.styleFrom(
+                                        backgroundColor: scheme.primary,
+                                        foregroundColor: scheme.onPrimary,
+                                      ),
+                                      icon: const Icon(
+                                        Icons.arrow_upward,
+                                        size: 19,
+                                      ),
+                                    ),
+                                ],
+                              );
                             },
-                            const SingleActivator(
-                              LogicalKeyboardKey.keyV,
-                              meta: true,
-                            ): () {
-                              unawaited(_pasteFromClipboard());
-                            },
-                            const SingleActivator(
-                              LogicalKeyboardKey.keyV,
-                              control: true,
-                            ): () {
-                              unawaited(_pasteFromClipboard());
-                            },
-                          },
-                          child: TextField(
-                            key: const Key('composer-field'),
-                            controller: composer,
-                            enabled: controller.canSend || controller.canSteer,
-                            contextMenuBuilder: _buildComposerContextMenu,
-                            minLines: 2,
-                            maxLines: 5,
-                            textInputAction: TextInputAction.newline,
-                            style: TextStyle(color: palette.trace),
-                            decoration: InputDecoration(
-                              hintText: '随心输入',
-                              hintStyle: TextStyle(color: palette.muted),
-                              filled: false,
-                              isCollapsed: true,
-                              border: InputBorder.none,
-                              enabledBorder: InputBorder.none,
-                              focusedBorder: InputBorder.none,
-                              disabledBorder: InputBorder.none,
-                              errorBorder: InputBorder.none,
-                              focusedErrorBorder: InputBorder.none,
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (_draggingFiles)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: Semantics(
+                            key: const Key('composer-drop-overlay'),
+                            liveRegion: true,
+                            label: '松开即可添加文件',
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                color: palette.active.withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Center(
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 18,
+                                    vertical: 11,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: palette.raised,
+                                    borderRadius: BorderRadius.circular(14),
+                                    border: Border.all(
+                                      color: palette.active.withValues(
+                                        alpha: 0.65,
+                                      ),
+                                    ),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withValues(
+                                          alpha: 0.18,
+                                        ),
+                                        blurRadius: 16,
+                                        offset: const Offset(0, 6),
+                                      ),
+                                    ],
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.file_upload_outlined,
+                                        size: 20,
+                                        color: palette.active,
+                                      ),
+                                      const SizedBox(width: 9),
+                                      Text(
+                                        '松开即可添加文件',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodyMedium
+                                            ?.copyWith(
+                                              color: palette.trace,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
                             ),
                           ),
                         ),
                       ),
-                      const SizedBox(height: 8),
-                      if (_hasComposerContext) ...[
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          child: Wrap(
-                            spacing: 7,
-                            runSpacing: 7,
-                            children: [
-                              for (final attachment in _attachments)
-                                _ComposerContextChip(
-                                  key: ValueKey(
-                                    'composer-attachment-${attachment.path}',
-                                  ),
-                                  icon:
-                                      !attachment.isDirectory &&
-                                          _isImagePath(attachment.path)
-                                      ? Icons.image_outlined
-                                      : Icons.attach_file,
-                                  thumbnailPath:
-                                      !attachment.isDirectory &&
-                                          _isImagePath(attachment.path)
-                                      ? attachment.path
-                                      : null,
-                                  label: _pathLabel(attachment.path),
-                                  onRemove: () =>
-                                      _removeAttachment(attachment.path),
-                                  onPreview:
-                                      !attachment.isDirectory &&
-                                          _isImagePath(attachment.path)
-                                      ? () => _showImagePreview(attachment.path)
-                                      : null,
-                                ),
-                              if (_includeWorkspace)
-                                _ComposerContextChip(
-                                  key: const Key('composer-workspace-chip'),
-                                  icon: Icons.terminal_outlined,
-                                  label: controller.workspacePath == null
-                                      ? '当前项目'
-                                      : _pathLabel(controller.workspacePath!),
-                                  onRemove: () =>
-                                      setState(() => _includeWorkspace = false),
-                                ),
-                              if (_goal case final goal?)
-                                _ComposerContextChip(
-                                  key: const Key('composer-goal-chip'),
-                                  icon: Icons.track_changes_outlined,
-                                  label: goal,
-                                  onRemove: () => setState(() => _goal = null),
-                                ),
-                              if (_planMode)
-                                _ComposerContextChip(
-                                  key: const Key('composer-plan-mode-chip'),
-                                  icon: Icons.lightbulb_outline,
-                                  label: '计划模式',
-                                  onRemove: () =>
-                                      setState(() => _planMode = false),
-                                ),
-                              if (_recordSkill)
-                                _ComposerContextChip(
-                                  key: const Key('composer-record-skill-chip'),
-                                  icon: Icons.radio_button_checked,
-                                  label: '录制技能',
-                                  onRemove: () =>
-                                      setState(() => _recordSkill = false),
-                                ),
-                              for (final skill in _selectedSkills)
-                                _ComposerContextChip(
-                                  key: ValueKey(
-                                    'composer-skill-chip-${skill.name}',
-                                  ),
-                                  icon: _skillIcon(skill.name),
-                                  label: skill.label,
-                                  onRemove: () => setState(
-                                    () =>
-                                        _selectedSkillPaths.remove(skill.path),
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 9),
-                      ],
-                      LayoutBuilder(
-                        builder: (context, constraints) {
-                          final showAttachment = constraints.maxWidth >= 420;
-                          final showApproval = constraints.maxWidth >= 340;
-                          final showApprovalLabel = constraints.maxWidth >= 460;
-                          final showModel = constraints.maxWidth >= 240;
-                          return Row(
-                            children: [
-                              if (showAttachment)
-                                PopupMenuButton<_AddMenuAction>(
-                                  key: const Key('composer-add-button'),
-                                  enabled:
-                                      controller.canSend || controller.canSteer,
-                                  tooltip: '添加上下文',
-                                  icon: const Icon(Icons.add, size: 20),
-                                  constraints: const BoxConstraints(
-                                    minWidth: 390,
-                                    maxWidth: 470,
-                                    maxHeight: 620,
-                                  ),
-                                  color: palette.field,
-                                  surfaceTintColor: Colors.transparent,
-                                  elevation: 10,
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(18),
-                                    side: BorderSide(
-                                      color: palette.controlBorder,
-                                    ),
-                                  ),
-                                  menuPadding: const EdgeInsets.fromLTRB(
-                                    8,
-                                    8,
-                                    8,
-                                    10,
-                                  ),
-                                  onOpened: () {
-                                    if (controller.skills.isEmpty &&
-                                        !controller.skillsLoading) {
-                                      unawaited(controller.refreshSkills());
-                                    }
-                                  },
-                                  onSelected: (action) =>
-                                      unawaited(_handleAddAction(action)),
-                                  itemBuilder: _buildAddMenu,
-                                ),
-                              if (showApproval)
-                                PopupMenuButton<ApprovalMode>(
-                                  tooltip:
-                                      '审批模式：${controller.approvalMode.label}',
-                                  onSelected: controller.setApprovalMode,
-                                  itemBuilder: (context) => ApprovalMode.values
-                                      .map(
-                                        (mode) => CheckedPopupMenuItem(
-                                          value: mode,
-                                          checked:
-                                              controller.approvalMode == mode,
-                                          child: Text(mode.label),
-                                        ),
-                                      )
-                                      .toList(growable: false),
-                                  child: Padding(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 6,
-                                      vertical: 8,
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        const Icon(
-                                          Icons.verified_user_outlined,
-                                          size: 16,
-                                        ),
-                                        if (showApprovalLabel) ...[
-                                          const SizedBox(width: 5),
-                                          Text(
-                                            controller.approvalMode.label,
-                                            style: Theme.of(
-                                              context,
-                                            ).textTheme.bodySmall,
-                                          ),
-                                        ],
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              const Spacer(),
-                              if (showModel) ...[
-                                _ComposerModelControls(
-                                  controller: controller,
-                                  compact: constraints.maxWidth < 430,
-                                ),
-                                const SizedBox(width: 8),
-                              ],
-                              if (controller.canStop)
-                                IconButton.filled(
-                                  tooltip: '停止当前任务',
-                                  onPressed: controller.stopCurrentTurn,
-                                  style: IconButton.styleFrom(
-                                    backgroundColor: scheme.primary,
-                                    foregroundColor: scheme.onPrimary,
-                                  ),
-                                  icon: const Icon(Icons.stop, size: 19),
-                                )
-                              else
-                                IconButton.filled(
-                                  tooltip: '发送任务',
-                                  onPressed: controller.canSend
-                                      ? _submit
-                                      : null,
-                                  style: IconButton.styleFrom(
-                                    backgroundColor: scheme.primary,
-                                    foregroundColor: scheme.onPrimary,
-                                  ),
-                                  icon: const Icon(
-                                    Icons.arrow_upward,
-                                    size: 19,
-                                  ),
-                                ),
-                            ],
-                          );
-                        },
-                      ),
-                    ],
+                  ],
+                ),
+              ),
+              if (controller.fileChanges.isNotEmpty)
+                Positioned(
+                  key: const Key('composer-file-change-overlay'),
+                  top: -18,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: _ComposerFileChangePill(
+                      changes: controller.fileChanges,
+                      turnDiff: controller.turnDiff,
+                    ),
                   ),
                 ),
-                if (_draggingFiles)
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      child: Semantics(
-                        key: const Key('composer-drop-overlay'),
-                        liveRegion: true,
-                        label: '松开即可添加文件',
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: palette.active.withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Center(
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 18,
-                                vertical: 11,
-                              ),
-                              decoration: BoxDecoration(
-                                color: palette.raised,
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(
-                                  color: palette.active.withValues(alpha: 0.65),
-                                ),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withValues(alpha: 0.18),
-                                    blurRadius: 16,
-                                    offset: const Offset(0, 6),
-                                  ),
-                                ],
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    Icons.file_upload_outlined,
-                                    size: 20,
-                                    color: palette.active,
-                                  ),
-                                  const SizedBox(width: 9),
-                                  Text(
-                                    '松开即可添加文件',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodyMedium
-                                        ?.copyWith(
-                                          color: palette.trace,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
+            ],
           ),
         ],
       ),
@@ -7545,32 +7808,32 @@ class _ConversationTimelineItem {
   final int entryIndex;
 }
 
-class _TimelineActivityList extends StatefulWidget {
-  const _TimelineActivityList({required this.entries, super.key});
+class _TimelineActivityList extends StatelessWidget {
+  const _TimelineActivityList({
+    required this.entries,
+    required this.expanded,
+    required this.onExpandedChanged,
+    super.key,
+  });
 
   final List<TimelineEntry> entries;
-
-  @override
-  State<_TimelineActivityList> createState() => _TimelineActivityListState();
-}
-
-class _TimelineActivityListState extends State<_TimelineActivityList> {
-  bool _expanded = true;
+  final bool expanded;
+  final ValueChanged<bool> onExpandedChanged;
 
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
-    final summary = _activitySummary(widget.entries);
+    final summary = _activitySummary(entries);
     return Semantics(
       container: true,
       label: summary,
-      expanded: _expanded,
+      expanded: expanded,
       button: true,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           InkWell(
-            onTap: () => setState(() => _expanded = !_expanded),
+            onTap: () => onExpandedChanged(!expanded),
             borderRadius: BorderRadius.circular(8),
             child: Padding(
               padding: const EdgeInsets.fromLTRB(2, 4, 6, 4),
@@ -7597,7 +7860,7 @@ class _TimelineActivityListState extends State<_TimelineActivityList> {
                   ),
                   const SizedBox(width: 4),
                   Icon(
-                    _expanded ? Icons.expand_less : Icons.expand_more,
+                    expanded ? Icons.expand_less : Icons.expand_more,
                     size: 19,
                     color: palette.muted,
                   ),
@@ -7605,10 +7868,9 @@ class _TimelineActivityListState extends State<_TimelineActivityList> {
               ),
             ),
           ),
-          if (_expanded) ...[
+          if (expanded) ...[
             const SizedBox(height: 5),
-            for (final entry in widget.entries)
-              _TimelineActivityRow(entry: entry),
+            for (final entry in entries) _TimelineActivityRow(entry: entry),
           ],
         ],
       ),
