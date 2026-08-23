@@ -23,6 +23,7 @@ import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'package:chatgpt/src/services/theme_preferences_store.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:yeknom_ui_kit/yeknom_workbench.dart';
@@ -39,6 +40,8 @@ class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
   String? model;
   String? savedModel;
   bool clearedWorkspace = false;
+  Set<String> pinnedWorkspaces = {};
+  Set<String>? savedPinnedWorkspaces;
 
   /// 模拟未保存自定义 CLI 路径。
   /// Simulates no saved custom CLI path.
@@ -108,6 +111,15 @@ class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
         .toList(growable: false);
     savedWorkspaces = snapshot;
     workspaces = snapshot;
+  }
+
+  @override
+  Future<Set<String>> readPinnedWorkspaces() async => Set.of(pinnedWorkspaces);
+
+  @override
+  Future<void> savePinnedWorkspaces(Iterable<String> paths) async {
+    savedPinnedWorkspaces = paths.toSet();
+    pinnedWorkspaces = paths.toSet();
   }
 
   /// 返回测试预设的推理强度。
@@ -672,6 +684,7 @@ CodexThread _thread({
   required String id,
   String? modelProvider,
   String? model,
+  String? status,
 }) => CodexThread(
   id: id,
   preview: 'preview-$id',
@@ -679,6 +692,7 @@ CodexThread _thread({
   updatedAt: 2,
   modelProvider: modelProvider,
   model: model,
+  status: status,
 );
 
 /// 注册 Codex Desk 的 Widget、控制器与协议回归测试。
@@ -779,6 +793,7 @@ void main() {
     late String firstPath;
     late String secondPath;
     late CodexController controller;
+    late _FakeRuntimeConfigurationStore runtimeStore;
     await tester.runAsync(() async {
       root = await Directory.systemTemp.createTemp(
         'codex-desk-sidebar-workspaces-',
@@ -794,20 +809,31 @@ void main() {
       ).create(recursive: true);
       firstPath = await first.resolveSymbolicLinks();
       secondPath = await second.resolveSymbolicLinks();
+      runtimeStore = _FakeRuntimeConfigurationStore()
+        ..workspace = second.path
+        ..workspaces = [
+          WorkspaceConfiguration(
+            primaryPath: first.path,
+            additionalPaths: [additional.path],
+          ),
+          WorkspaceConfiguration(primaryPath: second.path),
+        ];
       controller = CodexController(
         server: _ManagedRuntimeFakeServer(),
-        runtimeConfigurationStore: _FakeRuntimeConfigurationStore()
-          ..workspace = second.path
-          ..workspaces = [
-            WorkspaceConfiguration(
-              primaryPath: first.path,
-              additionalPaths: [additional.path],
-            ),
-            WorkspaceConfiguration(primaryPath: second.path),
-          ],
+        runtimeConfigurationStore: runtimeStore,
       );
       await controller.waitForInitialConfiguration();
       controller.status = RuntimeStatus.ready;
+      controller.threads = [
+        _thread(id: 'nested-task', status: 'idle'),
+        _thread(id: 'failed-task', status: 'systemError'),
+      ];
+      historyStore.snapshots[firstPath] = ConversationHistorySnapshot(
+        threads: [_thread(id: 'cached-first-task')],
+        archivedThreads: const [],
+        entries: const [],
+        fileChanges: const [],
+      );
     });
     addTearDown(() => root.delete(recursive: true));
 
@@ -821,7 +847,26 @@ void main() {
     expect(secondTile, findsOneWidget);
     expect(find.text('first-project'), findsOneWidget);
     expect(find.text('second-project'), findsOneWidget);
+    expect(find.text(firstPath), findsNothing);
     expect(find.text('+1'), findsOneWidget);
+    final nestedTask = find.text('preview-nested-task');
+    expect(nestedTask, findsOneWidget);
+    expect(
+      tester.getTopLeft(nestedTask).dy,
+      greaterThan(tester.getBottomLeft(secondTile).dy),
+    );
+    expect(
+      tester.getTopLeft(nestedTask).dx,
+      greaterThan(tester.getTopLeft(secondTile).dx),
+    );
+    expect(
+      find.byKey(const Key('sidebar-completed-task-indicator')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('sidebar-error-task-indicator')),
+      findsOneWidget,
+    );
     expect(
       tester.getTopLeft(firstTile).dy,
       lessThan(tester.getTopLeft(secondTile).dy),
@@ -841,6 +886,57 @@ void main() {
           )
           .onTap,
       isNull,
+    );
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.moveTo(tester.getCenter(firstTile));
+    await tester.pumpAndSettle();
+    final moreButton = find.byKey(
+      ValueKey('sidebar-workspace-more-$firstPath'),
+    );
+    final newTaskButton = find.byKey(
+      ValueKey('sidebar-workspace-edit-$firstPath'),
+    );
+    expect(moreButton, findsOneWidget);
+    expect(newTaskButton, findsOneWidget);
+    // 悬停本身显示项目详情卡片。
+    expect(find.text('1 个任务'), findsOneWidget);
+    expect(find.text('编辑项目'), findsOneWidget);
+    await tester.tap(find.byTooltip('置顶项目'));
+    await tester.pumpAndSettle();
+    expect(controller.isWorkspacePinned(firstPath), isTrue);
+    expect(runtimeStore.savedPinnedWorkspaces, {firstPath});
+    expect(find.byTooltip('取消置顶项目'), findsOneWidget);
+    await tester.tap(moreButton);
+    await tester.pumpAndSettle();
+    expect(find.text('置顶'), findsOneWidget);
+    expect(find.text('创建永久工作树'), findsOneWidget);
+    expect(find.text('归档聊天'), findsOneWidget);
+    expect(find.text('移除项目'), findsOneWidget);
+    await tester.tap(find.text('编辑'));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('workspace-directories-dialog')),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('关闭'));
+    await tester.pumpAndSettle();
+    controller
+      ..activeThreadId = 'nested-task'
+      ..status = RuntimeStatus.ready
+      ..notifyListeners();
+    await tester.pump();
+    await mouse.moveTo(tester.getCenter(firstTile));
+    await tester.pump();
+    await tester.tap(newTaskButton);
+    expect(controller.activeThreadId, isNull);
+    controller
+      ..activeThreadId = 'nested-task'
+      ..status = RuntimeStatus.running
+      ..notifyListeners();
+    await tester.pump();
+    expect(
+      find.byKey(const Key('sidebar-running-task-indicator')),
+      findsOneWidget,
     );
     expect(
       find.byKey(const Key('sidebar-create-workspace-button')),
@@ -3505,6 +3601,27 @@ void main() {
     expect(controller.status, RuntimeStatus.ready);
     expect(controller.lastError, 'request rejected');
     expect(controller.canSend, isTrue);
+    controller.dispose();
+  });
+
+  test('marks a completed thread for the sidebar status indicator', () {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'completed-thread'
+      ..threads = [_thread(id: 'completed-thread')];
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'turn': {'status': 'completed'},
+        },
+      ),
+    );
+
+    expect(controller.status, RuntimeStatus.ready);
+    expect(controller.threads.single.status, 'idle');
     controller.dispose();
   });
 

@@ -4,6 +4,9 @@ import 'dart:io';
 import '../domain/codex_plugin.dart';
 import '../domain/codex_marketplace.dart';
 
+typedef CodexPluginProcessRunner =
+    Future<ProcessResult> Function(String executable, List<String> arguments);
+
 /// 通过本机 Codex CLI 管理 marketplace 插件与启用状态。
 /// Manages marketplace plugins and enabled states through the local Codex CLI.
 class CodexPluginStore {
@@ -12,11 +15,14 @@ class CodexPluginStore {
   CodexPluginStore({
     String Function()? executableProvider,
     Directory? codexHome,
+    CodexPluginProcessRunner? processRunner,
   }) : _executableProvider = executableProvider ?? _defaultExecutable,
-       _codexHome = codexHome;
+       _codexHome = codexHome,
+       _processRunner = processRunner ?? _defaultProcessRunner;
 
   final String Function() _executableProvider;
   final Directory? _codexHome;
+  final CodexPluginProcessRunner _processRunner;
   Future<void> _configWriteQueue = Future.value();
 
   /// 返回已安装及当前 marketplace 可安装的插件列表。
@@ -30,6 +36,10 @@ class CodexPluginStore {
     ]);
     final decoded = jsonDecode(output);
     if (decoded is! Map) {
+      throw const FormatException('Codex CLI 返回了无效的插件列表。');
+    }
+    if ((decoded['installed'] != null && decoded['installed'] is! Iterable) ||
+        (decoded['available'] != null && decoded['available'] is! Iterable)) {
       throw const FormatException('Codex CLI 返回了无效的插件列表。');
     }
     final entries = <Object?>[
@@ -163,10 +173,9 @@ class CodexPluginStore {
   /// 执行 CLI 子命令并将失败信息转换为可展示的错误。
   /// Runs a CLI subcommand and converts failures into displayable errors.
   Future<String> _run(List<String> arguments) async {
-    final result = await Process.run(
+    final result = await _processRunner(
       _executableProvider(),
       arguments,
-      runInShell: false,
     ).timeout(const Duration(seconds: 20));
     if (result.exitCode != 0) {
       final detail = result.stderr.toString().trim();
@@ -215,6 +224,13 @@ class CodexPluginStore {
   /// Returns the default Codex CLI executable name.
   static String _defaultExecutable() =>
       Platform.environment['CODEX_EXECUTABLE'] ?? 'codex';
+
+  /// 不经 Shell 执行默认 Codex CLI 子进程。
+  /// Runs the default Codex CLI subprocess without a shell.
+  static Future<ProcessResult> _defaultProcessRunner(
+    String executable,
+    List<String> arguments,
+  ) => Process.run(executable, arguments, runInShell: false);
 
   /// 返回当前 Codex 用户配置目录，优先使用 `CODEX_HOME`。
   /// Returns the current Codex user configuration directory, preferring `CODEX_HOME`.

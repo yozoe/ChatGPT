@@ -42,7 +42,6 @@ project_input_paths=(
   "$script_dir/macos/Podfile.lock"
   "$script_dir/macos/Flutter/Flutter-Debug.xcconfig"
   "$script_dir/macos/Flutter/Flutter-Release.xcconfig"
-  "$script_dir/../private/yeknom-ui-kit"
 )
 
 existing_project_input_paths=()

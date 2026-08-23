@@ -57,7 +57,7 @@ class CodexThread {
 
   /// 返回替换可选名称后的线程副本。
   /// Returns a thread copy with an optional replacement name.
-  CodexThread copyWith({String? name}) => CodexThread(
+  CodexThread copyWith({String? name, String? status}) => CodexThread(
     id: id,
     preview: preview,
     modelProvider: modelProvider,
@@ -65,7 +65,7 @@ class CodexThread {
     name: name ?? this.name,
     createdAt: createdAt,
     updatedAt: updatedAt,
-    status: status,
+    status: status ?? this.status,
   );
 
   /// 将线程转换为本地历史缓存使用的 JSON。

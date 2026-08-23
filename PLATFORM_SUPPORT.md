@@ -2,7 +2,7 @@
 
 ## 当前支持
 
-Codex Desk 当前仅支持 macOS。它依赖 macOS Keychain 保存中转站密钥与本地历史加密密钥，并使用 macOS 原生窗口状态保存和 Applications/DMG 安装流程。
+Codex Desk 当前仅支持 macOS 12.0 及以上版本。它依赖 macOS Keychain 保存本地历史加密密钥和应用偏好，并使用 macOS 原生窗口状态保存和 Applications/DMG 安装流程；Provider 凭据由 Codex 自身的配置与认证存储管理。
 
 ## Windows 评估
 
@@ -24,4 +24,4 @@ Codex Desk 当前仅支持 macOS。它依赖 macOS Keychain 保存中转站密�
 
 ## 结论
 
-在 macOS 正式发布、云端 CI 可获取 `yeknom_ui_kit` 依赖并完成无障碍回归前，不启动 Windows/Linux 实现。跨平台工作应新建独立阶段，避免改变现有 macOS 的 Keychain 安全边界。
+云端 CI 已可通过固定 Git 提交获取 `yeknom_ui_kit`。在 macOS 正式发布并完成无障碍回归前，仍不启动 Windows/Linux 实现；跨平台工作应新建独立阶段，避免改变现有 macOS 的 Keychain 安全边界。

@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import '../domain/workspace_configuration.dart';
 import 'codex_keychain_storage.dart';
 
 /// 将本机 Codex Desk 偏好保存到项目目录之外。
@@ -8,7 +11,12 @@ class RuntimeConfigurationStore {
 
   static const _executableKey = 'codex_desk.runtime.executable.v1';
   static const _workspaceKey = 'codex_desk.workspace.last_path.v1';
+  static const _additionalWorkspacesKey =
+      'codex_desk.workspace.additional_paths.v1';
+  static const _workspacesKey = 'codex_desk.workspaces.v2';
+  static const _pinnedWorkspacesKey = 'codex_desk.workspaces.pinned.v1';
   static const _reasoningEffortKey = 'codex_desk.reasoning_effort.v1';
+  static const _modelKey = 'codex_desk.model.selected.v1';
 
   final CodexKeychainStorage _storage;
 
@@ -40,6 +48,96 @@ class RuntimeConfigurationStore {
   /// Clears an invalid or no-longer-used local workspace path.
   Future<void> clearWorkspace() => _storage.delete(key: _workspaceKey);
 
+  /// 读取旧版当前工作区的附加目录；损坏数据会安全地视为空列表。
+  /// Reads legacy additional directories for the current workspace, safely treating damaged data as an empty list.
+  Future<List<String>> readAdditionalWorkspaces() async {
+    final stored = await _storage.read(key: _additionalWorkspacesKey);
+    if (stored == null || stored.trim().isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(stored);
+      if (decoded is! List) return const [];
+      return decoded
+          .whereType<String>()
+          .map((path) => path.trim())
+          .where((path) => path.isNotEmpty)
+          .toList(growable: false);
+    } on FormatException {
+      return const [];
+    }
+  }
+
+  /// 镜像保存当前工作区的旧版附加目录偏好；空列表会删除对应键。
+  /// Mirrors the current workspace into the legacy additional-directory preference; an empty list removes its key.
+  Future<void> saveAdditionalWorkspaces(List<String> workspaces) {
+    if (workspaces.isEmpty) {
+      return _storage.delete(key: _additionalWorkspacesKey);
+    }
+    return _storage.write(
+      key: _additionalWorkspacesKey,
+      value: jsonEncode(workspaces),
+    );
+  }
+
+  /// 读取所有已保存工作区；损坏条目会被忽略，旧版单工作区数据由控制器迁移。
+  /// Reads every saved workspace, ignoring damaged entries while the controller migrates legacy single-workspace data.
+  Future<List<WorkspaceConfiguration>> readWorkspaces() async {
+    final stored = await _storage.read(key: _workspacesKey);
+    if (stored == null || stored.trim().isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(stored);
+      if (decoded is! List) return const [];
+      return decoded
+          .whereType<Map>()
+          .map(WorkspaceConfiguration.fromJson)
+          .where((workspace) => workspace.primaryPath.isNotEmpty)
+          .toList(growable: false);
+    } on FormatException {
+      return const [];
+    }
+  }
+
+  /// 保存可切换工作区列表；空列表会删除对应偏好，但不会删除任何目录。
+  /// Saves the switchable workspace list; an empty list removes only the preference and never deletes directories.
+  Future<void> saveWorkspaces(List<WorkspaceConfiguration> workspaces) {
+    if (workspaces.isEmpty) return _storage.delete(key: _workspacesKey);
+    return _storage.write(
+      key: _workspacesKey,
+      value: jsonEncode(
+        workspaces.map((workspace) => workspace.toJson()).toList(),
+      ),
+    );
+  }
+
+  /// Reads the locally pinned workspace paths.
+  /// 读取本地置顶的工作区路径。
+  Future<Set<String>> readPinnedWorkspaces() async {
+    final stored = await _storage.read(key: _pinnedWorkspacesKey);
+    if (stored == null || stored.trim().isEmpty) return <String>{};
+    try {
+      final decoded = jsonDecode(stored);
+      if (decoded is! List) return <String>{};
+      return decoded
+          .whereType<String>()
+          .map((path) => path.trim())
+          .where((path) => path.isNotEmpty)
+          .toSet();
+    } on FormatException {
+      return <String>{};
+    }
+  }
+
+  /// Saves locally pinned workspace paths; an empty set removes the preference.
+  /// 保存本地置顶的工作区路径；空集合会删除对应偏好。
+  Future<void> savePinnedWorkspaces(Iterable<String> workspaces) {
+    final paths = workspaces
+        .map((path) => path.trim())
+        .where((path) => path.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    if (paths.isEmpty) return _storage.delete(key: _pinnedWorkspacesKey);
+    return _storage.write(key: _pinnedWorkspacesKey, value: jsonEncode(paths));
+  }
+
   /// 读取用户保存的推理强度标识。
   /// Reads the user's saved reasoning-effort identifier.
   Future<String?> readReasoningEffort() =>
@@ -50,5 +148,16 @@ class RuntimeConfigurationStore {
   Future<void> saveReasoningEffort(String? effort) {
     if (effort == null) return _storage.delete(key: _reasoningEffortKey);
     return _storage.write(key: _reasoningEffortKey, value: effort);
+  }
+
+  /// 读取 Codex Desk 为后续新建任务保存的模型；`null` 表示跟随 Codex 配置。
+  /// Reads the model Codex Desk saved for subsequent new tasks; `null` means follow Codex configuration.
+  Future<String?> readModel() => _storage.read(key: _modelKey);
+
+  /// 保存后续新建任务的模型；传入 `null` 时恢复为跟随 Codex 配置。
+  /// Saves the model for subsequent new tasks; passing `null` restores configuration-following behavior.
+  Future<void> saveModel(String? model) {
+    if (model == null) return _storage.delete(key: _modelKey);
+    return _storage.write(key: _modelKey, value: model);
   }
 }

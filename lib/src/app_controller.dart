@@ -233,6 +233,7 @@ class CodexController extends ChangeNotifier {
   String? workspacePath;
   final List<String> _additionalWorkspacePaths = [];
   final List<WorkspaceConfiguration> _workspaceConfigurations = [];
+  final Set<String> _pinnedWorkspacePaths = {};
   String? activeThreadId;
   // A thread ID restored from local history must be resumed on the new
   // app-server connection before it can receive a turn.
@@ -262,6 +263,10 @@ class CodexController extends ChangeNotifier {
   bool codexConfigurationRead = false;
   String? codexConfigurationError;
   List<CodexThread> threads = const [];
+  // Keeps the most recent local turn outcome when the server list only reports
+  // the thread lifecycle state (for example, `idle` after a failed turn).
+  // 当服务端列表只返回线程生命周期状态时，保留最近一次本地 turn 结果。
+  final Map<String, String> _localThreadStatuses = {};
   bool threadsLoading = false;
   String? threadsError;
   List<CodexThread> archivedThreads = const [];
@@ -298,6 +303,45 @@ class CodexController extends ChangeNotifier {
   /// Returns every saved workspace, each retaining its own primary and additional directories.
   List<WorkspaceConfiguration> get workspaceConfigurations =>
       List.unmodifiable(_workspaceConfigurations);
+
+  /// Returns the locally pinned workspace paths.
+  /// 返回本地置顶的工作区路径。
+  Set<String> get pinnedWorkspacePaths =>
+      Set.unmodifiable(_pinnedWorkspacePaths);
+
+  /// Returns whether a workspace is pinned.
+  /// 判断指定工作区是否已置顶。
+  bool isWorkspacePinned(String path) => _pinnedWorkspacePaths.contains(path);
+
+  /// Toggles a workspace pin and persists the preference outside the project.
+  /// 切换工作区置顶状态，并将偏好保存到项目目录之外。
+  Future<void> toggleWorkspacePinned(String path) async {
+    if (!_workspaceConfigurations.any(
+      (workspace) => workspace.primaryPath == path,
+    )) {
+      return;
+    }
+    if (!_pinnedWorkspacePaths.add(path)) {
+      _pinnedWorkspacePaths.remove(path);
+    }
+    try {
+      await _runtimeConfigurationStore.savePinnedWorkspaces(
+        _pinnedWorkspacePaths,
+      );
+    } catch (error) {
+      lastError = '无法保存项目置顶状态：${_messageOf(error)}';
+      _add(TimelineKind.error, '项目置顶保存失败', lastError!);
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  /// Reads a workspace's cached task count for the hover details card.
+  /// 读取工作区本地缓存中的任务数量，供悬停详情卡片显示。
+  Future<int> readWorkspaceTaskCount(String path) async {
+    if (path == workspacePath) return threads.length;
+    final snapshot = await _conversationHistoryStore.read(path);
+    return snapshot?.threads.length ?? 0;
+  }
 
   /// 返回传给新任务的完整工作区根目录，主目录始终位于第一项。
   /// Returns all workspace roots passed to new tasks, always placing the primary directory first.
@@ -696,6 +740,7 @@ class CodexController extends ChangeNotifier {
     threads = const [];
     archivedThreads = const [];
     _pinnedThreadIds.clear();
+    _localThreadStatuses.clear();
     gitProjectStatus = null;
     gitProjectError = null;
     gitDiffChange = null;
@@ -782,10 +827,16 @@ class CodexController extends ChangeNotifier {
       (configuration) => configuration.primaryPath == primaryPath,
     );
     if (_workspaceConfigurations.length == previousLength) return;
+    final wasPinned = _pinnedWorkspacePaths.remove(primaryPath);
     _add(TimelineKind.system, '已移除工作区记录', primaryPath);
     notifyListeners();
     try {
       await _saveAdditionalWorkspacePaths();
+      if (wasPinned) {
+        await _runtimeConfigurationStore.savePinnedWorkspaces(
+          _pinnedWorkspacePaths,
+        );
+      }
     } catch (error) {
       _add(TimelineKind.error, '无法保存工作区列表', _messageOf(error));
       if (!_disposed) notifyListeners();
@@ -984,6 +1035,7 @@ class CodexController extends ChangeNotifier {
       _activeThreadAttached = true;
       await refreshThreads();
       final id = activeThreadId!;
+      _updateThreadStatus(id, 'active');
       final objective = goal?.trim();
       if (objective != null && objective.isNotEmpty) {
         await _server.setThreadGoal(threadId: id, objective: objective);
@@ -1011,6 +1063,7 @@ class CodexController extends ChangeNotifier {
     } catch (error) {
       status = _server.isRunning ? RuntimeStatus.ready : RuntimeStatus.failed;
       lastError = _messageOf(error);
+      _updateThreadStatus(activeThreadId, 'systemError');
       _add(TimelineKind.error, '任务未能启动', lastError!);
     }
     if (status == RuntimeStatus.failed) _scheduleRuntimeReconnect();
@@ -1181,15 +1234,29 @@ class CodexController extends ChangeNotifier {
     threadsError = null;
     if (!_disposed) notifyListeners();
     try {
-      final serverThreads = (await _server.listThreads(
-        workingDirectory: workspace,
-      )).map(CodexThread.fromJson).toList(growable: false);
+      final serverThreads =
+          (await _server.listThreads(workingDirectory: workspace))
+              .map(CodexThread.fromJson)
+              .map((thread) {
+                final localStatus = _localThreadStatuses[thread.id];
+                return localStatus == null
+                    ? thread
+                    : thread.copyWith(status: localStatus);
+              })
+              .toList(growable: false);
       var nextThreads = serverThreads;
       if (serverThreads.isEmpty && allowLocalSessionFallback) {
         final localThreads = await _localSessionThreadStore.listThreads(
           workspace,
         );
-        nextThreads = localThreads;
+        nextThreads = localThreads
+            .map((thread) {
+              final localStatus = _localThreadStatuses[thread.id];
+              return localStatus == null
+                  ? thread
+                  : thread.copyWith(status: localStatus);
+            })
+            .toList(growable: false);
         final activeId = activeThreadId;
         if (activeId != null &&
             !nextThreads.any((thread) => thread.id == activeId)) {
@@ -1562,6 +1629,7 @@ class CodexController extends ChangeNotifier {
           break;
         }
         archivedIds.add(thread.id);
+        _localThreadStatuses.remove(thread.id);
         threads = threads
             .where((value) => value.id != thread.id)
             .toList(growable: false);
@@ -1617,6 +1685,7 @@ class CodexController extends ChangeNotifier {
       archivedThreads = archivedThreads
           .where((value) => value.id != thread.id)
           .toList(growable: false);
+      _localThreadStatuses.remove(thread.id);
       _pinnedThreadIds.remove(thread.id);
       if (activeThreadId == thread.id) {
         activeThreadId = null;
@@ -1979,6 +2048,7 @@ class CodexController extends ChangeNotifier {
         // The next runtime process must attach the retained thread again.
         _activeThreadAttached = false;
         lastError = 'Codex runtime 已退出（code ${event.params['code']}）。';
+        _updateThreadStatus(activeThreadId, 'systemError');
         pendingApproval = null;
         approvalResponding = false;
         _clearStreamingState();
@@ -2095,14 +2165,30 @@ class CodexController extends ChangeNotifier {
         lastError = _findText(turnMap['error']).isNotEmpty
             ? _findText(turnMap['error'])
             : 'Codex 未能完成当前任务。';
+        _updateThreadStatus(activeThreadId, 'systemError');
         _add(TimelineKind.error, '任务失败', lastError!);
       case 'interrupted':
         status = RuntimeStatus.ready;
+        _updateThreadStatus(activeThreadId, 'idle');
         _add(TimelineKind.system, '任务已停止', '可以继续在同一线程追问。');
       default:
         status = RuntimeStatus.ready;
+        _updateThreadStatus(activeThreadId, 'idle');
         _add(TimelineKind.system, '任务完成', '你可以继续在同一线程追问。');
     }
+  }
+
+  /// Updates a cached task status immediately after a turn changes outcome.
+  /// 在 turn 结果变化后立即更新本地任务状态，避免侧栏等待历史刷新。
+  void _updateThreadStatus(String? threadId, String status) {
+    if (threadId == null) return;
+    _localThreadStatuses[threadId] = status;
+    final index = threads.indexWhere((thread) => thread.id == threadId);
+    if (index < 0) return;
+    final nextThreads = List<CodexThread>.of(threads);
+    nextThreads[index] = nextThreads[index].copyWith(status: status);
+    threads = nextThreads;
+    _scheduleConversationHistorySave();
   }
 
   /// 将恢复的线程历史项目转换为时间线、工具和文件变更记录。
@@ -2472,23 +2558,27 @@ class CodexController extends ChangeNotifier {
   /// Loads local runtime-path, new-task model, and reasoning-effort preferences.
   Future<void> _loadRuntimeConfiguration() async {
     try {
-      final values = await Future.wait([
+      final values = await Future.wait<Object?>([
         _runtimeConfigurationStore.readExecutable(),
         _runtimeConfigurationStore.readReasoningEffort(),
         _runtimeConfigurationStore.readModel(),
+        _runtimeConfigurationStore.readPinnedWorkspaces(),
       ]);
-      final executable = values[0];
+      final executable = values[0] as String?;
       if (executable != null && executable.trim().isNotEmpty) {
         _server.setExecutable(executable);
       }
-      reasoningEffort = ReasoningEffort.fromConfigValue(values[1]);
+      reasoningEffort = ReasoningEffort.fromConfigValue(values[1] as String?);
       if (reasoningEffort != ReasoningEffort.defaultValue) {
         reasoningEffortOptions = [
           ReasoningEffort.defaultValue,
           reasoningEffort,
         ];
       }
-      selectedModelId = _nonEmptyConfigString(values[2]);
+      selectedModelId = _nonEmptyConfigString(values[2] as String?);
+      _pinnedWorkspacePaths
+        ..clear()
+        ..addAll(values[3] as Set<String>);
     } catch (error) {
       runtimeError = '无法读取已保存的运行时配置：${_messageOf(error)}';
     }
@@ -2816,6 +2906,20 @@ class CodexController extends ChangeNotifier {
             )) {
           restoredConfigurations.add(restored);
         }
+      }
+      final validWorkspacePaths = restoredConfigurations
+          .map((workspace) => workspace.primaryPath)
+          .toSet();
+      final hadStalePins = _pinnedWorkspacePaths.any(
+        (path) => !validWorkspacePaths.contains(path),
+      );
+      _pinnedWorkspacePaths.removeWhere(
+        (path) => !validWorkspacePaths.contains(path),
+      );
+      if (hadStalePins) {
+        await _runtimeConfigurationStore.savePinnedWorkspaces(
+          _pinnedWorkspacePaths,
+        );
       }
 
       final legacyAdditional = await _runtimeConfigurationStore

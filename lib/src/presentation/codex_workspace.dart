@@ -1848,108 +1848,322 @@ class _MarketplaceTile extends StatelessWidget {
   }
 }
 
-/// 在侧栏中以紧凑仓库条目展示一个可切换工作区。
-/// Displays one switchable workspace as a compact repository-style sidebar entry.
-class _SidebarWorkspaceTile extends StatelessWidget {
+/// 在侧栏中以 Codex 风格的项目节点展示一个可切换工作区。
+/// Displays one switchable workspace as a compact Codex-style project node.
+class _SidebarWorkspaceTile extends StatefulWidget {
   const _SidebarWorkspaceTile({
     required this.workspace,
     required this.active,
+    required this.pinned,
     required this.enabled,
     required this.onTap,
+    required this.onMore,
+    required this.onEdit,
+    required this.onHoverStart,
+    required this.onHoverEnd,
     super.key,
   });
 
   final WorkspaceConfiguration workspace;
   final bool active;
+  final bool pinned;
   final bool enabled;
   final VoidCallback onTap;
+  final void Function(BuildContext context) onMore;
+  final void Function(BuildContext context) onEdit;
+  final void Function(BuildContext context) onHoverStart;
+  final VoidCallback onHoverEnd;
+
+  @override
+  State<_SidebarWorkspaceTile> createState() => _SidebarWorkspaceTileState();
+}
+
+class _SidebarWorkspaceTileState extends State<_SidebarWorkspaceTile> {
+  bool _hovering = false;
 
   /// 从主目录路径提取适合侧栏识别的工作区名称。
   /// Extracts a recognizable sidebar name from the primary-directory path.
   String get _displayName {
-    final normalized = workspace.primaryPath.endsWith(Platform.pathSeparator)
-        ? workspace.primaryPath.substring(0, workspace.primaryPath.length - 1)
-        : workspace.primaryPath;
+    final normalized =
+        widget.workspace.primaryPath.endsWith(Platform.pathSeparator)
+        ? widget.workspace.primaryPath.substring(
+            0,
+            widget.workspace.primaryPath.length - 1,
+          )
+        : widget.workspace.primaryPath;
     final separator = normalized.lastIndexOf(Platform.pathSeparator);
     return separator < 0 ? normalized : normalized.substring(separator + 1);
   }
 
-  /// 构建选中状态轨、工作区名称、完整路径和附加目录数量。
-  /// Builds the selection rail, workspace name, full path, and additional-root count.
+  /// 构建项目节点；完整路径只通过 tooltip 提供，不占用任务列表空间。
+  /// Builds the project node; the full path is kept in a tooltip so task rows stay dense.
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
-    return Semantics(
-      selected: active,
-      button: !active,
-      label: active ? '当前工作区 $_displayName' : '切换到工作区 $_displayName',
-      child: InkWell(
-        onTap: active || !enabled ? null : onTap,
-        child: ColoredBox(
-          color: active ? palette.selected : Colors.transparent,
-          child: Row(
-            children: [
-              Container(
-                width: 3,
-                height: 52,
-                color: active ? palette.active : Colors.transparent,
-              ),
-              const SizedBox(width: 9),
-              Icon(
-                active ? Icons.folder_special_outlined : Icons.folder_outlined,
-                size: 18,
-                color: active ? palette.active : palette.muted,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 7),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              _displayName,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context).textTheme.bodySmall
-                                  ?.copyWith(
-                                    fontWeight: active
-                                        ? FontWeight.w700
-                                        : FontWeight.w500,
-                                  ),
-                            ),
-                          ),
-                          if (workspace.additionalPaths.isNotEmpty)
-                            Text(
-                              '+${workspace.additionalPaths.length}',
-                              style: Theme.of(context).textTheme.labelSmall
-                                  ?.copyWith(color: palette.muted),
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 2),
-                      Tooltip(
-                        message: workspace.primaryPath,
-                        child: Text(
-                          workspace.primaryPath,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.labelSmall
-                              ?.copyWith(color: palette.muted),
+    return MouseRegion(
+      onEnter: (_) {
+        setState(() => _hovering = true);
+        widget.onHoverStart(context);
+      },
+      onExit: (_) {
+        setState(() => _hovering = false);
+        widget.onHoverEnd();
+      },
+      child: Semantics(
+        selected: widget.active,
+        button: !widget.active,
+        label: widget.active ? '当前工作区 $_displayName' : '切换到工作区 $_displayName',
+        child: Tooltip(
+          message: widget.workspace.primaryPath,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 100),
+            curve: Curves.easeOut,
+            decoration: BoxDecoration(
+              color: _hovering ? palette.selected : Colors.transparent,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: InkWell(
+              onTap: widget.active || !widget.enabled ? null : widget.onTap,
+              borderRadius: BorderRadius.circular(12),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+                child: Row(
+                  children: [
+                    Icon(
+                      widget.active
+                          ? Icons.folder_special_outlined
+                          : Icons.folder_outlined,
+                      size: 19,
+                      color: widget.active ? palette.active : palette.muted,
+                    ),
+                    const SizedBox(width: 9),
+                    Expanded(
+                      child: Text(
+                        _displayName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: widget.active ? palette.trace : palette.muted,
+                          fontSize: 14,
+                          fontWeight: widget.active
+                              ? FontWeight.w600
+                              : FontWeight.w500,
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                    if (widget.pinned)
+                      Icon(Icons.push_pin, size: 13, color: palette.faint),
+                    if (_hovering) ...[
+                      IconButton(
+                        key: ValueKey(
+                          'sidebar-workspace-more-${widget.workspace.primaryPath}',
+                        ),
+                        tooltip: '项目菜单',
+                        onPressed: () => widget.onMore(context),
+                        icon: const Icon(Icons.more_horiz, size: 19),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints.tightFor(
+                          width: 28,
+                          height: 28,
+                        ),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      IconButton(
+                        key: ValueKey(
+                          'sidebar-workspace-edit-${widget.workspace.primaryPath}',
+                        ),
+                        tooltip: '新建任务',
+                        onPressed: () => widget.onEdit(context),
+                        icon: const Icon(Icons.edit_outlined, size: 18),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints.tightFor(
+                          width: 28,
+                          height: 28,
+                        ),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ] else if (widget.workspace.additionalPaths.isNotEmpty)
+                      Text(
+                        '+${widget.workspace.additionalPaths.length}',
+                        style: TextStyle(color: palette.faint, fontSize: 11),
+                      ),
+                  ],
                 ),
               ),
-              const SizedBox(width: 10),
-            ],
+            ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// 侧栏的低对比度分组标题，保留 Codex 的信息层级而不制造额外卡片。
+/// A low-contrast sidebar section label that keeps Codex's hierarchy without extra cards.
+class _SidebarSectionLabel extends StatelessWidget {
+  const _SidebarSectionLabel({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Text(
+      label.toUpperCase(),
+      style: TextStyle(
+        color: palette.faint,
+        fontSize: 10,
+        fontWeight: FontWeight.w700,
+        letterSpacing: 0.7,
+      ),
+    );
+  }
+}
+
+enum _WorkspaceAction { pin, edit, worktree, archive, remove }
+
+class _WorkspaceDetailsCard extends StatelessWidget {
+  const _WorkspaceDetailsCard({
+    required this.workspace,
+    required this.pinned,
+    required this.taskCount,
+    required this.onTogglePin,
+    required this.onEditProject,
+  });
+
+  final WorkspaceConfiguration workspace;
+  final bool pinned;
+  final int? taskCount;
+  final VoidCallback onTogglePin;
+  final VoidCallback onEditProject;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final taskCountLabel = switch (taskCount) {
+      null => '任务数加载中…',
+      < 0 => '任务数不可用',
+      final count => '$count 个任务',
+    };
+    final paths = [workspace.primaryPath, ...workspace.additionalPaths];
+    return Material(
+      color: palette.module,
+      elevation: 14,
+      shadowColor: Colors.black.withValues(alpha: 0.35),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: BorderSide(color: palette.border),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 12, 4),
+              child: Row(
+                children: [
+                  const Icon(Icons.folder_outlined, size: 25),
+                  const SizedBox(width: 11),
+                  Expanded(
+                    child: Text(
+                      _workspaceName(workspace.primaryPath),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: pinned ? '取消置顶项目' : '置顶项目',
+                    onPressed: onTogglePin,
+                    icon: Icon(
+                      pinned ? Icons.push_pin : Icons.push_pin_outlined,
+                      size: 22,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ],
+              ),
+            ),
+            _WorkspaceDetailsRow(
+              icon: Icons.chat_bubble_outline,
+              label: taskCountLabel,
+            ),
+            Divider(height: 1, color: palette.border),
+            for (final path in paths)
+              _WorkspaceDetailsRow(
+                icon: Icons.folder_outlined,
+                label: _compactPath(path),
+              ),
+            Divider(height: 1, color: palette.border),
+            InkWell(
+              onTap: onEditProject,
+              child: const Padding(
+                padding: EdgeInsets.fromLTRB(16, 12, 16, 12),
+                child: Row(
+                  children: [
+                    Icon(Icons.settings_outlined, size: 23),
+                    SizedBox(width: 11),
+                    Text(
+                      '编辑项目',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _workspaceName(String path) {
+    final normalized = path.endsWith(Platform.pathSeparator)
+        ? path.substring(0, path.length - 1)
+        : path;
+    final separator = normalized.lastIndexOf(Platform.pathSeparator);
+    return separator < 0 ? normalized : normalized.substring(separator + 1);
+  }
+
+  static String _compactPath(String path) {
+    final home = Platform.environment['HOME'];
+    return home != null && path.startsWith(home)
+        ? '~${path.substring(home.length)}'
+        : path;
+  }
+}
+
+class _WorkspaceDetailsRow extends StatelessWidget {
+  const _WorkspaceDetailsRow({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+      child: Row(
+        children: [
+          Icon(icon, size: 23),
+          const SizedBox(width: 11),
+          Expanded(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 16),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1996,11 +2210,16 @@ class _SidebarState extends State<_Sidebar> {
   String _query = '';
   bool _batchMode = false;
   final Set<String> _selectedThreadIds = {};
+  final Map<String, int> _workspaceTaskCounts = {};
+  OverlayEntry? _workspaceDetailsEntry;
+  Timer? _workspaceDetailsHideTimer;
 
   /// 释放任务搜索输入控制器。
   /// Disposes the task-search text controller.
   @override
   void dispose() {
+    _workspaceDetailsHideTimer?.cancel();
+    _workspaceDetailsEntry?.remove();
     _threadSearch.dispose();
     super.dispose();
   }
@@ -2019,6 +2238,232 @@ class _SidebarState extends State<_Sidebar> {
         _batchMode = false;
       }
     });
+  }
+
+  /// 在项目悬停时显示详情卡片；卡片本身也是可悬停的，便于把鼠标移入查看。
+  /// Shows the hover detail card; the card keeps itself open while the pointer enters it.
+  void _showWorkspaceDetails(
+    BuildContext anchorContext,
+    WorkspaceConfiguration workspace,
+  ) {
+    _workspaceDetailsHideTimer?.cancel();
+    final renderObject = anchorContext.findRenderObject();
+    if (renderObject is! RenderBox) return;
+    final topLeft = renderObject.localToGlobal(Offset.zero);
+    final bottomRight = renderObject.localToGlobal(
+      Offset(renderObject.size.width, renderObject.size.height),
+    );
+    final controller = widget.controller;
+    final isActive = workspace.primaryPath == controller.workspacePath;
+    final overlay = Overlay.maybeOf(context, rootOverlay: true);
+    if (overlay == null) return;
+    final viewport = MediaQuery.sizeOf(context);
+    const cardWidth = 340.0;
+    final left = (bottomRight.dx + 6).clamp(
+      8.0,
+      viewport.width - cardWidth - 8,
+    );
+    final top = topLeft.dy.clamp(8.0, viewport.height - 280.0);
+    _workspaceDetailsEntry?.remove();
+    late final OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (overlayContext) => Positioned(
+        left: left,
+        top: top,
+        width: cardWidth,
+        child: MouseRegion(
+          onEnter: (_) => _workspaceDetailsHideTimer?.cancel(),
+          onExit: (_) => _scheduleWorkspaceDetailsHide(),
+          child: _WorkspaceDetailsCard(
+            workspace: workspace,
+            taskCount: isActive
+                ? controller.threads.length
+                : _workspaceTaskCounts[workspace.primaryPath],
+            pinned: controller.isWorkspacePinned(workspace.primaryPath),
+            onTogglePin: () {
+              unawaited(
+                controller.toggleWorkspacePinned(workspace.primaryPath).then((
+                  _,
+                ) {
+                  if (_workspaceDetailsEntry == entry) entry.markNeedsBuild();
+                }),
+              );
+            },
+            onEditProject: () {
+              _hideWorkspaceDetails();
+              widget.onChooseWorkspace();
+            },
+          ),
+        ),
+      ),
+    );
+    _workspaceDetailsEntry = entry;
+    overlay.insert(entry);
+    if (!isActive && !_workspaceTaskCounts.containsKey(workspace.primaryPath)) {
+      unawaited(_loadWorkspaceTaskCount(workspace.primaryPath, entry));
+    }
+  }
+
+  Future<void> _loadWorkspaceTaskCount(String path, OverlayEntry entry) async {
+    try {
+      final count = await widget.controller.readWorkspaceTaskCount(path);
+      if (!mounted || _workspaceDetailsEntry != entry) return;
+      _workspaceTaskCounts[path] = count;
+      entry.markNeedsBuild();
+    } catch (_) {
+      if (!mounted || _workspaceDetailsEntry != entry) return;
+      _workspaceTaskCounts[path] = -1;
+      entry.markNeedsBuild();
+    }
+  }
+
+  void _scheduleWorkspaceDetailsHide() {
+    _workspaceDetailsHideTimer?.cancel();
+    _workspaceDetailsHideTimer = Timer(
+      const Duration(milliseconds: 180),
+      _hideWorkspaceDetails,
+    );
+  }
+
+  void _hideWorkspaceDetails() {
+    _workspaceDetailsHideTimer?.cancel();
+    _workspaceDetailsEntry?.remove();
+    _workspaceDetailsEntry = null;
+  }
+
+  /// 点击项目铅笔后显示项目操作菜单。
+  /// Shows the project actions menu after clicking the pencil button.
+  Future<void> _showWorkspaceActions(
+    BuildContext anchorContext,
+    WorkspaceConfiguration workspace,
+  ) async {
+    _hideWorkspaceDetails();
+    final renderObject = anchorContext.findRenderObject();
+    if (renderObject is! RenderBox) return;
+    final topLeft = renderObject.localToGlobal(Offset.zero);
+    final bottomRight = renderObject.localToGlobal(
+      Offset(renderObject.size.width, renderObject.size.height),
+    );
+    final overlayRenderObject = Overlay.of(
+      context,
+      rootOverlay: true,
+    ).context.findRenderObject();
+    if (overlayRenderObject is! RenderBox) return;
+    final menuLeft = bottomRight.dx + 6;
+    final action = await showMenu<_WorkspaceAction>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        menuLeft,
+        topLeft.dy,
+        overlayRenderObject.size.width - menuLeft,
+        overlayRenderObject.size.height - bottomRight.dy,
+      ),
+      constraints: const BoxConstraints(minWidth: 235, maxWidth: 260),
+      color: YeknomPalette.of(context).module,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: YeknomPalette.of(context).border),
+      ),
+      items: const [
+        PopupMenuItem(
+          value: _WorkspaceAction.pin,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.push_pin_outlined),
+            title: Text('置顶'),
+          ),
+        ),
+        PopupMenuItem(
+          value: _WorkspaceAction.edit,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.edit_outlined),
+            title: Text('编辑'),
+          ),
+        ),
+        PopupMenuDivider(),
+        PopupMenuItem(
+          value: _WorkspaceAction.worktree,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.call_split_outlined),
+            title: Text('创建永久工作树'),
+          ),
+        ),
+        PopupMenuDivider(),
+        PopupMenuItem(
+          value: _WorkspaceAction.archive,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.archive_outlined),
+            title: Text('归档聊天'),
+          ),
+        ),
+        PopupMenuDivider(),
+        PopupMenuItem(
+          value: _WorkspaceAction.remove,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.close),
+            title: Text('移除项目'),
+          ),
+        ),
+      ],
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case _WorkspaceAction.pin:
+        await widget.controller.toggleWorkspacePinned(workspace.primaryPath);
+      case _WorkspaceAction.edit:
+        widget.onChooseWorkspace();
+      case _WorkspaceAction.worktree:
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('永久工作树功能暂未接入。')));
+      case _WorkspaceAction.archive:
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('请在任务菜单中归档聊天。')));
+      case _WorkspaceAction.remove:
+        await widget.controller.forgetWorkspace(workspace.primaryPath);
+    }
+  }
+
+  /// 构建树中的任务文件节点；任务操作仍沿用原有菜单和批量选择行为。
+  /// Builds a task-file node in the tree while preserving the existing actions.
+  Widget _buildThreadNode(CodexController controller, CodexThread thread) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 25, right: 1),
+      child: _HistoryThreadTile(
+        thread: thread,
+        selected: controller.activeThreadId == thread.id,
+        pinned: controller.isThreadPinned(thread.id),
+        statusIndicator: _threadStatusIndicator(thread.status),
+        running:
+            controller.status == RuntimeStatus.running &&
+            controller.activeThreadId == thread.id,
+        enabled:
+            controller.status == RuntimeStatus.ready &&
+            !controller.isUpdatingThread(thread.id),
+        selectionMode: _batchMode,
+        batchSelected: _selectedThreadIds.contains(thread.id),
+        onTap: () {
+          if (_batchMode) {
+            setState(() {
+              if (!_selectedThreadIds.add(thread.id)) {
+                _selectedThreadIds.remove(thread.id);
+              }
+            });
+          } else {
+            controller.resumeThread(thread);
+          }
+        },
+        onRename: () => widget.onRenameThread(thread),
+        onArchive: () => widget.onArchiveThread(thread),
+        onDelete: () => widget.onDeleteThread(thread),
+        onTogglePin: () => controller.toggleThreadPinned(thread),
+      ),
+    );
   }
 
   /// 构建工作区选择、线程历史和 CLI 配置侧栏。
@@ -2044,19 +2489,42 @@ class _SidebarState extends State<_Sidebar> {
         (thread) => !controller.isThreadPinned(thread.id),
       ),
     ];
+    final hasPinnedThreads = filteredThreads.any(
+      (thread) => controller.isThreadPinned(thread.id),
+    );
+    final pinnedThreads = visibleThreads
+        .where((thread) => controller.isThreadPinned(thread.id))
+        .toList(growable: false);
+    final projectThreads = visibleThreads
+        .where((thread) => !controller.isThreadPinned(thread.id))
+        .toList(growable: false);
     // 保持用户创建工作区时的顺序；切换只改变选中态，不重排列表。
     // Preserve creation order; switching changes selection without reordering the list.
-    final workspaces = controller.workspaceConfigurations;
+    final configuredWorkspaces = controller.workspaceConfigurations;
+    // 测试注入或旧缓存可能只有当前路径而没有工作区记录；仍将它作为树根，
+    // 避免任务从层级结构中消失。
+    // Test injections and older caches may only provide the current path; keep it as the tree root.
+    final workspaces = configuredWorkspaces.isNotEmpty
+        ? configuredWorkspaces
+        : controller.workspacePath == null
+        ? const <WorkspaceConfiguration>[]
+        : [WorkspaceConfiguration(primaryPath: controller.workspacePath!)];
     return SizedBox(
       width: 250,
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(10, 12, 10, 10),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
-                Text('工作区', style: Theme.of(context).textTheme.labelLarge),
+                Text(
+                  '项目',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.15,
+                  ),
+                ),
                 const Spacer(),
                 IconButton(
                   key: const Key('sidebar-create-workspace-button'),
@@ -2076,71 +2544,9 @@ class _SidebarState extends State<_Sidebar> {
                 ),
               ],
             ),
-            const SizedBox(height: 6),
-            Ink(
-              key: const Key('workspace-picker-surface'),
-              decoration: BoxDecoration(
-                color: palette.raised,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: palette.border),
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(9),
-                child: workspaces.isEmpty
-                    ? InkWell(
-                        key: const Key('sidebar-workspace-empty'),
-                        onTap: controller.canChangePrimaryWorkspace
-                            ? widget.onCreateWorkspace
-                            : null,
-                        child: const Padding(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 14,
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(Icons.create_new_folder_outlined, size: 19),
-                              SizedBox(width: 9),
-                              Expanded(child: Text('新建第一个工作区')),
-                            ],
-                          ),
-                        ),
-                      )
-                    : ConstrainedBox(
-                        constraints: const BoxConstraints(maxHeight: 168),
-                        child: ListView.separated(
-                          shrinkWrap: true,
-                          padding: EdgeInsets.zero,
-                          itemCount: workspaces.length,
-                          separatorBuilder: (_, _) =>
-                              Divider(height: 1, color: palette.border),
-                          itemBuilder: (context, index) {
-                            final workspace = workspaces[index];
-                            final active =
-                                workspace.primaryPath ==
-                                controller.workspacePath;
-                            return _SidebarWorkspaceTile(
-                              key: ValueKey(
-                                'sidebar-workspace-${workspace.primaryPath}',
-                              ),
-                              workspace: workspace,
-                              active: active,
-                              enabled: controller.canChangePrimaryWorkspace,
-                              onTap: () => unawaited(
-                                controller.selectWorkspaceAndReconnect(
-                                  workspace.primaryPath,
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-              ),
-            ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 10),
             Row(
               children: [
-                Text('线程', style: Theme.of(context).textTheme.labelLarge),
                 const Spacer(),
                 IconButton(
                   tooltip: '新建任务',
@@ -2205,7 +2611,7 @@ class _SidebarState extends State<_Sidebar> {
                 ),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 5),
             if (_batchMode) ...[
               Wrap(
                 spacing: 4,
@@ -2253,52 +2659,121 @@ class _SidebarState extends State<_Sidebar> {
                 border: const OutlineInputBorder(),
               ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             if (controller.threadsLoading && controller.threads.isEmpty)
               const LinearProgressIndicator(minHeight: 2),
             if (controller.threadsLoading && controller.threads.isEmpty)
               const SizedBox(height: 6),
-            if (controller.threadsError case final error?)
-              _MutedText(error)
-            else if (controller.threads.isEmpty)
-              const _MutedText('暂无历史任务；发送第一条消息后会创建。')
-            else if (visibleThreads.isEmpty)
-              const _MutedText('没有匹配的任务。')
-            else
-              Expanded(
-                child: ListView.separated(
-                  itemCount: visibleThreads.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: 6),
-                  itemBuilder: (context, index) {
-                    final thread = visibleThreads[index];
-                    return _HistoryThreadTile(
-                      thread: thread,
-                      selected: controller.activeThreadId == thread.id,
-                      pinned: controller.isThreadPinned(thread.id),
-                      enabled:
-                          controller.status == RuntimeStatus.ready &&
-                          !controller.isUpdatingThread(thread.id),
-                      selectionMode: _batchMode,
-                      batchSelected: _selectedThreadIds.contains(thread.id),
-                      onTap: () {
-                        if (_batchMode) {
-                          setState(() {
-                            if (!_selectedThreadIds.add(thread.id)) {
-                              _selectedThreadIds.remove(thread.id);
-                            }
-                          });
-                        } else {
-                          controller.resumeThread(thread);
-                        }
-                      },
-                      onRename: () => widget.onRenameThread(thread),
-                      onArchive: () => widget.onArchiveThread(thread),
-                      onDelete: () => widget.onDeleteThread(thread),
-                      onTogglePin: () => controller.toggleThreadPinned(thread),
-                    );
-                  },
+            Expanded(
+              child: Ink(
+                key: const Key('workspace-picker-surface'),
+                decoration: BoxDecoration(
+                  color: workspaces.isEmpty
+                      ? palette.raised
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(9),
+                  child: workspaces.isEmpty
+                      ? InkWell(
+                          key: const Key('sidebar-workspace-empty'),
+                          onTap: controller.canChangePrimaryWorkspace
+                              ? widget.onCreateWorkspace
+                              : null,
+                          child: const Padding(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 14,
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.create_new_folder_outlined,
+                                  size: 19,
+                                ),
+                                SizedBox(width: 9),
+                                Expanded(child: Text('新建第一个工作区')),
+                              ],
+                            ),
+                          ),
+                        )
+                      : ListView(
+                          padding: const EdgeInsets.only(top: 2, bottom: 4),
+                          children: [
+                            if (hasPinnedThreads) ...[
+                              const _SidebarSectionLabel(label: '置顶'),
+                              const SizedBox(height: 2),
+                              for (final thread in pinnedThreads) ...[
+                                _buildThreadNode(controller, thread),
+                                const SizedBox(height: 1),
+                              ],
+                              const SizedBox(height: 12),
+                            ],
+                            for (final workspace in workspaces) ...[
+                              _SidebarWorkspaceTile(
+                                key: ValueKey(
+                                  'sidebar-workspace-${workspace.primaryPath}',
+                                ),
+                                workspace: workspace,
+                                active:
+                                    workspace.primaryPath ==
+                                    controller.workspacePath,
+                                pinned: controller.isWorkspacePinned(
+                                  workspace.primaryPath,
+                                ),
+                                enabled: controller.canChangePrimaryWorkspace,
+                                onTap: () => unawaited(
+                                  controller.selectWorkspaceAndReconnect(
+                                    workspace.primaryPath,
+                                  ),
+                                ),
+                                onMore: (anchorContext) =>
+                                    _showWorkspaceActions(
+                                      anchorContext,
+                                      workspace,
+                                    ),
+                                onEdit: (_) => controller.createThread(),
+                                onHoverStart: (anchorContext) =>
+                                    _showWorkspaceDetails(
+                                      anchorContext,
+                                      workspace,
+                                    ),
+                                onHoverEnd: _scheduleWorkspaceDetailsHide,
+                              ),
+                              if (workspace.primaryPath ==
+                                  controller.workspacePath) ...[
+                                if (controller.threadsError case final error?)
+                                  Padding(
+                                    padding: const EdgeInsets.only(
+                                      left: 34,
+                                      top: 4,
+                                    ),
+                                    child: _MutedText(error),
+                                  )
+                                else if (controller.threads.isEmpty)
+                                  const Padding(
+                                    padding: EdgeInsets.only(left: 34, top: 4),
+                                    child: _MutedText('暂无历史任务；发送第一条消息后会创建。'),
+                                  )
+                                else if (projectThreads.isEmpty)
+                                  const Padding(
+                                    padding: EdgeInsets.only(left: 34, top: 4),
+                                    child: _MutedText('没有匹配的任务。'),
+                                  )
+                                else
+                                  for (final thread in projectThreads) ...[
+                                    _buildThreadNode(controller, thread),
+                                    const SizedBox(height: 1),
+                                  ],
+                              ],
+                              const SizedBox(height: 5),
+                            ],
+                          ],
+                        ),
                 ),
               ),
+            ),
             const SizedBox(height: 12),
             OutlinedButton.icon(
               onPressed: widget.onConfigureRuntime,
@@ -5720,6 +6195,8 @@ class _HistoryThreadTile extends StatelessWidget {
     required this.thread,
     required this.selected,
     required this.pinned,
+    required this.statusIndicator,
+    required this.running,
     required this.enabled,
     required this.selectionMode,
     required this.batchSelected,
@@ -5733,6 +6210,8 @@ class _HistoryThreadTile extends StatelessWidget {
   final CodexThread thread;
   final bool selected;
   final bool pinned;
+  final _ThreadStatusIndicator? statusIndicator;
+  final bool running;
   final bool enabled;
   final bool selectionMode;
   final bool batchSelected;
@@ -5748,89 +6227,146 @@ class _HistoryThreadTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
     return Material(
-      color: selected ? palette.selected : palette.raised,
-      borderRadius: BorderRadius.circular(10),
+      color: selected ? palette.selected : Colors.transparent,
+      borderRadius: BorderRadius.circular(12),
       child: InkWell(
         onTap: enabled ? onTap : null,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(12),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(10, 10, 4, 10),
+          padding: const EdgeInsets.fromLTRB(9, 6, 1, 6),
           child: Row(
             children: [
               if (selectionMode)
                 Checkbox(
                   value: batchSelected,
                   onChanged: enabled ? (_) => onTap() : null,
-                )
-              else
-                Icon(
-                  pinned
-                      ? Icons.push_pin
-                      : selected
-                      ? Icons.forum
-                      : Icons.forum_outlined,
-                  size: 17,
-                  color: selected ? palette.ack : null,
                 ),
-              const SizedBox(width: 8),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
                       thread.title,
-                      maxLines: 2,
+                      maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
+                      style: TextStyle(
+                        color: selected ? palette.trace : palette.muted,
+                        fontSize: 13,
+                        fontWeight: selected
+                            ? FontWeight.w600
+                            : FontWeight.w400,
                       ),
                     ),
-                    if (thread.status case final status?)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 3),
-                        child: _MutedText(status),
-                      ),
                   ],
                 ),
               ),
-              PopupMenuButton<_ThreadAction>(
-                tooltip: '任务选项',
-                enabled: enabled && !selectionMode,
-                onSelected: (action) {
-                  switch (action) {
-                    case _ThreadAction.rename:
-                      onRename();
-                    case _ThreadAction.archive:
-                      onArchive();
-                    case _ThreadAction.delete:
-                      onDelete();
-                    case _ThreadAction.pin:
-                      onTogglePin();
-                  }
-                },
-                itemBuilder: (context) => [
-                  PopupMenuItem(
-                    value: _ThreadAction.pin,
-                    child: Text(pinned ? '取消置顶' : '置顶'),
+              if (running)
+                SizedBox(
+                  key: const Key('sidebar-running-task-indicator'),
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: palette.muted,
                   ),
-                  const PopupMenuItem(
-                    value: _ThreadAction.rename,
-                    child: Text('重命名'),
-                  ),
-                  const PopupMenuItem(
-                    value: _ThreadAction.archive,
-                    child: Text('归档'),
-                  ),
-                  const PopupMenuItem(
-                    value: _ThreadAction.delete,
-                    child: Text('永久删除'),
-                  ),
-                ],
-              ),
+                )
+              else
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (statusIndicator case final indicator?)
+                      _ThreadStatusMark(indicator: indicator),
+                    PopupMenuButton<_ThreadAction>(
+                      tooltip: '任务选项',
+                      enabled: enabled && !selectionMode,
+                      padding: EdgeInsets.zero,
+                      iconSize: 16,
+                      onSelected: (action) {
+                        switch (action) {
+                          case _ThreadAction.rename:
+                            onRename();
+                          case _ThreadAction.archive:
+                            onArchive();
+                          case _ThreadAction.delete:
+                            onDelete();
+                          case _ThreadAction.pin:
+                            onTogglePin();
+                        }
+                      },
+                      itemBuilder: (context) => [
+                        PopupMenuItem(
+                          value: _ThreadAction.pin,
+                          child: Text(pinned ? '取消置顶' : '置顶'),
+                        ),
+                        const PopupMenuItem(
+                          value: _ThreadAction.rename,
+                          child: Text('重命名'),
+                        ),
+                        const PopupMenuItem(
+                          value: _ThreadAction.archive,
+                          child: Text('归档'),
+                        ),
+                        const PopupMenuItem(
+                          value: _ThreadAction.delete,
+                          child: Text('永久删除'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+enum _ThreadStatusIndicator { completed, error }
+
+/// Maps App Server thread status values to the compact sidebar outcome marks.
+/// 将 App Server 线程状态映射为侧栏紧凑的结果提示图标。
+_ThreadStatusIndicator? _threadStatusIndicator(String? status) {
+  final normalized = status?.trim().toLowerCase().replaceAll(
+    RegExp(r'[^a-z]'),
+    '',
+  );
+  return switch (normalized) {
+    'idle' ||
+    'completed' ||
+    'complete' ||
+    'done' ||
+    'success' ||
+    'succeeded' => _ThreadStatusIndicator.completed,
+    'systemerror' ||
+    'error' ||
+    'failed' ||
+    'failure' ||
+    'errored' => _ThreadStatusIndicator.error,
+    _ => null,
+  };
+}
+
+class _ThreadStatusMark extends StatelessWidget {
+  const _ThreadStatusMark({required this.indicator});
+
+  final _ThreadStatusIndicator indicator;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final completed = indicator == _ThreadStatusIndicator.completed;
+    return Tooltip(
+      message: completed ? '任务已完成' : '任务执行出错',
+      child: Icon(
+        completed ? Icons.info : Icons.error,
+        key: Key(
+          completed
+              ? 'sidebar-completed-task-indicator'
+              : 'sidebar-error-task-indicator',
+        ),
+        size: 16,
+        color: completed ? palette.active : palette.fault,
       ),
     );
   }

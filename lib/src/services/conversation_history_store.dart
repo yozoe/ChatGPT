@@ -7,6 +7,7 @@ import 'package:cryptography/cryptography.dart'
 import '../domain/codex_file_change.dart';
 import '../domain/codex_thread.dart';
 import '../domain/timeline_entry.dart';
+import 'app_storage_scope.dart';
 import 'codex_keychain_storage.dart';
 
 class ConversationHistorySnapshot {
@@ -17,6 +18,7 @@ class ConversationHistorySnapshot {
     required this.fileChanges,
     this.pinnedThreadIds = const {},
     this.turnDiff,
+    this.activeThreadId,
   });
 
   final List<CodexThread> threads;
@@ -25,6 +27,10 @@ class ConversationHistorySnapshot {
   final List<CodexFileChange> fileChanges;
   final Set<String> pinnedThreadIds;
   final String? turnDiff;
+
+  /// The thread that was open when the workspace snapshot was saved.
+  /// 保存快照时当前打开的线程；旧版本快照没有此字段时保持为空。
+  final String? activeThreadId;
 
   /// 将当前工作区快照转换为可持久化的 JSON。
   /// Converts the current workspace snapshot to persistable JSON.
@@ -37,6 +43,7 @@ class ConversationHistorySnapshot {
     'fileChanges': fileChanges.map((change) => change.toJson()).toList(),
     'pinnedThreadIds': pinnedThreadIds.toList(growable: false),
     'turnDiff': ?turnDiff,
+    'activeThreadId': ?activeThreadId,
   };
 
   /// 从持久化 JSON 恢复当前工作区快照。
@@ -65,11 +72,15 @@ class ConversationHistorySnapshot {
       fileChanges: decodeList(value['fileChanges'], CodexFileChange.fromJson),
       pinnedThreadIds: value['pinnedThreadIds'] is Iterable
           ? (value['pinnedThreadIds'] as Iterable)
+                .where((id) => id != null)
                 .map((id) => id.toString())
                 .where((id) => id.isNotEmpty)
                 .toSet()
           : const {},
       turnDiff: value['turnDiff']?.toString(),
+      activeThreadId: value['activeThreadId']?.toString().trim().isEmpty == true
+          ? null
+          : value['activeThreadId']?.toString(),
     );
   }
 }
@@ -244,10 +255,6 @@ class ConversationHistoryStore {
   /// 解析 macOS Application Support 中的默认缓存目录。
   /// Resolves the default cache directory in macOS Application Support.
   Directory _defaultDirectory() {
-    final home = Platform.environment['HOME'];
-    if (home == null || home.isEmpty) {
-      throw StateError('无法确定 macOS 用户目录。');
-    }
-    return Directory('$home/Library/Application Support/Codex Desk');
+    return AppStorageScope.defaultDirectory();
   }
 }

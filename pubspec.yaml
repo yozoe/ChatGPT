@@ -34,13 +34,16 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
+  desktop_drop: ^0.7.1
   file_selector: ^1.0.3
   flutter_secure_storage: ^10.0.0
   cryptography: ^2.7.0
   flutter_riverpod: ^3.3.1
   url_launcher: ^6.3.2
   yeknom_ui_kit:
-    path: ../private/yeknom-ui-kit
+    git:
+      url: https://github.com/yozoe/yeknom-ui-kit.git
+      ref: dc1ee84289297c3e63867d94ea2a9d3122b2889f
 
 dev_dependencies:
   flutter_test:
