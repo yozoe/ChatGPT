@@ -4,8 +4,8 @@ import 'dart:io';
 
 import '../domain/git_project_status.dart';
 
-/// 通过只读 `git` 命令读取当前项目状态和 Diff；永不执行会修改仓库的 Git 子命令。
-/// Reads project status and diffs through read-only `git` commands; it never invokes Git subcommands that modify a repository.
+/// 读取项目 Git 状态和 Diff，并仅在用户明确操作时执行受限的 Git 写入命令。
+/// Reads project Git state and diffs, running restricted Git writes only after an explicit user action.
 class GitProjectService {
   static const maximumDiffCharacters = 120000;
   static const truncatedDiffMarker =
@@ -60,6 +60,58 @@ class GitProjectService {
     required GitProjectChange change,
   }) async =>
       (await readDiffPreview(workspace: workspace, change: change)).content;
+
+  /// 将指定文件加入暂存区；调用者须在界面中明确触发此操作。
+  /// Stages one file after the caller has obtained explicit UI intent.
+  Future<void> stageFile({
+    required String workspace,
+    required GitProjectChange change,
+  }) => _runWrite(workspace, ['add', '--', change.path]);
+
+  /// 还原指定文件的暂存区和工作区内容；调用者须先完成不可逆操作确认。
+  /// Restores one file's index and working-tree content after destructive-action confirmation.
+  Future<void> revertFile({
+    required String workspace,
+    required GitProjectChange change,
+  }) {
+    if (change.isUntracked) {
+      return _runWrite(workspace, ['clean', '-f', '--', change.path]);
+    }
+    return _runWrite(workspace, [
+      'restore',
+      '--source=HEAD',
+      '--staged',
+      '--worktree',
+      '--',
+      change.path,
+    ]);
+  }
+
+  /// 以用户提供的消息创建提交；不会自动暂存任何文件。
+  /// Creates a commit with the user-provided message without staging files automatically.
+  Future<void> commit({required String workspace, required String message}) =>
+      _runWrite(workspace, ['commit', '-m', message]);
+
+  /// 推送当前分支所配置的上游；不会使用 force push。
+  /// Pushes the current branch to its configured upstream without force pushing.
+  Future<void> push({required String workspace}) =>
+      _runWrite(workspace, const ['push']);
+
+  /// 通过已登录的 GitHub CLI 为当前分支创建拉取请求。
+  /// Creates a pull request for the current branch through an authenticated GitHub CLI.
+  Future<void> createPullRequest({
+    required String workspace,
+    required String title,
+  }) async {
+    final result = await _runWriteProcess('gh', [
+      'pr',
+      'create',
+      '--title',
+      title,
+      '--fill',
+    ], workspace);
+    if (result.exitCode != 0) throw StateError(_errorOf(result));
+  }
 
   /// 读取 Diff 及截断状态，供界面明确提示大文件预览限制。
   /// Reads a diff with truncation metadata so the UI can explain large-preview limits.
@@ -127,6 +179,44 @@ class GitProjectService {
       workingDirectory: workspace,
       runInShell: false,
     ).timeout(const Duration(seconds: 8));
+  }
+
+  /// 执行单个受限 Git 写入并将 Git stderr 转换为界面错误。
+  /// Runs one restricted Git write and converts Git stderr into a UI error.
+  Future<void> _runWrite(String workspace, List<String> arguments) async {
+    final result = await _runWriteProcess('git', arguments, workspace);
+    if (result.exitCode != 0) throw StateError(_errorOf(result));
+  }
+
+  /// 运行可变更本地仓库或远端的命令；超时时终止进程，避免界面误报失败后操作仍继续。
+  /// Runs a repository-mutating command and kills it on timeout so it cannot continue after the UI reports failure.
+  Future<ProcessResult> _runWriteProcess(
+    String executable,
+    List<String> arguments,
+    String workspace,
+  ) async {
+    final process = await Process.start(
+      executable,
+      arguments,
+      workingDirectory: workspace,
+      runInShell: false,
+    );
+    final stdout = process.stdout.transform(utf8.decoder).join();
+    final stderr = process.stderr.transform(utf8.decoder).join();
+    try {
+      final exitCode = await process.exitCode.timeout(
+        const Duration(seconds: 60),
+      );
+      return ProcessResult(process.pid, exitCode, await stdout, await stderr);
+    } on TimeoutException {
+      process.kill();
+      try {
+        await process.exitCode.timeout(const Duration(seconds: 2));
+      } on TimeoutException {
+        // The operating system may need more time to reap a network command.
+      }
+      throw TimeoutException('Git 写入操作超时，已请求终止。');
+    }
   }
 
   /// 流式读取 Git Diff，在达到预览上限时终止子进程，避免缓冲完整输出。

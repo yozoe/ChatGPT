@@ -6,21 +6,24 @@ class TimelineEntry {
     required this.title,
     required this.detail,
     required this.createdAt,
+    this.imagePaths = const [],
   });
 
   final TimelineKind kind;
   final String title;
   final String detail;
   final DateTime createdAt;
+  final List<String> imagePaths;
 
   /// 返回替换可选详情后的时间线条目副本。
   /// Returns a timeline entry copy with an optional replacement detail.
-  TimelineEntry copyWith({String? detail}) {
+  TimelineEntry copyWith({String? detail, List<String>? imagePaths}) {
     return TimelineEntry(
       kind: kind,
       title: title,
       detail: detail ?? this.detail,
       createdAt: createdAt,
+      imagePaths: imagePaths ?? this.imagePaths,
     );
   }
 
@@ -31,6 +34,7 @@ class TimelineEntry {
     'title': title,
     'detail': detail,
     'createdAt': createdAt.toIso8601String(),
+    'imagePaths': imagePaths,
   };
 
   /// 从本地历史缓存 JSON 恢复时间线条目。
@@ -46,6 +50,11 @@ class TimelineEntry {
       createdAt:
           DateTime.tryParse(value['createdAt']?.toString() ?? '') ??
           DateTime.now(),
+      imagePaths: (value['imagePaths'] is Iterable
+          ? (value['imagePaths'] as Iterable)
+                .map((path) => path.toString())
+                .toList(growable: false)
+          : const <String>[]),
     );
   }
 }

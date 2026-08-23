@@ -39,6 +39,8 @@ class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
   String? savedReasoningEffort;
   String? model;
   String? savedModel;
+  String? approvalMode;
+  String? savedApprovalMode;
   bool clearedWorkspace = false;
   Set<String> pinnedWorkspaces = {};
   Set<String>? savedPinnedWorkspaces;
@@ -89,6 +91,7 @@ class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
   Future<List<WorkspaceConfiguration>> readWorkspaces() async => workspaces
       .map(
         (workspace) => WorkspaceConfiguration(
+          id: workspace.id,
           primaryPath: workspace.primaryPath,
           additionalPaths: workspace.additionalPaths,
         ),
@@ -104,6 +107,7 @@ class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
     final snapshot = configurations
         .map(
           (workspace) => WorkspaceConfiguration(
+            id: workspace.id,
             primaryPath: workspace.primaryPath,
             additionalPaths: workspace.additionalPaths,
           ),
@@ -146,6 +150,19 @@ class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
   Future<void> saveModel(String? value) async {
     savedModel = value;
     model = value;
+  }
+
+  /// 返回测试预设的审批模式；`null` 表示请求批准。
+  /// Returns the test-configured approval mode; `null` means request approval.
+  @override
+  Future<String?> readApprovalMode() async => approvalMode;
+
+  /// 在内存中保存审批模式，便于验证重启后的恢复行为。
+  /// Saves approval mode in memory to verify restoration after restart.
+  @override
+  Future<void> saveApprovalMode(String? value) async {
+    savedApprovalMode = value;
+    approvalMode = value;
   }
 }
 
@@ -344,6 +361,7 @@ class _FakeGitProjectService extends GitProjectService {
   String diff = '';
   GitProjectChange? requestedChange;
   int inspectCalls = 0;
+  Object? stageError;
 
   /// 返回预设的只读 Git 项目状态，并记录调用次数。
   /// Returns the preset read-only Git project status and records the call count.
@@ -374,6 +392,14 @@ class _FakeGitProjectService extends GitProjectService {
       content: diff,
       truncated: diff.endsWith(GitProjectService.truncatedDiffMarker),
     );
+  }
+
+  @override
+  Future<void> stageFile({
+    required String workspace,
+    required GitProjectChange change,
+  }) async {
+    if (stageError case final error?) throw error;
   }
 }
 
@@ -420,6 +446,7 @@ class _FakeCodexAppServer extends CodexAppServer {
   String? steeredTurnThreadId;
   String? steeredTurnId;
   String? steeredTurnPrompt;
+  List<JsonMap> steeredTurnAdditionalInput = <JsonMap>[];
   String? steerResponseTurnId;
   Object? steerTurnError;
   String? threadGoal;
@@ -530,6 +557,7 @@ class _FakeCodexAppServer extends CodexAppServer {
     steeredTurnThreadId = threadId;
     steeredTurnId = expectedTurnId;
     steeredTurnPrompt = prompt;
+    steeredTurnAdditionalInput = List.of(additionalInput);
     if (steerTurnError case final error?) throw error;
     return steerResponseTurnId ?? expectedTurnId;
   }
@@ -867,6 +895,12 @@ void main() {
       find.byKey(const Key('sidebar-error-task-indicator')),
       findsOneWidget,
     );
+    await tester.tap(nestedTask);
+    await tester.pump();
+    expect(
+      find.byKey(const Key('sidebar-completed-task-indicator')),
+      findsNothing,
+    );
     expect(
       tester.getTopLeft(firstTile).dy,
       lessThan(tester.getTopLeft(secondTile).dy),
@@ -918,6 +952,14 @@ void main() {
       find.byKey(const Key('workspace-directories-dialog')),
       findsOneWidget,
     );
+    final projectNameField = tester.widget<TextField>(
+      find.byKey(const Key('workspace-project-name-field')),
+    );
+    final projectNameDecoration = projectNameField.decoration!;
+    expect(projectNameDecoration.filled, isFalse);
+    expect(projectNameDecoration.border, InputBorder.none);
+    expect(projectNameDecoration.enabledBorder, InputBorder.none);
+    expect(projectNameDecoration.focusedBorder, InputBorder.none);
     await tester.tap(find.text('关闭'));
     await tester.pumpAndSettle();
     controller
@@ -939,6 +981,17 @@ void main() {
       findsOneWidget,
     );
     expect(
+      tester
+          .widget<InkWell>(
+            find.ancestor(
+              of: find.text('preview-nested-task'),
+              matching: find.byType(InkWell),
+            ),
+          )
+          .onTap,
+      isNotNull,
+    );
+    expect(
       find.byKey(const Key('sidebar-create-workspace-button')),
       findsOneWidget,
     );
@@ -946,6 +999,74 @@ void main() {
       find.byKey(const Key('sidebar-manage-workspaces-button')),
       findsOneWidget,
     );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('creates a project from a dragged source folder', (tester) async {
+    late Directory root;
+    late Directory source;
+    late CodexController controller;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp(
+        'codex-desk-create-project-',
+      );
+      source = await Directory('${root.path}/project-source').create();
+      controller = CodexController(server: _ManagedRuntimeFakeServer());
+      await controller.waitForInitialConfiguration();
+      controller.status = RuntimeStatus.stopped;
+    });
+    addTearDown(() => root.delete(recursive: true));
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.tap(find.byKey(const Key('sidebar-create-workspace-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('create-workspace-dialog')), findsOneWidget);
+    expect(
+      find.byKey(const Key('create-workspace-dialog-title')),
+      findsOneWidget,
+    );
+    expect(find.text('项目名称'), findsOneWidget);
+    expect(find.text('添加 Codex 可读取和编辑的文件夹'), findsOneWidget);
+    expect(
+      tester
+          .widget<InkWell>(
+            find.byKey(const Key('create-workspace-folder-picker')),
+          )
+          .onTap,
+      isNotNull,
+    );
+
+    var dropTarget = tester.widget<DropTarget>(
+      find.byKey(const Key('create-workspace-folder-drop-target')),
+    );
+    dropTarget.onDragEntered?.call(
+      DropEventDetails(
+        localPosition: const Offset(40, 40),
+        globalPosition: const Offset(40, 40),
+      ),
+    );
+    await tester.pump();
+    expect(find.text('松开即可添加文件夹'), findsOneWidget);
+
+    dropTarget = tester.widget<DropTarget>(
+      find.byKey(const Key('create-workspace-folder-drop-target')),
+    );
+    dropTarget.onDragDone?.call(
+      DropDoneDetails(
+        files: [DropItemDirectory(source.path, const [])],
+        localPosition: const Offset(40, 40),
+        globalPosition: const Offset(40, 40),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('project-source'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('cancel-create-workspace')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('create-workspace-dialog')), findsNothing);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -1032,6 +1153,17 @@ void main() {
     );
 
     expect(find.byKey(const Key('composer-model-controls')), findsOneWidget);
+    final composerField = tester.widget<TextField>(
+      find.byKey(const Key('composer-field')),
+    );
+    final composerDecoration = composerField.decoration!;
+    expect(composerDecoration.border, InputBorder.none);
+    expect(composerDecoration.enabledBorder, InputBorder.none);
+    expect(composerDecoration.focusedBorder, InputBorder.none);
+    final modelControls = tester.widget<Container>(
+      find.byKey(const Key('composer-model-controls')),
+    );
+    expect((modelControls.decoration! as BoxDecoration).border, isNull);
     await tester.tap(find.byKey(const Key('model-selector')));
     await tester.pumpAndSettle();
     final fastModelItem = find.byKey(const Key('model-option-fast-model'));
@@ -1046,8 +1178,9 @@ void main() {
 
     await tester.tap(find.byKey(const Key('reasoning-effort-selector')));
     await tester.pumpAndSettle();
-    expect(find.text('新任务推理强度：低'), findsOneWidget);
-    expect(find.text('新任务推理强度：高'), findsNothing);
+    expect(find.text('低'), findsOneWidget);
+    expect(find.text('新任务推理强度：低'), findsNothing);
+    expect(find.text('高'), findsNothing);
 
     await tester.pumpWidget(const SizedBox());
   });
@@ -1151,12 +1284,20 @@ void main() {
       ..activeThreadId = 'thread-1'
       ..activeTurnId = 'turn-1';
 
-    final sent = await controller.steerCurrentTurn('改成灰色');
+    final sent = await controller.steerCurrentTurn(
+      '改成灰色',
+      additionalInput: const [
+        {'type': 'localImage', 'path': '/tmp/steer.png'},
+      ],
+    );
 
     expect(sent, isTrue);
     expect(server.steeredTurnThreadId, 'thread-1');
     expect(server.steeredTurnId, 'turn-1');
     expect(server.steeredTurnPrompt, '改成灰色');
+    expect(server.steeredTurnAdditionalInput, [
+      {'type': 'localImage', 'path': '/tmp/steer.png'},
+    ]);
     expect(controller.entries.any((entry) => entry.detail == '改成灰色'), isTrue);
     controller.dispose();
   });
@@ -1174,37 +1315,60 @@ void main() {
     controller.dispose();
   });
 
-  testWidgets('keeps the composer editable while steering an active turn', (
-    tester,
-  ) async {
-    final server = _FakeCodexAppServer();
-    final controller = CodexController(server: server)
-      ..workspacePath = '/workspace'
-      ..status = RuntimeStatus.running
-      ..activeThreadId = 'thread-1'
-      ..activeTurnId = 'turn-1';
-    await tester.pumpWidget(
-      MaterialApp(home: CodexWorkspace(controller: controller)),
-    );
+  testWidgets(
+    'keeps the composer editable and accepts attachments while steering an active turn',
+    (tester) async {
+      const channel = MethodChannel('codex_desk/clipboard');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(
+        channel,
+        (call) async => [
+          {'path': '/tmp/steer.png', 'isDirectory': false},
+        ],
+      );
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      final server = _FakeCodexAppServer();
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..activeTurnId = 'turn-1';
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
 
-    final field = find.byKey(const Key('composer-field'));
-    expect(tester.widget<TextField>(field).enabled, isTrue);
-    expect(
-      tester
-          .widget<PopupMenuButton<dynamic>>(
-            find.byKey(const Key('composer-add-button')),
-          )
-          .enabled,
-      isFalse,
-    );
-    await tester.enterText(field, '请改成灰色');
-    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-    await tester.pump();
+      final field = find.byKey(const Key('composer-field'));
+      expect(tester.widget<TextField>(field).enabled, isTrue);
+      expect(
+        tester
+            .widget<PopupMenuButton<dynamic>>(
+              find.byKey(const Key('composer-add-button')),
+            )
+            .enabled,
+        isTrue,
+      );
+      await tester.tap(field);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('composer-attachment-/tmp/steer.png')),
+        findsOneWidget,
+      );
+      await tester.enterText(field, '请改成灰色');
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
 
-    expect(server.steeredTurnPrompt, '请改成灰色');
-    expect(tester.widget<TextField>(field).controller!.text, isEmpty);
-    await tester.pumpWidget(const SizedBox());
-  });
+      expect(server.steeredTurnPrompt, '请改成灰色');
+      expect(server.steeredTurnAdditionalInput, [
+        {'type': 'localImage', 'path': '/tmp/steer.png'},
+      ]);
+      expect(tester.widget<TextField>(field).controller!.text, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   testWidgets('shows goals, plan mode, and skills from the composer menu', (
     tester,
@@ -1978,38 +2142,75 @@ void main() {
     controller.dispose();
   });
 
-  test('automatically approves supported requests in auto approval mode', () {
-    final writes = <JsonMap>[];
-    final controller = CodexController(
-      server: CodexAppServer(messageSink: writes.add),
-    );
+  test(
+    'automatically approves supported requests in auto approval mode',
+    () async {
+      final writes = <JsonMap>[];
+      final controller = CodexController(
+        server: CodexAppServer(messageSink: writes.add),
+      );
 
-    controller.setApprovalMode(ApprovalMode.autoApprove);
-    controller.handleServerEventForTesting(
-      const ServerEvent(
-        method: 'item/fileChange/requestApproval',
-        requestId: 'approval-2',
-        params: {'reason': 'Update a project file'},
-      ),
-    );
+      await controller.setApprovalMode(ApprovalMode.autoApprove);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/fileChange/requestApproval',
+          requestId: 'approval-2',
+          params: {'reason': 'Update a project file'},
+        ),
+      );
 
-    expect(writes, [
-      {
-        'id': 'approval-2',
-        'result': {'decision': 'accept'},
-      },
-    ]);
-    expect(controller.pendingApproval, isNull);
-    expect(
-      controller.entries.map((entry) => entry.title),
-      contains('已自动批准本次操作'),
-    );
-    controller.dispose();
-  });
+      expect(writes, [
+        {
+          'id': 'approval-2',
+          'result': {'decision': 'accept'},
+        },
+      ]);
+      expect(controller.pendingApproval, isNull);
+      expect(
+        controller.entries.map((entry) => entry.title),
+        contains('已自动批准本次操作'),
+      );
+      controller.dispose();
+    },
+  );
 
   test('uses the unified approval mode labels', () {
     expect(ApprovalMode.manual.label, '请求批准');
     expect(ApprovalMode.autoApprove.label, '帮我批准');
+  });
+
+  test('persists and restores the approval mode', () async {
+    final store = _FakeRuntimeConfigurationStore();
+    final firstController = CodexController(
+      server: CodexAppServer(),
+      runtimeConfigurationStore: store,
+    );
+
+    await firstController.waitForInitialConfiguration();
+    await firstController.setApprovalMode(ApprovalMode.autoApprove);
+
+    expect(store.savedApprovalMode, ApprovalMode.autoApprove.name);
+    firstController.dispose();
+
+    final restoredController = CodexController(
+      server: CodexAppServer(),
+      runtimeConfigurationStore: store,
+    );
+    await restoredController.waitForInitialConfiguration();
+
+    expect(restoredController.approvalMode, ApprovalMode.autoApprove);
+    await restoredController.setApprovalMode(ApprovalMode.manual);
+    expect(store.savedApprovalMode, ApprovalMode.manual.name);
+    restoredController.dispose();
+
+    final defaultRestoredController = CodexController(
+      server: CodexAppServer(),
+      runtimeConfigurationStore: store,
+    );
+    await defaultRestoredController.waitForInitialConfiguration();
+
+    expect(defaultRestoredController.approvalMode, ApprovalMode.manual);
+    defaultRestoredController.dispose();
   });
 
   test('coalesces agent deltas into one timeline entry', () async {
@@ -2034,6 +2235,51 @@ void main() {
         .toList();
     expect(agentEntries, hasLength(1));
     expect(agentEntries.single.detail, 'Hello world');
+    controller.dispose();
+  });
+
+  testWidgets('renders Codex replies as selectable Markdown', (tester) async {
+    final controller = CodexController(server: CodexAppServer());
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/agentMessage/delta',
+        params: {
+          'itemId': 'markdown-message',
+          'delta': '- **严重**：加密缓存每次保存会丢掉其他项目的历史。',
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.pump(const Duration(milliseconds: 60));
+
+    final renderedText = find.byWidgetPredicate(
+      (widget) =>
+          widget is SelectableText &&
+          (widget.textSpan?.toPlainText() ?? '').contains('严重'),
+    );
+    expect(renderedText, findsOneWidget);
+    final text = tester.widget<SelectableText>(renderedText).textSpan!;
+    expect(text.toPlainText(), contains('严重'));
+    expect(text.toPlainText(), isNot(contains('**')));
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  test('keeps command output delta protocol events out of the timeline', () {
+    final controller = CodexController(server: CodexAppServer());
+    final initialEntryCount = controller.entries.length;
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/commandExecution/outputDelta',
+        params: {'itemId': 'command-1', 'delta': 'Compiling...'},
+      ),
+    );
+
+    expect(controller.entries, hasLength(initialEntryCount));
+    expect(controller.entries.where((entry) => entry.title == '执行事件'), isEmpty);
     controller.dispose();
   });
 
@@ -2162,6 +2408,41 @@ void main() {
         await first.resolveSymbolicLinks(),
       );
       restoredController.dispose();
+    },
+  );
+
+  test(
+    'starts a newly created project with no inherited directory tasks',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'codex-desk-clean-project-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final server = _ManagedRuntimeFakeServer()
+        ..listResponse = [
+          {'id': 'older-directory-task', 'preview': '来自同一目录的旧任务'},
+        ];
+      final history = _MemoryConversationHistoryStore();
+      final controller = CodexController(
+        server: server,
+        conversationHistoryStore: history,
+      );
+      await controller.waitForInitialConfiguration();
+
+      await controller.createWorkspace(directory.path);
+      await controller.refreshThreads();
+
+      expect(controller.threads, isEmpty);
+      expect(controller.workspaceProjectId, isNotNull);
+
+      server.listResponse = [
+        {'id': 'new-thread', 'preview': '这个项目的新任务'},
+      ];
+      controller.status = RuntimeStatus.ready;
+      expect(await controller.sendPrompt('创建任务'), isTrue);
+      expect(controller.threads.map((thread) => thread.id), ['new-thread']);
+
+      controller.dispose();
     },
   );
 
@@ -2609,6 +2890,86 @@ void main() {
       restoredController.dispose();
     },
   );
+
+  test(
+    'migrates path-keyed history when a project ID was saved before migration',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'codex-desk-history-key-migration-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final workspace = await directory.resolveSymbolicLinks();
+      const projectId = 'project-partially-migrated';
+      historyStore.snapshots[workspace] = ConversationHistorySnapshot(
+        threads: [_thread(id: 'legacy-thread')],
+        archivedThreads: const [],
+        entries: const [],
+        fileChanges: const [],
+      );
+      final runtimeStore = _FakeRuntimeConfigurationStore()
+        ..workspace = workspace
+        ..workspaces = [
+          WorkspaceConfiguration(id: projectId, primaryPath: workspace),
+        ];
+
+      final controller = CodexController(
+        server: CodexAppServer(),
+        runtimeConfigurationStore: runtimeStore,
+        conversationHistoryStore: historyStore,
+      );
+      await controller.waitForInitialConfiguration();
+
+      expect(controller.threads.map((thread) => thread.id), ['legacy-thread']);
+      expect(
+        historyStore.snapshots[projectId]!.threads.map((thread) => thread.id),
+        ['legacy-thread'],
+      );
+      controller.dispose();
+
+      final restartedController = CodexController(
+        server: CodexAppServer(),
+        runtimeConfigurationStore: runtimeStore,
+        conversationHistoryStore: historyStore,
+      );
+      await restartedController.waitForInitialConfiguration();
+      expect(restartedController.threads.map((thread) => thread.id), [
+        'legacy-thread',
+      ]);
+      restartedController.dispose();
+    },
+  );
+
+  test('preserves a project ID while editing its folders and name', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'codex-desk-project-id-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final primary = await Directory('${root.path}/primary').create();
+    final additional = await Directory('${root.path}/additional').create();
+    final primaryPath = await primary.resolveSymbolicLinks();
+    final additionalPath = await additional.resolveSymbolicLinks();
+    const projectId = 'stable-project-id';
+    final store = _FakeRuntimeConfigurationStore()
+      ..workspace = primaryPath
+      ..workspaces = [
+        WorkspaceConfiguration(id: projectId, primaryPath: primaryPath),
+      ];
+    final controller = CodexController(
+      server: CodexAppServer(),
+      runtimeConfigurationStore: store,
+    );
+    await controller.waitForInitialConfiguration();
+
+    await controller.renameWorkspace(primaryPath, 'Renamed project');
+    expect(store.savedWorkspaces!.single.id, projectId);
+
+    await controller.addWorkspaceRoot(additionalPath);
+    expect(store.savedWorkspaces!.single.id, projectId);
+
+    await controller.removeWorkspaceRoot(additionalPath);
+    expect(store.savedWorkspaces!.single.id, projectId);
+    controller.dispose();
+  });
 
   test(
     'persists pinned task IDs with each workspace history snapshot',
@@ -3553,6 +3914,97 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('renders the right inspector as a Codex environment card', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {'path': 'lib/main.dart', 'kind': 'modified', 'diff': '+card'},
+            ],
+          },
+        },
+      ),
+    );
+    await tester.pump();
+
+    final card = tester.widget<Container>(
+      find.byKey(const Key('codex-environment-card')),
+    );
+    final decoration = card.decoration! as BoxDecoration;
+    final cardFinder = find.byKey(const Key('codex-environment-card'));
+
+    expect(find.text('环境信息'), findsOneWidget);
+    expect(
+      find.descendant(of: cardFinder, matching: find.text('变更')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: cardFinder, matching: find.text('本地')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: cardFinder, matching: find.text('提交或推送')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: cardFinder, matching: find.text('任务文件')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: cardFinder, matching: find.text('1 个')),
+      findsNWidgets(2),
+    );
+    expect(decoration.borderRadius, BorderRadius.circular(28));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('resizes the side panes through their drag handles', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final sidebar = find.byKey(const Key('sidebar-pane'));
+    final environmentCard = find.byKey(const Key('codex-environment-card'));
+    final initialSidebarWidth = tester.getSize(sidebar).width;
+    final initialInspectorWidth = tester.getSize(environmentCard).width;
+
+    await tester.drag(
+      find.byKey(const Key('sidebar-resize-handle')),
+      const Offset(72, 0),
+    );
+    await tester.pump();
+    expect(tester.getSize(sidebar).width, greaterThan(initialSidebarWidth));
+
+    await tester.drag(
+      find.byKey(const Key('inspector-resize-handle')),
+      const Offset(-72, 0),
+    );
+    await tester.pump();
+    expect(
+      tester.getSize(environmentCard).width,
+      greaterThan(initialInspectorWidth),
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
   test('uses the authentication requirement resolved from Codex config', () {
     final controller = CodexController(server: CodexAppServer())
       ..workspacePath = '/workspace'
@@ -3714,8 +4166,28 @@ void main() {
         change: change,
       );
       expect(diff, contains('+new content'));
+
+      await service.revertFile(workspace: directory.path, change: change);
+      expect(await File('${directory.path}/new_file.txt').exists(), isFalse);
     },
   );
+
+  test('retains Git operation failures for the interface to display', () async {
+    final git = _FakeGitProjectService()
+      ..stageError = StateError('staging is blocked');
+    final controller = CodexController(
+      server: CodexAppServer(),
+      gitProjectService: git,
+    )..workspacePath = '/workspace';
+
+    final succeeded = await controller.stageGitChange(
+      const GitProjectChange(code: ' M', path: 'lib/main.dart'),
+    );
+
+    expect(succeeded, isFalse);
+    expect(controller.gitOperationError, 'staging is blocked');
+    controller.dispose();
+  });
 
   test('filters Git changes by state and case-insensitive path query', () {
     const status = GitProjectStatus(
@@ -3802,7 +4274,7 @@ void main() {
     },
   );
 
-  testWidgets('opens the read-only Git project view', (tester) async {
+  testWidgets('opens the Git project workflow view', (tester) async {
     const change = GitProjectChange(code: '??', path: 'new_file.txt');
     final git = _FakeGitProjectService()
       ..status = const GitProjectStatus(
@@ -3827,7 +4299,7 @@ void main() {
 
     expect(find.byKey(const Key('git-project-dialog')), findsOneWidget);
     expect(find.text('分支：main'), findsOneWidget);
-    expect(find.text('只读视图：不会执行暂存、还原、提交、切分支、拉取或推送。'), findsOneWidget);
+    expect(find.text('选择文件可查看 Diff、暂存或还原；提交、推送和创建 PR 均需显式确认。'), findsOneWidget);
     expect(find.byKey(const Key('git-change-search')), findsOneWidget);
     expect(find.byKey(const Key('git-change-filter')), findsOneWidget);
 
@@ -4021,6 +4493,9 @@ void main() {
       threadId: 'thread-1',
       expectedTurnId: 'turn-1',
       prompt: '改成灰色',
+      additionalInput: const [
+        {'type': 'localImage', 'path': '/tmp/steer.png'},
+      ],
     );
 
     expect(server.requestedMethod, 'turn/steer');
@@ -4029,6 +4504,7 @@ void main() {
       'expectedTurnId': 'turn-1',
       'input': [
         {'type': 'text', 'text': '改成灰色'},
+        {'type': 'localImage', 'path': '/tmp/steer.png'},
       ],
     });
   });
@@ -4358,6 +4834,42 @@ void main() {
         ]),
       );
       controller.dispose();
+    },
+  );
+
+  testWidgets(
+    'groups consecutive command and tool history into an activity list',
+    (tester) async {
+      final controller = CodexController(server: CodexAppServer());
+      controller.replaceTimelineEntriesForTesting([
+        TimelineEntry(
+          kind: TimelineKind.command,
+          title: '执行命令',
+          detail: 'flutter analyze\nNo issues found',
+          createdAt: DateTime(2026),
+        ),
+        TimelineEntry(
+          kind: TimelineKind.tool,
+          title: '网页搜索',
+          detail: 'Codex activity lists · 1 条结果',
+          createdAt: DateTime(2026, 1, 1, 0, 0, 1),
+        ),
+      ]);
+
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      expect(find.text('已运行了命令并进行了搜索'), findsOneWidget);
+      expect(find.text('已运行 flutter analyze'), findsOneWidget);
+      expect(find.text('网页搜索'), findsOneWidget);
+
+      await tester.tap(find.text('已运行了命令并进行了搜索'));
+      await tester.pump();
+
+      expect(find.text('已运行 flutter analyze'), findsNothing);
+      expect(find.text('网页搜索'), findsNothing);
+      await tester.pumpWidget(const SizedBox());
     },
   );
 

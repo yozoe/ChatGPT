@@ -29,6 +29,13 @@ enum AuthStatus { checking, signedOut, chatgpt, apiKey, external }
 
 enum ApprovalMode { manual, autoApprove }
 
+/// 将本地存储的审批模式转换为受支持的安全值。
+/// Converts a locally stored approval mode into a supported safe value.
+ApprovalMode approvalModeFromStorageValue(String? value) =>
+    value == ApprovalMode.autoApprove.name
+    ? ApprovalMode.autoApprove
+    : ApprovalMode.manual;
+
 /// App Server 公布的推理强度；保留未知字符串以兼容未来新增的模型能力。
 /// A reasoning effort advertised by App Server; unknown strings are preserved for future model capabilities.
 @immutable
@@ -218,6 +225,7 @@ class CodexController extends ChangeNotifier {
   ];
   Future<void> _reasoningEffortSave = Future.value();
   Future<void> _modelSelectionSave = Future.value();
+  Future<void> _approvalModeSave = Future.value();
   Map<String, Set<ReasoningEffort>> _reasoningEffortsByModel = const {};
   String? _catalogDefaultModelId;
   String? _configuredModelId;
@@ -234,6 +242,10 @@ class CodexController extends ChangeNotifier {
   final List<String> _additionalWorkspacePaths = [];
   final List<WorkspaceConfiguration> _workspaceConfigurations = [];
   final Set<String> _pinnedWorkspacePaths = {};
+  String? _workspaceProjectId;
+  final Set<String> _ownedThreadIds = {};
+  bool _threadHistoryInitialized = false;
+  final Set<String> _legacyWorkspaceHistoryPaths = {};
   String? activeThreadId;
   // A thread ID restored from local history must be resumed on the new
   // app-server connection before it can receive a turn.
@@ -244,6 +256,7 @@ class CodexController extends ChangeNotifier {
   PendingApproval? pendingApproval;
   bool approvalResponding = false;
   ApprovalMode approvalMode = ApprovalMode.manual;
+  bool _approvalModeChangedBeforeLoad = false;
   ReasoningEffort reasoningEffort = ReasoningEffort.defaultValue;
   List<ReasoningEffort> reasoningEffortOptions = const [
     ReasoningEffort.defaultValue,
@@ -293,6 +306,8 @@ class CodexController extends ChangeNotifier {
   String? gitDiff;
   bool gitDiffLoading = false;
   bool gitDiffTruncated = false;
+  bool gitOperationRunning = false;
+  String? gitOperationError;
 
   /// 返回不含主目录且不可由外部修改的附加工作区目录。
   /// Returns additional workspace directories, excluding the primary directory and preventing external mutation.
@@ -339,7 +354,17 @@ class CodexController extends ChangeNotifier {
   /// 读取工作区本地缓存中的任务数量，供悬停详情卡片显示。
   Future<int> readWorkspaceTaskCount(String path) async {
     if (path == workspacePath) return threads.length;
-    final snapshot = await _conversationHistoryStore.read(path);
+    final project = _workspaceConfigurations
+        .where((workspace) => workspace.primaryPath == path)
+        .firstOrNull;
+    var snapshot = await _conversationHistoryStore.read(project?.id ?? path);
+    // A configuration upgrade may have written its new project ID before the
+    // old path-keyed cache was copied.  A missing ID-keyed snapshot is safe to
+    // fall back in that case: newly created projects always save an explicit
+    // empty snapshot under their ID.
+    if (snapshot == null && project?.id != null) {
+      snapshot = await _conversationHistoryStore.read(path);
+    }
     return snapshot?.threads.length ?? 0;
   }
 
@@ -367,6 +392,9 @@ class CodexController extends ChangeNotifier {
   /// 返回当前项目中被置顶的任务 ID，不允许外部修改集合。
   /// Returns pinned task IDs for the current workspace as an immutable set.
   Set<String> get pinnedThreadIds => Set.unmodifiable(_pinnedThreadIds);
+
+  /// Stable identity of the active project, independent of its source path.
+  String? get workspaceProjectId => _workspaceProjectId;
 
   /// 判断指定任务是否已在当前项目中置顶。
   /// Returns whether a task is pinned in the current workspace.
@@ -427,6 +455,62 @@ class CodexController extends ChangeNotifier {
         gitDiffLoading = false;
         notifyListeners();
       }
+    }
+  }
+
+  /// 暂存一个文件，然后刷新当前工作区的 Git 摘要。
+  /// Stages one file and then refreshes the active workspace's Git summary.
+  Future<bool> stageGitChange(GitProjectChange change) => _runGitOperation(
+    () =>
+        _gitProjectService.stageFile(workspace: workspacePath!, change: change),
+  );
+
+  /// 在用户确认后还原一个文件，然后刷新 Git 摘要。
+  /// Restores one file after user confirmation and then refreshes the Git summary.
+  Future<bool> revertGitChange(GitProjectChange change) => _runGitOperation(
+    () => _gitProjectService.revertFile(
+      workspace: workspacePath!,
+      change: change,
+    ),
+  );
+
+  /// 以用户输入的消息创建 Git 提交；不会隐式暂存文件。
+  /// Creates a Git commit with the user's message and never stages files implicitly.
+  Future<bool> commitGitChanges(String message) => _runGitOperation(
+    () =>
+        _gitProjectService.commit(workspace: workspacePath!, message: message),
+  );
+
+  /// 推送当前 Git 分支，Git 会使用已配置的上游和凭据。
+  /// Pushes the current Git branch using its configured upstream and credentials.
+  Future<bool> pushGitBranch() => _runGitOperation(
+    () => _gitProjectService.push(workspace: workspacePath!),
+  );
+
+  /// 使用本机已认证的 GitHub CLI 为当前分支创建拉取请求。
+  /// Creates a pull request for the current branch with the locally authenticated GitHub CLI.
+  Future<bool> createGitPullRequest(String title) => _runGitOperation(
+    () => _gitProjectService.createPullRequest(
+      workspace: workspacePath!,
+      title: title,
+    ),
+  );
+
+  Future<bool> _runGitOperation(Future<void> Function() operation) async {
+    if (workspacePath == null || gitOperationRunning) return false;
+    gitOperationRunning = true;
+    gitOperationError = null;
+    if (!_disposed) notifyListeners();
+    try {
+      await operation();
+      await refreshGitProject();
+      return true;
+    } catch (error) {
+      gitOperationError = _messageOf(error);
+      return false;
+    } finally {
+      gitOperationRunning = false;
+      if (!_disposed) notifyListeners();
     }
   }
 
@@ -725,11 +809,17 @@ class CodexController extends ChangeNotifier {
         : _workspaceConfigurations[existingIndex].additionalPaths;
     if (existingIndex < 0) {
       _workspaceConfigurations.add(
-        WorkspaceConfiguration(primaryPath: canonicalPath),
+        WorkspaceConfiguration(
+          id: _newWorkspaceProjectId(),
+          primaryPath: canonicalPath,
+        ),
       );
     }
     _invalidateThreadRefreshes();
     workspacePath = canonicalPath;
+    _workspaceProjectId = existingIndex < 0
+        ? _workspaceConfigurations.last.id
+        : _workspaceConfigurations[existingIndex].id;
     _additionalWorkspacePaths
       ..clear()
       ..addAll(nextAdditionalPaths.where((path) => path != canonicalPath));
@@ -750,7 +840,15 @@ class CodexController extends ChangeNotifier {
     _clearStreamingState();
     _clearFileChanges();
     _resetConversationTimeline();
-    await _restoreConversationHistory(canonicalPath);
+    if (existingIndex < 0) {
+      // A newly created project starts with an explicit empty ownership set,
+      // even when Codex has older sessions for the same source directory.
+      _threadHistoryInitialized = true;
+      _ownedThreadIds.clear();
+      await _saveConversationHistory();
+    } else {
+      await _restoreConversationHistory(canonicalPath);
+    }
     unawaited(refreshGitProject());
     _add(TimelineKind.system, '项目已选择', canonicalPath);
     notifyListeners();
@@ -853,6 +951,7 @@ class CodexController extends ChangeNotifier {
     final trimmed = name.trim();
     final current = _workspaceConfigurations[index];
     _workspaceConfigurations[index] = WorkspaceConfiguration(
+      id: current.id,
       primaryPath: current.primaryPath,
       additionalPaths: current.additionalPaths,
       name: trimmed.isEmpty ? null : trimmed,
@@ -959,6 +1058,7 @@ class CodexController extends ChangeNotifier {
       return;
     }
     _workspaceConfigurations[index] = WorkspaceConfiguration(
+      id: configuration.id,
       primaryPath: configuration.primaryPath,
       additionalPaths: [...configuration.additionalPaths, canonicalPath],
       name: configuration.name,
@@ -1003,6 +1103,7 @@ class CodexController extends ChangeNotifier {
     final configuration = _workspaceConfigurations[index];
     if (!configuration.additionalPaths.contains(path)) return;
     _workspaceConfigurations[index] = WorkspaceConfiguration(
+      id: configuration.id,
       primaryPath: configuration.primaryPath,
       additionalPaths: configuration.additionalPaths
           .where((candidate) => candidate != path)
@@ -1125,6 +1226,7 @@ class CodexController extends ChangeNotifier {
     List<JsonMap> additionalInput = const [],
     String? goal,
     bool planMode = false,
+    List<String> imagePaths = const [],
   }) async {
     final text = prompt.trim();
     if (text.isEmpty || !canSend) return false;
@@ -1142,7 +1244,7 @@ class CodexController extends ChangeNotifier {
     status = RuntimeStatus.running;
     lastError = null;
     _clearStreamingState();
-    _add(TimelineKind.user, '你', text);
+    _add(TimelineKind.user, '你', text, imagePaths: imagePaths);
     notifyListeners();
 
     try {
@@ -1155,7 +1257,13 @@ class CodexController extends ChangeNotifier {
         model: _modelOverrideForNewThread,
         config: _newThreadConfig(),
       );
+      _ownedThreadIds.add(activeThreadId!);
+      _threadHistoryInitialized = true;
       _activeThreadAttached = true;
+      // App Server may not include a newly-created thread in the first list
+      // response while its turn is already running. Keep a lightweight local
+      // row so the sidebar can still identify and show the active task.
+      _ensureActiveThreadVisible(activeThreadId!, text);
       await refreshThreads();
       final id = activeThreadId!;
       _updateThreadStatus(id, 'active');
@@ -1192,6 +1300,23 @@ class CodexController extends ChangeNotifier {
     if (status == RuntimeStatus.failed) _scheduleRuntimeReconnect();
     notifyListeners();
     return false;
+  }
+
+  /// Keeps the just-created active thread visible while the server list catches up.
+  /// 在服务端线程列表同步前，先保留刚创建的活动任务行。
+  void _ensureActiveThreadVisible(String threadId, String preview) {
+    if (threads.any((thread) => thread.id == threadId)) return;
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    threads = [
+      ...threads,
+      CodexThread(
+        id: threadId,
+        preview: preview,
+        createdAt: now,
+        updatedAt: now,
+        status: 'active',
+      ),
+    ];
   }
 
   /// Refreshes the workspace-scoped skills advertised by App Server.
@@ -1245,6 +1370,7 @@ class CodexController extends ChangeNotifier {
   Future<bool> steerCurrentTurn(
     String prompt, {
     List<JsonMap> additionalInput = const [],
+    List<String> imagePaths = const [],
   }) async {
     final text = prompt.trim();
     final threadId = activeThreadId;
@@ -1252,7 +1378,7 @@ class CodexController extends ChangeNotifier {
     if (text.isEmpty || !canSteer || threadId == null || turnId == null) {
       return false;
     }
-    _add(TimelineKind.user, '你', text);
+    _add(TimelineKind.user, '你', text, imagePaths: imagePaths);
     lastError = null;
     notifyListeners();
     try {
@@ -1367,12 +1493,21 @@ class CodexController extends ChangeNotifier {
                     : thread.copyWith(status: localStatus);
               })
               .toList(growable: false);
-      var nextThreads = serverThreads;
+      var nextThreads = _threadHistoryInitialized
+          ? serverThreads
+                .where((thread) => _ownedThreadIds.contains(thread.id))
+                .toList(growable: false)
+          : serverThreads;
       if (serverThreads.isEmpty && allowLocalSessionFallback) {
         final localThreads = await _localSessionThreadStore.listThreads(
           workspace,
         );
         nextThreads = localThreads
+            .where(
+              (thread) =>
+                  !_threadHistoryInitialized ||
+                  _ownedThreadIds.contains(thread.id),
+            )
             .map((thread) {
               final localStatus = _localThreadStatuses[thread.id];
               return localStatus == null
@@ -1388,6 +1523,14 @@ class CodexController extends ChangeNotifier {
             nextThreads = [...nextThreads, cachedActive];
           }
         }
+      }
+      // A non-empty server response can still briefly omit the newly-created
+      // active thread. Preserve its local placeholder until the next refresh.
+      final activeId = activeThreadId;
+      if (activeId != null &&
+          !nextThreads.any((thread) => thread.id == activeId)) {
+        final cachedActive = _cachedThread(activeId);
+        if (cachedActive != null) nextThreads = [...nextThreads, cachedActive];
       }
       if (_isCurrentThreadRefresh(request, epoch, workspace)) {
         threads = nextThreads;
@@ -1593,10 +1736,18 @@ class CodexController extends ChangeNotifier {
     archivedThreadsError = null;
     if (!_disposed) notifyListeners();
     try {
-      final nextThreads = (await _server.listThreads(
-        workingDirectory: workspace,
-        archived: true,
-      )).map(CodexThread.fromJson).toList(growable: false);
+      final nextThreads =
+          (await _server.listThreads(
+                workingDirectory: workspace,
+                archived: true,
+              ))
+              .map(CodexThread.fromJson)
+              .where(
+                (thread) =>
+                    !_threadHistoryInitialized ||
+                    _ownedThreadIds.contains(thread.id),
+              )
+              .toList(growable: false);
       if (_isCurrentArchivedThreadRefresh(request, epoch, workspace)) {
         archivedThreads = nextThreads;
         _scheduleConversationHistorySave();
@@ -2077,10 +2228,20 @@ class CodexController extends ChangeNotifier {
     }
   }
 
-  /// 更新审批策略；自动模式会立即处理之后收到的审批请求。
-  /// Updates the approval policy; auto mode immediately handles later approval requests.
-  void setApprovalMode(ApprovalMode mode) {
-    if (approvalMode == mode) return;
+  /// 更新并持久化审批策略；自动模式会立即处理之后收到的审批请求。
+  /// Updates and persists the approval policy; auto mode immediately handles later approval requests.
+  Future<void> setApprovalMode(ApprovalMode mode) async {
+    _approvalModeChangedBeforeLoad = true;
+    if (approvalMode == mode) {
+      try {
+        await _saveApprovalMode(mode);
+      } catch (error) {
+        lastError = _messageOf(error);
+        _add(TimelineKind.error, '无法保存审批模式', lastError!);
+        if (!_disposed) notifyListeners();
+      }
+      return;
+    }
     approvalMode = mode;
     _add(
       TimelineKind.system,
@@ -2093,6 +2254,13 @@ class CodexController extends ChangeNotifier {
       unawaited(respondToApproval(accepted: true));
     }
     notifyListeners();
+    try {
+      await _saveApprovalMode(mode);
+    } catch (error) {
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '无法保存审批模式', lastError!);
+      if (!_disposed) notifyListeners();
+    }
   }
 
   /// 路由 App Server 事件，并更新时间线、审批和运行时状态。
@@ -2185,10 +2353,11 @@ class CodexController extends ChangeNotifier {
         }
       case 'skills/changed':
         unawaited(refreshSkills(forceReload: true));
+      // Unrecognized notifications are protocol implementation details. In
+      // particular, command output deltas can arrive very frequently and must
+      // not become visible timeline entries.
       default:
-        if (event.method.contains('command')) {
-          _add(TimelineKind.command, '执行事件', event.method);
-        }
+        break;
     }
     notifyListeners();
   }
@@ -2198,6 +2367,16 @@ class CodexController extends ChangeNotifier {
   /// Injects a server event into the controller for event-handling tests.
   void handleServerEventForTesting(ServerEvent event) =>
       _handleServerEvent(event);
+
+  @visibleForTesting
+  /// 供展示层测试直接替换时间线内容，无需模拟完整的 App Server 历史恢复会话。
+  /// Replaces timeline content for presentation tests without emulating a full App Server history-resume session.
+  void replaceTimelineEntriesForTesting(Iterable<TimelineEntry> values) {
+    _entries
+      ..clear()
+      ..addAll(values);
+    notifyListeners();
+  }
 
   /// 构造符合不同审批协议的允许或拒绝 JSON-RPC 结果。
   /// Builds an allow-or-deny JSON-RPC result for the relevant approval protocol.
@@ -2677,8 +2856,8 @@ class CodexController extends ChangeNotifier {
     };
   }
 
-  /// 加载本地运行时路径、新任务模型和推理强度偏好。
-  /// Loads local runtime-path, new-task model, and reasoning-effort preferences.
+  /// 加载本地运行时路径、新任务模型、推理强度和审批模式偏好。
+  /// Loads local runtime-path, new-task model, reasoning-effort, and approval-mode preferences.
   Future<void> _loadRuntimeConfiguration() async {
     try {
       final values = await Future.wait<Object?>([
@@ -2686,6 +2865,7 @@ class CodexController extends ChangeNotifier {
         _runtimeConfigurationStore.readReasoningEffort(),
         _runtimeConfigurationStore.readModel(),
         _runtimeConfigurationStore.readPinnedWorkspaces(),
+        _runtimeConfigurationStore.readApprovalMode(),
       ]);
       final executable = values[0] as String?;
       if (executable != null && executable.trim().isNotEmpty) {
@@ -2702,6 +2882,9 @@ class CodexController extends ChangeNotifier {
       _pinnedWorkspacePaths
         ..clear()
         ..addAll(values[3] as Set<String>);
+      if (!_approvalModeChangedBeforeLoad) {
+        approvalMode = approvalModeFromStorageValue(values[4] as String?);
+      }
     } catch (error) {
       runtimeError = '无法读取已保存的运行时配置：${_messageOf(error)}';
     }
@@ -2871,6 +3054,22 @@ class CodexController extends ChangeNotifier {
     return nextSave;
   }
 
+  /// 串行保存审批模式，避免较早写入覆盖用户较新的选择。
+  /// Serializes approval-mode writes so an older save cannot overwrite a newer selection.
+  Future<void> _saveApprovalMode(ApprovalMode value) {
+    final previousSave = _approvalModeSave;
+    final nextSave = () async {
+      try {
+        await previousSave;
+      } catch (_) {
+        // A previous write failure must not prevent a newer choice from saving.
+      }
+      await _runtimeConfigurationStore.saveApprovalMode(value.name);
+    }();
+    _approvalModeSave = nextSave;
+    return nextSave;
+  }
+
   /// 将当前目录集合写回对应工作区记录；没有主目录时保持列表不变。
   /// Writes the current directory set back to its workspace record, leaving the list unchanged without a primary path.
   void _updateCurrentWorkspaceConfiguration() {
@@ -2882,7 +3081,12 @@ class CodexController extends ChangeNotifier {
     final existingName = existingIndex < 0
         ? null
         : _workspaceConfigurations[existingIndex].name;
+    final existingId = existingIndex < 0
+        ? _newWorkspaceProjectId()
+        : _workspaceConfigurations[existingIndex].id ??
+              _newWorkspaceProjectId();
     final configuration = WorkspaceConfiguration(
+      id: existingId,
       primaryPath: primary,
       additionalPaths: _additionalWorkspacePaths
           .where((path) => path != primary)
@@ -2904,6 +3108,7 @@ class CodexController extends ChangeNotifier {
     final workspaceSnapshot = List<WorkspaceConfiguration>.unmodifiable(
       _workspaceConfigurations.map(
         (configuration) => WorkspaceConfiguration(
+          id: configuration.id,
           primaryPath: configuration.primaryPath,
           additionalPaths: configuration.additionalPaths,
           name: configuration.name,
@@ -2994,6 +3199,7 @@ class CodexController extends ChangeNotifier {
         }
       }
       return WorkspaceConfiguration(
+        id: stored.id ?? _newWorkspaceProjectId(),
         primaryPath: primaryPath,
         additionalPaths: additionalPaths,
         name: stored.name,
@@ -3034,6 +3240,9 @@ class CodexController extends ChangeNotifier {
               (existing) => existing.primaryPath == restored.primaryPath,
             )) {
           restoredConfigurations.add(restored);
+          if (stored.id == null || stored.id!.isEmpty) {
+            _legacyWorkspaceHistoryPaths.add(restored.primaryPath);
+          }
         }
       }
       final validWorkspacePaths = restoredConfigurations
@@ -3071,7 +3280,10 @@ class CodexController extends ChangeNotifier {
             additionalPaths: legacyAdditional,
           ),
         );
-        if (migrated != null) restoredConfigurations.add(migrated);
+        if (migrated != null) {
+          restoredConfigurations.add(migrated);
+          _legacyWorkspaceHistoryPaths.add(migrated.primaryPath);
+        }
       }
 
       _workspaceConfigurations
@@ -3089,6 +3301,9 @@ class CodexController extends ChangeNotifier {
               ? const <String>[]
               : _workspaceConfigurations[activeIndex].additionalPaths,
         );
+      _workspaceProjectId = activeIndex < 0
+          ? null
+          : _workspaceConfigurations[activeIndex].id;
 
       final storedJson = jsonEncode(
         storedConfigurations
@@ -3125,7 +3340,20 @@ class CodexController extends ChangeNotifier {
   /// Restores a workspace's cached threads, timeline, and diff into UI state.
   Future<void> _restoreConversationHistory(String workspace) async {
     try {
-      final snapshot = await _conversationHistoryStore.read(workspace);
+      final historyKey = _historyKeyFor(workspace);
+      var snapshot = await _conversationHistoryStore.read(historyKey);
+      if (snapshot == null && historyKey != workspace) {
+        snapshot = await _conversationHistoryStore.read(workspace);
+        // Persist the recovered legacy snapshot immediately. Previously this
+        // was deferred until another history change, so a restart could make
+        // an existing project's task list appear empty again.
+        if (snapshot != null) {
+          await _conversationHistoryStore.save(
+            workspace: historyKey,
+            snapshot: snapshot,
+          );
+        }
+      }
       if (_disposed || workspacePath != workspace || snapshot == null) return;
       threads = snapshot.threads;
       archivedThreads = snapshot.archivedThreads;
@@ -3144,6 +3372,10 @@ class CodexController extends ChangeNotifier {
         );
       turnDiff = snapshot.turnDiff;
       activeThreadId = snapshot.activeThreadId;
+      _ownedThreadIds
+        ..clear()
+        ..addAll(snapshot.ownedThreadIds);
+      _threadHistoryInitialized = snapshot.historyInitialized;
       _activeThreadAttached = false;
       // Cached history may predate file-level Diff support.
       // Hydrate safe untracked-file previews after restoring the snapshot.
@@ -3288,7 +3520,7 @@ class CodexController extends ChangeNotifier {
         // A failed older save must not prevent a newer snapshot from writing.
       }
       await _conversationHistoryStore.save(
-        workspace: workspace,
+        workspace: _historyKeyFor(workspace),
         snapshot: snapshot,
       );
     }();
@@ -3316,6 +3548,8 @@ class CodexController extends ChangeNotifier {
       pinnedThreadIds: Set.of(_pinnedThreadIds),
       turnDiff: turnDiff,
       activeThreadId: activeThreadId,
+      ownedThreadIds: Set.of(_ownedThreadIds),
+      historyInitialized: _threadHistoryInitialized,
     );
   }
 
@@ -3388,21 +3622,38 @@ class CodexController extends ChangeNotifier {
   String _messageOf(Object error) =>
       error.toString().replaceFirst('Bad state: ', '');
 
+  /// Creates a local project identity without tying history to its directory.
+  String _newWorkspaceProjectId() =>
+      'project-${DateTime.now().microsecondsSinceEpoch}-${_workspaceConfigurations.length}';
+
+  String _historyKeyFor(String workspace) => _workspaceProjectId ?? workspace;
+
   /// 创建带有当前时间戳的时间线条目。
   /// Creates a timeline entry stamped with the current time.
-  TimelineEntry _entry(TimelineKind kind, String title, String detail) {
+  TimelineEntry _entry(
+    TimelineKind kind,
+    String title,
+    String detail, {
+    List<String> imagePaths = const [],
+  }) {
     return TimelineEntry(
       kind: kind,
       title: title,
       detail: detail,
       createdAt: DateTime.now(),
+      imagePaths: imagePaths,
     );
   }
 
   /// 追加时间线条目并安排本地历史保存。
   /// Appends a timeline entry and schedules local history persistence.
-  void _add(TimelineKind kind, String title, String detail) {
-    _entries.add(_entry(kind, title, detail));
+  void _add(
+    TimelineKind kind,
+    String title,
+    String detail, {
+    List<String> imagePaths = const [],
+  }) {
+    _entries.add(_entry(kind, title, detail, imagePaths: imagePaths));
     _scheduleConversationHistorySave();
   }
 

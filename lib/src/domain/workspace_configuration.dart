@@ -5,8 +5,13 @@ class WorkspaceConfiguration {
     required this.primaryPath,
     List<String> additionalPaths = const [],
     this.name,
-  }) : additionalPaths = List.unmodifiable(additionalPaths);
+    String? id,
+  }) : id = id?.trim().isNotEmpty == true ? id!.trim() : null,
+       additionalPaths = List.unmodifiable(additionalPaths);
 
+  /// Stable identity for the Codex Desk project. It is deliberately separate
+  /// from the source directory so project history does not leak by path.
+  final String? id;
   final String primaryPath;
   final List<String> additionalPaths;
   final String? name;
@@ -19,6 +24,7 @@ class WorkspaceConfiguration {
     final name = json['name']?.toString().trim();
     return WorkspaceConfiguration(
       primaryPath: primaryPath,
+      id: json['id']?.toString(),
       name: name == null || name.isEmpty ? null : name,
       additionalPaths: additional is Iterable
           ? additional
@@ -33,6 +39,7 @@ class WorkspaceConfiguration {
   /// 返回工作区的稳定 JSON 表示，不保存项目文件或对话内容。
   /// Returns a stable workspace JSON representation without project files or conversation content.
   Map<String, Object?> toJson() => {
+    if (id != null && id!.isNotEmpty) 'id': id,
     'primaryPath': primaryPath,
     'additionalPaths': additionalPaths,
     if (name != null && name!.isNotEmpty) 'name': name,

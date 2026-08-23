@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -63,6 +64,12 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   final TextEditingController _composer = TextEditingController();
   final ScrollController _timelineScrollController = ScrollController();
   bool _timelineScrollScheduled = false;
+  static const _minimumSidebarWidth = 210.0;
+  static const _maximumSidebarWidth = 420.0;
+  static const _minimumInspectorWidth = 280.0;
+  static const _maximumInspectorWidth = 460.0;
+  double _sidebarWidth = 250;
+  double _inspectorWidth = 352;
   late final CodexController _controller;
 
   /// 注册控制器监听器，使时间线在内容更新后自动滚动。
@@ -113,21 +120,24 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     });
   }
 
-  /// 打开目录选择器并将所选目录注册为新的可切换工作区。
-  /// Opens the directory picker and registers the selected directory as a new switchable workspace.
-  Future<bool> _createWorkspace() async {
-    try {
-      final path = await getDirectoryPath(confirmButtonText: '新建工作区');
-      if (path != null && path.trim().isNotEmpty) {
-        return await _controller.createWorkspace(path);
-      }
-    } catch (_) {
-      if (!mounted) return false;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('无法打开目录选择器。')));
-    }
-    return false;
+  /// 打开创建项目弹窗，并在选择源文件夹后注册新的可切换工作区。
+  /// Opens the create-project dialog and registers a new switchable workspace after its source folder is chosen.
+  Future<void> _createWorkspace() async {
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.62),
+      builder: (dialogContext) => _CreateWorkspaceDialog(
+        onCreate: (path, name) async {
+          final created = await _controller.createWorkspace(path);
+          if (!created) return false;
+          final primary = _controller.workspacePath;
+          if (primary != null) {
+            await _controller.renameWorkspace(primary, name);
+          }
+          return true;
+        },
+      ),
+    );
   }
 
   /// 选择并添加一个附加工作区目录。
@@ -593,6 +603,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     if (rawPrompt.isEmpty && !submission.hasContext) return false;
     final contextLines = <String>[];
     final additionalInput = <Map<String, dynamic>>[];
+    final imagePaths = <String>[];
     final skillNames = <String>{};
     final selectedSkills = [...submission.skills];
     if (submission.recordSkill) {
@@ -613,6 +624,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     for (final attachment in submission.attachments) {
       final path = attachment.path;
       if (!attachment.isDirectory && _isImagePath(path)) {
+        imagePaths.add(path);
         additionalInput.add({'type': 'localImage', 'path': path});
       } else {
         contextLines.add('附加路径：$path');
@@ -632,14 +644,65 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       additionalInput: additionalInput,
       goal: submission.goal,
       planMode: submission.planMode,
+      imagePaths: imagePaths,
     );
     if (sent) _composer.clear();
     return sent;
   }
 
-  /// Sends text entered while a turn is running as a direction adjustment.
-  /// 运行中 Composer 的纯文本输入通过 `turn/steer` 发送到当前活动 turn。
-  Future<bool> _steer(String prompt) => _controller.steerCurrentTurn(prompt);
+  /// Sends composer text and context while a turn is running as a direction adjustment.
+  /// 运行中 Composer 的文本与附件上下文通过 `turn/steer` 发送到当前活动 turn。
+  Future<bool> _steer(_ComposerSubmission submission) async {
+    final rawPrompt = _composer.text.trim();
+    final contextLines = <String>[];
+    final additionalInput = <Map<String, dynamic>>[];
+    final imagePaths = <String>[];
+    final selectedSkills = [...submission.skills];
+    final skillNames = <String>{};
+    if (submission.recordSkill) {
+      final creator = _controller.skills
+          .where((skill) => skill.name == 'skill-creator')
+          .firstOrNull;
+      if (creator != null) selectedSkills.add(creator);
+      contextLines.add('请把本次调整的有效流程整理成一个可复用的 Codex 技能。');
+    }
+    for (final skill in selectedSkills) {
+      if (!skillNames.add(skill.name)) continue;
+      additionalInput.add({
+        'type': 'skill',
+        'name': skill.name,
+        'path': skill.path,
+      });
+    }
+    for (final attachment in submission.attachments) {
+      if (!attachment.isDirectory && _isImagePath(attachment.path)) {
+        imagePaths.add(attachment.path);
+        additionalInput.add({'type': 'localImage', 'path': attachment.path});
+      } else {
+        contextLines.add('附加路径：${attachment.path}');
+      }
+    }
+    if (submission.includeWorkspace && _controller.workspacePath != null) {
+      contextLines.add('显式附加当前项目：${_controller.workspacePath}');
+    }
+    if (submission.goal?.trim() case final goal? when goal.isNotEmpty) {
+      contextLines.add('调整目标：$goal');
+    }
+    if (submission.planMode) {
+      contextLines.add('请先给出执行计划，再继续处理这次调整。');
+    }
+    final skillPrefix = skillNames.map((name) => '\$$name').join(' ');
+    final prompt = <String>[
+      if (skillPrefix.isNotEmpty) skillPrefix,
+      rawPrompt.isEmpty ? '请根据附加内容调整当前任务。' : rawPrompt,
+      if (contextLines.isNotEmpty) '\n${contextLines.join('\n')}',
+    ].join(' ').trim();
+    return _controller.steerCurrentTurn(
+      prompt,
+      additionalInput: additionalInput,
+      imagePaths: imagePaths,
+    );
+  }
 
   /// Opens a focused editor for steering the currently running turn.
   /// 打开“调整方向”编辑器，将新的指示发送到当前活动 turn。
@@ -1356,8 +1419,8 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     );
   }
 
-  /// 刷新并展示当前项目的只读 Git 状态和文件 Diff，不提供仓库写操作。
-  /// Refreshes and shows the current project's read-only Git status and file diffs without repository write actions.
+  /// 刷新并展示当前项目的 Git 状态和 Diff，以及用户显式触发的 Git 操作。
+  /// Refreshes and shows the current project's Git state, diffs, and explicitly triggered Git actions.
   Future<void> _showGitProject() async {
     await _controller.refreshGitProject();
     if (!mounted) return;
@@ -1708,9 +1771,25 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   final compact = constraints.maxWidth < 980;
+                  final sidebarMaximum =
+                      (constraints.maxWidth -
+                              (compact ? 360 : _inspectorWidth + 420))
+                          .clamp(_minimumSidebarWidth, _maximumSidebarWidth)
+                          .toDouble();
+                  final inspectorMaximum =
+                      (constraints.maxWidth - _sidebarWidth - 420)
+                          .clamp(_minimumInspectorWidth, _maximumInspectorWidth)
+                          .toDouble();
+                  final sidebarWidth = _sidebarWidth
+                      .clamp(_minimumSidebarWidth, sidebarMaximum)
+                      .toDouble();
+                  final inspectorWidth = _inspectorWidth
+                      .clamp(_minimumInspectorWidth, inspectorMaximum)
+                      .toDouble();
                   return Row(
                     children: [
                       _Sidebar(
+                        width: sidebarWidth,
                         controller: controller,
                         onChooseWorkspace: _showWorkspaceDirectories,
                         onEditWorkspace: _showEditWorkspaceDialog,
@@ -1725,7 +1804,14 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                         onImportHistory: _importConversationHistory,
                         onShowGitProject: _showGitProject,
                       ),
-                      const VerticalDivider(width: 1),
+                      _PaneResizeHandle(
+                        key: const Key('sidebar-resize-handle'),
+                        onDragDelta: (delta) => setState(() {
+                          _sidebarWidth = (_sidebarWidth + delta)
+                              .clamp(_minimumSidebarWidth, sidebarMaximum)
+                              .toDouble();
+                        }),
+                      ),
                       Expanded(
                         child: _ConversationPane(
                           controller: controller,
@@ -1739,8 +1825,19 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                         ),
                       ),
                       if (!compact) ...[
-                        const VerticalDivider(width: 1),
-                        _Inspector(controller: controller),
+                        _PaneResizeHandle(
+                          key: const Key('inspector-resize-handle'),
+                          onDragDelta: (delta) => setState(() {
+                            _inspectorWidth = (_inspectorWidth - delta)
+                                .clamp(_minimumInspectorWidth, inspectorMaximum)
+                                .toDouble();
+                          }),
+                        ),
+                        _Inspector(
+                          width: inspectorWidth,
+                          controller: controller,
+                          onShowGitProject: _showGitProject,
+                        ),
                       ],
                     ],
                   );
@@ -1748,6 +1845,53 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PaneResizeHandle extends StatefulWidget {
+  const _PaneResizeHandle({required this.onDragDelta, super.key});
+
+  final ValueChanged<double> onDragDelta;
+
+  /// 创建承载悬停与拖拽状态的分隔条 State。
+  /// Creates the divider state that owns hover and drag feedback.
+  @override
+  State<_PaneResizeHandle> createState() => _PaneResizeHandleState();
+}
+
+class _PaneResizeHandleState extends State<_PaneResizeHandle> {
+  bool _hovered = false;
+  bool _dragging = false;
+
+  /// 构建桌面窗格的可拖拽分隔条，并在悬停或拖动时提高可见性。
+  /// Builds a desktop pane divider that becomes more visible on hover or drag.
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final active = _hovered || _dragging;
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeColumn,
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onHorizontalDragStart: (_) => setState(() => _dragging = true),
+        onHorizontalDragUpdate: (details) =>
+            widget.onDragDelta(details.delta.dx),
+        onHorizontalDragEnd: (_) => setState(() => _dragging = false),
+        onHorizontalDragCancel: () => setState(() => _dragging = false),
+        child: SizedBox(
+          width: 8,
+          child: Center(
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 120),
+              width: active ? 2 : 1,
+              color: active ? palette.active : palette.border,
+            ),
+          ),
         ),
       ),
     );
@@ -1762,10 +1906,311 @@ String _workspaceDirectoryName(String path) {
   return separator < 0 ? normalized : normalized.substring(separator + 1);
 }
 
+/// Displays the Codex-style project creation flow and accepts a source folder
+/// from either the native picker or a desktop drop.
+class _CreateWorkspaceDialog extends StatefulWidget {
+  const _CreateWorkspaceDialog({required this.onCreate});
+
+  final Future<bool> Function(String path, String name) onCreate;
+
+  @override
+  State<_CreateWorkspaceDialog> createState() => _CreateWorkspaceDialogState();
+}
+
+class _CreateWorkspaceDialogState extends State<_CreateWorkspaceDialog> {
+  final _nameController = TextEditingController();
+  String? _sourceDirectory;
+  bool _draggingDirectory = false;
+  bool _creating = false;
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  /// 打开系统目录选择器并更新弹窗中的源文件夹。
+  /// Opens the native directory picker and updates the source folder in the dialog.
+  Future<void> _chooseDirectory() async {
+    try {
+      final path = await getDirectoryPath(confirmButtonText: '选择文件夹');
+      if (!mounted || path == null || path.trim().isEmpty) return;
+      setState(() => _sourceDirectory = path);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('无法打开目录选择器。')));
+    }
+  }
+
+  /// 接收桌面拖入的目录；文件或空路径会被拒绝并提示用户。
+  /// Accepts a desktop-dropped directory and rejects files or empty paths with feedback.
+  void _acceptDroppedDirectories(List<DropItem> items) {
+    final directory = items.whereType<DropItemDirectory>().firstOrNull;
+    if (directory == null || directory.path.trim().isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请拖入一个文件夹。')));
+      return;
+    }
+    if (mounted) setState(() => _sourceDirectory = directory.path);
+  }
+
+  /// 校验源文件夹并创建工作区，成功后关闭弹窗。
+  /// Validates the source folder, creates the workspace, and closes the dialog on success.
+  Future<void> _createProject() async {
+    final directory = _sourceDirectory;
+    if (directory == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请先添加一个源文件夹。')));
+      return;
+    }
+    setState(() => _creating = true);
+    final created = await widget.onCreate(directory, _nameController.text);
+    if (!mounted) return;
+    if (created) {
+      Navigator.of(context).pop();
+    } else {
+      setState(() => _creating = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final sourceDirectory = _sourceDirectory;
+    final hasSourceDirectory = sourceDirectory != null;
+    final sourceColor = _draggingDirectory ? palette.active : palette.border;
+    return Dialog(
+      key: const Key('create-workspace-dialog'),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
+      backgroundColor: palette.module,
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 960),
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(34, 28, 32, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        key: const Key('create-workspace-dialog-title'),
+                        '创建项目',
+                        style: Theme.of(context).textTheme.headlineSmall
+                            ?.copyWith(
+                              fontSize: 34,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: -0.8,
+                            ),
+                      ),
+                    ),
+                    IconButton(
+                      key: const Key('close-create-workspace-dialog'),
+                      tooltip: '关闭',
+                      onPressed: _creating
+                          ? null
+                          : () => Navigator.of(context).pop(),
+                      icon: const Icon(Icons.close, size: 25),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 26),
+                _WorkspaceNameField(
+                  controller: _nameController,
+                  hintText: '项目名称',
+                  borderColor: palette.border,
+                ),
+                const SizedBox(height: 25),
+                Text(
+                  '源文件夹',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontSize: 24,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                DropTarget(
+                  key: const Key('create-workspace-folder-drop-target'),
+                  onDragEntered: (_) {
+                    if (mounted) setState(() => _draggingDirectory = true);
+                  },
+                  onDragExited: (_) {
+                    if (mounted) setState(() => _draggingDirectory = false);
+                  },
+                  onDragDone: (details) {
+                    if (mounted) setState(() => _draggingDirectory = false);
+                    _acceptDroppedDirectories(details.files);
+                  },
+                  child: Semantics(
+                    button: true,
+                    label: '添加 Codex 可读取和编辑的文件夹',
+                    child: Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        key: const Key('create-workspace-folder-picker'),
+                        borderRadius: BorderRadius.circular(20),
+                        onTap: _creating ? null : _chooseDirectory,
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 140),
+                          curve: Curves.easeOut,
+                          constraints: const BoxConstraints(minHeight: 190),
+                          decoration: BoxDecoration(
+                            color: _draggingDirectory
+                                ? Color.alphaBlend(
+                                    palette.active.withValues(alpha: 0.08),
+                                    palette.module,
+                                  )
+                                : palette.module,
+                            border: Border.all(
+                              color: sourceColor,
+                              width: _draggingDirectory ? 1.5 : 1,
+                            ),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Center(
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 28,
+                                vertical: 24,
+                              ),
+                              child: hasSourceDirectory
+                                  ? Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          Icons.folder_outlined,
+                                          size: 31,
+                                          color: palette.trace,
+                                        ),
+                                        const SizedBox(height: 12),
+                                        Tooltip(
+                                          message: sourceDirectory,
+                                          child: Text(
+                                            _workspaceDirectoryName(
+                                              sourceDirectory,
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: TextStyle(
+                                              color: palette.trace,
+                                              fontSize: 20,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 6),
+                                        Text(
+                                          '点击以更换文件夹',
+                                          style: TextStyle(
+                                            color: palette.muted,
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  : Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          _draggingDirectory
+                                              ? Icons
+                                                    .drive_folder_upload_outlined
+                                              : Icons
+                                                    .create_new_folder_outlined,
+                                          size: 31,
+                                          color: palette.muted,
+                                        ),
+                                        const SizedBox(height: 13),
+                                        Text(
+                                          _draggingDirectory
+                                              ? '松开即可添加文件夹'
+                                              : '添加 Codex 可读取和编辑的文件夹',
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(
+                                            color: palette.trace,
+                                            fontSize: 22,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 28),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      key: const Key('cancel-create-workspace'),
+                      onPressed: _creating
+                          ? null
+                          : () => Navigator.of(context).pop(),
+                      style: TextButton.styleFrom(
+                        foregroundColor: palette.muted,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 15,
+                        ),
+                      ),
+                      child: const Text(
+                        '取消',
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                    const SizedBox(width: 20),
+                    FilledButton(
+                      key: const Key('create-workspace-confirm'),
+                      onPressed: _creating ? null : _createProject,
+                      style: FilledButton.styleFrom(
+                        foregroundColor: palette.module,
+                        backgroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 30,
+                          vertical: 15,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(15),
+                        ),
+                      ),
+                      child: Text(
+                        _creating ? '创建中…' : '创建项目',
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _WorkspaceNameField extends StatelessWidget {
-  const _WorkspaceNameField({required this.controller});
+  const _WorkspaceNameField({
+    required this.controller,
+    this.hintText,
+    this.borderColor,
+  });
 
   final TextEditingController controller;
+  final String? hintText;
+  final Color? borderColor;
 
   @override
   Widget build(BuildContext context) {
@@ -1773,7 +2218,7 @@ class _WorkspaceNameField extends StatelessWidget {
     return Container(
       height: 80,
       decoration: BoxDecoration(
-        border: Border.all(color: palette.active, width: 1.5),
+        border: Border.all(color: borderColor ?? palette.active, width: 1.5),
         borderRadius: BorderRadius.circular(20),
       ),
       clipBehavior: Clip.antiAlias,
@@ -1796,8 +2241,18 @@ class _WorkspaceNameField extends StatelessWidget {
               controller: controller,
               textInputAction: TextInputAction.done,
               style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w500),
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
+                // The surrounding container owns the field border. Explicitly
+                // override every themed state border so the TextField cannot
+                // render a second outline when focused.
+                filled: false,
                 border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                disabledBorder: InputBorder.none,
+                errorBorder: InputBorder.none,
+                focusedErrorBorder: InputBorder.none,
+                hintText: hintText,
                 contentPadding: EdgeInsets.symmetric(horizontal: 18),
               ),
             ),
@@ -2600,6 +3055,7 @@ class _WorkspaceDetailsRow extends StatelessWidget {
 
 class _Sidebar extends StatefulWidget {
   const _Sidebar({
+    required this.width,
     required this.controller,
     required this.onChooseWorkspace,
     required this.onEditWorkspace,
@@ -2615,6 +3071,7 @@ class _Sidebar extends StatefulWidget {
     required this.onShowGitProject,
   });
 
+  final double width;
   final CodexController controller;
   final VoidCallback onChooseWorkspace;
   final void Function(String primaryPath) onEditWorkspace;
@@ -2636,12 +3093,29 @@ class _Sidebar extends StatefulWidget {
   State<_Sidebar> createState() => _SidebarState();
 }
 
+/// 缓存已访问工作区的任务列表，让切换项目只改变当前态而不会收起其他项目。
+/// Keeps visited workspace task lists mounted in the tree when the active project changes.
+class _WorkspaceThreadSnapshot {
+  const _WorkspaceThreadSnapshot({
+    required this.threads,
+    required this.pinnedIds,
+  });
+
+  final List<CodexThread> threads;
+  final Set<String> pinnedIds;
+}
+
 class _SidebarState extends State<_Sidebar> {
   final TextEditingController _threadSearch = TextEditingController();
   String _query = '';
   bool _batchMode = false;
   final Set<String> _selectedThreadIds = {};
+
+  /// 已打开过的已完成任务；打开后不再重复显示完成提醒。
+  /// Completed tasks acknowledged by opening them, so the reminder is not repeated.
+  final Set<String> _acknowledgedCompletedThreadIds = {};
   final Map<String, int> _workspaceTaskCounts = {};
+  final Map<String, _WorkspaceThreadSnapshot> _workspaceThreadSnapshots = {};
   OverlayEntry? _workspaceDetailsEntry;
   Timer? _workspaceDetailsHideTimer;
 
@@ -2863,22 +3337,33 @@ class _SidebarState extends State<_Sidebar> {
   /// 构建树中的任务文件节点；任务操作仍沿用原有菜单和批量选择行为。
   /// Builds a task-file node in the tree while preserving the existing actions.
   Widget _buildThreadNode(CodexController controller, CodexThread thread) {
+    final indicator = _threadStatusIndicator(thread.status);
+    final currentRunningThread =
+        controller.activeThreadId == thread.id &&
+        (controller.status == RuntimeStatus.running ||
+            _isRunningThreadStatus(thread.status));
     return Padding(
       padding: const EdgeInsets.only(left: 25, right: 1),
       child: _HistoryThreadTile(
         thread: thread,
         selected: controller.activeThreadId == thread.id,
         pinned: controller.isThreadPinned(thread.id),
-        statusIndicator: _threadStatusIndicator(thread.status),
-        running:
-            controller.status == RuntimeStatus.running &&
-            controller.activeThreadId == thread.id,
+        statusIndicator:
+            indicator == _ThreadStatusIndicator.completed &&
+                _acknowledgedCompletedThreadIds.contains(thread.id)
+            ? null
+            : indicator,
+        running: currentRunningThread,
         enabled:
-            controller.status == RuntimeStatus.ready &&
+            (controller.status == RuntimeStatus.ready ||
+                currentRunningThread) &&
             !controller.isUpdatingThread(thread.id),
         selectionMode: _batchMode,
         batchSelected: _selectedThreadIds.contains(thread.id),
         onTap: () {
+          // The active row remains clickable for focus/feedback while its
+          // turn runs, but must not attempt to resume or replace the thread.
+          if (currentRunningThread) return;
           if (_batchMode) {
             setState(() {
               if (!_selectedThreadIds.add(thread.id)) {
@@ -2886,6 +3371,11 @@ class _SidebarState extends State<_Sidebar> {
               }
             });
           } else {
+            if (indicator == _ThreadStatusIndicator.completed) {
+              setState(() {
+                _acknowledgedCompletedThreadIds.add(thread.id);
+              });
+            }
             controller.resumeThread(thread);
           }
         },
@@ -2903,8 +3393,20 @@ class _SidebarState extends State<_Sidebar> {
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
     final controller = widget.controller;
+    final activePath = controller.workspacePath;
+    if (activePath != null &&
+        (!controller.threadsLoading ||
+            !_workspaceThreadSnapshots.containsKey(activePath))) {
+      _workspaceThreadSnapshots[activePath] = _WorkspaceThreadSnapshot(
+        threads: List.unmodifiable(controller.threads),
+        pinnedIds: Set.unmodifiable(controller.pinnedThreadIds),
+      );
+    }
     final query = _query.trim().toLowerCase();
-    final filteredThreads = controller.threads
+    final activeSnapshot = activePath == null
+        ? null
+        : _workspaceThreadSnapshots[activePath];
+    final filteredThreads = (activeSnapshot?.threads ?? controller.threads)
         .where(
           (thread) =>
               query.isEmpty ||
@@ -2920,14 +3422,16 @@ class _SidebarState extends State<_Sidebar> {
         (thread) => !controller.isThreadPinned(thread.id),
       ),
     ];
-    final hasPinnedThreads = filteredThreads.any(
-      (thread) => controller.isThreadPinned(thread.id),
-    );
+    final hasPinnedThreads = filteredThreads.any((thread) {
+      return activeSnapshot?.pinnedIds.contains(thread.id) ??
+          controller.isThreadPinned(thread.id);
+    });
     final pinnedThreads = visibleThreads
-        .where((thread) => controller.isThreadPinned(thread.id))
-        .toList(growable: false);
-    final projectThreads = visibleThreads
-        .where((thread) => !controller.isThreadPinned(thread.id))
+        .where(
+          (thread) =>
+              activeSnapshot?.pinnedIds.contains(thread.id) ??
+              controller.isThreadPinned(thread.id),
+        )
         .toList(growable: false);
     // 保持用户创建工作区时的顺序；切换只改变选中态，不重排列表。
     // Preserve creation order; switching changes selection without reordering the list.
@@ -2940,8 +3444,31 @@ class _SidebarState extends State<_Sidebar> {
         : controller.workspacePath == null
         ? const <WorkspaceConfiguration>[]
         : [WorkspaceConfiguration(primaryPath: controller.workspacePath!)];
+    final workspaceThreadsByPath = <String, List<CodexThread>>{};
+    final workspaceProjectThreadsByPath = <String, List<CodexThread>>{};
+    for (final workspace in workspaces) {
+      final snapshot = _workspaceThreadSnapshots[workspace.primaryPath];
+      final threads = workspace.primaryPath == activePath
+          ? (activeSnapshot?.threads ?? controller.threads)
+          : (snapshot?.threads ?? const <CodexThread>[]);
+      final pinnedIds = workspace.primaryPath == activePath
+          ? (activeSnapshot?.pinnedIds ?? controller.pinnedThreadIds)
+          : (snapshot?.pinnedIds ?? const <String>{});
+      workspaceThreadsByPath[workspace.primaryPath] = threads;
+      workspaceProjectThreadsByPath[workspace.primaryPath] = threads
+          .where(
+            (thread) =>
+                (workspace.primaryPath != activePath ||
+                    !pinnedIds.contains(thread.id)) &&
+                (query.isEmpty ||
+                    thread.title.toLowerCase().contains(query) ||
+                    thread.preview.toLowerCase().contains(query)),
+          )
+          .toList(growable: false);
+    }
     return SizedBox(
-      width: 250,
+      key: const Key('sidebar-pane'),
+      width: widget.width,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(10, 12, 10, 10),
         child: Column(
@@ -3172,8 +3699,7 @@ class _SidebarState extends State<_Sidebar> {
                                     ),
                                 onHoverEnd: _scheduleWorkspaceDetailsHide,
                               ),
-                              if (workspace.primaryPath ==
-                                  controller.workspacePath) ...[
+                              if (workspace.primaryPath == activePath) ...[
                                 if (controller.threadsError case final error?)
                                   Padding(
                                     padding: const EdgeInsets.only(
@@ -3182,21 +3708,39 @@ class _SidebarState extends State<_Sidebar> {
                                     ),
                                     child: _MutedText(error),
                                   )
-                                else if (controller.threads.isEmpty)
+                                else if (workspaceProjectThreadsByPath[workspace
+                                            .primaryPath]!
+                                        .isEmpty &&
+                                    workspaceThreadsByPath[workspace
+                                            .primaryPath]!
+                                        .isEmpty)
                                   const Padding(
                                     padding: EdgeInsets.only(left: 34, top: 4),
                                     child: _MutedText('暂无历史任务；发送第一条消息后会创建。'),
                                   )
-                                else if (projectThreads.isEmpty)
+                                else if (workspaceProjectThreadsByPath[workspace
+                                        .primaryPath]!
+                                    .isEmpty)
                                   const Padding(
                                     padding: EdgeInsets.only(left: 34, top: 4),
                                     child: _MutedText('没有匹配的任务。'),
                                   )
                                 else
-                                  for (final thread in projectThreads) ...[
+                                  for (final thread
+                                      in workspaceProjectThreadsByPath[workspace
+                                          .primaryPath]!) ...[
                                     _buildThreadNode(controller, thread),
                                     const SizedBox(height: 1),
                                   ],
+                              ] else if (_workspaceThreadSnapshots.containsKey(
+                                workspace.primaryPath,
+                              )) ...[
+                                for (final thread
+                                    in workspaceProjectThreadsByPath[workspace
+                                        .primaryPath]!) ...[
+                                  _buildThreadNode(controller, thread),
+                                  const SizedBox(height: 1),
+                                ],
                               ],
                               const SizedBox(height: 5),
                             ],
@@ -3244,7 +3788,7 @@ class _ConversationPane extends StatelessWidget {
   final TextEditingController composer;
   final ScrollController timelineScrollController;
   final Future<bool> Function(_ComposerSubmission submission) onSend;
-  final Future<bool> Function(String prompt) onSteer;
+  final Future<bool> Function(_ComposerSubmission submission) onSteer;
   final Future<void> Function(String originalPrompt) onAdjustDirection;
   final Future<void> Function() onShowFileChanges;
   final Future<void> Function() onReview;
@@ -3323,6 +3867,9 @@ class _ConversationPane extends StatelessWidget {
               final latestUserIndex = controller.entries.lastIndexWhere(
                 (entry) => entry.kind == TimelineKind.user,
               );
+              final timelineItems = _conversationTimelineItems(
+                controller.entries,
+              );
               return Stack(
                 children: [
                   ListView.separated(
@@ -3334,7 +3881,7 @@ class _ConversationPane extends StatelessWidget {
                       plan == null ? 12 : planHeight + 28,
                     ),
                     itemCount:
-                        controller.entries.length +
+                        timelineItems.length +
                         (controller.status != RuntimeStatus.running &&
                                 controller.fileChanges.isNotEmpty
                             ? 1
@@ -3344,19 +3891,28 @@ class _ConversationPane extends StatelessWidget {
                       child: Divider(height: 1),
                     ),
                     itemBuilder: (context, index) {
-                      if (index == controller.entries.length) {
+                      if (index == timelineItems.length) {
                         return _FileChangeSummaryCard(
                           changes: controller.fileChanges,
                           turnDiff: controller.turnDiff,
                           onReview: onReview,
                         );
                       }
-                      final entry = controller.entries[index];
+                      final item = timelineItems[index];
+                      if (item.activities case final activities?) {
+                        return _TimelineActivityList(
+                          key: ValueKey(
+                            'timeline-activity-${activities.first.createdAt.microsecondsSinceEpoch}',
+                          ),
+                          entries: activities,
+                        );
+                      }
+                      final entry = item.entry!;
                       return _TimelineEntry(
                         entry,
                         onAdjustDirection:
                             controller.canSteer &&
-                                index == latestUserIndex &&
+                                item.entryIndex == latestUserIndex &&
                                 entry.kind == TimelineKind.user
                             ? () => onAdjustDirection(entry.detail)
                             : null,
@@ -4554,9 +5110,6 @@ class _ComposerModelControls extends StatelessWidget {
       decoration: BoxDecoration(
         color: palette.raised,
         borderRadius: BorderRadius.circular(9),
-        border: Border.all(
-          color: selectionError == null ? palette.controlBorder : palette.fault,
-        ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -4628,7 +5181,6 @@ class _ComposerModelControls extends StatelessWidget {
               ),
             ),
           ),
-          Container(width: 1, height: 18, color: palette.controlBorder),
           PopupMenuButton<ReasoningEffort>(
             key: const Key('reasoning-effort-selector'),
             enabled: effortEnabled,
@@ -4645,7 +5197,7 @@ class _ComposerModelControls extends StatelessWidget {
                     key: ValueKey('reasoning-option-${effort.name}'),
                     value: effort,
                     checked: controller.reasoningEffort == effort,
-                    child: Text('新任务推理强度：${effort.label}'),
+                    child: Text(effort.label),
                   ),
                 )
                 .toList(growable: false),
@@ -4659,7 +5211,7 @@ class _ComposerModelControls extends StatelessWidget {
                   children: [
                     Flexible(
                       child: Text(
-                        '推理${controller.reasoningEffort.label}',
+                        controller.reasoningEffort.label,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(
@@ -4798,7 +5350,7 @@ class _ComposerPanel extends StatefulWidget {
   final CodexController controller;
   final TextEditingController composer;
   final Future<bool> Function(_ComposerSubmission submission) onSend;
-  final Future<bool> Function(String prompt) onSteer;
+  final Future<bool> Function(_ComposerSubmission submission) onSteer;
 
   @override
   State<_ComposerPanel> createState() => _ComposerPanelState();
@@ -4833,14 +5385,6 @@ class _ComposerPanelState extends State<_ComposerPanel> {
       _includeWorkspace ||
       _goal?.isNotEmpty == true ||
       _planMode ||
-      _recordSkill ||
-      _selectedSkillPaths.isNotEmpty;
-
-  /// 指示运行中的 steering 是否仍有无法随纯文本发送的临时上下文。
-  /// Indicates whether steering still has transient context that cannot be sent as plain text.
-  bool get _hasUnsupportedSteeringContext =>
-      _attachments.isNotEmpty ||
-      _includeWorkspace ||
       _recordSkill ||
       _selectedSkillPaths.isNotEmpty;
 
@@ -4881,10 +5425,17 @@ class _ComposerPanelState extends State<_ComposerPanel> {
     final attachedPaths = _attachments
         .map((attachment) => attachment.path)
         .toSet();
-    final paths = <String>{
-      ..._securityBookmarks.keys,
-      ..._temporaryAttachmentPaths,
-    }.where((path) => !attachedPaths.contains(path)).toList(growable: false);
+    final timelineImagePaths = controller.entries
+        .expand((entry) => entry.imagePaths)
+        .toSet();
+    final paths =
+        <String>{..._securityBookmarks.keys, ..._temporaryAttachmentPaths}
+            .where(
+              (path) =>
+                  !attachedPaths.contains(path) &&
+                  !timelineImagePaths.contains(path),
+            )
+            .toList(growable: false);
     for (final path in paths) {
       _releaseAttachmentResources(path);
     }
@@ -4933,24 +5484,17 @@ class _ComposerPanelState extends State<_ComposerPanel> {
   }
 
   Future<void> _submit() async {
-    if (controller.canSteer && _hasUnsupportedSteeringContext) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('运行中的调整方向仅支持文本输入。')));
-      return;
-    }
+    final submission = _ComposerSubmission(
+      attachments: List.unmodifiable(_attachments),
+      includeWorkspace: _includeWorkspace,
+      goal: _goal,
+      planMode: _planMode,
+      recordSkill: _recordSkill,
+      skills: _selectedSkills,
+    );
     final submitted = controller.canSteer
-        ? await widget.onSteer(composer.text.trim())
-        : await widget.onSend(
-            _ComposerSubmission(
-              attachments: List.unmodifiable(_attachments),
-              includeWorkspace: _includeWorkspace,
-              goal: _goal,
-              planMode: _planMode,
-              recordSkill: _recordSkill,
-              skills: _selectedSkills,
-            ),
-          );
+        ? await widget.onSteer(submission)
+        : await widget.onSend(submission);
     if (!submitted || !mounted) return;
     setState(() {
       composer.clear();
@@ -5046,10 +5590,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
     final items = await _clipboardFileReader.readItems();
     if (!mounted) return;
     if (items.isNotEmpty) {
-      if (!controller.canSend) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('运行中的调整方向仅支持文本输入。')));
+      if (!controller.canSend && !controller.canSteer) {
         return;
       }
       _addAttachments(
@@ -5113,7 +5654,11 @@ class _ComposerPanelState extends State<_ComposerPanel> {
   }
 
   Future<void> _handleDroppedFiles(List<DropItem> items) async {
-    if (items.isEmpty || !mounted || !controller.canSend) return;
+    if (items.isEmpty ||
+        !mounted ||
+        (!controller.canSend && !controller.canSteer)) {
+      return;
+    }
     final attachments = <_ComposerAttachment>[];
     for (final item in items) {
       final path = item.path;
@@ -5144,7 +5689,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
   }
 
   void _addAttachments(Iterable<_ComposerAttachment> attachments) {
-    if (!controller.canSend) return;
+    if (!controller.canSend && !controller.canSteer) return;
     setState(() {
       for (final attachment in attachments) {
         if (attachment.path.isEmpty) continue;
@@ -5387,7 +5932,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
             ),
           DropTarget(
             onDragEntered: (_) {
-              if (controller.canSend && mounted) {
+              if ((controller.canSend || controller.canSteer) && mounted) {
                 setState(() => _draggingFiles = true);
               }
             },
@@ -5396,7 +5941,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
             },
             onDragDone: (details) {
               if (mounted) setState(() => _draggingFiles = false);
-              if (!controller.canSend) return;
+              if (!controller.canSend && !controller.canSteer) return;
               unawaited(_handleDroppedFiles(details.files));
             },
             child: Stack(
@@ -5457,9 +6002,17 @@ class _ComposerPanelState extends State<_ComposerPanel> {
                             maxLines: 5,
                             textInputAction: TextInputAction.newline,
                             style: TextStyle(color: palette.trace),
-                            decoration: InputDecoration.collapsed(
+                            decoration: InputDecoration(
                               hintText: '随心输入',
                               hintStyle: TextStyle(color: palette.muted),
+                              filled: false,
+                              isCollapsed: true,
+                              border: InputBorder.none,
+                              enabledBorder: InputBorder.none,
+                              focusedBorder: InputBorder.none,
+                              disabledBorder: InputBorder.none,
+                              errorBorder: InputBorder.none,
+                              focusedErrorBorder: InputBorder.none,
                             ),
                           ),
                         ),
@@ -5557,7 +6110,8 @@ class _ComposerPanelState extends State<_ComposerPanel> {
                               if (showAttachment)
                                 PopupMenuButton<_AddMenuAction>(
                                   key: const Key('composer-add-button'),
-                                  enabled: controller.canSend,
+                                  enabled:
+                                      controller.canSend || controller.canSteer,
                                   tooltip: '添加上下文',
                                   icon: const Icon(Icons.add, size: 20),
                                   constraints: const BoxConstraints(
@@ -6071,63 +6625,375 @@ class _ApprovalPanel extends StatelessWidget {
 }
 
 class _Inspector extends StatelessWidget {
-  const _Inspector({required this.controller});
+  const _Inspector({
+    required this.width,
+    required this.controller,
+    required this.onShowGitProject,
+  });
 
+  final double width;
   final CodexController controller;
+  final Future<void> Function() onShowGitProject;
 
-  /// 构建审批模式和文件变更的桌面检查器面板。
-  /// Builds the desktop inspector panel for approval mode and file changes.
+  /// 构建采用 Codex 信息卡层级的审批与文件变更检查器。
+  /// Builds the approval and file-change inspector with Codex information-card hierarchy.
   @override
   Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
     return SizedBox(
-      width: 320,
+      width: width,
       child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('变更与审批', style: Theme.of(context).textTheme.titleSmall),
-            const SizedBox(height: 12),
-            Text('审批模式', style: Theme.of(context).textTheme.labelLarge),
-            DropdownButton<ApprovalMode>(
-              value: controller.approvalMode,
-              isExpanded: true,
-              items: ApprovalMode.values
-                  .map(
-                    (mode) =>
-                        DropdownMenuItem(value: mode, child: Text(mode.label)),
-                  )
-                  .toList(growable: false),
-              onChanged: (mode) {
-                if (mode != null) controller.setApprovalMode(mode);
-              },
-            ),
-            _MutedText(
-              controller.approvalMode == ApprovalMode.autoApprove
-                  ? '帮我批准命令、文件变更和额外权限请求。'
-                  : '每次请求都会显示批准与拒绝按钮。',
-            ),
-            const SizedBox(height: 12),
-            const _InspectorCard(
-              icon: Icons.verified_user_outlined,
-              title: '权限审批',
-              detail: '审批请求会集中展示；自动模式会直接响应并记录到时间线。',
-            ),
-            const SizedBox(height: 16),
-            Text('文件变更', style: Theme.of(context).textTheme.labelLarge),
-            const SizedBox(height: 8),
-            Expanded(
-              child: _FileChangesList(
-                changes: controller.fileChanges,
-                turnDiff: controller.turnDiff,
+        padding: const EdgeInsets.fromLTRB(14, 14, 14, 16),
+        child: Container(
+          key: const Key('codex-environment-card'),
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+            color: palette.module,
+            borderRadius: BorderRadius.circular(28),
+            border: Border.all(color: palette.border),
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(22, 22, 22, 18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '环境信息',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      color: palette.muted,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.35,
+                    ),
+                  ),
+                  const SizedBox(height: 22),
+                  _InspectorActionRow(
+                    icon: Icons.add_box_outlined,
+                    label: '变更',
+                    trailing: Text(
+                      _fileChangeCountLabel(controller.fileChanges.length),
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        color: palette.active,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    onTap: onShowGitProject,
+                  ),
+                  _InspectorActionRow(
+                    icon: Icons.laptop_mac_outlined,
+                    label: '本地',
+                    trailing: Icon(Icons.expand_more, color: palette.muted),
+                    onTap: onShowGitProject,
+                  ),
+                  _InspectorActionRow(
+                    icon: Icons.account_tree_outlined,
+                    label: controller.gitProjectStatus?.branch ?? '未检测到分支',
+                    trailing: Icon(Icons.expand_more, color: palette.muted),
+                    onTap: onShowGitProject,
+                  ),
+                  _InspectorActionRow(
+                    icon: Icons.tune_outlined,
+                    label: '提交或推送',
+                    onTap: onShowGitProject,
+                  ),
+                  _InspectorActionRow(
+                    icon: Icons.call_merge_outlined,
+                    label: '创建拉取请求',
+                    onTap: onShowGitProject,
+                  ),
+                  _InspectorActionRow(
+                    icon: Icons.compare_arrows_outlined,
+                    label: '比较分支',
+                    trailing: Icon(
+                      Icons.north_east,
+                      size: 20,
+                      color: palette.muted,
+                    ),
+                    onTap: onShowGitProject,
+                  ),
+                  const SizedBox(height: 16),
+                  Divider(height: 1, color: palette.border),
+                  const SizedBox(height: 16),
+                  _InspectorSectionHeader(
+                    icon: Icons.description_outlined,
+                    label: '任务文件',
+                    trailing: Text(
+                      _fileChangeCountLabel(controller.fileChanges.length),
+                      style: Theme.of(
+                        context,
+                      ).textTheme.labelLarge?.copyWith(color: palette.muted),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Expanded(
+                    child: _InspectorFileChangesList(
+                      changes: controller.fileChanges,
+                      turnDiff: controller.turnDiff,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Divider(height: 1, color: palette.border),
+                  const SizedBox(height: 12),
+                  _InspectorThreadRow(threadId: controller.activeThreadId),
+                ],
               ),
             ),
-            const SizedBox(height: 12),
-            _MutedText('当前线程：${controller.activeThreadId ?? '尚未创建'}'),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+String _fileChangeCountLabel(int count) => count == 0 ? '暂无' : '$count 个';
+
+class _InspectorSectionHeader extends StatelessWidget {
+  const _InspectorSectionHeader({
+    required this.icon,
+    required this.label,
+    required this.trailing,
+  });
+
+  final IconData icon;
+  final String label;
+  final Widget trailing;
+
+  /// 构建信息卡内带图标、操作和清晰层级的分组标题。
+  /// Builds an information-card section heading with an icon and action.
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Row(
+      children: [
+        Icon(icon, size: 22, color: palette.trace),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Text(
+            label,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.2,
+            ),
+          ),
+        ),
+        trailing,
+      ],
+    );
+  }
+}
+
+class _InspectorActionRow extends StatelessWidget {
+  const _InspectorActionRow({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.trailing,
+  });
+
+  final IconData icon;
+  final String label;
+  final Future<void> Function() onTap;
+  final Widget? trailing;
+
+  /// 构建可打开相应 Git 工作流的 Codex 环境信息行。
+  /// Builds a Codex environment row that opens its corresponding Git workflow.
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return InkWell(
+      onTap: () => unawaited(onTap()),
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 3),
+        child: Row(
+          children: [
+            Icon(icon, size: 22, color: palette.trace),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+              ),
+            ),
+            ?trailing,
           ],
         ),
       ),
     );
+  }
+}
+
+class _InspectorThreadRow extends StatelessWidget {
+  const _InspectorThreadRow({required this.threadId});
+
+  final String? threadId;
+
+  /// 显示当前任务标识，并在空间受限时截断而不撑破信息卡。
+  /// Shows the active task identifier without allowing it to overflow the card.
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Row(
+      children: [
+        Icon(Icons.forum_outlined, size: 18, color: palette.muted),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            threadId ?? '尚未创建任务',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: palette.muted),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _InspectorFileChangesList extends StatelessWidget {
+  const _InspectorFileChangesList({
+    required this.changes,
+    required this.turnDiff,
+  });
+
+  final List<CodexFileChange> changes;
+  final String? turnDiff;
+
+  /// 以信息卡中的紧凑行展示完整任务和单文件 Diff。
+  /// Shows task and file diffs as compact rows inside the information card.
+  @override
+  Widget build(BuildContext context) {
+    if (changes.isEmpty && (turnDiff == null || turnDiff!.isEmpty)) {
+      return const Align(
+        alignment: Alignment.topLeft,
+        child: Padding(
+          padding: EdgeInsets.only(left: 38, top: 4),
+          child: _MutedText('任务执行后，AI 修改的文件会显示在这里。'),
+        ),
+      );
+    }
+    return Scrollbar(
+      child: ListView(
+        padding: EdgeInsets.zero,
+        children: [
+          if (turnDiff case final diff?)
+            _InspectorDiffExpansionTile(
+              title: '本次任务完整 Diff',
+              subtitle: '来自 Codex App Server',
+              diff: diff,
+            ),
+          ...changes.map(
+            (change) => _InspectorDiffExpansionTile(
+              title: change.path,
+              subtitle: change.kind,
+              diff: change.diff,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InspectorDiffExpansionTile extends StatelessWidget {
+  const _InspectorDiffExpansionTile({
+    required this.title,
+    required this.subtitle,
+    required this.diff,
+  });
+
+  final String title;
+  final String subtitle;
+  final String diff;
+
+  /// 构建与 Codex 环境信息列表一致的紧凑可展开 Diff 项。
+  /// Builds a compact expandable Diff row consistent with Codex environment lists.
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Theme(
+      data: Theme.of(context).copyWith(
+        dividerColor: Colors.transparent,
+        expansionTileTheme: ExpansionTileThemeData(
+          iconColor: palette.trace,
+          collapsedIconColor: palette.trace,
+          tilePadding: EdgeInsets.zero,
+          childrenPadding: const EdgeInsets.only(bottom: 10),
+        ),
+      ),
+      child: ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        childrenPadding: const EdgeInsets.only(bottom: 10),
+        leading: Icon(
+          Icons.description_outlined,
+          size: 19,
+          color: palette.trace,
+        ),
+        title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+        subtitle: Text(
+          subtitle,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(
+            context,
+          ).textTheme.bodySmall?.copyWith(color: palette.muted),
+        ),
+        children: [
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.only(left: 33),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: palette.field,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: palette.border),
+            ),
+            child: diff.isEmpty
+                ? const _MutedText('App Server 未提供可显示的 Diff。')
+                : SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: SelectableText.rich(
+                      TextSpan(children: _diffSpans(palette, diff)),
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        height: 1.45,
+                      ),
+                    ),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 按 unified Diff 行类型与当前主题语义色为文本片段分配颜色。
+  /// Assigns colors to text spans using unified-diff line types and theme semantics.
+  List<TextSpan> _diffSpans(YeknomPalette palette, String value) {
+    return value
+        .split('\n')
+        .map((line) {
+          final color = switch (line) {
+            _ when line.startsWith('+++') || line.startsWith('---') =>
+              palette.muted,
+            _ when line.startsWith('+') => palette.ack,
+            _ when line.startsWith('-') => palette.fault,
+            _ when line.startsWith('@@') => palette.active,
+            _ => palette.trace,
+          };
+          return TextSpan(
+            text: '$line\n',
+            style: TextStyle(color: color),
+          );
+        })
+        .toList(growable: false);
   }
 }
 
@@ -6237,8 +7103,8 @@ class _DiffExpansionTile extends StatelessWidget {
   }
 }
 
-/// 展示可搜索、可按状态筛选的只读 Git 项目对话框。
-/// Displays a searchable, status-filterable, read-only Git project dialog.
+/// 展示可搜索、可按状态筛选并支持显式 Git 操作的项目对话框。
+/// Displays a searchable, status-filterable project dialog with explicit Git actions.
 class _GitProjectDialog extends StatefulWidget {
   const _GitProjectDialog({required this.controller});
 
@@ -6252,14 +7118,107 @@ class _GitProjectDialogState extends State<_GitProjectDialog> {
   final TextEditingController _search = TextEditingController();
   GitChangeFilter _filter = GitChangeFilter.all;
 
+  /// 收集提交消息并由用户显式选择仅提交或提交后推送。
+  /// Collects a commit message and lets the user explicitly choose commit or commit-and-push.
+  Future<void> _commitOrPush() async {
+    final message = TextEditingController();
+    final action = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('提交或推送'),
+        content: TextField(
+          controller: message,
+          autofocus: true,
+          maxLength: 240,
+          decoration: const InputDecoration(labelText: '提交消息'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton.tonal(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('仅提交'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('提交并推送'),
+          ),
+        ],
+      ),
+    );
+    final text = message.text.trim();
+    message.dispose();
+    if (action == null || text.isEmpty) return;
+    final committed = await widget.controller.commitGitChanges(text);
+    if (committed && action) await widget.controller.pushGitBranch();
+  }
+
+  /// 收集 PR 标题并通过本机已认证的 GitHub CLI 创建拉取请求。
+  /// Collects a PR title and creates it through the locally authenticated GitHub CLI.
+  Future<void> _createPullRequest() async {
+    final title = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('创建拉取请求'),
+        content: TextField(
+          controller: title,
+          autofocus: true,
+          maxLength: 240,
+          decoration: const InputDecoration(labelText: '拉取请求标题'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('创建'),
+          ),
+        ],
+      ),
+    );
+    final text = title.text.trim();
+    title.dispose();
+    if (confirmed == true && text.isNotEmpty) {
+      await widget.controller.createGitPullRequest(text);
+    }
+  }
+
+  /// 二次确认后丢弃指定文件的 Git 改动，避免点击行尾按钮即丢失内容。
+  /// Discards a file's Git changes only after a second confirmation.
+  Future<void> _revertChange(GitProjectChange change) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('还原文件改动？'),
+        content: Text('“${change.path}”的暂存区和工作区改动将被丢弃，无法恢复。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.tonal(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('还原'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await widget.controller.revertGitChange(change);
+  }
+
   @override
   void dispose() {
     _search.dispose();
     super.dispose();
   }
 
-  /// 构建筛选控件、文件列表和当前只读 Diff 预览。
-  /// Builds filter controls, the file list, and the selected read-only diff preview.
+  /// 构建筛选控件、文件级 Git 操作和当前 Diff 预览。
+  /// Builds filters, file-level Git actions, and the current Diff preview.
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -6281,8 +7240,12 @@ class _GitProjectDialogState extends State<_GitProjectDialog> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('只读视图：不会执行暂存、还原、提交、切分支、拉取或推送。'),
+                const Text('选择文件可查看 Diff、暂存或还原；提交、推送和创建 PR 均需显式确认。'),
                 const SizedBox(height: 12),
+                if (controller.gitOperationError case final error?) ...[
+                  Text(error, style: TextStyle(color: palette.fault)),
+                  const SizedBox(height: 8),
+                ],
                 if (controller.gitProjectLoading)
                   const LinearProgressIndicator()
                 else if (controller.gitProjectError case final error?)
@@ -6375,6 +7338,35 @@ class _GitProjectDialogState extends State<_GitProjectDialog> {
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                       ),
+                                      trailing: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          if (!change.isStaged)
+                                            IconButton(
+                                              tooltip: '暂存文件',
+                                              onPressed:
+                                                  controller.gitOperationRunning
+                                                  ? null
+                                                  : () => controller
+                                                        .stageGitChange(change),
+                                              icon: const Icon(
+                                                Icons.add_box_outlined,
+                                                size: 18,
+                                              ),
+                                            ),
+                                          IconButton(
+                                            tooltip: '还原文件改动',
+                                            onPressed:
+                                                controller.gitOperationRunning
+                                                ? null
+                                                : () => _revertChange(change),
+                                            icon: const Icon(
+                                              Icons.restore_outlined,
+                                              size: 18,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
                                       onTap: () =>
                                           controller.showGitDiff(change),
                                     );
@@ -6398,6 +7390,18 @@ class _GitProjectDialogState extends State<_GitProjectDialog> {
             ),
           ),
           actions: [
+            TextButton.icon(
+              onPressed: controller.gitOperationRunning ? null : _commitOrPush,
+              icon: const Icon(Icons.upload_outlined, size: 18),
+              label: const Text('提交或推送'),
+            ),
+            TextButton.icon(
+              onPressed: controller.gitOperationRunning
+                  ? null
+                  : _createPullRequest,
+              icon: const Icon(Icons.call_merge_outlined, size: 18),
+              label: const Text('创建拉取请求'),
+            ),
             TextButton.icon(
               onPressed: controller.gitProjectLoading
                   ? null
@@ -6501,6 +7505,196 @@ class _GitDiffViewer extends StatelessWidget {
   }
 }
 
+/// Collapses consecutive low-level tool records into one Codex-style activity
+/// disclosure while retaining their order in the conversation timeline.
+List<_ConversationTimelineItem> _conversationTimelineItems(
+  List<TimelineEntry> entries,
+) {
+  final items = <_ConversationTimelineItem>[];
+  var index = 0;
+  while (index < entries.length) {
+    final entry = entries[index];
+    if (!_isActivityEntry(entry)) {
+      items.add(_ConversationTimelineItem.entry(entry, index));
+      index++;
+      continue;
+    }
+    final activities = <TimelineEntry>[];
+    final firstIndex = index;
+    while (index < entries.length && _isActivityEntry(entries[index])) {
+      activities.add(entries[index]);
+      index++;
+    }
+    items.add(_ConversationTimelineItem.activities(activities, firstIndex));
+  }
+  return items;
+}
+
+bool _isActivityEntry(TimelineEntry entry) =>
+    entry.kind == TimelineKind.tool ||
+    (entry.kind == TimelineKind.command && entry.title != '文件变更');
+
+class _ConversationTimelineItem {
+  const _ConversationTimelineItem.entry(this.entry, this.entryIndex)
+    : activities = null;
+
+  const _ConversationTimelineItem.activities(this.activities, this.entryIndex)
+    : entry = null;
+
+  final TimelineEntry? entry;
+  final List<TimelineEntry>? activities;
+  final int entryIndex;
+}
+
+class _TimelineActivityList extends StatefulWidget {
+  const _TimelineActivityList({required this.entries, super.key});
+
+  final List<TimelineEntry> entries;
+
+  @override
+  State<_TimelineActivityList> createState() => _TimelineActivityListState();
+}
+
+class _TimelineActivityListState extends State<_TimelineActivityList> {
+  bool _expanded = true;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final summary = _activitySummary(widget.entries);
+    return Semantics(
+      container: true,
+      label: summary,
+      expanded: _expanded,
+      button: true,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            onTap: () => setState(() => _expanded = !_expanded),
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(2, 4, 6, 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.manage_search_outlined,
+                    size: 20,
+                    color: palette.muted,
+                  ),
+                  const SizedBox(width: 10),
+                  Flexible(
+                    child: Text(
+                      summary,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        color: palette.trace,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: -0.1,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(
+                    _expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 19,
+                    color: palette.muted,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_expanded) ...[
+            const SizedBox(height: 5),
+            for (final entry in widget.entries)
+              _TimelineActivityRow(entry: entry),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+String _activitySummary(List<TimelineEntry> entries) {
+  final actions = <String>{};
+  for (final entry in entries) {
+    final label = '${entry.title}\n${entry.detail}'.toLowerCase();
+    if (entry.kind == TimelineKind.command) {
+      actions.add('运行了命令');
+    } else if (label.contains('read') || label.contains('读取')) {
+      actions.add('读取了文件');
+    } else if (label.contains('search') || label.contains('搜索')) {
+      actions.add('进行了搜索');
+    } else {
+      actions.add('使用了工具');
+    }
+  }
+  return '已${actions.join('并')}';
+}
+
+class _TimelineActivityRow extends StatelessWidget {
+  const _TimelineActivityRow({required this.entry});
+
+  final TimelineEntry entry;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final label = _activityLabel(entry);
+    return Tooltip(
+      message: entry.detail,
+      waitDuration: const Duration(milliseconds: 450),
+      child: Semantics(
+        label: '$label。${entry.detail}',
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(2, 5, 6, 5),
+          child: Row(
+            children: [
+              Icon(_activityIcon(entry), size: 19, color: palette.muted),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyMedium?.copyWith(color: palette.trace),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+String _activityLabel(TimelineEntry entry) {
+  if (entry.kind == TimelineKind.command) {
+    final command = entry.detail.split('\n').first.trim();
+    return command.isEmpty ? '已运行命令' : '已运行 $command';
+  }
+  return entry.title.isEmpty ? '已使用工具' : entry.title;
+}
+
+IconData _activityIcon(TimelineEntry entry) {
+  if (entry.kind == TimelineKind.command) return Icons.terminal_outlined;
+  final label = '${entry.title}\n${entry.detail}'.toLowerCase();
+  if (label.contains('read') || label.contains('读取')) {
+    return Icons.menu_book_outlined;
+  }
+  if (label.contains('search') || label.contains('搜索')) {
+    return Icons.search;
+  }
+  if (label.contains('image') || label.contains('图片')) {
+    return Icons.image_outlined;
+  }
+  return Icons.build_outlined;
+}
+
 class _TimelineEntry extends StatelessWidget {
   const _TimelineEntry(this.entry, {this.onAdjustDirection});
 
@@ -6529,6 +7723,20 @@ class _TimelineEntry extends StatelessWidget {
                 alignment: Alignment.centerLeft,
                 child: SelectableText(entry.detail),
               ),
+              if (entry.imagePaths.isNotEmpty) ...[
+                const SizedBox(height: 9),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final path in entry.imagePaths)
+                        _TimelineImage(path: path),
+                    ],
+                  ),
+                ),
+              ],
               if (onAdjustDirection != null) ...[
                 const SizedBox(height: 5),
                 TextButton.icon(
@@ -6570,9 +7778,101 @@ class _TimelineEntry extends StatelessWidget {
         ),
         if (entry.detail.isNotEmpty) ...[
           const SizedBox(height: 8),
-          SelectableText(entry.detail),
+          if (entry.kind == TimelineKind.agent)
+            _AgentMarkdown(entry.detail)
+          else
+            SelectableText(entry.detail),
         ],
       ],
+    );
+  }
+}
+
+/// 在用户消息中展示随消息发送的本地图片缩略图。
+/// Renders thumbnails for local images sent alongside a user message.
+class _TimelineImage extends StatelessWidget {
+  const _TimelineImage({required this.path});
+
+  final String path;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(10),
+      child: Image.file(
+        File(path),
+        key: ValueKey('timeline-image-$path'),
+        width: 180,
+        height: 130,
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => const SizedBox.shrink(),
+      ),
+    );
+  }
+}
+
+/// 将 Codex 回复按 GitHub Flavored Markdown 渲染，并保持与工作台主题一致。
+/// Renders Codex replies as GitHub Flavored Markdown while matching the workbench theme.
+class _AgentMarkdown extends StatelessWidget {
+  const _AgentMarkdown(this.data);
+
+  final String data;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final theme = Theme.of(context);
+    final body = theme.textTheme.bodyMedium?.copyWith(height: 1.5);
+    return MarkdownBody(
+      data: data,
+      selectable: true,
+      onTapLink: (_, href, _) async {
+        final uri = href == null ? null : Uri.tryParse(href);
+        if (uri == null ||
+            !const {
+              'http',
+              'https',
+              'mailto',
+            }.contains(uri.scheme.toLowerCase())) {
+          return;
+        }
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      },
+      styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+        p: body,
+        pPadding: EdgeInsets.zero,
+        blockSpacing: 8,
+        listIndent: 22,
+        listBullet: body,
+        a: body?.copyWith(
+          color: palette.active,
+          decoration: TextDecoration.underline,
+          decorationColor: palette.active.withValues(alpha: 0.65),
+        ),
+        code: body?.copyWith(
+          color: palette.trace,
+          fontFamily: 'monospace',
+          fontSize: 12,
+          backgroundColor: palette.field,
+        ),
+        codeblockPadding: const EdgeInsets.all(12),
+        codeblockDecoration: BoxDecoration(
+          color: palette.field,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: palette.border),
+        ),
+        blockquotePadding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 8,
+        ),
+        blockquoteDecoration: BoxDecoration(
+          color: palette.raised,
+          border: Border(left: BorderSide(color: palette.active, width: 3)),
+        ),
+        tableBorder: TableBorder.all(color: palette.border),
+        tableHead: body?.copyWith(fontWeight: FontWeight.w700),
+        tableBody: body,
+      ),
     );
   }
 }
@@ -6692,13 +7992,16 @@ class _HistoryThreadTile extends StatelessWidget {
                 ),
               ),
               if (running)
-                SizedBox(
-                  key: const Key('sidebar-running-task-indicator'),
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: palette.muted,
+                Tooltip(
+                  message: '任务进行中',
+                  child: SizedBox(
+                    key: const Key('sidebar-running-task-indicator'),
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.2,
+                      color: palette.active,
+                    ),
                   ),
                 )
               else
@@ -6751,6 +8054,16 @@ class _HistoryThreadTile extends StatelessWidget {
       ),
     );
   }
+}
+
+bool _isRunningThreadStatus(String? status) {
+  final normalized = status?.trim().toLowerCase().replaceAll(
+    RegExp(r'[^a-z]'),
+    '',
+  );
+  return normalized == 'active' ||
+      normalized == 'inprogress' ||
+      normalized == 'running';
 }
 
 enum _ThreadStatusIndicator { completed, error }
@@ -6906,43 +8219,6 @@ class _ArchivedThreadTile extends StatelessWidget {
             onPressed: enabled && !restoring ? onDelete : null,
             icon: const Icon(Icons.delete_outline),
           ),
-        ],
-      ),
-    );
-  }
-}
-
-class _InspectorCard extends StatelessWidget {
-  const _InspectorCard({
-    required this.icon,
-    required this.title,
-    required this.detail,
-  });
-
-  final IconData icon;
-  final String title;
-  final String detail;
-
-  /// 构建检查器中带图标、标题和说明的静态信息卡。
-  /// Builds a static inspector card with icon, title, and description.
-  @override
-  Widget build(BuildContext context) {
-    final palette = YeknomPalette.of(context);
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: palette.module,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: palette.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, size: 20, color: palette.muted),
-          const SizedBox(height: 10),
-          Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
-          const SizedBox(height: 4),
-          _MutedText(detail),
         ],
       ),
     );

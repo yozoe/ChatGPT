@@ -17,6 +17,7 @@ class RuntimeConfigurationStore {
   static const _pinnedWorkspacesKey = 'codex_desk.workspaces.pinned.v1';
   static const _reasoningEffortKey = 'codex_desk.reasoning_effort.v1';
   static const _modelKey = 'codex_desk.model.selected.v1';
+  static const _approvalModeKey = 'codex_desk.approval_mode.v1';
 
   final CodexKeychainStorage _storage;
 
@@ -159,5 +160,16 @@ class RuntimeConfigurationStore {
   Future<void> saveModel(String? model) {
     if (model == null) return _storage.delete(key: _modelKey);
     return _storage.write(key: _modelKey, value: model);
+  }
+
+  /// 读取用户保存的审批模式标识；`null` 表示使用安全的请求批准默认值。
+  /// Reads the user's saved approval-mode identifier; `null` uses the safe request-approval default.
+  Future<String?> readApprovalMode() => _storage.read(key: _approvalModeKey);
+
+  /// 保存审批模式；传入 `null` 时清除用户偏好并恢复默认行为。
+  /// Saves the approval mode; passing `null` clears the user preference and restores default behavior.
+  Future<void> saveApprovalMode(String? mode) {
+    if (mode == null) return _storage.delete(key: _approvalModeKey);
+    return _storage.write(key: _approvalModeKey, value: mode);
   }
 }

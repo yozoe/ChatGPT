@@ -19,6 +19,8 @@ class ConversationHistorySnapshot {
     this.pinnedThreadIds = const {},
     this.turnDiff,
     this.activeThreadId,
+    this.ownedThreadIds = const {},
+    this.historyInitialized = false,
   });
 
   final List<CodexThread> threads;
@@ -32,6 +34,12 @@ class ConversationHistorySnapshot {
   /// 保存快照时当前打开的线程；旧版本快照没有此字段时保持为空。
   final String? activeThreadId;
 
+  /// Thread IDs explicitly belonging to this project.
+  final Set<String> ownedThreadIds;
+
+  /// Whether the project has established its thread boundary.
+  final bool historyInitialized;
+
   /// 将当前工作区快照转换为可持久化的 JSON。
   /// Converts the current workspace snapshot to persistable JSON.
   Map<String, dynamic> toJson() => {
@@ -44,6 +52,8 @@ class ConversationHistorySnapshot {
     'pinnedThreadIds': pinnedThreadIds.toList(growable: false),
     'turnDiff': ?turnDiff,
     'activeThreadId': ?activeThreadId,
+    'ownedThreadIds': ownedThreadIds.toList(growable: false),
+    'historyInitialized': historyInitialized,
   };
 
   /// 从持久化 JSON 恢复当前工作区快照。
@@ -59,15 +69,31 @@ class ConversationHistorySnapshot {
       return raw.whereType<Map>().map(parse).toList(growable: false);
     }
 
+    final decodedThreads = decodeList(
+      value['threads'],
+      (thread) => CodexThread.fromJson(Map<String, dynamic>.from(thread)),
+    );
+    final decodedArchivedThreads = decodeList(
+      value['archivedThreads'],
+      (thread) => CodexThread.fromJson(Map<String, dynamic>.from(thread)),
+    );
+    final explicitOwned = value['ownedThreadIds'] is Iterable
+        ? (value['ownedThreadIds'] as Iterable)
+              .where((id) => id != null)
+              .map((id) => id.toString().trim())
+              .where((id) => id.isNotEmpty)
+              .toSet()
+        : <String>{};
+    // Older snapshots did not have an ownership field; their visible threads
+    // are the safest migration source.
+    final owned = <String>{
+      ...explicitOwned,
+      ...decodedThreads.map((thread) => thread.id),
+      ...decodedArchivedThreads.map((thread) => thread.id),
+    };
     return ConversationHistorySnapshot(
-      threads: decodeList(
-        value['threads'],
-        (thread) => CodexThread.fromJson(Map<String, dynamic>.from(thread)),
-      ),
-      archivedThreads: decodeList(
-        value['archivedThreads'],
-        (thread) => CodexThread.fromJson(Map<String, dynamic>.from(thread)),
-      ),
+      threads: decodedThreads,
+      archivedThreads: decodedArchivedThreads,
       entries: decodeList(value['entries'], TimelineEntry.fromJson),
       fileChanges: decodeList(value['fileChanges'], CodexFileChange.fromJson),
       pinnedThreadIds: value['pinnedThreadIds'] is Iterable
@@ -81,6 +107,9 @@ class ConversationHistorySnapshot {
       activeThreadId: value['activeThreadId']?.toString().trim().isEmpty == true
           ? null
           : value['activeThreadId']?.toString(),
+      ownedThreadIds: owned,
+      historyInitialized:
+          value['historyInitialized'] == true || owned.isNotEmpty,
     );
   }
 }
@@ -140,6 +169,7 @@ class ConversationHistoryStore {
   static const _encryptionKey = 'codex_desk.history.encryption_key.v1';
   final Directory? _directory;
   final CodexKeychainStorage _secureStorage;
+  Future<void> _saveQueue = Future<void>.value();
 
   /// 读取指定工作区的历史快照；没有缓存时返回 `null`。
   /// Reads the history snapshot for a workspace and returns `null` when absent.
@@ -156,9 +186,27 @@ class ConversationHistoryStore {
         : null;
   }
 
-  /// 原子地保存指定工作区的历史快照，并保留其他工作区的缓存。
-  /// Atomically saves a workspace snapshot while retaining other workspace caches.
+  /// 串行且原子地保存指定工作区的历史快照，并保留其他工作区的缓存。
+  /// Serializes and atomically saves a workspace snapshot while retaining the other workspace caches.
   Future<void> save({
+    required String workspace,
+    required ConversationHistorySnapshot snapshot,
+  }) async {
+    final previousSave = _saveQueue;
+    final nextSave = () async {
+      try {
+        await previousSave;
+      } catch (_) {
+        // A failed older write must not prevent a later snapshot from being
+        // persisted. The later write still validates its own input.
+      }
+      await _saveNow(workspace: workspace, snapshot: snapshot);
+    }();
+    _saveQueue = nextSave;
+    await nextSave;
+  }
+
+  Future<void> _saveNow({
     required String workspace,
     required ConversationHistorySnapshot snapshot,
   }) async {
@@ -169,13 +217,17 @@ class ConversationHistoryStore {
       'workspaces': <String, dynamic>{},
     };
     if (await file.exists()) {
-      final decoded = jsonDecode(await file.readAsString());
-      if (decoded is Map && decoded['workspaces'] is Map) {
-        content = Map<String, dynamic>.from(decoded);
-        content['workspaces'] = Map<String, dynamic>.from(
-          decoded['workspaces'] as Map,
-        );
+      // The on-disk value is normally an AES-GCM envelope. Decode the
+      // plaintext before updating one workspace so existing encrypted entries
+      // are retained instead of being silently replaced.
+      final decoded = jsonDecode(await _decrypt(await file.readAsString()));
+      if (decoded is! Map || decoded['workspaces'] is! Map) {
+        throw const FormatException('本地历史记录格式无效。');
       }
+      content = Map<String, dynamic>.from(decoded);
+      content['workspaces'] = Map<String, dynamic>.from(
+        decoded['workspaces'] as Map,
+      );
     }
     (content['workspaces'] as Map<String, dynamic>)[workspace] = snapshot
         .toJson();
