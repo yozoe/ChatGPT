@@ -107,7 +107,7 @@ if [[ "$mode" == "install" && -d "$target_app" && -f "$install_fingerprint_file"
   installed_fingerprint="$(<"$install_fingerprint_file")"
   if [[ "$installed_fingerprint" == "$project_fingerprint" ]]; then
     stop_running_app
-    open -n "$target_app"
+    open "$target_app"
     print "No application source changes; restarted existing installation: $target_app"
     exit 0
   fi
@@ -140,11 +140,10 @@ if [[ "$built_current_source" == true ]]; then
   print -r -- "$project_fingerprint" > "$install_fingerprint_file"
 fi
 
-# The app keeps its bundle identifier across upgrades, so Finder and the Dock
-# can otherwise retain the previous icon after the application bundle changes.
-run_install_command /usr/bin/touch "$target_app"
-/usr/bin/killall Dock || true
-/usr/bin/killall Finder || true
+# Register the exact replacement bundle.  This refreshes its AppIcon without
+# restarting Finder or creating a second Dock instance of the same app.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+  -f "$target_app"
 
-open -n "$target_app"
+open "$target_app"
 print "Installed and opened: $target_app"
