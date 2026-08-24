@@ -377,8 +377,14 @@ class CodexAppServer {
 
   /// 请求中断指定线程正在执行的任务。
   /// Requests interruption of the executing task in a thread.
-  Future<void> interruptTurn({required String threadId}) async {
-    final response = await request('turn/interrupt', {'threadId': threadId});
+  Future<void> interruptTurn({
+    required String threadId,
+    required String turnId,
+  }) async {
+    final response = await request('turn/interrupt', {
+      'threadId': threadId,
+      'turnId': turnId,
+    });
     _throwIfError(response);
   }
 

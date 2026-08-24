@@ -63,4 +63,21 @@ void main() {
     expect((await store.read('project-a'))!.threads.single.id, 'thread-a');
     expect((await store.read('project-b'))!.threads.single.id, 'thread-b');
   });
+
+  test('persists acknowledged completed-task reminders', () async {
+    final store = createStore();
+    final value = ConversationHistorySnapshot(
+      threads: const [],
+      archivedThreads: const [],
+      entries: const [],
+      fileChanges: const [],
+      acknowledgedCompletedThreadIds: const {'completed-thread'},
+    );
+
+    await store.save(workspace: 'project-a', snapshot: value);
+
+    expect((await store.read('project-a'))!.acknowledgedCompletedThreadIds, {
+      'completed-thread',
+    });
+  });
 }

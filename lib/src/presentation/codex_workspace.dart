@@ -224,8 +224,10 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       showFileChangeSummary:
           _controller.status != RuntimeStatus.running &&
           _controller.fileChanges.isNotEmpty,
-      canSteer: _controller.canSteer,
       activeCommand: _controller.activeCommand,
+      isThinking:
+          _controller.status == RuntimeStatus.running &&
+          _controller.activeCommand == null,
     );
   }
 
@@ -832,10 +834,18 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     return sent;
   }
 
-  /// Sends composer text and context while a turn is running as a direction adjustment.
-  /// 运行中 Composer 的文本与附件上下文通过 `turn/steer` 发送到当前活动 turn。
-  Future<bool> _steer(_ComposerSubmission submission) async {
+  /// Queues composer text and context as a temporary tail item while a turn runs.
+  /// 运行中 Composer 的文本与附件上下文先暂存为临时尾项，等待用户明确发送。
+  Future<bool> _queueDirection(_ComposerSubmission submission) async {
     final rawPrompt = _composer.text.trim();
+    final hasSubmittedContext =
+        submission.attachments.isNotEmpty ||
+        submission.includeWorkspace ||
+        submission.goal?.trim().isNotEmpty == true ||
+        submission.planMode ||
+        submission.recordSkill ||
+        submission.skills.isNotEmpty;
+    if (rawPrompt.isEmpty && !hasSubmittedContext) return false;
     final contextLines = <String>[];
     final additionalInput = <Map<String, dynamic>>[];
     final imagePaths = <String>[];
@@ -879,51 +889,14 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       rawPrompt.isEmpty ? '请根据附加内容调整当前任务。' : rawPrompt,
       if (contextLines.isNotEmpty) '\n${contextLines.join('\n')}',
     ].join(' ').trim();
-    return _controller.steerCurrentTurn(
-      prompt,
-      additionalInput: additionalInput,
-      imagePaths: imagePaths,
-    );
-  }
-
-  /// Opens a focused editor for steering the currently running turn.
-  /// 打开“调整方向”编辑器，将新的指示发送到当前活动 turn。
-  Future<void> _adjustDirection(String originalPrompt) async {
-    var draft = '';
-    final direction = await showDialog<String?>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        key: const Key('adjust-direction-dialog'),
-        title: const Text('调整方向'),
-        content: SizedBox(
-          width: 520,
-          child: TextFormField(
-            key: const Key('adjust-direction-field'),
-            autofocus: true,
-            minLines: 3,
-            maxLines: 8,
-            onChanged: (value) => draft = value,
-            decoration: InputDecoration(
-              hintText: '告诉 Codex 接下来应该怎么调整…',
-              helperText: '原指令：${originalPrompt.trim()}',
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            key: const Key('send-adjust-direction'),
-            onPressed: () => Navigator.of(dialogContext).pop(draft.trim()),
-            child: const Text('发送调整'),
-          ),
-        ],
+    return _controller.queueTurnSteer(
+      PendingTurnSteer(
+        displayText: rawPrompt.isEmpty ? '请根据附加内容调整当前任务。' : rawPrompt,
+        prompt: prompt,
+        additionalInput: List.unmodifiable(additionalInput),
+        imagePaths: List.unmodifiable(imagePaths),
       ),
     );
-    if (direction == null || direction.trim().isEmpty || !mounted) return;
-    await _controller.steerCurrentTurn(direction);
   }
 
   /// 将当前项目的本地历史导出到用户选择的 JSON 文件；文件不包含 API Key。
@@ -2108,7 +2081,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                                           },
                                       activityExpanded: (pageKey, activityId) =>
                                           _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
-                                          true,
+                                          false,
                                       onActivityExpandedChanged:
                                           (pageKey, activityId, expanded) {
                                             setState(() {
@@ -2117,8 +2090,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                                             });
                                           },
                                       onSend: _send,
-                                      onSteer: _steer,
-                                      onAdjustDirection: _adjustDirection,
+                                      onQueueSteer: _queueDirection,
                                       onReview: _showCodeReview,
                                     ),
                                   ),
@@ -3597,7 +3569,8 @@ class _TaskSearchDialog extends StatefulWidget {
   const _TaskSearchDialog({
     required this.results,
     required this.canCreateTask,
-    required this.canOpenTasks,
+    required this.canOpenTask,
+    required this.canSearchFiles,
     required this.onOpenTask,
     required this.onNewTask,
     required this.onOpenWorkspace,
@@ -3606,7 +3579,8 @@ class _TaskSearchDialog extends StatefulWidget {
 
   final List<_TaskSearchResult> results;
   final bool canCreateTask;
-  final bool canOpenTasks;
+  final bool Function(_TaskSearchResult result) canOpenTask;
+  final bool canSearchFiles;
   final Future<void> Function(_TaskSearchResult result) onOpenTask;
   final VoidCallback onNewTask;
   final VoidCallback onOpenWorkspace;
@@ -3666,6 +3640,7 @@ class _TaskSearchDialogState extends State<_TaskSearchDialog> {
   }
 
   void _openResult(_TaskSearchResult result) {
+    if (!widget.canOpenTask(result)) return;
     Navigator.of(context).pop();
     unawaited(widget.onOpenTask(result));
   }
@@ -3683,12 +3658,13 @@ class _TaskSearchDialogState extends State<_TaskSearchDialog> {
         const SingleActivator(LogicalKeyboardKey.keyO, meta: true): () =>
             _closeThen(widget.onOpenWorkspace),
         const SingleActivator(LogicalKeyboardKey.keyP, meta: true): () {
+          if (!widget.canSearchFiles) return;
           Navigator.of(context).pop();
           unawaited(widget.onSearchFiles());
         },
         for (var index = 0; index < 9; index++)
           SingleActivator(_digitKeys[index], meta: true): () {
-            if (index < results.length && widget.canOpenTasks) {
+            if (index < results.length && widget.canOpenTask(results[index])) {
               _openResult(results[index]);
             }
           },
@@ -3763,7 +3739,7 @@ class _TaskSearchDialogState extends State<_TaskSearchDialog> {
                               ),
                               result: results[index],
                               shortcut: index < 9 ? '⌘${index + 1}' : null,
-                              enabled: widget.canOpenTasks,
+                              enabled: widget.canOpenTask(results[index]),
                               onTap: () => _openResult(results[index]),
                             ),
                           ),
@@ -3788,7 +3764,7 @@ class _TaskSearchDialogState extends State<_TaskSearchDialog> {
                     icon: Icons.search_outlined,
                     label: '搜索文件',
                     shortcut: '⌘P',
-                    enabled: widget.canOpenTasks,
+                    enabled: widget.canSearchFiles,
                     onTap: () {
                       Navigator.of(context).pop();
                       unawaited(widget.onSearchFiles());
@@ -3996,8 +3972,9 @@ class _SidebarMenuAction extends StatelessWidget {
                 const SizedBox(width: 12),
                 Text(
                   label,
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: color,
+                    fontSize: 14,
                     fontWeight: FontWeight.w600,
                     letterSpacing: -0.2,
                   ),
@@ -4065,9 +4042,6 @@ class _SidebarState extends State<_Sidebar> {
   bool _batchMode = false;
   final Set<String> _selectedThreadIds = {};
 
-  /// 已打开过的已完成任务；打开后不再重复显示完成提醒。
-  /// Completed tasks acknowledged by opening them, so the reminder is not repeated.
-  final Set<String> _acknowledgedCompletedThreadIds = {};
   final Map<String, int> _workspaceTaskCounts = {};
   final Map<String, bool> _workspaceExpanded = {};
   OverlayEntry? _workspaceDetailsEntry;
@@ -4123,9 +4097,11 @@ class _SidebarState extends State<_Sidebar> {
       builder: (context) => _TaskSearchDialog(
         results: results,
         canCreateTask: controller.canCreateThread,
-        canOpenTasks:
-            controller.canChangePrimaryWorkspace ||
-            controller.status == RuntimeStatus.ready,
+        canOpenTask: (result) =>
+            result.workspacePath == controller.workspacePath
+            ? controller.canSwitchThreads
+            : controller.canChangePrimaryWorkspace,
+        canSearchFiles: controller.workspacePath != null,
         onOpenTask: (result) => controller.openWorkspaceThread(
           workspace: result.workspacePath,
           thread: result.thread,
@@ -4373,26 +4349,27 @@ class _SidebarState extends State<_Sidebar> {
     required bool pinned,
   }) {
     final indicator = _threadStatusIndicator(thread.status);
+    final selected =
+        isActiveWorkspace && controller.activeThreadId == thread.id;
     final currentRunningThread =
         isActiveWorkspace &&
-        controller.activeThreadId == thread.id &&
-        (controller.status == RuntimeStatus.running ||
+        (controller.isThreadRunning(thread.id) ||
             _isRunningThreadStatus(thread.status));
     return Padding(
-      padding: const EdgeInsets.only(left: 25, right: 1),
+      padding: const EdgeInsets.symmetric(horizontal: 4),
       child: _HistoryThreadTile(
         thread: thread,
-        selected: isActiveWorkspace && controller.activeThreadId == thread.id,
+        selected: selected,
         pinned: pinned,
         statusIndicator:
             indicator == _ThreadStatusIndicator.completed &&
-                _acknowledgedCompletedThreadIds.contains(thread.id)
+                (selected ||
+                    controller.isCompletedThreadAcknowledged(thread.id))
             ? null
             : indicator,
         running: currentRunningThread,
         enabled: isActiveWorkspace
-            ? (controller.status == RuntimeStatus.ready ||
-                      currentRunningThread) &&
+            ? controller.canSwitchThreads &&
                   !controller.isUpdatingThread(thread.id)
             : controller.canChangePrimaryWorkspace,
         selectionMode: isActiveWorkspace && _batchMode,
@@ -4400,7 +4377,9 @@ class _SidebarState extends State<_Sidebar> {
         onTap: () {
           // The active row remains clickable for focus/feedback while its
           // turn runs, but must not attempt to resume or replace the thread.
-          if (currentRunningThread) return;
+          if (currentRunningThread && controller.activeThreadId == thread.id) {
+            return;
+          }
           if (isActiveWorkspace && _batchMode) {
             setState(() {
               if (!_selectedThreadIds.add(thread.id)) {
@@ -4412,9 +4391,6 @@ class _SidebarState extends State<_Sidebar> {
             // tap.  Record the visit independently of the currently rendered
             // status so an old completion reminder cannot reappear while the
             // user switches between tasks.
-            setState(() {
-              _acknowledgedCompletedThreadIds.add(thread.id);
-            });
             unawaited(
               controller.openWorkspaceThread(
                 workspace: workspacePath,
@@ -4805,8 +4781,7 @@ class _ConversationPane extends StatelessWidget {
     required this.activityExpanded,
     required this.onActivityExpandedChanged,
     required this.onSend,
-    required this.onSteer,
-    required this.onAdjustDirection,
+    required this.onQueueSteer,
     required this.onReview,
   });
 
@@ -4829,8 +4804,7 @@ class _ConversationPane extends StatelessWidget {
   )
   onActivityExpandedChanged;
   final Future<bool> Function(_ComposerSubmission submission) onSend;
-  final Future<bool> Function(_ComposerSubmission submission) onSteer;
-  final Future<void> Function(String originalPrompt) onAdjustDirection;
+  final Future<bool> Function(_ComposerSubmission submission) onQueueSteer;
   final Future<void> Function() onReview;
 
   /// 构建时间线、审批提示和任务输入区域。
@@ -4840,7 +4814,8 @@ class _ConversationPane extends StatelessWidget {
     final palette = YeknomPalette.of(context);
     return Column(
       children: [
-        if (controller.lastError case final error?)
+        if (controller.lastError case final error?
+            when !controller.hasResumeConflict)
           Container(
             width: double.infinity,
             margin: const EdgeInsets.fromLTRB(24, 0, 24, 12),
@@ -4854,6 +4829,7 @@ class _ConversationPane extends StatelessWidget {
         if (controller.pendingApproval case final approval?)
           _ApprovalPanel(
             approval: approval,
+            taskLabel: controller.pendingApprovalTaskLabel,
             enabled: controller.canRespondToApproval,
             onAccept: () => controller.respondToApproval(accepted: true),
             onDecline: () => controller.respondToApproval(accepted: false),
@@ -4907,7 +4883,6 @@ class _ConversationPane extends StatelessWidget {
                                 activityId,
                                 expanded,
                               ),
-                          onAdjustDirection: onAdjustDirection,
                           onReview: onReview,
                         ),
                     ],
@@ -4941,15 +4916,167 @@ class _ConversationPane extends StatelessWidget {
             },
           ),
         ),
+        if (controller.hasResumeConflict)
+          _ThreadOpenElsewhereNotice(
+            retrying: controller.isResumingThread,
+            onRetry: controller.retryResumeConflict,
+          ),
         _ComposerPanel(
           key: const Key('composer-panel'),
           controller: controller,
           composer: composer,
           recordSkillRequest: recordSkillRequest,
           onSend: onSend,
-          onSteer: onSteer,
+          onQueueSteer: onQueueSteer,
         ),
       ],
+    );
+  }
+}
+
+/// Keeps a concurrent-writer conflict non-blocking so the user can close the
+/// other session and retry without dismissing a dialog.
+class _ThreadOpenElsewhereNotice extends StatelessWidget {
+  const _ThreadOpenElsewhereNotice({
+    required this.retrying,
+    required this.onRetry,
+  });
+
+  final bool retrying;
+  final Future<void> Function() onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Semantics(
+      container: true,
+      label: '已在另一个应用中打开。请先在那边关闭会话，才能在这里继续。',
+      child: Container(
+        key: const Key('thread-open-elsewhere-notice'),
+        width: double.infinity,
+        margin: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+        padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+        decoration: BoxDecoration(
+          color: palette.field,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: palette.border),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.lock_outline, size: 18, color: palette.trace),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '已在另一个应用中打开',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: palette.trace,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '请先在那边关闭会话，才能在这里继续。',
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.copyWith(color: palette.muted),
+                  ),
+                ],
+              ),
+            ),
+            Container(width: 1, height: 28, color: palette.border),
+            TextButton(
+              key: const Key('thread-open-elsewhere-retry'),
+              onPressed: retrying ? null : onRetry,
+              child: Text(retrying ? '重试中' : '重试'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A locally queued direction renders as a composer header rather than a
+/// conversation bubble. Its action intentionally sends directly.
+/// 本地暂存的方向显示为 Composer 顶部栏而非会话气泡；点击操作会直接发送。
+class _PendingTurnSteerPanel extends StatelessWidget {
+  const _PendingTurnSteerPanel({
+    required this.pending,
+    required this.sending,
+    required this.onSend,
+    required this.onDiscard,
+  });
+
+  final PendingTurnSteer pending;
+  final bool sending;
+  final Future<bool> Function() onSend;
+  final VoidCallback onDiscard;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      child: Container(
+        key: const Key('pending-turn-steer'),
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(14, 9, 8, 10),
+        decoration: BoxDecoration(
+          color: palette.raised,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+          border: Border.all(color: palette.border),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              Icons.subdirectory_arrow_right,
+              size: 16,
+              color: palette.muted,
+            ),
+            const SizedBox(width: 7),
+            Expanded(
+              child: SelectionArea(
+                child: Text(
+                  pending.displayText,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            TextButton.icon(
+              key: const Key('adjust-direction-button'),
+              onPressed: sending ? null : () => unawaited(onSend()),
+              icon: sending
+                  ? const SizedBox.square(
+                      dimension: 15,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.reply_outlined, size: 17),
+              label: const Text('调整方向'),
+              style: TextButton.styleFrom(
+                foregroundColor: palette.muted,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                visualDensity: VisualDensity.compact,
+              ),
+            ),
+            IconButton(
+              key: const Key('discard-direction-button'),
+              tooltip: '删除待发送方向',
+              onPressed: sending ? null : onDiscard,
+              icon: const Icon(Icons.delete_outline, size: 17),
+              color: palette.muted,
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -4962,16 +5089,16 @@ class _TimelinePageData {
     required this.fileChanges,
     required this.turnDiff,
     required this.showFileChangeSummary,
-    required this.canSteer,
     required this.activeCommand,
+    required this.isThinking,
   });
 
   final List<TimelineEntry> entries;
   final List<CodexFileChange> fileChanges;
   final String? turnDiff;
   final bool showFileChangeSummary;
-  final bool canSteer;
   final String? activeCommand;
+  final bool isThinking;
 }
 
 /// A task timeline that remains mounted inside the page cache.
@@ -4987,7 +5114,6 @@ class _ConversationTimeline extends StatelessWidget {
     required this.onFileChangeSummaryExpandedChanged,
     required this.activityExpanded,
     required this.onActivityExpandedChanged,
-    required this.onAdjustDirection,
     required this.onReview,
     super.key,
   });
@@ -5002,16 +5128,13 @@ class _ConversationTimeline extends StatelessWidget {
   final bool Function(String activityId) activityExpanded;
   final void Function(String activityId, bool expanded)
   onActivityExpandedChanged;
-  final Future<void> Function(String originalPrompt) onAdjustDirection;
   final Future<void> Function() onReview;
 
   @override
   Widget build(BuildContext context) {
-    final latestUserIndex = data.entries.lastIndexWhere(
-      (entry) => entry.kind == TimelineKind.user,
-    );
     final timelineItems = _conversationTimelineItems(data.entries);
     final liveCommand = active ? data.activeCommand : null;
+    final isThinking = active && data.isThinking && liveCommand == null;
     return ListView.separated(
       key: PageStorageKey('conversation-timeline-${pageKey.storageKey}'),
       controller: scrollController,
@@ -5019,6 +5142,7 @@ class _ConversationTimeline extends StatelessWidget {
       itemCount:
           timelineItems.length +
           (liveCommand == null ? 0 : 1) +
+          (isThinking ? 1 : 0) +
           (data.showFileChangeSummary ? 1 : 0),
       separatorBuilder: (_, _) => const Padding(
         padding: EdgeInsets.symmetric(vertical: 14),
@@ -5029,6 +5153,9 @@ class _ConversationTimeline extends StatelessWidget {
           var tailIndex = index - timelineItems.length;
           if (liveCommand != null && tailIndex-- == 0) {
             return _LiveCommandRow(command: liveCommand);
+          }
+          if (isThinking && tailIndex-- == 0) {
+            return const _LiveThinkingRow();
           }
           if (!data.showFileChangeSummary || tailIndex != 0) {
             throw StateError('Unexpected conversation timeline item index.');
@@ -5056,16 +5183,7 @@ class _ConversationTimeline extends StatelessWidget {
           );
         }
         final entry = item.entry!;
-        return _TimelineEntry(
-          entry,
-          onAdjustDirection:
-              active &&
-                  data.canSteer &&
-                  item.entryIndex == latestUserIndex &&
-                  entry.kind == TimelineKind.user
-              ? () => onAdjustDirection(entry.detail)
-              : null,
-        );
+        return _TimelineEntry(entry);
       },
     );
   }
@@ -6553,14 +6671,14 @@ class _ComposerPanel extends StatefulWidget {
     required this.composer,
     required this.recordSkillRequest,
     required this.onSend,
-    required this.onSteer,
+    required this.onQueueSteer,
   });
 
   final CodexController controller;
   final TextEditingController composer;
   final ValueListenable<int> recordSkillRequest;
   final Future<bool> Function(_ComposerSubmission submission) onSend;
-  final Future<bool> Function(_ComposerSubmission submission) onSteer;
+  final Future<bool> Function(_ComposerSubmission submission) onQueueSteer;
 
   @override
   State<_ComposerPanel> createState() => _ComposerPanelState();
@@ -6717,7 +6835,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
       skills: _selectedSkills,
     );
     final submitted = controller.canSteer
-        ? await widget.onSteer(submission)
+        ? await widget.onQueueSteer(submission)
         : await widget.onSend(submission);
     if (!submitted || !mounted) return;
     setState(() {
@@ -6814,7 +6932,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
     final items = await _clipboardFileReader.readItems();
     if (!mounted) return;
     if (items.isNotEmpty) {
-      if (!controller.canSend && !controller.canSteer) {
+      if (!controller.canSend && !controller.canQueueTurnSteer) {
         return;
       }
       _addAttachments(
@@ -6880,7 +6998,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
   Future<void> _handleDroppedFiles(List<DropItem> items) async {
     if (items.isEmpty ||
         !mounted ||
-        (!controller.canSend && !controller.canSteer)) {
+        (!controller.canSend && !controller.canQueueTurnSteer)) {
       return;
     }
     final attachments = <_ComposerAttachment>[];
@@ -6913,7 +7031,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
   }
 
   void _addAttachments(Iterable<_ComposerAttachment> attachments) {
-    if (!controller.canSend && !controller.canSteer) return;
+    if (!controller.canSend && !controller.canQueueTurnSteer) return;
     setState(() {
       for (final attachment in attachments) {
         if (attachment.path.isEmpty) continue;
@@ -7144,18 +7262,27 @@ class _ComposerPanelState extends State<_ComposerPanel> {
         mainAxisSize: MainAxisSize.min,
         children: [
           if (controller.fileChanges.isEmpty &&
+              controller.pendingTurnSteer == null &&
               (controller.activeThreadId != null ||
                   controller.status == RuntimeStatus.running))
             _ComposerActivityPill(
               label: _activityLabel,
               active: controller.status == RuntimeStatus.running,
             ),
+          if (controller.pendingTurnSteer case final pending?)
+            _PendingTurnSteerPanel(
+              pending: pending,
+              sending: controller.pendingTurnSteerSending,
+              onSend: controller.sendPendingTurnSteer,
+              onDiscard: controller.discardPendingTurnSteer,
+            ),
           Stack(
             clipBehavior: Clip.none,
             children: [
               DropTarget(
                 onDragEntered: (_) {
-                  if ((controller.canSend || controller.canSteer) && mounted) {
+                  if ((controller.canSend || controller.canQueueTurnSteer) &&
+                      mounted) {
                     setState(() => _draggingFiles = true);
                   }
                 },
@@ -7164,7 +7291,9 @@ class _ComposerPanelState extends State<_ComposerPanel> {
                 },
                 onDragDone: (details) {
                   if (mounted) setState(() => _draggingFiles = false);
-                  if (!controller.canSend && !controller.canSteer) return;
+                  if (!controller.canSend && !controller.canQueueTurnSteer) {
+                    return;
+                  }
                   unawaited(_handleDroppedFiles(details.files));
                 },
                 child: Stack(
@@ -7220,7 +7349,8 @@ class _ComposerPanelState extends State<_ComposerPanel> {
                                 key: const Key('composer-field'),
                                 controller: composer,
                                 enabled:
-                                    controller.canSend || controller.canSteer,
+                                    controller.canSend ||
+                                    controller.canQueueTurnSteer,
                                 contextMenuBuilder: _buildComposerContextMenu,
                                 minLines: 2,
                                 maxLines: 5,
@@ -7350,7 +7480,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
                                       key: const Key('composer-add-button'),
                                       enabled:
                                           controller.canSend ||
-                                          controller.canSteer,
+                                          controller.canQueueTurnSteer,
                                       tooltip: '添加上下文',
                                       icon: const Icon(Icons.add, size: 20),
                                       constraints: const BoxConstraints(
@@ -7440,6 +7570,9 @@ class _ComposerPanelState extends State<_ComposerPanel> {
                                       style: IconButton.styleFrom(
                                         backgroundColor: scheme.primary,
                                         foregroundColor: scheme.onPrimary,
+                                        fixedSize: const Size.square(36),
+                                        padding: EdgeInsets.zero,
+                                        shape: const CircleBorder(),
                                       ),
                                       icon: const Icon(Icons.stop, size: 19),
                                     )
@@ -7829,12 +7962,14 @@ class _ComposerContextChip extends StatelessWidget {
 class _ApprovalPanel extends StatelessWidget {
   const _ApprovalPanel({
     required this.approval,
+    required this.taskLabel,
     required this.enabled,
     required this.onAccept,
     required this.onDecline,
   });
 
   final PendingApproval approval;
+  final String? taskLabel;
   final bool enabled;
   final Future<void> Function() onAccept;
   final Future<void> Function() onDecline;
@@ -7863,6 +7998,10 @@ class _ApprovalPanel extends StatelessWidget {
               fontWeight: FontWeight.w700,
             ),
           ),
+          if (taskLabel case final label?) ...[
+            const SizedBox(height: 4),
+            Text('来自后台任务：$label', style: TextStyle(color: palette.signal)),
+          ],
           if (approval.detail.isNotEmpty) ...[
             const SizedBox(height: 6),
             SelectableText(approval.detail),
@@ -10423,10 +10562,9 @@ IconData _activityIcon(TimelineEntry entry) {
 }
 
 class _TimelineEntry extends StatelessWidget {
-  const _TimelineEntry(this.entry, {this.onAdjustDirection});
+  const _TimelineEntry(this.entry);
 
   final TimelineEntry entry;
-  final VoidCallback? onAdjustDirection;
 
   /// 按时间线条目类型构建消息或系统事件视图。
   /// Builds a message or system-event view based on the timeline entry kind.
@@ -10451,52 +10589,37 @@ class _TimelineEntry extends StatelessWidget {
     if (entry.kind == TimelineKind.user) {
       return Align(
         alignment: Alignment.centerRight,
-        child: Container(
-          constraints: const BoxConstraints(maxWidth: 560),
-          padding: const EdgeInsets.fromLTRB(14, 10, 8, 8),
-          decoration: BoxDecoration(
-            color: palette.raised,
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Align(
-                alignment: Alignment.centerLeft,
-                child: SelectionArea(child: Text(entry.detail)),
-              ),
-              if (entry.imagePaths.isNotEmpty) ...[
-                const SizedBox(height: 9),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      for (final path in entry.imagePaths)
-                        _TimelineImage(path: path),
-                    ],
-                  ),
-                ),
-              ],
-              if (onAdjustDirection != null) ...[
-                const SizedBox(height: 5),
-                TextButton.icon(
-                  key: const Key('adjust-direction-button'),
-                  onPressed: onAdjustDirection,
-                  icon: const Icon(Icons.reply_outlined, size: 17),
-                  label: const Text('调整方向'),
-                  style: TextButton.styleFrom(
-                    foregroundColor: palette.muted,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720),
+          child: Container(
+            key: const Key('timeline-user-message'),
+            padding: const EdgeInsets.fromLTRB(14, 8, 10, 8),
+            decoration: BoxDecoration(
+              color: palette.raised,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: palette.border),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SelectionArea(child: Text(entry.detail)),
+                if (entry.imagePaths.isNotEmpty) ...[
+                  const SizedBox(height: 9),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        for (final path in entry.imagePaths)
+                          _TimelineImage(path: path),
+                      ],
                     ),
-                    visualDensity: VisualDensity.compact,
                   ),
-                ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       );
@@ -10579,6 +10702,127 @@ class _LiveCommandRow extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// A quiet, live turn indicator shown while Codex is deciding its next step.
+/// It yields to the command row when App Server reports an active command.
+/// Codex 正在决定下一步时显示的安静状态提示；App Server 报告活动命令后让位给命令行。
+class _LiveThinkingRow extends StatefulWidget {
+  const _LiveThinkingRow();
+
+  @override
+  State<_LiveThinkingRow> createState() => _LiveThinkingRowState();
+}
+
+class _LiveThinkingRowState extends State<_LiveThinkingRow>
+    with SingleTickerProviderStateMixin {
+  static const _animationDuration = Duration(milliseconds: 760);
+
+  late final AnimationController _animationController = AnimationController(
+    vsync: this,
+    duration: _animationDuration,
+  );
+  var _reduceMotion = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _reduceMotion = MediaQuery.disableAnimationsOf(context);
+    if (_reduceMotion) {
+      _animationController.stop();
+    } else if (!_animationController.isAnimating) {
+      _animationController.repeat();
+    }
+  }
+
+  @override
+  void dispose() {
+    _animationController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final textStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
+      color: palette.muted,
+      fontWeight: FontWeight.w600,
+    );
+    final highlightColor = Color.lerp(
+      palette.trace,
+      Theme.of(context).colorScheme.onSurface,
+      0.38,
+    )!;
+    return Semantics(
+      key: const Key('live-thinking-row'),
+      liveRegion: true,
+      label: '正在思考',
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: ExcludeSemantics(
+          child: AnimatedBuilder(
+            animation: _animationController,
+            builder: (context, child) {
+              final progress = _reduceMotion ? 0.5 : _animationController.value;
+              // A narrow, muted highlight moves across the label, followed by
+              // three dots that breathe in sequence. This mirrors Codex's
+              // activity treatment without competing with message content.
+              final highlightStart = -1.35 + (progress * 2.7);
+              return Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ShaderMask(
+                    key: const Key('live-thinking-shimmer'),
+                    blendMode: BlendMode.srcIn,
+                    shaderCallback: (bounds) => LinearGradient(
+                      begin: Alignment(highlightStart, 0),
+                      end: Alignment(highlightStart + 0.8, 0),
+                      colors: [
+                        palette.muted.withValues(alpha: 0.78),
+                        highlightColor,
+                        palette.muted.withValues(alpha: 0.78),
+                      ],
+                    ).createShader(bounds),
+                    child: Text('正在思考', style: textStyle),
+                  ),
+                  const SizedBox(width: 5),
+                  _ThinkingDots(progress: progress, color: palette.muted),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ThinkingDots extends StatelessWidget {
+  const _ThinkingDots({required this.progress, required this.color});
+
+  final double progress;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: List.generate(3, (index) {
+        final phase = (progress - (index * 0.13) + 1) % 1;
+        final opacity = 0.34 + (0.66 * (1 - (phase - 0.5).abs() * 2));
+        return Padding(
+          padding: EdgeInsets.only(right: index == 2 ? 0 : 3),
+          child: Opacity(
+            opacity: opacity,
+            child: DecoratedBox(
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              child: const SizedBox(width: 3, height: 3),
+            ),
+          ),
+        );
+      }),
     );
   }
 }
@@ -10741,7 +10985,7 @@ class _ControllerBuilder extends ConsumerWidget {
   }
 }
 
-class _HistoryThreadTile extends StatelessWidget {
+class _HistoryThreadTile extends StatefulWidget {
   const _HistoryThreadTile({
     required this.thread,
     required this.selected,
@@ -10774,119 +11018,193 @@ class _HistoryThreadTile extends StatelessWidget {
   final VoidCallback? onDelete;
   final VoidCallback? onTogglePin;
 
-  /// 构建带有恢复、重命名和归档操作的历史线程项。
-  /// Builds a history-thread item with resume, rename, and archive actions.
+  /// 构建带有悬停快捷操作和右键菜单的历史线程项。
+  /// Builds a history-thread item with hover shortcuts and a context menu.
+  @override
+  State<_HistoryThreadTile> createState() => _HistoryThreadTileState();
+}
+
+class _HistoryThreadTileState extends State<_HistoryThreadTile> {
+  bool _hovering = false;
+
+  /// 显示任务行的完整右键操作菜单。
+  /// Shows the task row's full context-action menu.
+  Future<void> _showContextMenu(TapUpDetails details) async {
+    if (!widget.actionsEnabled || !widget.enabled || widget.selectionMode) {
+      return;
+    }
+    final overlay = Overlay.of(context).context.findRenderObject();
+    if (overlay is! RenderBox) return;
+    final position = details.globalPosition;
+    final action = await showMenu<_ThreadAction>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        position.dx,
+        position.dy,
+        overlay.size.width - position.dx,
+        overlay.size.height - position.dy,
+      ),
+      items: [
+        PopupMenuItem(
+          value: _ThreadAction.pin,
+          child: Text(widget.pinned ? '取消置顶' : '置顶'),
+        ),
+        const PopupMenuItem(value: _ThreadAction.rename, child: Text('重命名')),
+        const PopupMenuItem(value: _ThreadAction.archive, child: Text('归档')),
+        const PopupMenuItem(value: _ThreadAction.delete, child: Text('永久删除')),
+      ],
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case _ThreadAction.rename:
+        widget.onRename?.call();
+      case _ThreadAction.archive:
+        widget.onArchive?.call();
+      case _ThreadAction.delete:
+        widget.onDelete?.call();
+      case _ThreadAction.pin:
+        widget.onTogglePin?.call();
+    }
+  }
+
+  /// 构建与 Codex 侧栏一致的紧凑悬停操作图标。
+  /// Builds compact hover action icons consistent with the Codex sidebar.
+  Widget _buildHoverAction({
+    required String keySuffix,
+    required String tooltip,
+    required IconData icon,
+    required VoidCallback? onPressed,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: IconButton(
+        key: ValueKey('sidebar-thread-$keySuffix-${widget.thread.id}'),
+        onPressed: widget.enabled ? onPressed : null,
+        icon: Icon(icon, size: 16),
+        padding: EdgeInsets.zero,
+        visualDensity: VisualDensity.compact,
+        constraints: const BoxConstraints.tightFor(width: 24, height: 24),
+        splashRadius: 14,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
+    final showHoverActions =
+        _hovering &&
+        widget.actionsEnabled &&
+        !widget.selectionMode &&
+        !widget.running;
     return Material(
-      key: ValueKey('sidebar-thread-tile-${thread.id}'),
-      color: selected ? palette.selected : Colors.transparent,
+      key: ValueKey('sidebar-thread-tile-${widget.thread.id}'),
+      color: widget.selected ? palette.selected : Colors.transparent,
       borderRadius: BorderRadius.circular(12),
-      child: InkWell(
-        onTap: enabled ? onTap : null,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          // The left inset preserves the project-tree hierarchy; the compact
-          // vertical inset keeps a selected task from reading as a large card.
-          padding: const EdgeInsets.fromLTRB(9, 2, 1, 2),
-          child: Row(
-            children: [
-              if (selectionMode)
-                Checkbox(
-                  value: batchSelected,
-                  onChanged: enabled ? (_) => onTap() : null,
-                ),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _hovering = true),
+        onExit: (_) => setState(() => _hovering = false),
+        child: GestureDetector(
+          onSecondaryTapUp: _showContextMenu,
+          child: InkWell(
+            onTap: widget.enabled ? widget.onTap : null,
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              // The left inset preserves the project-tree hierarchy; the compact
+              // vertical inset keeps a selected task from reading as a large card.
+              padding: const EdgeInsets.fromLTRB(30, 4, 8, 4),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 24),
+                child: Row(
                   children: [
-                    Text(
-                      thread.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: selected ? palette.trace : palette.muted,
-                        fontSize: 13,
-                        fontWeight: selected
-                            ? FontWeight.w600
-                            : FontWeight.w400,
+                    if (widget.selectionMode)
+                      Checkbox(
+                        value: widget.batchSelected,
+                        onChanged: widget.enabled
+                            ? (_) => widget.onTap()
+                            : null,
+                      ),
+                    Expanded(
+                      child: Column(
+                        // Keep the fade aligned with the task bubble's trailing
+                        // edge instead of the rendered title's intrinsic width.
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          ShaderMask(
+                            key: ValueKey(
+                              'sidebar-thread-title-fade-${widget.thread.id}',
+                            ),
+                            blendMode: BlendMode.dstIn,
+                            shaderCallback: (bounds) => const LinearGradient(
+                              begin: Alignment.centerLeft,
+                              end: Alignment.centerRight,
+                              colors: [
+                                Colors.white,
+                                Colors.white,
+                                Colors.transparent,
+                              ],
+                              stops: [0, 0.78, 1],
+                            ).createShader(bounds),
+                            child: Text(
+                              widget.thread.title,
+                              maxLines: 1,
+                              softWrap: false,
+                              overflow: TextOverflow.clip,
+                              style: TextStyle(
+                                color: widget.selected
+                                    ? palette.trace
+                                    : palette.muted,
+                                fontSize: 13,
+                                fontWeight: widget.selected
+                                    ? FontWeight.w600
+                                    : FontWeight.w400,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
+                    if (widget.running)
+                      Tooltip(
+                        message: '任务进行中',
+                        child: SizedBox(
+                          key: const Key('sidebar-running-task-indicator'),
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 1.5,
+                            color: palette.active,
+                          ),
+                        ),
+                      )
+                    else
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (widget.statusIndicator case final indicator?)
+                            _ThreadStatusMark(indicator: indicator),
+                          if (showHoverActions) ...[
+                            _buildHoverAction(
+                              keySuffix: 'pin',
+                              tooltip: widget.pinned ? '取消置顶任务' : '置顶任务',
+                              icon: widget.pinned
+                                  ? Icons.push_pin
+                                  : Icons.push_pin_outlined,
+                              onPressed: widget.onTogglePin,
+                            ),
+                            _buildHoverAction(
+                              keySuffix: 'archive',
+                              tooltip: '归档任务',
+                              icon: Icons.archive_outlined,
+                              onPressed: widget.onArchive,
+                            ),
+                          ],
+                        ],
+                      ),
                   ],
                 ),
               ),
-              if (running)
-                Tooltip(
-                  message: '任务进行中',
-                  child: SizedBox(
-                    key: const Key('sidebar-running-task-indicator'),
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2.2,
-                      color: palette.active,
-                    ),
-                  ),
-                )
-              else
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (statusIndicator case final indicator?)
-                      _ThreadStatusMark(indicator: indicator),
-                    if (actionsEnabled)
-                      Theme(
-                        data: Theme.of(context).copyWith(
-                          iconButtonTheme: IconButtonThemeData(
-                            style: IconButton.styleFrom(
-                              minimumSize: const Size(24, 24),
-                              maximumSize: const Size(24, 24),
-                              padding: EdgeInsets.zero,
-                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            ),
-                          ),
-                        ),
-                        child: PopupMenuButton<_ThreadAction>(
-                          tooltip: '任务选项',
-                          enabled: enabled && !selectionMode,
-                          padding: EdgeInsets.zero,
-                          iconSize: 16,
-                          onSelected: (action) {
-                            switch (action) {
-                              case _ThreadAction.rename:
-                                onRename?.call();
-                              case _ThreadAction.archive:
-                                onArchive?.call();
-                              case _ThreadAction.delete:
-                                onDelete?.call();
-                              case _ThreadAction.pin:
-                                onTogglePin?.call();
-                            }
-                          },
-                          itemBuilder: (context) => [
-                            PopupMenuItem(
-                              value: _ThreadAction.pin,
-                              child: Text(pinned ? '取消置顶' : '置顶'),
-                            ),
-                            const PopupMenuItem(
-                              value: _ThreadAction.rename,
-                              child: Text('重命名'),
-                            ),
-                            const PopupMenuItem(
-                              value: _ThreadAction.archive,
-                              child: Text('归档'),
-                            ),
-                            const PopupMenuItem(
-                              value: _ThreadAction.delete,
-                              child: Text('永久删除'),
-                            ),
-                          ],
-                        ),
-                      ),
-                  ],
-                ),
-            ],
+            ),
           ),
         ),
       ),

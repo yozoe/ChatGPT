@@ -15,6 +15,15 @@ class PendingApproval {
   final JsonMap params;
   final ApprovalKind kind;
 
+  /// Thread that requested this approval, when supplied by App Server.
+  String? get threadId {
+    final direct = params['threadId']?.toString().trim();
+    if (direct != null && direct.isNotEmpty) return direct;
+    final turn = params['turn'];
+    final nested = turn is Map ? turn['threadId']?.toString().trim() : null;
+    return nested == null || nested.isEmpty ? null : nested;
+  }
+
   /// 返回与审批类型对应的本地化标题。
   /// Returns the localized title for this approval kind.
   String get title => switch (kind) {

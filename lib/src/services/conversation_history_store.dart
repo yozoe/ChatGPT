@@ -17,6 +17,7 @@ class ConversationHistorySnapshot {
     required this.entries,
     required this.fileChanges,
     this.pinnedThreadIds = const {},
+    this.acknowledgedCompletedThreadIds = const {},
     this.turnDiff,
     this.activeThreadId,
     this.ownedThreadIds = const {},
@@ -28,6 +29,9 @@ class ConversationHistorySnapshot {
   final List<TimelineEntry> entries;
   final List<CodexFileChange> fileChanges;
   final Set<String> pinnedThreadIds;
+
+  /// Completed-task reminders that the user has already viewed.
+  final Set<String> acknowledgedCompletedThreadIds;
   final String? turnDiff;
 
   /// The thread that was open when the workspace snapshot was saved.
@@ -50,6 +54,9 @@ class ConversationHistorySnapshot {
     'entries': entries.map((entry) => entry.toJson()).toList(),
     'fileChanges': fileChanges.map((change) => change.toJson()).toList(),
     'pinnedThreadIds': pinnedThreadIds.toList(growable: false),
+    'acknowledgedCompletedThreadIds': acknowledgedCompletedThreadIds.toList(
+      growable: false,
+    ),
     'turnDiff': ?turnDiff,
     'activeThreadId': ?activeThreadId,
     'ownedThreadIds': ownedThreadIds.toList(growable: false),
@@ -98,6 +105,14 @@ class ConversationHistorySnapshot {
       fileChanges: decodeList(value['fileChanges'], CodexFileChange.fromJson),
       pinnedThreadIds: value['pinnedThreadIds'] is Iterable
           ? (value['pinnedThreadIds'] as Iterable)
+                .where((id) => id != null)
+                .map((id) => id.toString())
+                .where((id) => id.isNotEmpty)
+                .toSet()
+          : const {},
+      acknowledgedCompletedThreadIds:
+          value['acknowledgedCompletedThreadIds'] is Iterable
+          ? (value['acknowledgedCompletedThreadIds'] as Iterable)
                 .where((id) => id != null)
                 .map((id) => id.toString())
                 .where((id) => id.isNotEmpty)

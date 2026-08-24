@@ -56,6 +56,26 @@ class WorkspaceTaskList {
   final Set<String> pinnedIds;
 }
 
+/// A direction change submitted from the composer but not yet sent to the
+/// active App Server turn. It is deliberately transient and never written to
+/// the conversation history until `turn/steer` succeeds.
+/// 在输入框提交、但尚未发送至当前 App Server turn 的调整方向。它仅存在于
+/// 当前界面；在 `turn/steer` 成功前不会写入对话历史。
+@immutable
+class PendingTurnSteer {
+  const PendingTurnSteer({
+    required this.displayText,
+    required this.prompt,
+    this.additionalInput = const [],
+    this.imagePaths = const [],
+  });
+
+  final String displayText;
+  final String prompt;
+  final List<JsonMap> additionalInput;
+  final List<String> imagePaths;
+}
+
 /// 将本地存储的审批模式转换为受支持的安全值。
 /// Converts a locally stored approval mode into a supported safe value.
 ApprovalMode approvalModeFromStorageValue(String? value) =>
@@ -226,6 +246,7 @@ class CodexController extends ChangeNotifier {
   final List<TimelineEntry> _entries = [];
   final Map<String, CodexFileChange> _fileChangesByPath = {};
   final Set<String> _pinnedThreadIds = {};
+  final Set<String> _acknowledgedCompletedThreadIds = {};
   final List<RuntimeLogEntry> _runtimeLogs = [];
   final List<ScheduledTask> _scheduledTasks = [];
   final Map<String, Timer> _scheduledTaskTimers = {};
@@ -289,17 +310,79 @@ class CodexController extends ChangeNotifier {
   final Set<String> _legacyWorkspaceHistoryPaths = {};
   final LinkedHashMap<String, _ThreadViewSnapshot> _threadViewCache =
       LinkedHashMap();
+  // A task can continue on App Server after the user opens another task. This
+  // is intentionally independent of [status], which describes the task that
+  // is currently open in the workbench.
+  final Set<String> _runningThreadIds = {};
   String? activeThreadId;
+
+  /// Whether the completion reminder for a thread has been viewed.
+  bool isCompletedThreadAcknowledged(String threadId) =>
+      _acknowledgedCompletedThreadIds.contains(threadId);
+
+  /// Persists that the user has opened a completed thread.
+  Future<void> acknowledgeCompletedThread(String threadId) async {
+    if (!_acknowledgedCompletedThreadIds.add(threadId)) return;
+    _scheduleConversationHistorySave();
+    notifyListeners();
+  }
+
   // A thread ID restored from local history must be resumed on the new
   // app-server connection before it can receive a turn.
   bool _activeThreadAttached = false;
   String? activeTurnId;
+  PendingTurnSteer? pendingTurnSteer;
+  bool pendingTurnSteerSending = false;
+  Object? _pendingTurnSteerSendToken;
   DateTime? _activeTurnStartedAt;
   String? _activeCommand;
   String? _activeCommandItemId;
   TaskPlan? activeTaskPlan;
   String? lastError;
-  PendingApproval? pendingApproval;
+  CodexThread? _resumeConflictThread;
+
+  /// Whether the last attempt to open a task was rejected because another
+  /// Codex client still owns the writer for it.
+  bool get hasResumeConflict => _resumeConflictThread != null;
+
+  /// Retries the task that could not be opened while another client held its
+  /// writer. The retry remains scoped to that original task.
+  Future<void> retryResumeConflict() async {
+    final thread = _resumeConflictThread;
+    if (thread == null || _resumingThread) return;
+    _resumeConflictThread = null;
+    lastError = null;
+    notifyListeners();
+    await resumeThread(thread);
+  }
+
+  final LinkedHashMap<Object, PendingApproval> _pendingApprovals =
+      LinkedHashMap();
+
+  /// Prefers an approval for the task currently shown in the workbench. A
+  /// background task's approval remains available rather than being replaced
+  /// by a later request from another concurrent task.
+  PendingApproval? get pendingApproval {
+    final activeId = activeThreadId;
+    if (activeId != null) {
+      for (final approval in _pendingApprovals.values) {
+        if (approval.threadId == activeId) return approval;
+      }
+    }
+    return _pendingApprovals.values.firstOrNull;
+  }
+
+  /// Describes the task owning an approval that is not in the current view.
+  String? get pendingApprovalTaskLabel {
+    final approval = pendingApproval;
+    final threadId = approval?.threadId;
+    if (threadId == null || threadId == activeThreadId) return null;
+    final title = _cachedThread(threadId)?.title;
+    if (title != null && title.isNotEmpty) return title;
+    final shortId = threadId.length > 12 ? threadId.substring(0, 12) : threadId;
+    return '后台任务 $shortId';
+  }
+
   bool approvalResponding = false;
   ApprovalMode approvalMode = ApprovalMode.manual;
   bool _approvalModeChangedBeforeLoad = false;
@@ -682,6 +765,7 @@ class CodexController extends ChangeNotifier {
       status == RuntimeStatus.ready &&
       workspacePath != null &&
       (activeThreadId == null || _activeThreadAttached) &&
+      (activeThreadId == null || !isThreadRunning(activeThreadId!)) &&
       _hasUsableModelSelection &&
       _hasUsableReasoningEffort &&
       (!requiresOpenaiAuth || authStatus != AuthStatus.signedOut);
@@ -689,11 +773,37 @@ class CodexController extends ChangeNotifier {
   /// 指示是否可以清空当前任务并开始一个新任务。
   /// Indicates whether the current task can be cleared to start a new task.
   bool get canCreateThread =>
-      status == RuntimeStatus.ready && workspacePath != null;
+      workspacePath != null &&
+      (status == RuntimeStatus.ready ||
+          (status == RuntimeStatus.running && activeThreadId != null));
+
+  /// Whether another task in the current project can be opened. Switching
+  /// keeps a running task connected in the background rather than stopping it.
+  /// 是否可打开当前项目中的另一项任务；切换会让运行中的任务在后台继续，
+  /// 不会中断它。
+  bool get canSwitchThreads =>
+      status == RuntimeStatus.ready ||
+      (status == RuntimeStatus.running && activeThreadId != null);
+
+  /// Whether any task in the current project is still executing.
+  bool get hasRunningTasks =>
+      _runningThreadIds.isNotEmpty || status == RuntimeStatus.running;
+
+  /// Whether [threadId] is executing, including a task left running in the
+  /// background after the user opened another conversation.
+  bool isThreadRunning(String threadId) =>
+      _runningThreadIds.contains(threadId) ||
+      (status == RuntimeStatus.running && activeThreadId == threadId);
+
+  bool get _hasBackgroundRunningTasks =>
+      _runningThreadIds.any((threadId) => threadId != activeThreadId);
 
   /// 指示当前正在运行的任务是否可以中断。
   /// Indicates whether the running task can be interrupted.
-  bool get canStop => status == RuntimeStatus.running && activeThreadId != null;
+  bool get canStop =>
+      status == RuntimeStatus.running &&
+      activeThreadId != null &&
+      activeTurnId != null;
 
   /// Indicates whether the active turn can accept a direction adjustment.
   /// 当前运行中的 turn 只有在已收到 turn id 时才能调整方向。
@@ -701,6 +811,9 @@ class CodexController extends ChangeNotifier {
       status == RuntimeStatus.running &&
       activeThreadId != null &&
       activeTurnId != null;
+
+  /// Whether the running turn can accept a new, locally queued direction.
+  bool get canQueueTurnSteer => canSteer && pendingTurnSteer == null;
 
   /// 当前 turn 中正执行的命令；命令完成后立即清除，不写入持久化状态。
   /// The command currently running in this turn. It is cleared on completion
@@ -716,9 +829,7 @@ class CodexController extends ChangeNotifier {
   /// 指示当前任务状态是否允许新建或切换工作区并重建运行时连接。
   /// Indicates whether the current task state permits creating or switching workspaces and rebuilding the runtime connection.
   bool get canChangePrimaryWorkspace =>
-      !_startingRuntime &&
-      status != RuntimeStatus.starting &&
-      status != RuntimeStatus.running;
+      !_startingRuntime && status != RuntimeStatus.starting && !hasRunningTasks;
 
   /// 指示本地 App Server 是否可以停止。
   /// Indicates whether the local App Server can be stopped.
@@ -907,9 +1018,7 @@ class CodexController extends ChangeNotifier {
   /// 指示运行时路径是否可以在不影响会话的情况下配置。
   /// Indicates whether the runtime path can be configured without disrupting a session.
   bool get canConfigureRuntime =>
-      !_startingRuntime &&
-      status != RuntimeStatus.starting &&
-      status != RuntimeStatus.running;
+      !_startingRuntime && status != RuntimeStatus.starting && !hasRunningTasks;
 
   /// 验证、切换并持久化本地项目，同时恢复该项目的本地历史。
   /// Validates, selects, and persists a local workspace, then restores its local history.
@@ -963,6 +1072,8 @@ class CodexController extends ChangeNotifier {
     _updateCurrentWorkspaceConfiguration();
     _clearRuntimeResolvedConfiguration();
     _threadViewCache.clear();
+    _runningThreadIds.clear();
+    _acknowledgedCompletedThreadIds.clear();
     activeThreadId = null;
     _activeThreadAttached = false;
     threads = const [];
@@ -1063,6 +1174,7 @@ class CodexController extends ChangeNotifier {
       final switched = await selectWorkspaceAndReconnect(workspace);
       if (!switched || workspacePath != workspace || _disposed) return;
     }
+    await acknowledgeCompletedThread(thread.id);
     await resumeThread(thread);
   }
 
@@ -1137,6 +1249,7 @@ class CodexController extends ChangeNotifier {
     );
     _pinnedWorkspacePaths.remove(primary);
     _threadViewCache.clear();
+    _runningThreadIds.clear();
     workspacePath = null;
     _additionalWorkspacePaths.clear();
     activeThreadId = null;
@@ -1292,14 +1405,20 @@ class CodexController extends ChangeNotifier {
   /// Clears the current task state so the next message creates a server thread.
   void createThread() {
     if (!canCreateThread) {
-      lastError = status == RuntimeStatus.running
-          ? '当前任务运行中；完成或停止后才能新建任务。'
-          : '运行时就绪后才能新建任务。';
+      lastError = '运行时就绪后才能新建任务。';
       notifyListeners();
       return;
     }
+    final previousThreadId = activeThreadId;
+    if (previousThreadId != null && status == RuntimeStatus.running) {
+      // Do not retain a page that will miss background stream updates. Opening
+      // this task again loads its authoritative App Server history instead.
+      _runningThreadIds.add(previousThreadId);
+      _threadViewCache.remove(previousThreadId);
+    }
     activeThreadId = null;
     _activeThreadAttached = false;
+    status = RuntimeStatus.ready;
     _clearStreamingState();
     _clearFileChanges();
     _resetConversationTimeline();
@@ -1478,8 +1597,9 @@ class CodexController extends ChangeNotifier {
     _add(TimelineKind.user, '你', text, imagePaths: imagePaths);
     notifyListeners();
 
+    String? requestedThreadId = activeThreadId;
     try {
-      activeThreadId ??= await _server.startThread(
+      requestedThreadId ??= await _server.startThread(
         workingDirectory: workspace,
         runtimeWorkspaceRoots: workspaceRoots.length > 1
             ? workspaceRoots
@@ -1488,24 +1608,34 @@ class CodexController extends ChangeNotifier {
         model: _modelOverrideForNewThread,
         config: _newThreadConfig(),
       );
-      _ownedThreadIds.add(activeThreadId!);
+      final threadId = requestedThreadId;
+      if (activeThreadId == null) {
+        activeThreadId = threadId;
+        _activeThreadAttached = true;
+      }
+      _ownedThreadIds.add(threadId);
       _threadHistoryInitialized = true;
-      _activeThreadAttached = true;
       // App Server may not include a newly-created thread in the first list
       // response while its turn is already running. Keep a lightweight local
       // row so the sidebar can still identify and show the active task.
-      _ensureActiveThreadVisible(activeThreadId!, text);
+      _ensureActiveThreadVisible(threadId, text);
+      _runningThreadIds.add(threadId);
       await refreshThreads();
-      final id = activeThreadId!;
-      _updateThreadStatus(id, 'active');
+      _acknowledgedCompletedThreadIds.remove(threadId);
+      _updateThreadStatus(threadId, 'active');
+      _scheduleConversationHistorySave();
       final objective = goal?.trim();
       if (objective != null && objective.isNotEmpty) {
-        await _server.setThreadGoal(threadId: id, objective: objective);
+        await _server.setThreadGoal(threadId: threadId, objective: objective);
       }
-      final shortId = id.length > 12 ? id.substring(0, 12) : id;
-      _add(TimelineKind.system, '任务已创建', 'Thread $shortId');
+      if (activeThreadId == threadId) {
+        final shortId = threadId.length > 12
+            ? threadId.substring(0, 12)
+            : threadId;
+        _add(TimelineKind.system, '任务已创建', 'Thread $shortId');
+      }
       await _server.startTurn(
-        threadId: id,
+        threadId: threadId,
         prompt: text,
         workingDirectory: workspace,
         additionalInput: additionalInput,
@@ -1523,11 +1653,16 @@ class CodexController extends ChangeNotifier {
       notifyListeners();
       return true;
     } catch (error) {
-      status = _server.isRunning ? RuntimeStatus.ready : RuntimeStatus.failed;
-      _clearStreamingState();
-      lastError = _messageOf(error);
-      _updateThreadStatus(activeThreadId, 'systemError');
-      _add(TimelineKind.error, '任务未能启动', lastError!);
+      _runningThreadIds.remove(requestedThreadId);
+      _updateThreadStatus(requestedThreadId, 'systemError');
+      // Another task may have become active while this request was awaiting
+      // App Server. Never replace that task's UI state with an old failure.
+      if (requestedThreadId == null || activeThreadId == requestedThreadId) {
+        status = _server.isRunning ? RuntimeStatus.ready : RuntimeStatus.failed;
+        _clearStreamingState();
+        lastError = _messageOf(error);
+        _add(TimelineKind.error, '任务未能启动', lastError!);
+      }
     }
     if (status == RuntimeStatus.failed) _scheduleRuntimeReconnect();
     notifyListeners();
@@ -1587,9 +1722,12 @@ class CodexController extends ChangeNotifier {
   /// Requests that App Server interrupt the currently executing task.
   Future<void> stopCurrentTurn() async {
     final threadId = activeThreadId;
-    if (threadId == null || status != RuntimeStatus.running) return;
+    final turnId = activeTurnId;
+    if (threadId == null || turnId == null || status != RuntimeStatus.running) {
+      return;
+    }
     try {
-      await _server.interruptTurn(threadId: threadId);
+      await _server.interruptTurn(threadId: threadId, turnId: turnId);
       _add(TimelineKind.system, '已请求停止', '正在等待 App Server 结束当前任务。');
     } catch (error) {
       _add(TimelineKind.error, '停止失败', _messageOf(error));
@@ -1607,12 +1745,11 @@ class CodexController extends ChangeNotifier {
     final text = prompt.trim();
     final threadId = activeThreadId;
     final turnId = activeTurnId;
+    final workspace = workspacePath;
     if (text.isEmpty || !canSteer || threadId == null || turnId == null) {
       return false;
     }
-    _add(TimelineKind.user, '你', text, imagePaths: imagePaths);
     lastError = null;
-    notifyListeners();
     try {
       final nextTurnId = await _server.steerTurn(
         threadId: threadId,
@@ -1620,16 +1757,75 @@ class CodexController extends ChangeNotifier {
         prompt: text,
         additionalInput: additionalInput,
       );
-      if (status == RuntimeStatus.running && activeThreadId == threadId) {
+      final stillCurrent =
+          !_disposed &&
+          workspacePath == workspace &&
+          status == RuntimeStatus.running &&
+          activeThreadId == threadId &&
+          activeTurnId == turnId;
+      if (stillCurrent) {
         activeTurnId = nextTurnId;
+        _add(TimelineKind.user, '你', text, imagePaths: imagePaths);
+        notifyListeners();
       }
-      notifyListeners();
       return true;
     } catch (error) {
-      lastError = _messageOf(error);
-      _add(TimelineKind.error, '调整方向失败', lastError!);
-      notifyListeners();
+      if (!_disposed &&
+          workspacePath == workspace &&
+          status == RuntimeStatus.running &&
+          activeThreadId == threadId &&
+          activeTurnId == turnId) {
+        lastError = _messageOf(error);
+        _add(TimelineKind.error, '调整方向失败', lastError!);
+        notifyListeners();
+      }
       return false;
+    }
+  }
+
+  /// Keeps a new direction in the composer header until the user explicitly
+  /// chooses to send it through `turn/steer`.
+  /// 将新的方向暂存在 Composer 顶部栏，等待用户明确发送至 `turn/steer`。
+  bool queueTurnSteer(PendingTurnSteer value) {
+    if (!canQueueTurnSteer || value.prompt.trim().isEmpty) return false;
+    pendingTurnSteer = value;
+    notifyListeners();
+    return true;
+  }
+
+  /// Discards a locally queued direction before it is sent.
+  /// 丢弃尚未发送的本地方向调整。
+  void discardPendingTurnSteer() {
+    if (pendingTurnSteer == null || pendingTurnSteerSending) return;
+    pendingTurnSteer = null;
+    notifyListeners();
+  }
+
+  /// Sends the locally queued direction without opening a second editor.
+  /// 直接发送暂存的方向，不再打开二次输入框。
+  Future<bool> sendPendingTurnSteer() async {
+    final pending = pendingTurnSteer;
+    if (pending == null || pendingTurnSteerSending) return false;
+    final sendToken = Object();
+    _pendingTurnSteerSendToken = sendToken;
+    pendingTurnSteerSending = true;
+    notifyListeners();
+    try {
+      final sent = await steerCurrentTurn(
+        pending.prompt,
+        additionalInput: pending.additionalInput,
+        imagePaths: pending.imagePaths,
+      );
+      if (sent && identical(pendingTurnSteer, pending)) {
+        pendingTurnSteer = null;
+      }
+      return sent;
+    } finally {
+      if (identical(_pendingTurnSteerSendToken, sendToken)) {
+        _pendingTurnSteerSendToken = null;
+        pendingTurnSteerSending = false;
+        if (!_disposed) notifyListeners();
+      }
     }
   }
 
@@ -1645,9 +1841,10 @@ class CodexController extends ChangeNotifier {
       _invalidateThreadRefreshes();
       _clearRuntimeResolvedConfiguration();
       status = RuntimeStatus.stopped;
+      _runningThreadIds.clear();
       activeThreadId = null;
       _activeThreadAttached = false;
-      pendingApproval = null;
+      _pendingApprovals.clear();
       approvalResponding = false;
       _clearStreamingState();
       _add(TimelineKind.system, '运行时连接已关闭', '应用会在需要时自动重新连接。');
@@ -1663,7 +1860,7 @@ class CodexController extends ChangeNotifier {
   /// Automatically rebuilds the current primary directory's runtime connection while no task is executing.
   Future<void> reconnectRuntime() async {
     if (workspacePath == null ||
-        status == RuntimeStatus.running ||
+        hasRunningTasks ||
         status == RuntimeStatus.starting ||
         _startingRuntime) {
       return;
@@ -1706,7 +1903,10 @@ class CodexController extends ChangeNotifier {
   /// session 元数据重新填充。
   /// When a deletion event or request has just completed, an empty server list is
   /// authoritative and must not be repopulated from stale local session metadata.
-  Future<void> refreshThreads({bool allowLocalSessionFallback = true}) async {
+  Future<void> refreshThreads({
+    bool allowLocalSessionFallback = true,
+    bool reconcileUnidentifiedBackgroundCompletion = false,
+  }) async {
     final workspace = workspacePath;
     if (!_server.isRunning || workspace == null) return;
     final epoch = _threadRefreshEpoch;
@@ -1715,16 +1915,21 @@ class CodexController extends ChangeNotifier {
     threadsError = null;
     if (!_disposed) notifyListeners();
     try {
-      final serverThreads =
-          (await _server.listThreads(workingDirectory: workspace))
-              .map(CodexThread.fromJson)
-              .map((thread) {
-                final localStatus = _localThreadStatuses[thread.id];
-                return localStatus == null
-                    ? thread
-                    : thread.copyWith(status: localStatus);
-              })
-              .toList(growable: false);
+      final fetchedServerThreads = (await _server.listThreads(
+        workingDirectory: workspace,
+      )).map(CodexThread.fromJson).toList(growable: false);
+      if (_isCurrentThreadRefresh(request, epoch, workspace) &&
+          reconcileUnidentifiedBackgroundCompletion) {
+        _reconcileUnidentifiedCompletion(fetchedServerThreads);
+      }
+      final serverThreads = fetchedServerThreads
+          .map((thread) {
+            final localStatus = _localThreadStatuses[thread.id];
+            return localStatus == null
+                ? thread
+                : thread.copyWith(status: localStatus);
+          })
+          .toList(growable: false);
       var nextThreads = _threadHistoryInitialized
           ? serverThreads
                 .where((thread) => _ownedThreadIds.contains(thread.id))
@@ -1756,16 +1961,23 @@ class CodexController extends ChangeNotifier {
           }
         }
       }
-      // A non-empty server response can still briefly omit the newly-created
-      // active thread. Preserve its local placeholder until the next refresh.
-      final activeId = activeThreadId;
-      if (activeId != null &&
-          !nextThreads.any((thread) => thread.id == activeId)) {
-        final cachedActive = _cachedThread(activeId);
-        if (cachedActive != null) nextThreads = [...nextThreads, cachedActive];
+      // App Server can briefly omit a newly-created task while its turn is
+      // starting. Preserve every local running-task placeholder: a user may
+      // create another task before the first task appears in this response.
+      final retainedThreadIds = <String>{..._runningThreadIds, ?activeThreadId};
+      for (final threadId in retainedThreadIds) {
+        if (nextThreads.any((thread) => thread.id == threadId)) continue;
+        final cachedThread = _cachedThread(threadId);
+        if (cachedThread != null) {
+          nextThreads = [...nextThreads, cachedThread];
+        }
       }
       if (_isCurrentThreadRefresh(request, epoch, workspace)) {
-        threads = nextThreads;
+        // App Server returns threads ordered by their latest update. A task
+        // changing from running to completed must not make it jump to a new
+        // position in the sidebar, so retain the order already shown and only
+        // append threads that have not appeared locally before.
+        threads = _mergeThreadsPreservingOrder(nextThreads);
         _scheduleConversationHistorySave();
       }
     } catch (error) {
@@ -1778,6 +1990,27 @@ class CodexController extends ChangeNotifier {
         if (!_disposed) notifyListeners();
       }
     }
+  }
+
+  /// Updates task data from a refresh without letting `updatedAt` reorder the
+  /// sidebar. Server omissions remain authoritative, while newly discovered
+  /// tasks are appended in the order supplied by the server.
+  List<CodexThread> _mergeThreadsPreservingOrder(
+    List<CodexThread> refreshedThreads,
+  ) {
+    final refreshedById = {
+      for (final thread in refreshedThreads) thread.id: thread,
+    };
+    final ordered = <CodexThread>[];
+    for (final existing in threads) {
+      final refreshed = refreshedById.remove(existing.id);
+      if (refreshed != null) ordered.add(refreshed);
+    }
+    for (final thread in refreshedThreads) {
+      final refreshed = refreshedById.remove(thread.id);
+      if (refreshed != null) ordered.add(refreshed);
+    }
+    return ordered;
   }
 
   /// 切换指定任务在当前项目列表中的置顶状态，并保存到本地历史缓存。
@@ -1820,6 +2053,7 @@ class CodexController extends ChangeNotifier {
     final snapshot = imported.snapshot;
     _invalidateThreadRefreshes();
     _threadViewCache.clear();
+    _runningThreadIds.clear();
     activeThreadId = null;
     _activeThreadAttached = false;
     threads = List.of(snapshot.threads);
@@ -1827,6 +2061,9 @@ class CodexController extends ChangeNotifier {
     _pinnedThreadIds
       ..clear()
       ..addAll(snapshot.pinnedThreadIds);
+    _acknowledgedCompletedThreadIds
+      ..clear()
+      ..addAll(snapshot.acknowledgedCompletedThreadIds);
     _clearStreamingState();
     _entries
       ..clear()
@@ -2000,12 +2237,39 @@ class CodexController extends ChangeNotifier {
   /// 恢复指定线程，并将其历史消息与工具记录写入时间线。
   /// Resumes a thread and writes its historic messages and tool records to the timeline.
   Future<void> resumeThread(CodexThread thread) async {
-    if (status != RuntimeStatus.ready || !_server.isRunning) return;
+    if (!canSwitchThreads || !_server.isRunning) return;
     if (activeThreadId == thread.id && _activeThreadAttached) return;
+    _resumeConflictThread = null;
+    // A thread that is already executing belongs to the App Server writer
+    // created for its turn. `thread/resume` would acquire another writer and
+    // is rejected while that turn is active. Its timeline is read separately.
+    final openingRunningThread = isThreadRunning(thread.id);
+    final previousThreadId = activeThreadId;
+    final previousWasRunning =
+        previousThreadId != null &&
+        status == RuntimeStatus.running &&
+        isThreadRunning(previousThreadId);
+    final previousActiveTurnId = activeTurnId;
+    final previousTurnStartedAt = _activeTurnStartedAt;
+    final previousActiveCommand = _activeCommand;
+    final previousActiveCommandItemId = _activeCommandItemId;
+    final previousTaskPlan = activeTaskPlan;
+    final previousAgentEntryIndices = Map<String, int>.of(
+      _agentEntryIndexByItem,
+    );
+    final previousCompletedCommandItemIds = Set<String>.of(
+      _completedCommandItemIds,
+    );
     _cacheActiveThreadView();
+    if (previousWasRunning) {
+      // Keep the current turn subscribed while its row is no longer selected.
+      // Its remaining output is reconstructed from authoritative history when
+      // the user opens it again, just like a task started from “新对话”.
+      _runningThreadIds.add(previousThreadId);
+      _threadViewCache.remove(previousThreadId);
+    }
     final cachedView = _cachedThreadView(thread.id);
     _resumingThread = true;
-    final previousThreadId = activeThreadId;
     final previousThreadAttached = _activeThreadAttached;
     final previousView = previousThreadId == null
         ? null
@@ -2023,24 +2287,39 @@ class CodexController extends ChangeNotifier {
     }
     notifyListeners();
     try {
-      final resumeResult = await _server.resumeThread(
-        threadId: thread.id,
-        modelProvider: thread.modelProvider,
-        model: thread.model,
-        config: null,
-      );
       activeThreadId = thread.id;
-      _activeThreadAttached = true;
-      status = RuntimeStatus.ready;
+      JsonMap? history;
+      JsonMap? resumeResult;
+      if (openingRunningThread) {
+        // Do not take a second writer from a task left running in the
+        // background. Reading persisted turns lets live notifications keep
+        // targeting the selected task.
+        _activeThreadAttached = false;
+        status = RuntimeStatus.running;
+      } else {
+        resumeResult = await _server.resumeThread(
+          threadId: thread.id,
+          modelProvider: thread.modelProvider,
+          model: thread.model,
+          config: null,
+        );
+        _activeThreadAttached = true;
+        status = RuntimeStatus.ready;
+      }
       try {
         if (cachedView == null) {
-          final history = await _loadThreadHistory(
-            threadId: thread.id,
-            resumeResult: resumeResult,
-          );
+          history = openingRunningThread
+              ? await _loadThreadHistoryFromPages(threadId: thread.id)
+              : await _loadThreadHistory(
+                  threadId: thread.id,
+                  resumeResult: resumeResult!,
+                );
           _resetConversationTimeline();
           _appendThreadHistory(history);
           viewLoaded = true;
+          if (openingRunningThread) {
+            _restoreActiveTurnFromHistory(history);
+          }
           final incompleteItemTurnCount =
               history['incompleteItemTurnCount'] as int? ?? 0;
           final incompleteTurnHistory =
@@ -2068,14 +2347,37 @@ class CodexController extends ChangeNotifier {
     } catch (error) {
       activeThreadId = previousThreadId;
       _activeThreadAttached = previousThreadAttached;
-      status = RuntimeStatus.ready;
+      final previousIsStillRunning =
+          previousWasRunning && _runningThreadIds.contains(previousThreadId);
+      status = previousIsStillRunning
+          ? RuntimeStatus.running
+          : RuntimeStatus.ready;
       if (previousView != null) _restoreThreadView(previousView);
+      if (previousIsStillRunning) {
+        activeTurnId = previousActiveTurnId;
+        _activeTurnStartedAt = previousTurnStartedAt;
+        _activeCommand = previousActiveCommand;
+        _activeCommandItemId = previousActiveCommandItemId;
+        activeTaskPlan = previousTaskPlan;
+        _agentEntryIndexByItem
+          ..clear()
+          ..addAll(previousAgentEntryIndices);
+        _completedCommandItemIds
+          ..clear()
+          ..addAll(previousCompletedCommandItemIds);
+      }
       lastError = _messageOf(error);
+      if (_isActiveWriterConflict(lastError!)) {
+        _resumeConflictThread = thread;
+      }
       _add(TimelineKind.error, '无法恢复任务', lastError!);
     }
     _resumingThread = false;
     notifyListeners();
   }
+
+  bool _isActiveWriterConflict(String message) =>
+      message.toLowerCase().contains('already has an active writer');
 
   /// 自动恢复本地快照中上次打开的线程，避免重启后发送消息创建新线程。
   /// Reattaches the thread that was open in the restored snapshot before the
@@ -2140,9 +2442,7 @@ class CodexController extends ChangeNotifier {
             .values
             .where((thread) => !_archivingThreadIds.contains(thread.id))
             .toList(growable: false);
-    if (!_server.isRunning ||
-        status == RuntimeStatus.running ||
-        items.isEmpty) {
+    if (!_server.isRunning || hasRunningTasks || items.isEmpty) {
       return const <String>{};
     }
     _archivingThreadIds.addAll(items.map((thread) => thread.id));
@@ -2159,6 +2459,7 @@ class CodexController extends ChangeNotifier {
         }
         archivedIds.add(thread.id);
         _localThreadStatuses.remove(thread.id);
+        _acknowledgedCompletedThreadIds.remove(thread.id);
         _threadViewCache.remove(thread.id);
         threads = threads
             .where((value) => value.id != thread.id)
@@ -2202,7 +2503,7 @@ class CodexController extends ChangeNotifier {
   /// Permanently deletes a task and App Server-defined descendants, then removes matching local cache references.
   Future<void> deleteThread(CodexThread thread) async {
     if (!_server.isRunning ||
-        status == RuntimeStatus.running ||
+        hasRunningTasks ||
         !_deletingThreadIds.add(thread.id)) {
       return;
     }
@@ -2216,6 +2517,7 @@ class CodexController extends ChangeNotifier {
           .where((value) => value.id != thread.id)
           .toList(growable: false);
       _localThreadStatuses.remove(thread.id);
+      _acknowledgedCompletedThreadIds.remove(thread.id);
       _threadViewCache.remove(thread.id);
       _pinnedThreadIds.remove(thread.id);
       if (activeThreadId == thread.id) {
@@ -2474,8 +2776,14 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
     try {
       _server.respond(approval.requestId, _approvalResult(approval, accepted));
-      _add(TimelineKind.system, accepted ? '已允许本次操作' : '已拒绝操作', approval.title);
-      pendingApproval = null;
+      if (approval.threadId == null || approval.threadId == activeThreadId) {
+        _add(
+          TimelineKind.system,
+          accepted ? '已允许本次操作' : '已拒绝操作',
+          approval.title,
+        );
+      }
+      _pendingApprovals.remove(approval.requestId);
     } catch (error) {
       lastError = _messageOf(error);
       _add(TimelineKind.error, '审批响应失败', lastError!);
@@ -2536,15 +2844,21 @@ class CodexController extends ChangeNotifier {
               approval.requestId,
               _approvalResult(approval, true),
             );
-            _add(TimelineKind.system, '已自动批准本次操作', approval.title);
+            if (approval.threadId == null ||
+                approval.threadId == activeThreadId) {
+              _add(TimelineKind.system, '已自动批准本次操作', approval.title);
+            }
           } catch (error) {
             lastError = _messageOf(error);
             _add(TimelineKind.error, '自动审批响应失败', lastError!);
           }
         } else {
-          pendingApproval = approval;
+          _pendingApprovals[approval.requestId] = approval;
           approvalResponding = false;
-          _add(TimelineKind.approval, approval.title, approval.detail);
+          if (approval.threadId == null ||
+              approval.threadId == activeThreadId) {
+            _add(TimelineKind.approval, approval.title, approval.detail);
+          }
         }
       }
       notifyListeners();
@@ -2563,8 +2877,10 @@ class CodexController extends ChangeNotifier {
           lastError = event.params['error']?.toString() ?? '登录未完成。';
         }
       case 'item/agentMessage/delta':
-        _appendAgentDelta(event.params);
-        _scheduleDeltaNotification();
+        if (_isEventForActiveTurn(event.params)) {
+          _appendAgentDelta(event.params);
+          _scheduleDeltaNotification();
+        }
         return;
       case 'turn/started':
         final turn = event.params['turn'];
@@ -2591,10 +2907,25 @@ class CodexController extends ChangeNotifier {
           _updateTurnDiff(event.params['diff']);
         }
       case 'turn/completed':
-        if (_isEventForActiveTurn(event.params)) {
+        final backgroundCompletionNeedsReconciliation =
+            _threadIdFromEvent(event.params) == null &&
+            _hasBackgroundRunningTasks;
+        // A background history read can return a slightly stale turn ID. A
+        // completion explicitly attributed to the thread currently open is
+        // still authoritative, even when its turn ID differs from the cached
+        // one. Live deltas remain strictly turn-scoped above.
+        if (_threadIdFromEvent(event.params) == activeThreadId ||
+            _isEventForActiveTurn(event.params)) {
           _handleTurnCompleted(event.params);
+        } else {
+          _handleBackgroundTurnCompleted(event.params);
         }
-        unawaited(refreshThreads());
+        unawaited(
+          refreshThreads(
+            reconcileUnidentifiedBackgroundCompletion:
+                backgroundCompletionNeedsReconciliation,
+          ),
+        );
       case 'thread/archived':
       case 'thread/unarchived':
       case 'thread/name/updated':
@@ -2610,21 +2941,20 @@ class CodexController extends ChangeNotifier {
         // 只有进程退出才会使连接失败；单个 turn 失败仍可继续复用当前连接。
         // Only process exit fails the connection; an individual failed turn remains recoverable in-place.
         status = RuntimeStatus.failed;
+        _runningThreadIds.clear();
         // The next runtime process must attach the retained thread again.
         _activeThreadAttached = false;
         lastError = 'Codex runtime 已退出（code ${event.params['code']}）。';
         _updateThreadStatus(activeThreadId, 'systemError');
-        pendingApproval = null;
+        _pendingApprovals.clear();
         approvalResponding = false;
         _clearStreamingState();
         _recordRuntimeLog(lastError!, level: RuntimeLogLevel.error);
         _add(TimelineKind.error, '运行时已断开', lastError!);
         _scheduleRuntimeReconnect();
       case 'serverRequest/resolved':
-        if (event.params['requestId'] == pendingApproval?.requestId) {
-          pendingApproval = null;
-          approvalResponding = false;
-        }
+        _pendingApprovals.remove(event.params['requestId']);
+        approvalResponding = false;
       case 'skills/changed':
         unawaited(refreshSkills(forceReload: true));
       // Unrecognized notifications are protocol implementation details. In
@@ -2731,8 +3061,13 @@ class CodexController extends ChangeNotifier {
         turnMap['status']?.toString() ??
         params['status']?.toString() ??
         'completed';
+    final completedThreadId = activeThreadId;
+    if (completedThreadId != null) _runningThreadIds.remove(completedThreadId);
+    // A task opened from read-only history cannot accept a new turn while its
+    // writer is active. The finished turn releases that restriction.
+    if (completedThreadId != null) _activeThreadAttached = true;
     _appendTurnElapsed(turnMap);
-    pendingApproval = null;
+    _clearPendingApprovalsForThread(completedThreadId);
     approvalResponding = false;
     switch (completionStatus) {
       case 'failed':
@@ -2751,9 +3086,106 @@ class CodexController extends ChangeNotifier {
       default:
         status = RuntimeStatus.ready;
         _updateThreadStatus(activeThreadId, 'idle');
+        // The task is already open in the focused workbench, so its success
+        // is not a new completion the user needs to be reminded about.
+        if (completedThreadId != null) {
+          unawaited(acknowledgeCompletedThread(completedThreadId));
+        }
         _add(TimelineKind.system, '任务完成', '你可以继续在同一线程追问。');
     }
     _clearStreamingState();
+  }
+
+  /// Completes a task that remains on App Server after the user moved to a
+  /// different conversation. Its transient output is loaded from history if
+  /// opened later, so it cannot leak into the task now shown in the workbench.
+  void _handleBackgroundTurnCompleted(JsonMap params) {
+    final threadId = _threadIdFromEvent(params);
+    if (threadId == null || !_runningThreadIds.remove(threadId)) return;
+    final turn = params['turn'];
+    final turnMap = turn is Map
+        ? JsonMap.from(turn)
+        : const <String, dynamic>{};
+    final completionStatus =
+        turnMap['status']?.toString() ??
+        params['status']?.toString() ??
+        'completed';
+    _threadViewCache.remove(threadId);
+    _updateThreadStatus(
+      threadId,
+      completionStatus == 'failed' ? 'systemError' : 'idle',
+    );
+    _clearPendingApprovalsForThread(threadId);
+  }
+
+  /// Reconciles legacy unscoped completion events after an authoritative
+  /// thread-list refresh. An event without a thread ID cannot safely be
+  /// attributed while multiple tasks run, but a server-reported terminal
+  /// state can safely release a matching background or focused task.
+  /// 旧运行时完成事件没有任务 ID 时，先刷新权威任务列表再对账。多个任务并行时
+  /// 不能安全归属该事件；仅服务端明确报告终态后，才释放对应的后台或当前任务。
+  void _reconcileUnidentifiedCompletion(Iterable<CodexThread> serverThreads) {
+    final serverThreadById = {
+      for (final thread in serverThreads) thread.id: thread,
+    };
+    final currentThreadId = activeThreadId;
+    final currentStatus = currentThreadId == null
+        ? null
+        : serverThreadById[currentThreadId]?.status;
+    if (status == RuntimeStatus.running &&
+        currentThreadId != null &&
+        _isTerminalThreadStatus(currentStatus)) {
+      // The list response is authoritative here: the completion event did not
+      // name a task, but it is safe to end the focused turn once its own row
+      // is terminal. This also replaces the local `active` status before it
+      // can override the server result during the merge below.
+      _handleTurnCompleted({
+        'turn': {'status': currentStatus},
+      });
+    }
+    final completedIds = _runningThreadIds
+        .where((threadId) {
+          if (threadId == activeThreadId) return false;
+          final status = serverThreadById[threadId]?.status;
+          return _isTerminalThreadStatus(status);
+        })
+        .toList(growable: false);
+    for (final threadId in completedIds) {
+      _runningThreadIds.remove(threadId);
+      _threadViewCache.remove(threadId);
+      final status = serverThreadById[threadId]?.status;
+      _updateThreadStatus(threadId, status ?? 'idle');
+      _clearPendingApprovalsForThread(threadId);
+    }
+  }
+
+  bool _isTerminalThreadStatus(String? status) {
+    final normalized = status?.trim().toLowerCase().replaceAll(
+      RegExp(r'[^a-z]'),
+      '',
+    );
+    return switch (normalized) {
+      'idle' ||
+      'completed' ||
+      'complete' ||
+      'done' ||
+      'success' ||
+      'failed' ||
+      'error' ||
+      'systemerror' ||
+      'interrupted' ||
+      'cancelled' ||
+      'canceled' => true,
+      _ => false,
+    };
+  }
+
+  void _clearPendingApprovalsForThread(String? threadId) {
+    if (threadId == null) return;
+    _pendingApprovals.removeWhere(
+      (_, approval) => approval.threadId == threadId,
+    );
+    approvalResponding = false;
   }
 
   /// Updates a cached task status immediately after a turn changes outcome.
@@ -2847,7 +3279,7 @@ class CodexController extends ChangeNotifier {
   bool _isEventForActiveTurn(JsonMap params) {
     if (!_isEventForActiveThread(params)) return false;
     final turn = params['turn'];
-    final threadId = _label(params['threadId']);
+    final threadId = _threadIdFromEvent(params) ?? '';
     final turnId = _label(
       params['turnId'] ?? (turn is Map ? turn['id'] : null),
     );
@@ -2863,11 +3295,19 @@ class CodexController extends ChangeNotifier {
   /// Limits timeline mutations to notifications for the thread being shown.
   /// A connection can remain subscribed to previously resumed threads.
   bool _isEventForActiveThread(JsonMap params) {
-    final threadId = _label(params['threadId']);
-    // Older App Server notifications may omit the thread ID, so retain that
-    // compatibility. An explicitly identified event, however, must belong to
-    // the task being shown; a blank task cannot receive a prior task's event.
-    return threadId.isEmpty || threadId == activeThreadId;
+    final threadId = _threadIdFromEvent(params) ?? '';
+    // Older App Server notifications may omit the thread ID. That fallback is
+    // only safe when there is no background task competing for the event.
+    if (threadId.isEmpty) return !_hasBackgroundRunningTasks;
+    return threadId == activeThreadId;
+  }
+
+  String? _threadIdFromEvent(JsonMap params) {
+    final direct = _label(params['threadId']);
+    if (direct.isNotEmpty) return direct;
+    final turn = params['turn'];
+    final nested = turn is Map ? _label(turn['threadId']) : '';
+    return nested.isEmpty ? null : nested;
   }
 
   void _appendCompletedCommandItem(JsonMap item) {
@@ -3039,6 +3479,44 @@ class CodexController extends ChangeNotifier {
       'incompleteTurnHistory': cursor != null,
       'incompleteItemTurnCount': incompleteItemTurnCount,
     };
+  }
+
+  /// Reads a running thread without attempting to acquire its active writer.
+  /// The normal resume response contains a first turn page, so rebuild that
+  /// shape and reuse the pagination and item-hydration path above.
+  Future<JsonMap> _loadThreadHistoryFromPages({
+    required String threadId,
+  }) async {
+    final firstPage = await _server.listThreadTurns(
+      threadId: threadId,
+      sortDirection: 'desc',
+    );
+    return _loadThreadHistory(
+      threadId: threadId,
+      resumeResult: {
+        'thread': {'turns': firstPage['data']},
+        'turnsBackwardsCursor': firstPage['nextCursor'],
+      },
+    );
+  }
+
+  /// Recovers the running turn ID after opening background history so the
+  /// existing writer can still receive `turn/steer` requests.
+  void _restoreActiveTurnFromHistory(JsonMap history) {
+    final turns = history['turns'];
+    if (turns is! Iterable) return;
+    JsonMap? latest;
+    for (final rawTurn in turns) {
+      if (rawTurn is! Map) continue;
+      final turn = JsonMap.from(rawTurn);
+      if (_label(turn['id']).isEmpty) continue;
+      if (latest == null || _turnTimestamp(turn) >= _turnTimestamp(latest)) {
+        latest = turn;
+      }
+    }
+    if (latest == null) return;
+    activeTurnId = _label(latest['id']);
+    _activeTurnStartedAt = _turnStartedAt(latest) ?? _activeTurnStartedAt;
   }
 
   /// 分页获取单个 turn 的项目，并报告是否在安全页数内完成。
@@ -3289,7 +3767,7 @@ class CodexController extends ChangeNotifier {
     if (task == null || _disposed) return;
     // A live turn must not be replaced by unattended work. Keep the task and
     // retry after a short delay, preserving the user's currently running task.
-    if (status == RuntimeStatus.running) {
+    if (hasRunningTasks) {
       _scheduledTaskTimers[id] = Timer(
         const Duration(minutes: 1),
         () => unawaited(_dispatchScheduledTask(id)),
@@ -3817,6 +4295,9 @@ class CodexController extends ChangeNotifier {
       _pinnedThreadIds
         ..clear()
         ..addAll(snapshot.pinnedThreadIds);
+      _acknowledgedCompletedThreadIds
+        ..clear()
+        ..addAll(snapshot.acknowledgedCompletedThreadIds);
       if (snapshot.entries.isNotEmpty) {
         _entries
           ..clear()
@@ -3901,7 +4382,7 @@ class CodexController extends ChangeNotifier {
     required String progressMessage,
     String? targetId,
   }) async {
-    if (status == RuntimeStatus.running) {
+    if (hasRunningTasks) {
       pluginsError = '请等待当前任务完成后再变更插件。';
       if (!_disposed) notifyListeners();
       return;
@@ -3947,6 +4428,9 @@ class CodexController extends ChangeNotifier {
     _agentEntryIndexByItem.clear();
     _completedCommandItemIds.clear();
     activeTurnId = null;
+    pendingTurnSteer = null;
+    pendingTurnSteerSending = false;
+    _pendingTurnSteerSendToken = null;
     _activeTurnStartedAt = null;
     _activeCommand = null;
     _activeCommandItemId = null;
@@ -4007,6 +4491,7 @@ class CodexController extends ChangeNotifier {
       entries: List.of(entries),
       fileChanges: List.of(fileChanges),
       pinnedThreadIds: Set.of(_pinnedThreadIds),
+      acknowledgedCompletedThreadIds: Set.of(_acknowledgedCompletedThreadIds),
       turnDiff: turnDiff,
       activeThreadId: activeThreadId,
       ownedThreadIds: Set.of(_ownedThreadIds),

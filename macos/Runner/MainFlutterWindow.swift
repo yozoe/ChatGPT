@@ -73,6 +73,9 @@ class MainFlutterWindow: NSWindow {
     self.setFrameAutosaveName(Self.frameAutosaveName)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+    DispatchQueue.main.async {
+      DockIcon.apply()
+    }
     try? FileManager.default.removeItem(at: Self.clipboardTemporaryDirectory)
 
     let clipboardChannel = FlutterMethodChannel(

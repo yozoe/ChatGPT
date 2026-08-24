@@ -455,6 +455,8 @@ class _FakeCodexAppServer extends CodexAppServer {
   List<JsonMap> skillListResponse = <JsonMap>[];
   String? startedTurnPrompt;
   String? startedTurnThreadId;
+  final List<String> startedTurnThreadIds = [];
+  final List<String> startThreadResponseIds = [];
   List<JsonMap> startedTurnAdditionalInput = <JsonMap>[];
   JsonMap? startedTurnCollaborationMode;
   Object? startTurnError;
@@ -464,6 +466,10 @@ class _FakeCodexAppServer extends CodexAppServer {
   List<JsonMap> steeredTurnAdditionalInput = <JsonMap>[];
   String? steerResponseTurnId;
   Object? steerTurnError;
+  Completer<String>? steerCompleter;
+  String? interruptedThreadId;
+  String? interruptedTurnId;
+  Object? interruptTurnError;
   String? threadGoal;
   String? renamedThreadId;
   String? renamedThreadName;
@@ -544,7 +550,9 @@ class _FakeCodexAppServer extends CodexAppServer {
     startedModelProvider = modelProvider;
     startedModel = model;
     startedConfig = config;
-    return 'new-thread';
+    return startThreadResponseIds.isEmpty
+        ? 'new-thread'
+        : startThreadResponseIds.removeAt(0);
   }
 
   /// 接受模拟任务启动，不与真实运行时通信。
@@ -558,6 +566,7 @@ class _FakeCodexAppServer extends CodexAppServer {
     JsonMap? collaborationMode,
   }) async {
     startedTurnThreadId = threadId;
+    startedTurnThreadIds.add(threadId);
     startedTurnPrompt = prompt;
     startedTurnAdditionalInput = List.of(additionalInput);
     startedTurnCollaborationMode = collaborationMode;
@@ -576,7 +585,18 @@ class _FakeCodexAppServer extends CodexAppServer {
     steeredTurnPrompt = prompt;
     steeredTurnAdditionalInput = List.of(additionalInput);
     if (steerTurnError case final error?) throw error;
+    if (steerCompleter case final completer?) return completer.future;
     return steerResponseTurnId ?? expectedTurnId;
+  }
+
+  @override
+  Future<void> interruptTurn({
+    required String threadId,
+    required String turnId,
+  }) async {
+    interruptedThreadId = threadId;
+    interruptedTurnId = turnId;
+    if (interruptTurnError case final error?) throw error;
   }
 
   @override
@@ -860,6 +880,7 @@ void main() {
       findsOneWidget,
     );
     expect(find.byKey(const Key('sidebar-plugins-button')), findsOneWidget);
+    expect(tester.widget<Text>(find.text('新对话')).style?.fontSize, 14);
   });
 
   test('persists and cancels a scheduled prompt', () async {
@@ -1480,7 +1501,23 @@ void main() {
       find.byKey(const Key('sidebar-running-task-indicator')),
       findsOneWidget,
     );
-    expect(tester.widget<IconButton>(newTaskButton).onPressed, isNull);
+    final runningTaskIndicator = tester.widget<SizedBox>(
+      find.byKey(const Key('sidebar-running-task-indicator')),
+    );
+    expect(runningTaskIndicator.width, 12);
+    expect(runningTaskIndicator.height, 12);
+    expect(
+      tester
+          .widget<CircularProgressIndicator>(
+            find.descendant(
+              of: find.byKey(const Key('sidebar-running-task-indicator')),
+              matching: find.byType(CircularProgressIndicator),
+            ),
+          )
+          .strokeWidth,
+      1.5,
+    );
+    expect(tester.widget<IconButton>(newTaskButton).onPressed, isNotNull);
     expect(
       tester
           .widget<InkWell>(
@@ -1780,6 +1817,35 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('uses a circular stop button while a task is running', (
+    tester,
+  ) async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final stopButton = tester.widget<IconButton>(
+      find.byWidgetPredicate(
+        (widget) => widget is IconButton && widget.tooltip == '停止当前任务',
+      ),
+    );
+    expect(
+      stopButton.style?.shape?.resolve(const <WidgetState>{}),
+      isA<CircleBorder>(),
+    );
+    expect(
+      stopButton.style?.fixedSize?.resolve(const <WidgetState>{}),
+      const Size.square(36),
+    );
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('floats file change stats without moving the composer', (
     tester,
   ) async {
@@ -1877,6 +1943,209 @@ void main() {
     controller.dispose();
   });
 
+  test(
+    'does not write an in-flight direction into a newly opened task',
+    () async {
+      final steerCompleter = Completer<String>();
+      final server = _FakeCodexAppServer()..steerCompleter = steerCompleter;
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..activeTurnId = 'turn-1';
+      controller.queueTurnSteer(
+        const PendingTurnSteer(displayText: '旧任务方向', prompt: '旧任务方向'),
+      );
+
+      final send = controller.sendPendingTurnSteer();
+      await Future<void>.delayed(Duration.zero);
+      expect(server.steeredTurnPrompt, '旧任务方向');
+
+      controller.createThread();
+      steerCompleter.complete('turn-1');
+
+      expect(await send, isTrue);
+      expect(controller.activeThreadId, isNull);
+      expect(controller.pendingTurnSteer, isNull);
+      expect(
+        controller.entries.map((entry) => entry.detail),
+        isNot(contains('旧任务方向')),
+      );
+      controller.dispose();
+    },
+  );
+
+  test(
+    'does not release a newer direction send when an older send finishes',
+    () async {
+      final firstCompleter = Completer<String>();
+      final secondCompleter = Completer<String>();
+      final server = _FakeCodexAppServer()..steerCompleter = firstCompleter;
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..activeTurnId = 'turn-1';
+      controller.queueTurnSteer(
+        const PendingTurnSteer(displayText: '旧任务方向', prompt: '旧任务方向'),
+      );
+      final firstSend = controller.sendPendingTurnSteer();
+      await Future<void>.delayed(Duration.zero);
+
+      controller.createThread();
+      server.steerCompleter = secondCompleter;
+      controller
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-2'
+        ..activeTurnId = 'turn-2';
+      controller.queueTurnSteer(
+        const PendingTurnSteer(displayText: '新任务方向', prompt: '新任务方向'),
+      );
+      final secondSend = controller.sendPendingTurnSteer();
+      await Future<void>.delayed(Duration.zero);
+
+      firstCompleter.complete('turn-1');
+      expect(await firstSend, isTrue);
+      expect(controller.pendingTurnSteer?.prompt, '新任务方向');
+      expect(controller.pendingTurnSteerSending, isTrue);
+      expect(
+        controller.entries.map((entry) => entry.detail),
+        isNot(contains('旧任务方向')),
+      );
+
+      secondCompleter.complete('turn-2');
+      expect(await secondSend, isTrue);
+      expect(controller.pendingTurnSteer, isNull);
+      expect(controller.pendingTurnSteerSending, isFalse);
+      expect(
+        controller.entries.map((entry) => entry.detail),
+        contains('新任务方向'),
+      );
+      controller.dispose();
+    },
+  );
+
+  test(
+    'does not write a stale direction failure into a newly opened task',
+    () async {
+      final steerCompleter = Completer<String>();
+      final server = _FakeCodexAppServer()..steerCompleter = steerCompleter;
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..activeTurnId = 'turn-1';
+      controller.queueTurnSteer(
+        const PendingTurnSteer(displayText: '旧任务方向', prompt: '旧任务方向'),
+      );
+
+      final send = controller.sendPendingTurnSteer();
+      await Future<void>.delayed(Duration.zero);
+      controller.createThread();
+      steerCompleter.completeError(StateError('stale failure'));
+
+      expect(await send, isFalse);
+      expect(controller.activeThreadId, isNull);
+      expect(controller.lastError, isNull);
+      expect(
+        controller.entries.map((entry) => entry.title),
+        isNot(contains('调整方向失败')),
+      );
+      controller.dispose();
+    },
+  );
+
+  testWidgets(
+    'keeps a queued direction outside persisted entries and sends directly',
+    (tester) async {
+      final server = _FakeCodexAppServer();
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..activeTurnId = 'turn-1';
+      controller.queueTurnSteer(
+        const PendingTurnSteer(displayText: '应该是我图里的样子', prompt: '应该是我图里的样子'),
+      );
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+      await tester.pump();
+
+      final pendingMessage = find.byKey(const Key('pending-turn-steer'));
+      final adjustDirection = find.byKey(const Key('adjust-direction-button'));
+      final composerPanel = find.byKey(const Key('composer-panel'));
+      expect(pendingMessage, findsOneWidget);
+      expect(adjustDirection, findsOneWidget);
+      expect(find.byKey(const Key('discard-direction-button')), findsOneWidget);
+      expect(
+        find.descendant(of: composerPanel, matching: pendingMessage),
+        findsOneWidget,
+      );
+      expect(
+        tester.getTopLeft(pendingMessage).dy,
+        lessThan(tester.getTopLeft(find.byKey(const Key('composer-field'))).dy),
+      );
+      expect(
+        tester.getCenter(adjustDirection).dx,
+        greaterThan(tester.getCenter(pendingMessage).dx),
+      );
+      expect(find.byKey(const Key('adjust-direction-dialog')), findsNothing);
+      await tester.tap(adjustDirection);
+      await tester.pump();
+      expect(server.steeredTurnPrompt, '应该是我图里的样子');
+      expect(controller.pendingTurnSteer, isNull);
+      expect(find.byKey(const Key('adjust-direction-dialog')), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('does not queue an empty direction while a task is running', (
+    tester,
+  ) async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final field = find.byKey(const Key('composer-field'));
+    await tester.tap(field);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+
+    expect(controller.pendingTurnSteer, isNull);
+    expect(find.byKey(const Key('pending-turn-steer')), findsNothing);
+    expect(tester.widget<TextField>(field).enabled, isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('discards a queued direction from the composer header', (
+    tester,
+  ) async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+    controller.queueTurnSteer(
+      const PendingTurnSteer(displayText: '不要发送这条', prompt: '不要发送这条'),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('discard-direction-button')));
+    await tester.pump();
+
+    expect(controller.pendingTurnSteer, isNull);
+    expect(find.byKey(const Key('pending-turn-steer')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'keeps the composer editable and accepts attachments while steering an active turn',
     (tester) async {
@@ -1914,7 +2183,9 @@ void main() {
       await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
       await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
       await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
-      await tester.pumpAndSettle();
+      // The live thinking indicator deliberately animates while a turn is
+      // active, so settling is neither expected nor necessary here.
+      await tester.pump();
       expect(
         find.byKey(const Key('composer-attachment-/tmp/steer.png')),
         findsOneWidget,
@@ -1923,6 +2194,11 @@ void main() {
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pump();
 
+      expect(server.steeredTurnPrompt, isNull);
+      expect(controller.pendingTurnSteer?.displayText, '请改成灰色');
+      expect(find.byKey(const Key('pending-turn-steer')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('adjust-direction-button')));
+      await tester.pump();
       expect(server.steeredTurnPrompt, '请改成灰色');
       expect(server.steeredTurnAdditionalInput, [
         {'type': 'localImage', 'path': '/tmp/steer.png'},
@@ -2648,7 +2924,8 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(home: CodexWorkspace(controller: controller)),
     );
-    await tester.pumpAndSettle();
+    // A live turn includes the intentionally repeating thinking indicator.
+    await tester.pump();
 
     final planScrollable = find.descendant(
       of: find.byKey(const Key('task-plan-progress')),
@@ -2676,7 +2953,11 @@ void main() {
         },
       ),
     );
-    await tester.pumpAndSettle();
+    // Wait for the plan's scroll transition without waiting on the deliberate
+    // looping thinking indicator for this active turn.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.pump(const Duration(milliseconds: 200));
 
     expect(find.text('第 10 / 12 步'), findsOneWidget);
     expect(
@@ -3059,6 +3340,7 @@ void main() {
     );
 
     expect(find.byKey(const Key('live-command-row')), findsOneWidget);
+    expect(find.byKey(const Key('live-thinking-row')), findsNothing);
 
     controller.handleServerEventForTesting(
       const ServerEvent(
@@ -3074,6 +3356,12 @@ void main() {
         },
       ),
     );
+    await tester.pump();
+
+    expect(find.byKey(const Key('live-command-row')), findsNothing);
+    expect(find.byKey(const Key('live-thinking-row')), findsOneWidget);
+    expect(find.byKey(const Key('live-thinking-shimmer')), findsOneWidget);
+
     controller.handleServerEventForTesting(
       const ServerEvent(
         method: 'turn/completed',
@@ -3086,6 +3374,7 @@ void main() {
     await tester.pump();
 
     expect(find.byKey(const Key('live-command-row')), findsNothing);
+    expect(find.byKey(const Key('live-thinking-row')), findsNothing);
     expect(find.text('已处理 1 分钟 3 秒'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
@@ -3908,9 +4197,14 @@ void main() {
             ..threads = [_thread(id: 'first'), _thread(id: 'second')];
 
       controller.toggleThreadPinned(controller.threads.last);
+      await controller.acknowledgeCompletedThread('first');
       await controller.saveConversationHistoryForTesting();
 
       expect(historyStore.snapshots['/workspace']!.pinnedThreadIds, {'second'});
+      expect(
+        historyStore.snapshots['/workspace']!.acknowledgedCompletedThreadIds,
+        {'first'},
+      );
       controller.dispose();
     },
   );
@@ -4016,6 +4310,47 @@ void main() {
   );
 
   test(
+    'does not retain acknowledged completions when creating a fresh workspace',
+    () async {
+      final firstWorkspace = await Directory.systemTemp.createTemp(
+        'codex-acknowledged-first-',
+      );
+      final secondWorkspace = await Directory.systemTemp.createTemp(
+        'codex-acknowledged-second-',
+      );
+      addTearDown(() => firstWorkspace.delete(recursive: true));
+      addTearDown(() => secondWorkspace.delete(recursive: true));
+      final controller = CodexController(
+        server: CodexAppServer(),
+        runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+        conversationHistoryStore: historyStore,
+      );
+
+      await controller.selectWorkspace(firstWorkspace.path);
+      await controller.acknowledgeCompletedThread('completed-in-first');
+      final snapshotKeysBeforeSecondWorkspace = Set<String>.of(
+        historyStore.snapshots.keys,
+      );
+      await controller.selectWorkspace(secondWorkspace.path);
+
+      expect(
+        controller.isCompletedThreadAcknowledged('completed-in-first'),
+        isFalse,
+      );
+      final secondWorkspaceSnapshotKey = historyStore.snapshots.keys.firstWhere(
+        (key) => !snapshotKeysBeforeSecondWorkspace.contains(key),
+      );
+      expect(
+        historyStore
+            .snapshots[secondWorkspaceSnapshotKey]!
+            .acknowledgedCompletedThreadIds,
+        isEmpty,
+      );
+      controller.dispose();
+    },
+  );
+
+  test(
     'exports and imports portable local history without changing workspace',
     () async {
       final source =
@@ -4029,12 +4364,14 @@ void main() {
               _thread(id: 'plain-thread'),
             ];
       source.toggleThreadPinned(source.threads.first);
+      await source.acknowledgeCompletedThread('plain-thread');
       final exported = source.exportConversationHistory();
 
       final target = CodexController(
         server: CodexAppServer(),
         conversationHistoryStore: historyStore,
       )..workspacePath = '/target';
+      await target.acknowledgeCompletedThread('pinned-thread');
       await target.importConversationHistory(exported);
 
       expect(target.workspacePath, '/target');
@@ -4043,10 +4380,16 @@ void main() {
         'plain-thread',
       ]);
       expect(target.isThreadPinned('pinned-thread'), isTrue);
+      expect(target.isCompletedThreadAcknowledged('plain-thread'), isTrue);
+      expect(target.isCompletedThreadAcknowledged('pinned-thread'), isFalse);
       expect(jsonDecode(exported)['format'], 'codex-desk-history');
       expect(historyStore.snapshots['/target']!.pinnedThreadIds, {
         'pinned-thread',
       });
+      expect(
+        historyStore.snapshots['/target']!.acknowledgedCompletedThreadIds,
+        {'plain-thread'},
+      );
       source.dispose();
       target.dispose();
     },
@@ -4067,7 +4410,7 @@ void main() {
     final taskContent = tester.widget<Padding>(
       find.descendant(of: taskTile, matching: find.byType(Padding)).first,
     );
-    expect(taskContent.padding, const EdgeInsets.fromLTRB(9, 2, 1, 2));
+    expect(taskContent.padding, const EdgeInsets.fromLTRB(30, 4, 8, 4));
 
     expect(find.byKey(const Key('thread-search-field')), findsNothing);
     await tester.tap(find.byKey(const Key('task-search-button')));
@@ -4092,6 +4435,62 @@ void main() {
     expect(find.text('打开文件夹'), findsOneWidget);
     expect(find.text('搜索文件'), findsOneWidget);
   });
+
+  testWidgets(
+    'shows task hover shortcuts and opens task actions on right click',
+    (tester) async {
+      final controller = CodexController(server: CodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready
+        ..threads = [_thread(id: 'alpha')];
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      final taskTile = find.byKey(const ValueKey('sidebar-thread-tile-alpha'));
+      expect(
+        find.byKey(const ValueKey('sidebar-thread-pin-alpha')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('sidebar-thread-archive-alpha')),
+        findsNothing,
+      );
+      expect(
+        find.descendant(of: taskTile, matching: find.byType(PopupMenuButton)),
+        findsNothing,
+      );
+
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.moveTo(tester.getCenter(taskTile));
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey('sidebar-thread-pin-alpha')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('sidebar-thread-archive-alpha')),
+        findsOneWidget,
+      );
+
+      final contextMenuMouse = await tester.createGesture(
+        pointer: 2,
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await contextMenuMouse.down(tester.getCenter(taskTile));
+      await contextMenuMouse.up();
+      await tester.pumpAndSettle();
+      expect(find.text('置顶'), findsOneWidget);
+      expect(find.text('重命名'), findsOneWidget);
+      expect(find.text('归档'), findsOneWidget);
+      expect(find.text('永久删除'), findsOneWidget);
+
+      await tester.tap(find.text('置顶'));
+      await tester.pump();
+      expect(controller.isThreadPinned('alpha'), isTrue);
+    },
+  );
 
   testWidgets('keeps the task list visible while a selected task refreshes', (
     tester,
@@ -4756,9 +5155,14 @@ void main() {
     );
 
     expect(find.text('已运行了命令'), findsOneWidget);
-    expect(find.text('已运行 dart format'), findsOneWidget);
+    expect(find.text('已运行 dart format'), findsNothing);
     expect(find.text('文件变更'), findsNothing);
     expect(find.text('{type: update} lib/main.dart'), findsNothing);
+
+    await tester.tap(find.text('已运行了命令'));
+    await tester.pump();
+
+    expect(find.text('已运行 dart format'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -5129,8 +5533,519 @@ void main() {
 
     expect(controller.status, RuntimeStatus.ready);
     expect(controller.threads.single.status, 'idle');
+    expect(
+      controller.isCompletedThreadAcknowledged('completed-thread'),
+      isTrue,
+    );
     controller.dispose();
   });
+
+  testWidgets(
+    'does not show a completion reminder for the task currently open',
+    (tester) async {
+      final controller = CodexController(server: CodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready
+        ..activeThreadId = 'current-thread'
+        ..threads = [_thread(id: 'current-thread', status: 'idle')];
+
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      expect(
+        find.byKey(const Key('sidebar-completed-task-indicator')),
+        findsNothing,
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  test(
+    'starts a new task while the previous task runs in the background',
+    () async {
+      final server = _FakeCodexAppServer();
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'background-thread'
+        ..threads = [_thread(id: 'background-thread')];
+
+      expect(controller.canCreateThread, isTrue);
+      controller.createThread();
+
+      expect(controller.activeThreadId, isNull);
+      expect(controller.status, RuntimeStatus.ready);
+      expect(controller.isThreadRunning('background-thread'), isTrue);
+      expect(controller.canSend, isTrue);
+
+      expect(await controller.sendPrompt('开始另一个任务'), isTrue);
+      expect(controller.activeThreadId, 'new-thread');
+      expect(controller.status, RuntimeStatus.running);
+      expect(controller.isThreadRunning('background-thread'), isTrue);
+      expect(controller.isThreadRunning('new-thread'), isTrue);
+
+      controller.threads = [
+        _thread(id: 'background-thread', status: 'active'),
+        _thread(id: 'new-thread', status: 'active'),
+      ];
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'background-thread',
+            'turn': {'status': 'completed'},
+          },
+        ),
+      );
+
+      expect(controller.activeThreadId, 'new-thread');
+      expect(controller.status, RuntimeStatus.running);
+      expect(controller.isThreadRunning('background-thread'), isFalse);
+      expect(controller.isThreadRunning('new-thread'), isTrue);
+      expect(
+        controller.threads
+            .firstWhere((thread) => thread.id == 'background-thread')
+            .status,
+        'idle',
+      );
+      controller.dispose();
+    },
+  );
+
+  test(
+    'opens another task while the current task continues in the background',
+    () async {
+      final server = _FakeCodexAppServer();
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'running-thread'
+        ..threads = [
+          _thread(id: 'running-thread', status: 'active'),
+          _thread(id: 'next-thread'),
+        ];
+
+      await controller.resumeThread(_thread(id: 'next-thread'));
+
+      expect(server.resumedThreadId, 'next-thread');
+      expect(controller.activeThreadId, 'next-thread');
+      expect(controller.status, RuntimeStatus.ready);
+      expect(controller.isThreadRunning('running-thread'), isTrue);
+      expect(controller.canSend, isTrue);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'opens a running background task without requesting a second writer',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..turnPage = {
+          'data': [
+            {'id': 'background-turn', 'startedAt': 1, 'items': <JsonMap>[]},
+          ],
+        };
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'background-thread'
+        ..activeTurnId = 'background-turn';
+
+      controller.createThread();
+      await controller.resumeThread(_thread(id: 'background-thread'));
+
+      expect(server.resumedThreadId, isNull);
+      expect(server.turnPageCursors, [isNull]);
+      expect(controller.activeThreadId, 'background-thread');
+      expect(controller.activeTurnId, 'background-turn');
+      expect(controller.status, RuntimeStatus.running);
+      expect(controller.canSteer, isTrue);
+
+      expect(await controller.steerCurrentTurn('继续，但换一个方向'), isTrue);
+      expect(server.steeredTurnThreadId, 'background-thread');
+      expect(server.steeredTurnId, 'background-turn');
+      controller.dispose();
+    },
+  );
+
+  test(
+    'keeps the running task active when opening another task fails',
+    () async {
+      final server = _FakeCodexAppServer()..resumeError = StateError('offline');
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'running-thread'
+        ..activeTurnId = 'running-turn';
+
+      await controller.resumeThread(_thread(id: 'next-thread'));
+
+      expect(controller.activeThreadId, 'running-thread');
+      expect(controller.activeTurnId, 'running-turn');
+      expect(controller.status, RuntimeStatus.running);
+      expect(controller.isThreadRunning('running-thread'), isTrue);
+      controller.dispose();
+    },
+  );
+
+  testWidgets('allows switching sidebar tasks while another task runs', (
+    tester,
+  ) async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'running-thread'
+      ..threads = [
+        _thread(id: 'running-thread', status: 'active'),
+        _thread(id: 'next-thread'),
+      ];
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey('sidebar-thread-tile-next-thread')),
+    );
+    // The background task keeps its progress indicator animating, so the
+    // widget tree intentionally never settles while it is still running.
+    await tester.pump();
+    await tester.pump();
+
+    expect(controller.activeThreadId, 'next-thread');
+    expect(controller.isThreadRunning('running-thread'), isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('opens current-workspace search results while a task runs', (
+    tester,
+  ) async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'running-thread'
+      ..threads = [
+        _thread(id: 'running-thread', status: 'active'),
+        _thread(id: 'other-thread'),
+      ];
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('task-search-button')));
+    await tester.pump();
+    await tester.tap(
+      find.byKey(const ValueKey('task-search-result-other-thread')),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(controller.activeThreadId, 'other-thread');
+    expect(controller.isThreadRunning('running-thread'), isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  test('interrupts the active turn with both protocol identifiers', () async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+
+    expect(controller.canStop, isTrue);
+    await controller.stopCurrentTurn();
+
+    expect(server.interruptedThreadId, 'thread-1');
+    expect(server.interruptedTurnId, 'turn-1');
+    controller.dispose();
+  });
+
+  test('does not expose stop before the active turn id is known', () async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1';
+
+    expect(controller.canStop, isFalse);
+    await controller.stopCurrentTurn();
+    expect(server.interruptedThreadId, isNull);
+    controller.dispose();
+  });
+
+  test(
+    'treats an identified current-thread completion as current after stale history',
+    () {
+      final controller = CodexController(server: _FakeCodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'running-thread'
+        ..activeTurnId = 'stale-turn'
+        ..threads = [_thread(id: 'running-thread', status: 'active')];
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'running-thread',
+            'turn': {'id': 'actual-turn', 'status': 'completed'},
+          },
+        ),
+      );
+
+      expect(controller.status, RuntimeStatus.ready);
+      expect(controller.activeTurnId, isNull);
+      expect(controller.isThreadRunning('running-thread'), isFalse);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'keeps an in-flight task bound to its original thread after new chat',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..queueListRequests = true
+        ..startThreadResponseIds.addAll(['thread-a', 'thread-b']);
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+
+      final firstSend = controller.sendPrompt('任务 A');
+      await Future<void>.delayed(Duration.zero);
+      expect(server.listRequests, hasLength(1));
+
+      controller.createThread();
+      final secondSend = controller.sendPrompt('任务 B');
+      await Future<void>.delayed(Duration.zero);
+      expect(server.listRequests, hasLength(2));
+
+      server.listRequests[0].complete(const []);
+      expect(await firstSend, isTrue);
+      expect(controller.activeThreadId, 'thread-b');
+      expect(controller.status, RuntimeStatus.running);
+      expect(server.startedTurnThreadIds, ['thread-a']);
+      expect(
+        controller.threads.map((thread) => thread.id),
+        containsAll(['thread-a', 'thread-b']),
+      );
+
+      server.listRequests[1].complete(const []);
+      expect(await secondSend, isTrue);
+      expect(server.startedTurnThreadIds, ['thread-a', 'thread-b']);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'reconciles an unscoped completion after refreshing background tasks',
+    () async {
+      final server = _FakeCodexAppServer()..queueListRequests = true;
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'background-thread';
+      controller.createThread();
+      controller
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'foreground-thread'
+        ..activeTurnId = 'foreground-turn';
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'turn': {'status': 'completed'},
+          },
+        ),
+      );
+
+      expect(server.listRequests, hasLength(1));
+      server.listRequests.single.complete([
+        {'id': 'background-thread', 'preview': 'background', 'status': 'idle'},
+        {
+          'id': 'foreground-thread',
+          'preview': 'foreground',
+          'status': 'active',
+        },
+      ]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.activeThreadId, 'foreground-thread');
+      expect(controller.activeTurnId, 'foreground-turn');
+      expect(controller.status, RuntimeStatus.running);
+      expect(controller.isThreadRunning('background-thread'), isFalse);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'reconciles an unscoped completion when the focused task is terminal',
+    () async {
+      final server = _FakeCodexAppServer()..queueListRequests = true;
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'background-thread';
+      controller.createThread();
+      controller
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'foreground-thread'
+        ..activeTurnId = 'foreground-turn'
+        ..threads = [
+          _thread(id: 'background-thread', status: 'active'),
+          _thread(id: 'foreground-thread', status: 'active'),
+        ];
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'turn': {'status': 'completed'},
+          },
+        ),
+      );
+
+      expect(server.listRequests, hasLength(1));
+      server.listRequests.single.complete([
+        {
+          'id': 'background-thread',
+          'preview': 'background',
+          'status': 'active',
+        },
+        {'id': 'foreground-thread', 'preview': 'foreground', 'status': 'idle'},
+      ]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.status, RuntimeStatus.ready);
+      expect(controller.activeTurnId, isNull);
+      expect(controller.isThreadRunning('foreground-thread'), isFalse);
+      expect(
+        controller.threads
+            .firstWhere((thread) => thread.id == 'foreground-thread')
+            .status,
+        'idle',
+      );
+      controller.dispose();
+    },
+  );
+
+  testWidgets(
+    'keeps user bubbles right aligned with left-aligned wrapped text',
+    (tester) async {
+      final controller = CodexController(server: CodexAppServer())
+        ..workspacePath = '/workspace';
+      controller.replaceTimelineEntriesForTesting([
+        TimelineEntry(
+          kind: TimelineKind.user,
+          title: '你',
+          detail: '修复',
+          createdAt: DateTime(2026),
+        ),
+      ]);
+
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      final message = tester.widget<Text>(
+        find.descendant(
+          of: find.byKey(const Key('timeline-user-message')),
+          matching: find.text('修复'),
+        ),
+      );
+      expect(message.textAlign, isNull);
+      final bubble = tester.getRect(
+        find.byKey(const Key('timeline-user-message')),
+      );
+      expect(bubble.right, closeTo(776, 1));
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('fades long sidebar task titles instead of showing an ellipsis', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 760));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    const title = '这是一个很长很长很长很长很长的任务标题，用于验证侧栏渐隐效果';
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..threads = [
+        const CodexThread(
+          id: 'long-title-thread',
+          preview: title,
+          createdAt: 1,
+          updatedAt: 1,
+        ),
+      ];
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(
+      find.byKey(const ValueKey('sidebar-thread-title-fade-long-title-thread')),
+      findsOneWidget,
+    );
+    final titleText = tester.widget<Text>(find.text(title));
+    expect(titleText.overflow, TextOverflow.clip);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('anchors the sidebar title fade to the task row trailing edge', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..threads = [_thread(id: 'short-title')];
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final taskTile = find.byKey(
+      const ValueKey('sidebar-thread-tile-short-title'),
+    );
+    final fade = find.byKey(
+      const ValueKey('sidebar-thread-title-fade-short-title'),
+    );
+    expect(
+      tester.getRect(fade).right,
+      closeTo(tester.getRect(taskTile).right - 8, 0.1),
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  test(
+    'labels an approval from a background task without writing it to the foreground timeline',
+    () {
+      final controller = CodexController(server: _FakeCodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'background-thread'
+        ..threads = [_thread(id: 'background-thread')];
+      controller.createThread();
+      controller
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'foreground-thread';
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/commandExecution/requestApproval',
+          requestId: 'background-approval',
+          params: {'threadId': 'background-thread', 'command': 'dart test'},
+        ),
+      );
+
+      expect(controller.pendingApproval?.requestId, 'background-approval');
+      expect(controller.pendingApprovalTaskLabel, 'preview-background-thread');
+      expect(
+        controller.entries.map((entry) => entry.kind),
+        isNot(contains(TimelineKind.approval)),
+      );
+      controller.dispose();
+    },
+  );
 
   test('deduplicates concurrent runtime startup attempts', () async {
     final controller = CodexController(
@@ -5564,6 +6479,18 @@ void main() {
     });
   });
 
+  test('encodes both thread and turn IDs when interrupting a turn', () async {
+    final server = _ProtocolCaptureCodexAppServer();
+
+    await server.interruptTurn(threadId: 'thread-1', turnId: 'turn-1');
+
+    expect(server.requestedMethod, 'turn/interrupt');
+    expect(server.requestedParams, {
+      'threadId': 'thread-1',
+      'turnId': 'turn-1',
+    });
+  });
+
   test('opts into experimental App Server fields during initialize', () async {
     final server = _ProtocolCaptureCodexAppServer();
 
@@ -5987,14 +6914,14 @@ void main() {
       );
 
       expect(find.text('已运行了命令并进行了搜索'), findsOneWidget);
-      expect(find.text('已运行 flutter analyze'), findsOneWidget);
-      expect(find.text('网页搜索'), findsOneWidget);
+      expect(find.text('已运行 flutter analyze'), findsNothing);
+      expect(find.text('网页搜索'), findsNothing);
 
       await tester.tap(find.text('已运行了命令并进行了搜索'));
       await tester.pump();
 
-      expect(find.text('已运行 flutter analyze'), findsNothing);
-      expect(find.text('网页搜索'), findsNothing);
+      expect(find.text('已运行 flutter analyze'), findsOneWidget);
+      expect(find.text('网页搜索'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -6034,8 +6961,8 @@ void main() {
     await tester.tap(summaries.first);
     await tester.pump();
 
-    expect(find.text('已运行 first command'), findsNothing);
-    expect(find.text('已运行 second command'), findsOneWidget);
+    expect(find.text('已运行 first command'), findsOneWidget);
+    expect(find.text('已运行 second command'), findsNothing);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -6054,6 +6981,43 @@ void main() {
     expect(controller.lastError, 'offline');
     controller.dispose();
   });
+
+  testWidgets(
+    'shows a non-blocking retry notice when another app owns a thread writer',
+    (tester) async {
+      final server = _FakeCodexAppServer()
+        ..resumeError = StateError('thread already has an active writer');
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+
+      await controller.resumeThread(_thread(id: 'shared-thread'));
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      expect(
+        find.byKey(const Key('thread-open-elsewhere-notice')),
+        findsOneWidget,
+      );
+      expect(find.text('已在另一个应用中打开'), findsOneWidget);
+      expect(find.text('请先在那边关闭会话，才能在这里继续。'), findsOneWidget);
+      expect(find.byType(AlertDialog), findsNothing);
+
+      server.resumeError = null;
+      await tester.tap(find.byKey(const Key('thread-open-elsewhere-retry')));
+      await tester.pump();
+      await tester.pump();
+
+      expect(controller.activeThreadId, 'shared-thread');
+      expect(controller.hasResumeConflict, isFalse);
+      expect(
+        find.byKey(const Key('thread-open-elsewhere-notice')),
+        findsNothing,
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   test(
     'hydrates older turns when resume returns a pagination cursor',
@@ -6260,6 +7224,49 @@ void main() {
     expect(controller.threadsLoading, isFalse);
     controller.dispose();
   });
+
+  test(
+    'keeps task positions stable when a refresh reports a new update order',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..listResponse = [
+          {
+            'id': 'first',
+            'preview': 'first updated most recently',
+            'createdAt': 1,
+            'updatedAt': 20,
+            'status': 'idle',
+          },
+          {
+            'id': 'second',
+            'preview': 'second updated earlier',
+            'createdAt': 2,
+            'updatedAt': 10,
+            'status': 'active',
+          },
+          {
+            'id': 'new',
+            'preview': 'new task',
+            'createdAt': 3,
+            'updatedAt': 3,
+            'status': 'idle',
+          },
+        ];
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..threads = [_thread(id: 'second'), _thread(id: 'first')];
+
+      await controller.refreshThreads();
+
+      expect(controller.threads.map((thread) => thread.id), [
+        'second',
+        'first',
+        'new',
+      ]);
+      expect(controller.threads[1].preview, 'first updated most recently');
+      controller.dispose();
+    },
+  );
 
   test('restores archived threads to the active thread list', () async {
     final server = _FakeCodexAppServer()
