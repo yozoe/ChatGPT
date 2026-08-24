@@ -444,6 +444,7 @@ class _FakeCodexAppServer extends CodexAppServer {
   List<JsonMap>? itemPages;
   var itemPageIndex = 0;
   String? resumedThreadId;
+  int resumeCalls = 0;
   String? resumedModelProvider;
   String? resumedModel;
   JsonMap? resumedConfig;
@@ -469,7 +470,9 @@ class _FakeCodexAppServer extends CodexAppServer {
   Completer<String>? steerCompleter;
   String? interruptedThreadId;
   String? interruptedTurnId;
+  Completer<void>? interruptCompleter;
   Object? interruptTurnError;
+  Object? unarchiveError;
   String? threadGoal;
   String? renamedThreadId;
   String? renamedThreadName;
@@ -479,6 +482,8 @@ class _FakeCodexAppServer extends CodexAppServer {
   final archivedThreadIds = <String>[];
   int archiveCalls = 0;
   Completer<void>? archiveCompleter;
+  Object? archiveError;
+  final archiveErrorsById = <String, Object>{};
   final deletedThreadIds = <String>[];
   final archiveFailureIds = <String>{};
 
@@ -526,6 +531,7 @@ class _FakeCodexAppServer extends CodexAppServer {
     String? model,
     JsonMap? config,
   }) async {
+    resumeCalls++;
     resumedThreadId = threadId;
     resumedModelProvider = modelProvider;
     resumedModel = model;
@@ -596,6 +602,7 @@ class _FakeCodexAppServer extends CodexAppServer {
   }) async {
     interruptedThreadId = threadId;
     interruptedTurnId = turnId;
+    await interruptCompleter?.future;
     if (interruptTurnError case final error?) throw error;
   }
 
@@ -661,6 +668,7 @@ class _FakeCodexAppServer extends CodexAppServer {
     unarchivedThreadId = threadId;
     unarchiveCalls++;
     await unarchiveCompleter?.future;
+    if (unarchiveError case final error?) throw error;
     archivedListResponse = <JsonMap>[];
   }
 
@@ -670,6 +678,8 @@ class _FakeCodexAppServer extends CodexAppServer {
   Future<void> archiveThread({required String threadId}) async {
     archiveCalls++;
     await archiveCompleter?.future;
+    if (archiveError case final error?) throw error;
+    if (archiveErrorsById[threadId] case final error?) throw error;
     if (archiveFailureIds.contains(threadId)) {
       throw StateError('无法归档 $threadId');
     }
@@ -1783,6 +1793,86 @@ void main() {
       contains('用 Enter 发送'),
     );
 
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('does not send a composing IME value when Enter is pressed', (
+    tester,
+  ) async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('composer-field')));
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'nihao',
+        selection: TextSelection.collapsed(offset: 5),
+        composing: TextRange(start: 0, end: 5),
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('composer-field')))
+          .controller!
+          .value
+          .composing,
+      const TextRange(start: 0, end: 5),
+    );
+    final entryCount = controller.entries.length;
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+
+    expect(controller.entries, hasLength(entryCount));
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('composer-field')))
+          .controller!
+          .text,
+      'nihao',
+    );
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('sends after an IME composition was already confirmed', (
+    tester,
+  ) async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('composer-field')));
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'nihao',
+        selection: TextSelection.collapsed(offset: 5),
+        composing: TextRange(start: 0, end: 5),
+      ),
+    );
+    await tester.pump();
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '你好',
+        selection: TextSelection.collapsed(offset: 2),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 40));
+    final entryCount = controller.entries.length;
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+
+    expect(controller.entries, hasLength(entryCount + 1));
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -5775,6 +5865,37 @@ void main() {
   });
 
   test(
+    'does not write a delayed stop result into a newly opened task',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..interruptCompleter = Completer<void>();
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'stopped-thread'
+        ..activeTurnId = 'stopped-turn';
+
+      final stopping = controller.stopCurrentTurn();
+      await Future<void>.delayed(Duration.zero);
+      controller
+        ..activeThreadId = 'new-thread'
+        ..activeTurnId = 'new-turn';
+      server.interruptCompleter!.complete();
+      await stopping;
+
+      expect(
+        controller.entries.where((entry) => entry.title == '已请求停止'),
+        isEmpty,
+      );
+      expect(
+        controller.entries.where((entry) => entry.title == '停止失败'),
+        isEmpty,
+      );
+      controller.dispose();
+    },
+  );
+
+  test(
     'treats an identified current-thread completion as current after stale history',
     () {
       final controller = CodexController(server: _FakeCodexAppServer())
@@ -5874,6 +5995,44 @@ void main() {
       expect(controller.activeThreadId, 'foreground-thread');
       expect(controller.activeTurnId, 'foreground-turn');
       expect(controller.status, RuntimeStatus.running);
+      expect(controller.isThreadRunning('background-thread'), isFalse);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'does not write an unscoped background completion into a new task',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..listResponse = [
+          {
+            'id': 'background-thread',
+            'preview': 'background',
+            'status': 'idle',
+          },
+        ];
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'background-thread';
+      controller.createThread();
+      controller.replaceTimelineEntriesForTesting(const []);
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'turn': {'status': 'completed'},
+          },
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.activeThreadId, isNull);
+      expect(
+        controller.entries.where((entry) => entry.title == '任务完成'),
+        isEmpty,
+      );
       expect(controller.isThreadRunning('background-thread'), isFalse);
       controller.dispose();
     },
@@ -6982,6 +7141,37 @@ void main() {
     controller.dispose();
   });
 
+  test(
+    'keeps the previous timeline clean when a resume writer conflict occurs',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..resumeError = StateError('thread already has an active writer');
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready
+        ..activeThreadId = 'old-thread';
+      controller.replaceTimelineEntriesForTesting([
+        TimelineEntry(
+          kind: TimelineKind.user,
+          title: '你',
+          detail: '仍在查看旧任务',
+          createdAt: DateTime(2026),
+        ),
+      ]);
+
+      await controller.resumeThread(_thread(id: 'shared-thread'));
+
+      expect(controller.activeThreadId, 'old-thread');
+      expect(controller.hasResumeConflict, isTrue);
+      expect(
+        controller.entries.where((entry) => entry.title == '无法恢复任务'),
+        isEmpty,
+      );
+      expect(controller.entries.single.detail, '仍在查看旧任务');
+      controller.dispose();
+    },
+  );
+
   testWidgets(
     'shows a non-blocking retry notice when another app owns a thread writer',
     (tester) async {
@@ -7001,7 +7191,7 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('已在另一个应用中打开'), findsOneWidget);
-      expect(find.text('请先在那边关闭会话，才能在这里继续。'), findsOneWidget);
+      expect(find.text('请先在那边关闭会话，然后重试此操作。'), findsOneWidget);
       expect(find.byType(AlertDialog), findsNothing);
 
       server.resumeError = null;
@@ -7018,6 +7208,83 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets('requires unarchive before reopening a task archived elsewhere', (
+    tester,
+  ) async {
+    final server = _FakeCodexAppServer()
+      ..resumeError = StateError('session archived-thread is archived')
+      ..archivedListResponse = [
+        {'id': 'archived-thread', 'preview': '已归档任务'},
+      ];
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+
+    await controller.resumeThread(_thread(id: 'archived-thread'));
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(controller.activeThreadId, isNull);
+    expect(
+      controller.entries.where((entry) => entry.title == '无法恢复任务'),
+      isEmpty,
+    );
+    expect(find.byKey(const Key('thread-archived-notice')), findsOneWidget);
+    expect(find.text('取消归档'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  test(
+    'keeps the archived-task restore action after unarchive fails',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..resumeError = StateError('session archived-thread is archived')
+        ..unarchiveError = StateError('unarchive unavailable');
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+
+      await controller.resumeThread(_thread(id: 'archived-thread'));
+      await controller.restoreArchivedThread();
+
+      expect(controller.hasArchivedThreadRestore, isTrue);
+      expect(controller.lastError, 'unarchive unavailable');
+      controller.dispose();
+    },
+  );
+
+  test('clears a writer-conflict retry when switching workspaces', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'codex-desk-writer-conflict-switch-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final first = await Directory('${root.path}/first').create();
+    final second = await Directory('${root.path}/second').create();
+    final server = _ManagedRuntimeFakeServer()
+      ..resumeError = StateError('thread already has an active writer')
+      ..running = true;
+    final controller =
+        CodexController(
+            server: server,
+            runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+            conversationHistoryStore: _MemoryConversationHistoryStore(),
+          )
+          ..workspacePath = first.path
+          ..status = RuntimeStatus.ready;
+
+    await controller.resumeThread(_thread(id: 'shared-thread'));
+    expect(controller.hasThreadWriterConflict, isTrue);
+
+    expect(await controller.selectWorkspaceAndReconnect(second.path), isTrue);
+    expect(controller.workspacePath, await second.resolveSymbolicLinks());
+    expect(controller.hasThreadWriterConflict, isFalse);
+    await controller.retryThreadWriterConflict();
+    expect(server.resumeCalls, 1);
+    controller.dispose();
+  });
 
   test(
     'hydrates older turns when resume returns a pagination cursor',
@@ -7320,6 +7587,89 @@ void main() {
             .detail,
         '已归档 2 个任务。',
       );
+      controller.dispose();
+    },
+  );
+
+  testWidgets(
+    'blocks archive with the writer-conflict notice and retries the archive',
+    (tester) async {
+      final server = _FakeCodexAppServer()
+        ..listResponse = [
+          {'id': 'shared-thread', 'preview': 'shared'},
+        ]
+        ..archiveError = StateError('thread already has an active writer');
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await controller.refreshThreads();
+
+      await controller.archiveThread(controller.threads.single);
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      expect(controller.hasThreadWriterConflict, isTrue);
+      expect(controller.threads.single.id, 'shared-thread');
+      expect(
+        find.byKey(const Key('thread-open-elsewhere-notice')),
+        findsOneWidget,
+      );
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(
+        controller.entries.where((entry) => entry.title == '归档失败'),
+        isEmpty,
+      );
+
+      server.archiveError = null;
+      await tester.tap(find.byKey(const Key('thread-open-elsewhere-retry')));
+      await tester.pump();
+      await tester.pump();
+
+      expect(server.archivedThreadIds, ['shared-thread']);
+      expect(controller.hasThreadWriterConflict, isFalse);
+      expect(
+        find.byKey(const Key('thread-open-elsewhere-notice')),
+        findsNothing,
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  test(
+    'retries every unarchived task after a batch archive writer conflict',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..listResponse = [
+          {'id': 'first', 'preview': 'first'},
+          {'id': 'second', 'preview': 'second'},
+          {'id': 'third', 'preview': 'third'},
+        ]
+        ..archiveErrorsById['second'] = StateError(
+          'thread already has an active writer',
+        );
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await controller.refreshThreads();
+
+      final firstPass = await controller.archiveThreads(controller.threads);
+
+      expect(firstPass, {'first'});
+      expect(server.archivedThreadIds, ['first']);
+      expect(controller.threads.map((thread) => thread.id), [
+        'second',
+        'third',
+      ]);
+      expect(controller.hasThreadWriterConflict, isTrue);
+
+      server.archiveErrorsById.remove('second');
+      await controller.retryThreadWriterConflict();
+
+      expect(server.archivedThreadIds, ['first', 'second', 'third']);
+      expect(controller.threads, isEmpty);
+      expect(server.archiveCalls, 4);
+      expect(controller.hasThreadWriterConflict, isFalse);
       controller.dispose();
     },
   );

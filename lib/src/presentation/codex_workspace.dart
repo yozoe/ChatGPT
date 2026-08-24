@@ -4815,7 +4815,7 @@ class _ConversationPane extends StatelessWidget {
     return Column(
       children: [
         if (controller.lastError case final error?
-            when !controller.hasResumeConflict)
+            when !controller.hasThreadWriterConflict)
           Container(
             width: double.infinity,
             margin: const EdgeInsets.fromLTRB(24, 0, 24, 12),
@@ -4916,10 +4916,15 @@ class _ConversationPane extends StatelessWidget {
             },
           ),
         ),
-        if (controller.hasResumeConflict)
+        if (controller.hasThreadWriterConflict)
           _ThreadOpenElsewhereNotice(
-            retrying: controller.isResumingThread,
-            onRetry: controller.retryResumeConflict,
+            retrying: controller.isRetryingThreadWriterConflict,
+            onRetry: controller.retryThreadWriterConflict,
+          ),
+        if (controller.hasArchivedThreadRestore)
+          _ArchivedThreadNotice(
+            restoring: controller.isRestoringArchivedThread,
+            onRestore: controller.restoreArchivedThread,
           ),
         _ComposerPanel(
           key: const Key('composer-panel'),
@@ -4950,7 +4955,7 @@ class _ThreadOpenElsewhereNotice extends StatelessWidget {
     final palette = YeknomPalette.of(context);
     return Semantics(
       container: true,
-      label: '已在另一个应用中打开。请先在那边关闭会话，才能在这里继续。',
+      label: '已在另一个应用中打开。请先在那边关闭会话，然后重试此操作。',
       child: Container(
         key: const Key('thread-open-elsewhere-notice'),
         width: double.infinity,
@@ -4979,7 +4984,7 @@ class _ThreadOpenElsewhereNotice extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '请先在那边关闭会话，才能在这里继续。',
+                    '请先在那边关闭会话，然后重试此操作。',
                     style: Theme.of(
                       context,
                     ).textTheme.bodySmall?.copyWith(color: palette.muted),
@@ -4992,6 +4997,70 @@ class _ThreadOpenElsewhereNotice extends StatelessWidget {
               key: const Key('thread-open-elsewhere-retry'),
               onPressed: retrying ? null : onRetry,
               child: Text(retrying ? '重试中' : '重试'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ArchivedThreadNotice extends StatelessWidget {
+  const _ArchivedThreadNotice({
+    required this.restoring,
+    required this.onRestore,
+  });
+
+  final bool restoring;
+  final Future<void> Function() onRestore;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Semantics(
+      container: true,
+      label: '此任务已归档。取消归档后会重新出现在任务列表中。',
+      child: Container(
+        key: const Key('thread-archived-notice'),
+        width: double.infinity,
+        margin: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+        padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+        decoration: BoxDecoration(
+          color: palette.field,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: palette.border),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.inventory_2_outlined, size: 18, color: palette.trace),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '此任务已归档',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: palette.trace,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '取消归档后会重新出现在任务列表中。',
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.copyWith(color: palette.muted),
+                  ),
+                ],
+              ),
+            ),
+            Container(width: 1, height: 28, color: palette.border),
+            TextButton(
+              key: const Key('thread-archived-unarchive'),
+              onPressed: restoring ? null : onRestore,
+              child: Text(restoring ? '取消归档中' : '取消归档'),
             ),
           ],
         ),
@@ -6695,6 +6764,9 @@ class _ComposerPanelState extends State<_ComposerPanel> {
   bool _includeWorkspace = false;
   bool _planMode = false;
   bool _recordSkill = false;
+  bool _imeCompositionActive = false;
+  bool _imeCompositionJustEnded = false;
+  Timer? _imeCompositionDeferral;
   late int _handledRecordSkillRequest;
   String? _goal;
 
@@ -6721,6 +6793,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
     _lastRuntimeStatus = controller.status;
     _handledRecordSkillRequest = widget.recordSkillRequest.value;
     controller.addListener(_handleControllerChanged);
+    composer.addListener(_handleComposerEditingChanged);
     widget.recordSkillRequest.addListener(_handleRecordSkillRequest);
   }
 
@@ -6743,7 +6816,9 @@ class _ComposerPanelState extends State<_ComposerPanel> {
   @override
   void dispose() {
     controller.removeListener(_handleControllerChanged);
+    composer.removeListener(_handleComposerEditingChanged);
     widget.recordSkillRequest.removeListener(_handleRecordSkillRequest);
+    _imeCompositionDeferral?.cancel();
     _releaseAllAttachmentResources();
     super.dispose();
   }
@@ -6761,6 +6836,28 @@ class _ComposerPanelState extends State<_ComposerPanel> {
         status != RuntimeStatus.running;
     _lastRuntimeStatus = status;
     if (turnEnded) _releaseDetachedAttachmentResources();
+  }
+
+  void _handleComposerEditingChanged() {
+    final composing = composer.value.composing;
+    if (composing.isValid && !composing.isCollapsed) {
+      _imeCompositionActive = true;
+      _imeCompositionJustEnded = false;
+      _imeCompositionDeferral?.cancel();
+      return;
+    }
+    if (!_imeCompositionActive) return;
+
+    // Some platform IMEs clear this range before the Enter shortcut is
+    // dispatched. Briefly retain that transition so this Enter can finish the
+    // IME operation instead of sending the composer text.
+    _imeCompositionActive = false;
+    _imeCompositionJustEnded = true;
+    _imeCompositionDeferral?.cancel();
+    _imeCompositionDeferral = Timer(
+      const Duration(milliseconds: 16),
+      () => _imeCompositionJustEnded = false,
+    );
   }
 
   void _releaseDetachedAttachmentResources() {
@@ -6823,6 +6920,20 @@ class _ComposerPanelState extends State<_ComposerPanel> {
       return count == 0 ? '正在处理任务' : '正在处理 · $count 个文件已变更';
     }
     return controller.status == RuntimeStatus.ready ? '任务已就绪' : '等待运行时连接';
+  }
+
+  /// Keeps Enter available to the IME while it has an uncommitted composition.
+  /// This lets an input method cancel or commit its candidate text before a
+  /// subsequent Enter sends the composer content.
+  void _submitFromKeyboard() {
+    final composing = composer.value.composing;
+    if (composing.isValid && !composing.isCollapsed) return;
+    if (_imeCompositionJustEnded) {
+      _imeCompositionJustEnded = false;
+      _imeCompositionDeferral?.cancel();
+      return;
+    }
+    unawaited(_submit());
   }
 
   Future<void> _submit() async {
@@ -7330,7 +7441,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
                                 const SingleActivator(
                                   LogicalKeyboardKey.enter,
                                 ): () {
-                                  unawaited(_submit());
+                                  _submitFromKeyboard();
                                 },
                                 const SingleActivator(
                                   LogicalKeyboardKey.keyV,

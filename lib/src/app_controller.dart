@@ -32,6 +32,29 @@ enum AuthStatus { checking, signedOut, chatgpt, apiKey, external }
 
 enum ApprovalMode { manual, autoApprove }
 
+enum _ThreadWriterConflictOperation { resume, archive }
+
+/// A recoverable operation rejected because another Codex client still owns
+/// the thread writer. The workspace is retained so a stale retry can never
+/// run after the user moves to another project.
+class _ThreadWriterConflict {
+  const _ThreadWriterConflict({
+    required this.workspace,
+    required this.threads,
+    required this.operation,
+  });
+
+  final String workspace;
+  final List<CodexThread> threads;
+  final _ThreadWriterConflictOperation operation;
+}
+
+class _ArchivedThreadRestore {
+  const _ArchivedThreadRestore({required this.workspace, required this.thread});
+  final String workspace;
+  final CodexThread thread;
+}
+
 /// In-memory view state for a previously opened task.
 /// 已打开任务的内存视图缓存。
 class _ThreadViewSnapshot {
@@ -339,21 +362,111 @@ class CodexController extends ChangeNotifier {
   String? _activeCommandItemId;
   TaskPlan? activeTaskPlan;
   String? lastError;
-  CodexThread? _resumeConflictThread;
+  _ThreadWriterConflict? _threadWriterConflict;
+  bool _retryingThreadWriterConflict = false;
+  _ArchivedThreadRestore? _archivedThreadRestore;
+  bool _restoringArchivedThread = false;
 
-  /// Whether the last attempt to open a task was rejected because another
-  /// Codex client still owns the writer for it.
-  bool get hasResumeConflict => _resumeConflictThread != null;
+  /// Whether an operation on a task was rejected because another Codex
+  /// client still owns that task's writer.
+  bool get hasThreadWriterConflict =>
+      _threadWriterConflict?.workspace == workspacePath;
 
-  /// Retries the task that could not be opened while another client held its
-  /// writer. The retry remains scoped to that original task.
-  Future<void> retryResumeConflict() async {
-    final thread = _resumeConflictThread;
-    if (thread == null || _resumingThread) return;
-    _resumeConflictThread = null;
+  /// Kept for callers that only need to distinguish a failed history resume.
+  bool get hasResumeConflict =>
+      hasThreadWriterConflict &&
+      _threadWriterConflict?.operation == _ThreadWriterConflictOperation.resume;
+
+  bool get isRetryingThreadWriterConflict => _retryingThreadWriterConflict;
+
+  bool get hasArchivedThreadRestore =>
+      _archivedThreadRestore?.workspace == workspacePath;
+  bool get isRestoringArchivedThread => _restoringArchivedThread;
+
+  /// Retries the rejected operation only while its original workspace remains
+  /// active. A workspace switch deliberately discards this ephemeral prompt.
+  Future<void> retryThreadWriterConflict() async {
+    final conflict = _threadWriterConflict;
+    if (conflict == null || _retryingThreadWriterConflict || _resumingThread) {
+      return;
+    }
+    if (workspacePath != conflict.workspace) {
+      _clearThreadWriterConflict();
+      notifyListeners();
+      return;
+    }
+    _clearThreadWriterConflict();
+    _retryingThreadWriterConflict = true;
     lastError = null;
     notifyListeners();
-    await resumeThread(thread);
+    try {
+      switch (conflict.operation) {
+        case _ThreadWriterConflictOperation.resume:
+          await resumeThread(conflict.threads.single);
+        case _ThreadWriterConflictOperation.archive:
+          await archiveThreads(conflict.threads);
+      }
+    } finally {
+      _retryingThreadWriterConflict = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  void _setThreadWriterConflict({
+    required Iterable<CodexThread> threads,
+    required _ThreadWriterConflictOperation operation,
+  }) {
+    final workspace = workspacePath;
+    final retryThreads = List<CodexThread>.unmodifiable(threads);
+    if (workspace == null || retryThreads.isEmpty) return;
+    _threadWriterConflict = _ThreadWriterConflict(
+      workspace: workspace,
+      threads: retryThreads,
+      operation: operation,
+    );
+  }
+
+  void _clearThreadWriterConflict() {
+    _threadWriterConflict = null;
+  }
+
+  void _setArchivedThreadRestore(CodexThread thread) {
+    final workspace = workspacePath;
+    if (workspace == null) return;
+    _archivedThreadRestore = _ArchivedThreadRestore(
+      workspace: workspace,
+      thread: thread,
+    );
+  }
+
+  void _clearArchivedThreadRestore() => _archivedThreadRestore = null;
+
+  bool _isThreadArchived(String threadId) =>
+      archivedThreads.any((thread) => thread.id == threadId);
+
+  Future<void> restoreArchivedThread() async {
+    final restore = _archivedThreadRestore;
+    if (restore == null || _restoringArchivedThread) return;
+    if (workspacePath != restore.workspace) {
+      _clearArchivedThreadRestore();
+      notifyListeners();
+      return;
+    }
+    _restoringArchivedThread = true;
+    lastError = null;
+    notifyListeners();
+    try {
+      final restored = await unarchiveThread(
+        restore.thread,
+        recordTimeline: false,
+      );
+      if (restored && workspacePath == restore.workspace) {
+        _clearArchivedThreadRestore();
+      }
+    } finally {
+      _restoringArchivedThread = false;
+      if (!_disposed) notifyListeners();
+    }
   }
 
   final LinkedHashMap<Object, PendingApproval> _pendingApprovals =
@@ -1062,6 +1175,8 @@ class CodexController extends ChangeNotifier {
       );
     }
     _invalidateThreadRefreshes();
+    _clearThreadWriterConflict();
+    _clearArchivedThreadRestore();
     workspacePath = canonicalPath;
     _workspaceProjectId = existingIndex < 0
         ? _workspaceConfigurations.last.id
@@ -1250,6 +1365,8 @@ class CodexController extends ChangeNotifier {
     _pinnedWorkspacePaths.remove(primary);
     _threadViewCache.clear();
     _runningThreadIds.clear();
+    _clearThreadWriterConflict();
+    _clearArchivedThreadRestore();
     workspacePath = null;
     _additionalWorkspacePaths.clear();
     activeThreadId = null;
@@ -1542,6 +1659,7 @@ class CodexController extends ChangeNotifier {
         pluginActionResult = '运行时已重启，最新插件配置将在新建任务中生效。';
       }
       _add(TimelineKind.system, '运行时已连接', 'App Server 已通过本地 stdio 通道就绪。');
+      await refreshArchivedThreads();
       await refreshThreads();
       await _resumeRestoredThreadIfNeeded();
       await refreshSkills(notify: false);
@@ -1723,17 +1841,43 @@ class CodexController extends ChangeNotifier {
   Future<void> stopCurrentTurn() async {
     final threadId = activeThreadId;
     final turnId = activeTurnId;
+    final workspace = workspacePath;
     if (threadId == null || turnId == null || status != RuntimeStatus.running) {
       return;
     }
     try {
       await _server.interruptTurn(threadId: threadId, turnId: turnId);
+      if (!_isCurrentTurnRequest(
+        workspace: workspace,
+        threadId: threadId,
+        turnId: turnId,
+      )) {
+        return;
+      }
       _add(TimelineKind.system, '已请求停止', '正在等待 App Server 结束当前任务。');
     } catch (error) {
+      if (!_isCurrentTurnRequest(
+        workspace: workspace,
+        threadId: threadId,
+        turnId: turnId,
+      )) {
+        return;
+      }
       _add(TimelineKind.error, '停止失败', _messageOf(error));
     }
     notifyListeners();
   }
+
+  bool _isCurrentTurnRequest({
+    required String? workspace,
+    required String threadId,
+    required String turnId,
+  }) =>
+      !_disposed &&
+      workspacePath == workspace &&
+      status == RuntimeStatus.running &&
+      activeThreadId == threadId &&
+      activeTurnId == turnId;
 
   /// Sends a correction to the active turn through `turn/steer`.
   /// 调整方向不会创建新 turn，而是继续当前线程中的活动 turn。
@@ -2239,7 +2383,14 @@ class CodexController extends ChangeNotifier {
   Future<void> resumeThread(CodexThread thread) async {
     if (!canSwitchThreads || !_server.isRunning) return;
     if (activeThreadId == thread.id && _activeThreadAttached) return;
-    _resumeConflictThread = null;
+    if (_isThreadArchived(thread.id)) {
+      _setArchivedThreadRestore(thread);
+      lastError = null;
+      notifyListeners();
+      return;
+    }
+    _clearThreadWriterConflict();
+    _clearArchivedThreadRestore();
     // A thread that is already executing belongs to the App Server writer
     // created for its turn. `thread/resume` would acquire another writer and
     // is rejected while that turn is active. Its timeline is read separately.
@@ -2368,9 +2519,18 @@ class CodexController extends ChangeNotifier {
       }
       lastError = _messageOf(error);
       if (_isActiveWriterConflict(lastError!)) {
-        _resumeConflictThread = thread;
+        _setThreadWriterConflict(
+          threads: [thread],
+          operation: _ThreadWriterConflictOperation.resume,
+        );
+      } else if (_isArchivedThreadError(lastError!)) {
+        lastError = null;
+        _setArchivedThreadRestore(thread);
+        unawaited(refreshArchivedThreads());
+        unawaited(refreshThreads());
+      } else {
+        _add(TimelineKind.error, '无法恢复任务', lastError!);
       }
-      _add(TimelineKind.error, '无法恢复任务', lastError!);
     }
     _resumingThread = false;
     notifyListeners();
@@ -2378,6 +2538,9 @@ class CodexController extends ChangeNotifier {
 
   bool _isActiveWriterConflict(String message) =>
       message.toLowerCase().contains('already has an active writer');
+
+  bool _isArchivedThreadError(String message) =>
+      message.toLowerCase().contains('is archived');
 
   /// 自动恢复本地快照中上次打开的线程，避免重启后发送消息创建新线程。
   /// Reattaches the thread that was open in the restored snapshot before the
@@ -2388,7 +2551,7 @@ class CodexController extends ChangeNotifier {
       return;
     }
     CodexThread? thread;
-    for (final candidate in [...threads, ...archivedThreads]) {
+    for (final candidate in threads) {
       if (candidate.id == id) {
         thread = candidate;
         break;
@@ -2437,26 +2600,36 @@ class CodexController extends ChangeNotifier {
   /// 批量归档指定线程，并在成功后更新当前项目的本地列表。
   /// Archives selected threads in sequence and updates the current workspace list after each success.
   Future<Set<String>> archiveThreads(Iterable<CodexThread> selected) async {
+    final workspace = workspacePath;
     final items =
         <String, CodexThread>{for (final thread in selected) thread.id: thread}
             .values
             .where((thread) => !_archivingThreadIds.contains(thread.id))
             .toList(growable: false);
-    if (!_server.isRunning || hasRunningTasks || items.isEmpty) {
+    if (workspace == null ||
+        !_server.isRunning ||
+        hasRunningTasks ||
+        items.isEmpty) {
       return const <String>{};
     }
+    _clearThreadWriterConflict();
     _archivingThreadIds.addAll(items.map((thread) => thread.id));
     if (!_disposed) notifyListeners();
     final archivedIds = <String>{};
     Object? failure;
+    List<CodexThread>? retryThreads;
     try {
-      for (final thread in items) {
+      for (var index = 0; index < items.length; index++) {
+        final thread = items[index];
         try {
           await _server.archiveThread(threadId: thread.id);
         } catch (error) {
+          if (_disposed || workspacePath != workspace) return archivedIds;
           failure = error;
+          retryThreads = items.sublist(index);
           break;
         }
+        if (_disposed || workspacePath != workspace) return archivedIds;
         archivedIds.add(thread.id);
         _localThreadStatuses.remove(thread.id);
         _acknowledgedCompletedThreadIds.remove(thread.id);
@@ -2486,11 +2659,18 @@ class CodexController extends ChangeNotifier {
       }
       if (failure != null) {
         lastError = _messageOf(failure);
-        _add(
-          TimelineKind.error,
-          archivedIds.isEmpty ? '归档失败' : '部分任务归档失败',
-          lastError!,
-        );
+        if (_isActiveWriterConflict(lastError!)) {
+          _setThreadWriterConflict(
+            threads: retryThreads!,
+            operation: _ThreadWriterConflictOperation.archive,
+          );
+        } else {
+          _add(
+            TimelineKind.error,
+            archivedIds.isEmpty ? '归档失败' : '部分任务归档失败',
+            lastError!,
+          );
+        }
       }
     } finally {
       _archivingThreadIds.removeAll(items.map((thread) => thread.id));
@@ -2549,23 +2729,31 @@ class CodexController extends ChangeNotifier {
 
   /// 恢复归档线程，并防止对同一线程重复提交恢复请求。
   /// Unarchives a thread while preventing duplicate requests for that thread.
-  Future<void> unarchiveThread(CodexThread thread) async {
+  Future<bool> unarchiveThread(
+    CodexThread thread, {
+    bool recordTimeline = true,
+  }) async {
     if (!_server.isRunning ||
         status != RuntimeStatus.ready ||
         !_unarchivingThreadIds.add(thread.id)) {
-      return;
+      return false;
     }
     notifyListeners();
     try {
+      // Ignore a list request started before this mutation; otherwise an old
+      // archived-list response can immediately re-hide the restored task.
+      _archivedThreadRefreshRequest++;
       await _server.unarchiveThread(threadId: thread.id);
       archivedThreads = archivedThreads
           .where((value) => value.id != thread.id)
           .toList(growable: false);
-      _add(TimelineKind.system, '任务已恢复到列表', thread.title);
+      if (recordTimeline) _add(TimelineKind.system, '任务已恢复到列表', thread.title);
       await Future.wait([refreshThreads(), refreshArchivedThreads()]);
+      return true;
     } catch (error) {
       lastError = _messageOf(error);
-      _add(TimelineKind.error, '恢复归档任务失败', lastError!);
+      if (recordTimeline) _add(TimelineKind.error, '恢复归档任务失败', lastError!);
+      return false;
     } finally {
       _unarchivingThreadIds.remove(thread.id);
       if (!_disposed) notifyListeners();
@@ -2907,15 +3095,19 @@ class CodexController extends ChangeNotifier {
           _updateTurnDiff(event.params['diff']);
         }
       case 'turn/completed':
+        final currentThreadId = activeThreadId;
+        final eventThreadId = _threadIdFromEvent(event.params);
         final backgroundCompletionNeedsReconciliation =
-            _threadIdFromEvent(event.params) == null &&
-            _hasBackgroundRunningTasks;
+            eventThreadId == null && _hasBackgroundRunningTasks;
         // A background history read can return a slightly stale turn ID. A
         // completion explicitly attributed to the thread currently open is
         // still authoritative, even when its turn ID differs from the cached
         // one. Live deltas remain strictly turn-scoped above.
-        if (_threadIdFromEvent(event.params) == activeThreadId ||
-            _isEventForActiveTurn(event.params)) {
+        final canAcceptUnscopedForegroundCompletion =
+            currentThreadId != null || !_hasBackgroundRunningTasks;
+        if ((currentThreadId != null && eventThreadId == currentThreadId) ||
+            (canAcceptUnscopedForegroundCompletion &&
+                _isEventForActiveTurn(event.params))) {
           _handleTurnCompleted(event.params);
         } else {
           _handleBackgroundTurnCompleted(event.params);
