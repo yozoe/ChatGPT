@@ -2,7 +2,8 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart' show kReleaseMode;
 
-/// Resolves an isolated Application Support directory for development builds.
+/// 统一计算应用状态目录，确保 Debug/Profile 不会读取或覆盖 Release 数据。
+/// Resolves app-state storage so Debug/Profile never read or overwrite Release data.
 abstract final class AppStorageScope {
   static const releaseDirectoryName = 'Codex Desk';
   static const developmentDirectoryName = 'Codex Desk Development';

@@ -6,7 +6,8 @@ import 'package:flutter/foundation.dart' show kReleaseMode;
 
 import 'app_storage_scope.dart';
 
-/// Release builds use a dedicated Keychain service; development builds use an isolated file store.
+/// 为 Release 提供独立 Keychain，为开发与测试提供隔离且可原子写入的本地存储。
+/// Release builds use a dedicated Keychain service; development and tests use isolated atomically written local storage.
 class CodexKeychainStorage {
   /// Creates build-appropriate storage; tests may inject either implementation.
   CodexKeychainStorage({
@@ -72,6 +73,8 @@ class CodexKeychainStorage {
     await _legacyStorage.delete(key: key);
   }
 
+  /// 开发存储只承载测试/Debug 配置，格式异常必须显式失败而不能静默覆盖。
+  /// Development storage holds only test/Debug configuration; malformed data fails rather than being silently overwritten.
   Future<Map<String, String>> _readDevelopmentValues() async {
     final file = _developmentFile();
     if (!await file.exists()) return <String, String>{};
@@ -84,6 +87,8 @@ class CodexKeychainStorage {
     );
   }
 
+  /// 串行化读取—修改—写入序列，防止并发偏好更新互相覆盖。
+  /// Serializes read-modify-write operations so concurrent preferences cannot overwrite each other.
   Future<void> _mutateDevelopmentValues(
     void Function(Map<String, String> values) mutation,
   ) {

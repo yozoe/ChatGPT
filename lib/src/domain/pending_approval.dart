@@ -1,7 +1,11 @@
 import '../services/codex_app_server.dart';
 
+/// App Server 可能向客户端请求确认的高风险操作类别。
+/// High-impact operation categories App Server may ask the client to approve.
 enum ApprovalKind { command, fileChange, permissions }
 
+/// 尚未得到用户或自动审批策略答复的 App Server 请求。
+/// An App Server request awaiting user or automatic-policy resolution.
 class PendingApproval {
   const PendingApproval({
     required this.requestId,

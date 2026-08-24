@@ -10,6 +10,8 @@ import '../domain/timeline_entry.dart';
 import 'app_storage_scope.dart';
 import 'codex_keychain_storage.dart';
 
+/// 单个工作区的可加密持久化视图；与 App Server 的原始会话数据分离。
+/// Encryptable persisted view of one workspace, separate from App Server's source session.
 class ConversationHistorySnapshot {
   const ConversationHistorySnapshot({
     required this.threads,

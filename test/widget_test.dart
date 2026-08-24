@@ -18,6 +18,7 @@ import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/domain/workspace_configuration.dart';
 import 'package:chatgpt/src/presentation/codex_workspace.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
+import 'package:chatgpt/src/services/agent_markdown_link.dart';
 import 'package:chatgpt/src/services/codex_plugin_store.dart';
 import 'package:chatgpt/src/services/conversation_history_store.dart';
 import 'package:chatgpt/src/services/git_project_service.dart';
@@ -1351,6 +1352,7 @@ void main() {
     expect(find.text('first-project'), findsOneWidget);
     expect(find.text('second-project'), findsOneWidget);
     expect(find.text(firstPath), findsNothing);
+    expect(find.byTooltip(firstPath), findsNothing);
     expect(find.text('+1'), findsOneWidget);
     final nestedTask = find.text('preview-nested-task');
     expect(nestedTask, findsOneWidget);
@@ -1840,6 +1842,51 @@ void main() {
 
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets(
+    'does not send the Enter that has just confirmed an IME candidate',
+    (tester) async {
+      final controller = CodexController(server: _FakeCodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      await tester.tap(find.byKey(const Key('composer-field')));
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: 'nihao',
+          selection: TextSelection.collapsed(offset: 5),
+          composing: TextRange(start: 0, end: 5),
+        ),
+      );
+      await tester.pump();
+      final entryCount = controller.entries.length;
+
+      // Some macOS IMEs clear `composing` before dispatching the same Enter
+      // that confirms the selected candidate.
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '你好',
+          selection: TextSelection.collapsed(offset: 2),
+        ),
+      );
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+
+      expect(controller.entries, hasLength(entryCount));
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('composer-field')))
+            .controller!
+            .text,
+        '你好',
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   testWidgets('sends after an IME composition was already confirmed', (
     tester,
@@ -3261,6 +3308,103 @@ void main() {
     controller.dispose();
   });
 
+  test('uses App Server item types for the live turn status', () {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/started',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'search-1',
+            'type': 'webSearch',
+            'query': 'Codex App Server protocol',
+          },
+        },
+      ),
+    );
+
+    expect(controller.activeLiveActivity?.label, '正在搜索网页');
+    expect(controller.activeLiveActivity?.detail, 'Codex App Server protocol');
+    expect(controller.activeCommand, isNull);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/started',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'mcp-1',
+            'type': 'mcpToolCall',
+            'server': 'docs',
+            'tool': 'search',
+          },
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {'id': 'search-1', 'type': 'webSearch'},
+        },
+      ),
+    );
+
+    expect(controller.activeLiveActivity?.label, '正在调用 MCP 工具');
+    expect(controller.activeLiveActivity?.detail, 'docs/search');
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {'id': 'mcp-1', 'type': 'mcpToolCall'},
+        },
+      ),
+    );
+
+    expect(controller.activeLiveActivity, isNull);
+    controller.dispose();
+  });
+
+  test('labels a dynamic skill reader with the skill name', () {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/started',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'skill-reader-1',
+            'type': 'dynamicToolCall',
+            'namespace': 'skills',
+            'tool': 'read',
+            'arguments': {'name': 'code-review'},
+          },
+        },
+      ),
+    );
+
+    expect(controller.activeLiveActivity?.kind, 'skillRead');
+    expect(controller.activeLiveActivity?.label, '正在读取 Code Review 技能');
+    controller.dispose();
+  });
+
   test('ignores lifecycle events from a previously resumed thread', () {
     final controller = CodexController(server: CodexAppServer())
       ..status = RuntimeStatus.running
@@ -3430,6 +3574,7 @@ void main() {
     );
 
     expect(find.byKey(const Key('live-command-row')), findsOneWidget);
+    expect(find.byKey(const Key('live-command-shimmer')), findsOneWidget);
     expect(find.byKey(const Key('live-thinking-row')), findsNothing);
 
     controller.handleServerEventForTesting(
@@ -3448,9 +3593,9 @@ void main() {
     );
     await tester.pump();
 
+    expect(controller.status, RuntimeStatus.running);
+    expect(controller.activeLiveActivity, isNull);
     expect(find.byKey(const Key('live-command-row')), findsNothing);
-    expect(find.byKey(const Key('live-thinking-row')), findsOneWidget);
-    expect(find.byKey(const Key('live-thinking-shimmer')), findsOneWidget);
 
     controller.handleServerEventForTesting(
       const ServerEvent(
@@ -3466,6 +3611,54 @@ void main() {
     expect(find.byKey(const Key('live-command-row')), findsNothing);
     expect(find.byKey(const Key('live-thinking-row')), findsNothing);
     expect(find.text('已处理 1 分钟 3 秒'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('renders the server-declared live activity before thinking', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/started',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'search-1',
+            'type': 'webSearch',
+            'query': 'Codex App Server',
+          },
+        },
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(find.byKey(const Key('live-activity-row')), findsOneWidget);
+    expect(find.byKey(const Key('live-activity-shimmer')), findsOneWidget);
+    expect(find.text('正在搜索网页 Codex App Server'), findsOneWidget);
+    expect(find.byKey(const Key('live-thinking-row')), findsNothing);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {'id': 'search-1', 'type': 'webSearch'},
+        },
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const Key('live-activity-row')), findsNothing);
+    expect(find.byKey(const Key('live-thinking-row')), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -3501,6 +3694,54 @@ void main() {
     expect(text.toPlainText(), isNot(contains('**')));
 
     await tester.pumpWidget(const SizedBox());
+  });
+
+  test('opens only project-local Markdown file links', () async {
+    final workspace = await Directory.systemTemp.createTemp(
+      'codex-desk-markdown-link-',
+    );
+    final document = File('${workspace.path}/technical-plan.md');
+    await document.writeAsString('# Technical plan');
+    final outside = await Directory.systemTemp.createTemp(
+      'codex-desk-markdown-link-outside-',
+    );
+    final outsideDocument = File('${outside.path}/secret.md');
+    await outsideDocument.writeAsString('# Outside');
+    final indirectDocument = Link('${workspace.path}/indirect.md');
+    await indirectDocument.create(outsideDocument.path);
+    addTearDown(() async {
+      await workspace.delete(recursive: true);
+      await outside.delete(recursive: true);
+    });
+
+    Uri? opened;
+    final didOpen = await openAgentMarkdownLink(
+      href: 'technical-plan.md',
+      workspacePath: workspace.path,
+      launch: (uri) async {
+        opened = uri;
+        return true;
+      },
+    );
+
+    expect(didOpen, isTrue);
+    expect(opened, Uri.file(await document.resolveSymbolicLinks()));
+
+    final didOpenOutside = await openAgentMarkdownLink(
+      href: outsideDocument.uri.toString(),
+      workspacePath: workspace.path,
+      launch: (_) async => fail('must not open files outside the workspace'),
+    );
+
+    expect(didOpenOutside, isFalse);
+
+    final didOpenIndirect = await openAgentMarkdownLink(
+      href: 'indirect.md',
+      workspacePath: workspace.path,
+      launch: (_) async => fail('must not follow a link outside the workspace'),
+    );
+
+    expect(didOpenIndirect, isFalse);
   });
 
   test('keeps command output delta protocol events out of the timeline', () {

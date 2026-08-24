@@ -1,3 +1,5 @@
+/// 时间线条目的渲染与语义类别；活动明细仍通过 command/tool 两类聚合。
+/// Rendering and semantic category for a timeline entry; command/tool entries are grouped as activity details.
 enum TimelineKind {
   system,
   user,
@@ -9,6 +11,8 @@ enum TimelineKind {
   elapsed,
 }
 
+/// 可持久化的单条对话时间线记录，不包含仅在运行时存在的活动状态。
+/// One persistable conversation timeline record, excluding transient live activity.
 class TimelineEntry {
   const TimelineEntry({
     required this.kind,

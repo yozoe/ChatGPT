@@ -26,12 +26,39 @@ import 'services/git_project_service.dart';
 import 'services/local_session_thread_store.dart';
 import 'services/runtime_configuration_store.dart';
 
+/// App Server 连接与当前前台任务共同决定的工作台运行状态。
+/// Workbench runtime state derived from the App Server connection and focused turn.
 enum RuntimeStatus { stopped, starting, ready, running, failed }
 
+/// 当前运行时凭据来源的已解析状态；不暴露任何凭据内容。
+/// Resolved runtime credential source without exposing credential values.
 enum AuthStatus { checking, signedOut, chatgpt, apiKey, external }
 
+/// App Server 请求额外权限时采用的本地决策策略。
+/// Local decision policy for App Server approval requests.
 enum ApprovalMode { manual, autoApprove }
 
+/// App Server 明确报告、但尚未完成的当前 turn 活动。
+/// A transient activity that App Server has explicitly reported for the
+/// focused turn. It is intentionally not persisted: completed work belongs in
+/// the timeline, while this only describes what is happening right now.
+@immutable
+class LiveTurnActivity {
+  const LiveTurnActivity({
+    required this.itemId,
+    required this.kind,
+    required this.label,
+    this.detail = '',
+  });
+
+  final String itemId;
+  final String kind;
+  final String label;
+  final String detail;
+}
+
+/// 会与另一 Codex 客户端争抢 writer 的任务操作。
+/// Thread operations that can conflict with another Codex client's writer.
 enum _ThreadWriterConflictOperation { resume, archive }
 
 /// A recoverable operation rejected because another Codex client still owns
@@ -49,6 +76,8 @@ class _ThreadWriterConflict {
   final _ThreadWriterConflictOperation operation;
 }
 
+/// 保存“先取消归档、再打开任务”的可重试上下文。
+/// Retry context for unarchiving a task before opening it.
 class _ArchivedThreadRestore {
   const _ArchivedThreadRestore({required this.workspace, required this.thread});
   final String workspace;
@@ -72,6 +101,8 @@ class _ThreadViewSnapshot {
 /// Read-only local task list for a workspace that is not currently connected.
 /// 由本地历史恢复的非当前项目只读任务列表。
 @immutable
+/// 非当前项目的只读任务清单，来自本地加密历史而非活动运行时。
+/// Read-only task list for an inactive workspace, sourced from local history.
 class WorkspaceTaskList {
   const WorkspaceTaskList({required this.threads, required this.pinnedIds});
 
@@ -85,6 +116,8 @@ class WorkspaceTaskList {
 /// 在输入框提交、但尚未发送至当前 App Server turn 的调整方向。它仅存在于
 /// 当前界面；在 `turn/steer` 成功前不会写入对话历史。
 @immutable
+/// Composer 已提交但尚未发送给 App Server 的临时方向调整。
+/// A composer direction change retained locally until it can be sent to App Server.
 class PendingTurnSteer {
   const PendingTurnSteer({
     required this.displayText,
@@ -109,6 +142,8 @@ ApprovalMode approvalModeFromStorageValue(String? value) =>
 /// App Server 公布的推理强度；保留未知字符串以兼容未来新增的模型能力。
 /// A reasoning effort advertised by App Server; unknown strings are preserved for future model capabilities.
 @immutable
+/// 保留 App Server 原始配置值的推理强度选择，兼容未来新增等级。
+/// Reasoning-effort selection that preserves raw App Server values for forward compatibility.
 class ReasoningEffort {
   const ReasoningEffort._(this.configValue);
 
@@ -163,6 +198,8 @@ class ReasoningEffort {
   int get hashCode => configValue.hashCode;
 }
 
+/// 将审批策略映射为稳定的界面标签。
+/// Maps approval policies to stable UI labels.
 extension ApprovalModeLabel on ApprovalMode {
   /// 返回用于界面的本地化审批模式标签。
   /// Returns the localized approval-mode label for the UI.
@@ -219,6 +256,8 @@ class CodexControllerNotifier extends Notifier<CodexController> {
       true;
 }
 
+/// 应用的协调层：维护运行时、工作区、任务历史与实时 App Server 事件。
+/// Application coordinator for runtime, workspaces, task history, and live App Server events.
 class CodexController extends ChangeNotifier {
   CodexController({
     CodexAppServer? server,
@@ -360,6 +399,7 @@ class CodexController extends ChangeNotifier {
   DateTime? _activeTurnStartedAt;
   String? _activeCommand;
   String? _activeCommandItemId;
+  LiveTurnActivity? _activeLiveActivity;
   TaskPlan? activeTaskPlan;
   String? lastError;
   _ThreadWriterConflict? _threadWriterConflict;
@@ -931,7 +971,13 @@ class CodexController extends ChangeNotifier {
   /// 当前 turn 中正执行的命令；命令完成后立即清除，不写入持久化状态。
   /// The command currently running in this turn. It is cleared on completion
   /// and is deliberately not persisted.
-  String? get activeCommand => _activeCommand;
+  String? get activeCommand =>
+      _activeLiveActivity?.kind == 'commandExecution' ? _activeCommand : null;
+
+  /// The exact active item reported by App Server, when its protocol exposes
+  /// one. A null value deliberately leaves the UI to use its generic
+  /// "thinking" fallback instead of inventing a more specific explanation.
+  LiveTurnActivity? get activeLiveActivity => _activeLiveActivity;
 
   /// 指示当前是否可以安全切换本地项目。
   /// Indicates whether it is safe to switch the local workspace.
@@ -2404,6 +2450,7 @@ class CodexController extends ChangeNotifier {
     final previousTurnStartedAt = _activeTurnStartedAt;
     final previousActiveCommand = _activeCommand;
     final previousActiveCommandItemId = _activeCommandItemId;
+    final previousActiveLiveActivity = _activeLiveActivity;
     final previousTaskPlan = activeTaskPlan;
     final previousAgentEntryIndices = Map<String, int>.of(
       _agentEntryIndexByItem,
@@ -2509,6 +2556,7 @@ class CodexController extends ChangeNotifier {
         _activeTurnStartedAt = previousTurnStartedAt;
         _activeCommand = previousActiveCommand;
         _activeCommandItemId = previousActiveCommandItemId;
+        _activeLiveActivity = previousActiveLiveActivity;
         activeTaskPlan = previousTaskPlan;
         _agentEntryIndexByItem
           ..clear()
@@ -3080,14 +3128,14 @@ class CodexController extends ChangeNotifier {
               DateTime.now();
         }
       case 'item/started':
-        _recordStartedCommand(event.params);
+        _recordStartedLiveActivity(event.params);
       case 'turn/plan/updated':
         if (_isEventForActiveTurn(event.params)) {
           _updateTaskPlan(event.params);
         }
       case 'item/completed':
         if (_isEventForActiveTurn(event.params)) {
-          _recordCompletedCommand(event.params);
+          _recordCompletedLiveActivity(event.params);
           _recordCompletedFileChange(event.params['item']);
         }
       case 'turn/diff/updated':
@@ -3221,6 +3269,7 @@ class CodexController extends ChangeNotifier {
     if (text.isEmpty) return;
 
     final itemId = params['itemId']?.toString() ?? 'active-agent-message';
+    _recordAgentMessageActivity(itemId);
     final index = _agentEntryIndexByItem[itemId];
     if (index == null) {
       _agentEntryIndexByItem[itemId] = _entries.length;
@@ -3437,35 +3486,167 @@ class CodexController extends ChangeNotifier {
     }
   }
 
-  /// Keeps a single concise command line visible only while App Server marks a
-  /// command-execution item as active. Output deltas intentionally remain
-  /// hidden so the conversation does not turn into a terminal transcript.
-  void _recordStartedCommand(JsonMap params) {
+  /// Records a server-declared current item so the interface can explain the
+  /// actual operation instead of labelling every quiet interval as thinking.
+  void _recordStartedLiveActivity(JsonMap params) {
     if (!_isEventForActiveTurn(params)) return;
     final rawItem = params['item'];
     if (rawItem is! Map) return;
     final item = JsonMap.from(rawItem);
-    if (item['type']?.toString() != 'commandExecution') return;
-    final command = _label(item['command']);
-    if (command.isEmpty) return;
-    _activeCommand = command;
-    _activeCommandItemId = _label(item['id']);
+    final activity = _liveTurnActivityFor(item);
+    if (activity == null) return;
+    _activeLiveActivity = activity;
+    if (activity.kind == 'commandExecution') {
+      _activeCommand = activity.detail;
+      _activeCommandItemId = activity.itemId;
+    }
   }
 
-  /// Converts a completed command item into the existing activity history and
-  /// removes its transient live-command presentation.
-  void _recordCompletedCommand(JsonMap params) {
+  /// Moves completed commands into history and clears their matching live
+  /// activity. A completion for an older overlapping item must not hide a
+  /// newer server-declared operation.
+  void _recordCompletedLiveActivity(JsonMap params) {
     if (!_isEventForActiveTurn(params)) return;
     final rawItem = params['item'];
     if (rawItem is! Map) return;
     final item = JsonMap.from(rawItem);
-    if (item['type']?.toString() != 'commandExecution') return;
     final itemId = _label(item['id']);
-    if (itemId.isEmpty || itemId == _activeCommandItemId) {
-      _activeCommand = null;
-      _activeCommandItemId = null;
+    if (itemId.isEmpty || itemId == _activeLiveActivity?.itemId) {
+      _activeLiveActivity = null;
     }
-    _appendCompletedCommandItem(item);
+    if (item['type']?.toString() == 'commandExecution') {
+      if (itemId.isEmpty || itemId == _activeCommandItemId) {
+        _activeCommand = null;
+        _activeCommandItemId = null;
+      }
+      _appendCompletedCommandItem(item);
+    }
+  }
+
+  /// Converts an App Server item into a concise, user-facing live activity.
+  /// Returning null for an unknown future item type keeps the fallback honest.
+  LiveTurnActivity? _liveTurnActivityFor(JsonMap item) {
+    final type = _label(item['type']);
+    final itemId = _label(item['id']);
+    if (type.isEmpty) return null;
+    if (type == 'skill' ||
+        (type == 'dynamicToolCall' && _isSkillReadActivity(item))) {
+      return LiveTurnActivity(
+        itemId: itemId,
+        kind: 'skillRead',
+        label: _skillReadLabel(item),
+      );
+    }
+    final (label, detail) = switch (type) {
+      'reasoning' => ('正在分析', ''),
+      'agentMessage' => ('正在撰写回复', ''),
+      'commandExecution' => ('正在运行命令', _label(item['command'])),
+      'mcpToolCall' => (
+        '正在调用 MCP 工具',
+        _joinLiveActivityDetail(item['server'], item['tool']),
+      ),
+      'dynamicToolCall' => (
+        '正在调用动态工具',
+        _joinLiveActivityDetail(item['namespace'], item['tool']),
+      ),
+      'webSearch' => ('正在搜索网页', _label(item['query'])),
+      'imageView' => ('正在查看图片', _label(item['path'])),
+      'imageGeneration' => ('正在生成图片', ''),
+      'sleep' => (
+        '正在等待',
+        _label(item['durationMs']).isEmpty
+            ? ''
+            : '${_label(item['durationMs'])} ms',
+      ),
+      'fileChange' => ('正在整理文件变更', ''),
+      'enteredReviewMode' => ('正在进入审查模式', ''),
+      'exitedReviewMode' => ('正在退出审查模式', ''),
+      _ => (null, ''),
+    };
+    if (label == null) return null;
+    return LiveTurnActivity(
+      itemId: itemId,
+      kind: type,
+      label: label,
+      detail: detail,
+    );
+  }
+
+  /// Recognizes the App Server's dynamic skill-reader without assigning the
+  /// same label to unrelated tools that happen to receive a skill as input.
+  bool _isSkillReadActivity(JsonMap item) {
+    final namespace = _label(item['namespace']).toLowerCase();
+    final tool = _label(item['tool']).toLowerCase();
+    final operation = '$namespace/$tool';
+    final referencesSkill = operation.contains('skill');
+    final readsContent = RegExp(r'read|load|open|fetch').hasMatch(operation);
+    return referencesSkill && (readsContent || tool == 'skill');
+  }
+
+  String _skillReadLabel(JsonMap item) {
+    final skillName = _skillNameFor(item);
+    return skillName.isEmpty ? '正在读取技能' : '正在读取 $skillName 技能';
+  }
+
+  String _skillNameFor(JsonMap item) {
+    for (final value in [
+      item['skillName'],
+      item['skill'],
+      item['skillPath'],
+      item['path'],
+      if (_label(item['type']) == 'skill') item['name'],
+      item['arguments'],
+      item['input'],
+      item['params'],
+    ]) {
+      final name = _skillNameFromValue(value);
+      if (name.isNotEmpty) return name;
+    }
+    return '';
+  }
+
+  String _skillNameFromValue(Object? value) {
+    if (value is String) return _displaySkillName(value);
+    if (value is! Map) return '';
+    for (final key in ['displayName', 'skillName', 'name', 'id', 'path']) {
+      final name = _skillNameFromValue(value[key]);
+      if (name.isNotEmpty) return name;
+    }
+    return '';
+  }
+
+  String _displaySkillName(String value) {
+    final normalized = value.trim();
+    if (normalized.isEmpty) return '';
+    final pathMatch = RegExp(
+      r'([^/\\]+)[/\\]SKILL\\.md$',
+      caseSensitive: false,
+    ).firstMatch(normalized);
+    final name = pathMatch?.group(1) ?? normalized;
+    if (!RegExp(r'^[a-z0-9_-]+$').hasMatch(name)) return name;
+    return name
+        .split(RegExp(r'[-_]+'))
+        .where((part) => part.isNotEmpty)
+        .map((part) => '${part[0].toUpperCase()}${part.substring(1)}')
+        .join(' ');
+  }
+
+  String _joinLiveActivityDetail(Object? scope, Object? action) {
+    final scopeLabel = _label(scope);
+    final actionLabel = _label(action);
+    if (scopeLabel.isEmpty) return actionLabel;
+    if (actionLabel.isEmpty) return scopeLabel;
+    return '$scopeLabel/$actionLabel';
+  }
+
+  /// Keeps the response status accurate even on servers that only emit text
+  /// deltas and omit the corresponding item/started notification.
+  void _recordAgentMessageActivity(String itemId) {
+    _activeLiveActivity = LiveTurnActivity(
+      itemId: itemId,
+      kind: 'agentMessage',
+      label: '正在撰写回复',
+    );
   }
 
   bool _isEventForActiveTurn(JsonMap params) {
@@ -4626,6 +4807,7 @@ class CodexController extends ChangeNotifier {
     _activeTurnStartedAt = null;
     _activeCommand = null;
     _activeCommandItemId = null;
+    _activeLiveActivity = null;
     activeTaskPlan = null;
     _deltaNotificationTimer?.cancel();
     _deltaNotificationTimer = null;

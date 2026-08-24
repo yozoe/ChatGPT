@@ -1,3 +1,5 @@
+/// 一项由 App Server 报告、可带有统一 Diff 的文件变更。
+/// One App Server-reported file change with an optional unified diff.
 class CodexFileChange {
   const CodexFileChange({
     required this.path,

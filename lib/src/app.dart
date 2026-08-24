@@ -22,6 +22,8 @@ Future<void> runCodexDesk() async {
   );
 }
 
+/// 应用根部：建立可替换的 Provider 容器，并把启动时恢复的主题偏好注入其中。
+/// Root application widget that injects restored theme preferences into a replaceable Provider scope.
 class CodexDeskApp extends StatelessWidget {
   const CodexDeskApp({
     super.key,
@@ -50,6 +52,8 @@ class CodexDeskApp extends StatelessWidget {
   }
 }
 
+/// 消费主题状态并拥有全局错误提示入口的内部应用视图。
+/// Internal app view that consumes theme state and owns global error feedback.
 class _CodexDeskAppView extends ConsumerStatefulWidget {
   const _CodexDeskAppView();
 
@@ -57,6 +61,8 @@ class _CodexDeskAppView extends ConsumerStatefulWidget {
   ConsumerState<_CodexDeskAppView> createState() => _CodexDeskAppViewState();
 }
 
+/// 将持久化失败降级为非阻塞提示，保留本次内存中的主题选择。
+/// Keeps a chosen theme in memory when persistence fails and reports it non-blockingly.
 class _CodexDeskAppViewState extends ConsumerState<_CodexDeskAppView> {
   final _messengerKey = GlobalKey<ScaffoldMessengerState>();
 

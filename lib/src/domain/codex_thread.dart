@@ -1,5 +1,7 @@
 import '../services/codex_app_server.dart';
 
+/// 可恢复的 Codex App Server 任务线程及其侧栏所需元数据。
+/// A resumable Codex App Server thread with sidebar-facing metadata.
 class CodexThread {
   const CodexThread({
     required this.id,

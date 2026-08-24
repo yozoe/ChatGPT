@@ -5,8 +5,13 @@ import 'dart:io';
 import '../domain/codex_plugin.dart';
 import '../domain/codex_marketplace.dart';
 
+/// 可替换的 CLI 执行边界，使插件命令可在测试中脱离真实子进程验证。
+/// Replaceable CLI runner boundary for testing plugin commands without real subprocesses.
 typedef CodexPluginProcessRunner =
     Future<ProcessResult> Function(String executable, List<String> arguments);
+
+/// 延迟解析实际 Codex CLI 路径，支持 App Server 已发现的可执行文件。
+/// Lazily resolves the actual Codex CLI path, including one discovered by App Server.
 typedef CodexPluginExecutableProvider = FutureOr<String> Function();
 
 /// 通过本机 Codex CLI 管理 marketplace 插件与启用状态。

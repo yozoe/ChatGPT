@@ -1,5 +1,9 @@
+/// 已脱敏运行时诊断的严重程度。
+/// Severity of a redacted runtime diagnostic entry.
 enum RuntimeLogLevel { info, warning, error }
 
+/// 将诊断等级映射为界面和复制报告都可复用的文字。
+/// Maps diagnostic severities to text reusable by UI and copied reports.
 extension RuntimeLogLevelLabel on RuntimeLogLevel {
   /// 返回运行时日志等级的简短展示文本。
   /// Returns a short display label for the runtime log level.

@@ -4,8 +4,12 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+/// JSON-RPC 载荷在协议边界内使用的可变映射别名。
+/// Mutable map alias used for JSON-RPC payloads at the protocol boundary.
 typedef JsonMap = Map<String, dynamic>;
 
+/// CLI 探测的可展示结果；错误文本进入前已在协议层脱敏。
+/// Displayable CLI-probe result whose error text has already been redacted.
 class CodexRuntimeProbe {
   const CodexRuntimeProbe({
     required this.isAvailable,
@@ -22,6 +26,8 @@ class CodexRuntimeProbe {
   final String? error;
 }
 
+/// App Server 发出的通知或需要客户端回复的 JSON-RPC 请求。
+/// A notification or client-answerable JSON-RPC request emitted by App Server.
 class ServerEvent {
   const ServerEvent({
     required this.method,

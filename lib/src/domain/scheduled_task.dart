@@ -19,6 +19,8 @@ class ScheduledTask {
   final String prompt;
   final DateTime runAt;
 
+  /// 验证持久化记录后恢复计划任务；不完整记录不会进入调度器。
+  /// Restores a task only after validating persisted fields, keeping invalid records out of the scheduler.
   factory ScheduledTask.fromJson(Object? value) {
     if (value is! Map) throw const FormatException('Invalid scheduled task.');
     final id = value['id']?.toString().trim() ?? '';
@@ -39,6 +41,8 @@ class ScheduledTask {
     );
   }
 
+  /// 以 UTC 保存触发时间，避免本地时区变化改变计划含义。
+  /// Stores trigger time in UTC so local time-zone changes do not alter the schedule.
   Map<String, String> toJson() => {
     'id': id,
     'workspacePath': workspacePath,

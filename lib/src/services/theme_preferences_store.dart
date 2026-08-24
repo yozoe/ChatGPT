@@ -5,6 +5,8 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 
+/// 用户选择的主题模式与 UI Kit 配色预设，可安全序列化到应用目录。
+/// User-selected theme mode and UI Kit preset, safely serializable in the app directory.
 @immutable
 final class CodexThemePreferences {
   const CodexThemePreferences({required this.mode, required this.preset});
@@ -54,12 +56,16 @@ final class CodexThemePreferences {
   int get hashCode => Object.hash(mode, preset);
 }
 
+/// 主题偏好的存取边界，便于测试替换文件系统实现。
+/// Storage boundary for theme preferences, allowing file-system replacement in tests.
 abstract interface class CodexThemePreferencesStore {
   Future<CodexThemePreferences> load();
 
   Future<void> save(CodexThemePreferences preferences);
 }
 
+/// 以临时文件加重命名写入主题偏好，避免中断写入留下半份 JSON。
+/// Writes theme preferences through temp-file rename so interrupted writes do not leave partial JSON.
 final class FileCodexThemePreferencesStore
     implements CodexThemePreferencesStore {
   FileCodexThemePreferencesStore({File? file, Random? random})

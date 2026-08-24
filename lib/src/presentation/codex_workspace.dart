@@ -1,3 +1,5 @@
+// Codex Desk 的主要工作台：组合项目导航、可保活任务时间线、输入区和检查器。
+// Main Codex Desk workbench composing project navigation, retained timelines, composer, and inspector.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -26,8 +28,11 @@ import '../domain/scheduled_task.dart';
 import '../domain/task_plan.dart';
 import '../domain/timeline_entry.dart';
 import '../domain/workspace_configuration.dart';
+import '../services/agent_markdown_link.dart';
 import '../services/clipboard_file_reader.dart';
 
+/// 仅根据常见扩展名决定附件是否应按图片预览；不读取文件内容。
+/// Determines whether an attachment should use image preview from its extension without reading file contents.
 bool _isImagePath(String path) {
   final lower = path.toLowerCase();
   return const [
@@ -40,6 +45,8 @@ bool _isImagePath(String path) {
   ].any(lower.endsWith);
 }
 
+/// 右侧主区域当前显示的工作台目的地。
+/// Destination currently shown in the right-side workbench area.
 enum _WorkspaceDestination {
   conversation,
   pullRequests,
@@ -47,6 +54,8 @@ enum _WorkspaceDestination {
   plugins,
 }
 
+/// 插件工作区内两个互斥的数据来源视图。
+/// Mutually exclusive data-source views within the plugin workspace.
 enum _PluginLibraryTab { plugins, skills }
 
 /// Identifies a retained timeline viewport within its owning workspace.
@@ -70,6 +79,8 @@ class _ThreadViewportKey {
   int get hashCode => Object.hash(workspace, threadId);
 }
 
+/// 应用主工作台；显式注入控制器仅用于嵌入式调用和 Widget 测试。
+/// Main application workbench; explicit controller injection is only for embedding and widget tests.
 class CodexWorkspace extends ConsumerStatefulWidget {
   const CodexWorkspace({
     this.controller,
@@ -94,6 +105,8 @@ class CodexWorkspace extends ConsumerStatefulWidget {
   ConsumerState<CodexWorkspace> createState() => _CodexWorkspaceState();
 }
 
+/// 拥有短生命周期界面状态，并把可共享业务状态交由 [CodexController] 管理。
+/// Owns short-lived UI state while delegating shared business state to [CodexController].
 class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   final TextEditingController _composer = TextEditingController();
   final ValueNotifier<int> _recordSkillRequest = ValueNotifier(0);
@@ -224,10 +237,10 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       showFileChangeSummary:
           _controller.status != RuntimeStatus.running &&
           _controller.fileChanges.isNotEmpty,
-      activeCommand: _controller.activeCommand,
+      activeActivity: _controller.activeLiveActivity,
       isThinking:
           _controller.status == RuntimeStatus.running &&
-          _controller.activeCommand == null,
+          _controller.activeLiveActivity == null,
     );
   }
 
@@ -2128,6 +2141,8 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   }
 }
 
+/// 提供鼠标悬停反馈和宽度约束的桌面双栏分隔条。
+/// Desktop split-pane divider with hover feedback and bounded width adjustment.
 class _PaneResizeHandle extends StatefulWidget {
   const _PaneResizeHandle({required this.onDragDelta, super.key});
 
@@ -3259,8 +3274,8 @@ class _SidebarWorkspaceTileState extends State<_SidebarWorkspaceTile> {
       widget.workspace.name ??
       _workspaceDirectoryName(widget.workspace.primaryPath);
 
-  /// 构建项目节点；完整路径只通过 tooltip 提供，不占用任务列表空间。
-  /// Builds the project node; the full path is kept in a tooltip so task rows stay dense.
+  /// 构建项目节点；完整路径收纳在项目详情卡片中，不占用任务列表空间。
+  /// Builds the project node; the details card keeps the full path out of the task list.
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
@@ -3277,56 +3292,71 @@ class _SidebarWorkspaceTileState extends State<_SidebarWorkspaceTile> {
         selected: widget.active,
         button: !widget.active,
         label: widget.active ? '当前工作区 $_displayName' : '切换到工作区 $_displayName',
-        child: Tooltip(
-          message: widget.workspace.primaryPath,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 100),
-            curve: Curves.easeOut,
-            decoration: BoxDecoration(
-              color: _hovering ? palette.selected : Colors.transparent,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: InkWell(
-              onTap: widget.active || !widget.enabled ? null : widget.onTap,
-              borderRadius: BorderRadius.circular(12),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
-                child: Row(
-                  children: [
-                    Icon(
-                      widget.active
-                          ? Icons.folder_special_outlined
-                          : Icons.folder_outlined,
-                      size: 19,
-                      color: widget.active ? palette.active : palette.muted,
-                    ),
-                    const SizedBox(width: 9),
-                    Expanded(
-                      child: Text(
-                        _displayName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: widget.active ? palette.trace : palette.muted,
-                          fontSize: 14,
-                          fontWeight: widget.active
-                              ? FontWeight.w600
-                              : FontWeight.w500,
-                        ),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 100),
+          curve: Curves.easeOut,
+          decoration: BoxDecoration(
+            color: _hovering ? palette.selected : Colors.transparent,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: InkWell(
+            onTap: widget.active || !widget.enabled ? null : widget.onTap,
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+              child: Row(
+                children: [
+                  Icon(
+                    widget.active
+                        ? Icons.folder_special_outlined
+                        : Icons.folder_outlined,
+                    size: 19,
+                    color: widget.active ? palette.active : palette.muted,
+                  ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Text(
+                      _displayName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: widget.active ? palette.trace : palette.muted,
+                        fontSize: 14,
+                        fontWeight: widget.active
+                            ? FontWeight.w600
+                            : FontWeight.w500,
                       ),
                     ),
+                  ),
+                  IconButton(
+                    key: ValueKey(
+                      'sidebar-workspace-toggle-${widget.workspace.primaryPath}',
+                    ),
+                    tooltip: widget.expanded ? '收起项目任务' : '展开项目任务',
+                    onPressed: widget.onToggleExpanded,
+                    icon: Icon(
+                      widget.expanded
+                          ? Icons.keyboard_arrow_down
+                          : Icons.keyboard_arrow_right,
+                      size: 18,
+                    ),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(
+                      width: 28,
+                      height: 28,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  if (widget.pinned)
+                    Icon(Icons.push_pin, size: 13, color: palette.faint),
+                  if (_hovering) ...[
                     IconButton(
                       key: ValueKey(
-                        'sidebar-workspace-toggle-${widget.workspace.primaryPath}',
+                        'sidebar-workspace-more-${widget.workspace.primaryPath}',
                       ),
-                      tooltip: widget.expanded ? '收起项目任务' : '展开项目任务',
-                      onPressed: widget.onToggleExpanded,
-                      icon: Icon(
-                        widget.expanded
-                            ? Icons.keyboard_arrow_down
-                            : Icons.keyboard_arrow_right,
-                        size: 18,
-                      ),
+                      tooltip: '项目菜单',
+                      onPressed: () => widget.onMore(context),
+                      icon: const Icon(Icons.more_horiz, size: 19),
                       padding: EdgeInsets.zero,
                       constraints: const BoxConstraints.tightFor(
                         width: 28,
@@ -3334,46 +3364,28 @@ class _SidebarWorkspaceTileState extends State<_SidebarWorkspaceTile> {
                       ),
                       visualDensity: VisualDensity.compact,
                     ),
-                    if (widget.pinned)
-                      Icon(Icons.push_pin, size: 13, color: palette.faint),
-                    if (_hovering) ...[
-                      IconButton(
-                        key: ValueKey(
-                          'sidebar-workspace-more-${widget.workspace.primaryPath}',
-                        ),
-                        tooltip: '项目菜单',
-                        onPressed: () => widget.onMore(context),
-                        icon: const Icon(Icons.more_horiz, size: 19),
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints.tightFor(
-                          width: 28,
-                          height: 28,
-                        ),
-                        visualDensity: VisualDensity.compact,
+                    IconButton(
+                      key: ValueKey(
+                        'sidebar-workspace-edit-${widget.workspace.primaryPath}',
                       ),
-                      IconButton(
-                        key: ValueKey(
-                          'sidebar-workspace-edit-${widget.workspace.primaryPath}',
-                        ),
-                        tooltip: '新建任务',
-                        onPressed: widget.canCreateTask
-                            ? () => widget.onEdit(context)
-                            : null,
-                        icon: const Icon(Icons.edit_outlined, size: 18),
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints.tightFor(
-                          width: 28,
-                          height: 28,
-                        ),
-                        visualDensity: VisualDensity.compact,
+                      tooltip: '新建任务',
+                      onPressed: widget.canCreateTask
+                          ? () => widget.onEdit(context)
+                          : null,
+                      icon: const Icon(Icons.edit_outlined, size: 18),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints.tightFor(
+                        width: 28,
+                        height: 28,
                       ),
-                    ] else if (widget.workspace.additionalPaths.isNotEmpty)
-                      Text(
-                        '+${widget.workspace.additionalPaths.length}',
-                        style: TextStyle(color: palette.faint, fontSize: 11),
-                      ),
-                  ],
-                ),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ] else if (widget.workspace.additionalPaths.isNotEmpty)
+                    Text(
+                      '+${widget.workspace.additionalPaths.length}',
+                      style: TextStyle(color: palette.faint, fontSize: 11),
+                    ),
+                ],
               ),
             ),
           ),
@@ -4767,6 +4779,8 @@ class _SidebarState extends State<_Sidebar> {
   }
 }
 
+/// 连接时间线、审批、计划浮层和 Composer 的当前任务阅读/输入区域。
+/// Focused-task reading and input area joining timeline, approvals, plan overlay, and composer.
 class _ConversationPane extends StatelessWidget {
   const _ConversationPane({
     required this.controller,
@@ -5158,7 +5172,7 @@ class _TimelinePageData {
     required this.fileChanges,
     required this.turnDiff,
     required this.showFileChangeSummary,
-    required this.activeCommand,
+    required this.activeActivity,
     required this.isThinking,
   });
 
@@ -5166,7 +5180,7 @@ class _TimelinePageData {
   final List<CodexFileChange> fileChanges;
   final String? turnDiff;
   final bool showFileChangeSummary;
-  final String? activeCommand;
+  final LiveTurnActivity? activeActivity;
   final bool isThinking;
 }
 
@@ -5202,15 +5216,15 @@ class _ConversationTimeline extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final timelineItems = _conversationTimelineItems(data.entries);
-    final liveCommand = active ? data.activeCommand : null;
-    final isThinking = active && data.isThinking && liveCommand == null;
+    final liveActivity = active ? data.activeActivity : null;
+    final isThinking = active && data.isThinking && liveActivity == null;
     return ListView.separated(
       key: PageStorageKey('conversation-timeline-${pageKey.storageKey}'),
       controller: scrollController,
       padding: EdgeInsets.fromLTRB(24, 12, 24, bottomPadding),
       itemCount:
           timelineItems.length +
-          (liveCommand == null ? 0 : 1) +
+          (liveActivity == null ? 0 : 1) +
           (isThinking ? 1 : 0) +
           (data.showFileChangeSummary ? 1 : 0),
       separatorBuilder: (_, _) => const Padding(
@@ -5220,8 +5234,10 @@ class _ConversationTimeline extends StatelessWidget {
       itemBuilder: (context, index) {
         if (index >= timelineItems.length) {
           var tailIndex = index - timelineItems.length;
-          if (liveCommand != null && tailIndex-- == 0) {
-            return _LiveCommandRow(command: liveCommand);
+          if (liveActivity != null && tailIndex-- == 0) {
+            return liveActivity.kind == 'commandExecution'
+                ? _LiveCommandRow(command: liveActivity.detail)
+                : _LiveActivityRow(activity: liveActivity);
           }
           if (isThinking && tailIndex-- == 0) {
             return const _LiveThinkingRow();
@@ -5252,7 +5268,7 @@ class _ConversationTimeline extends StatelessWidget {
           );
         }
         final entry = item.entry!;
-        return _TimelineEntry(entry);
+        return _TimelineEntry(entry, workspacePath: pageKey.workspace);
       },
     );
   }
@@ -6733,6 +6749,8 @@ class _ComposerFileChangePill extends StatelessWidget {
   }
 }
 
+/// 管理未发送文本、附件与临时上下文的 Composer 外壳。
+/// Composer shell managing unsent text, attachments, and transient context.
 class _ComposerPanel extends StatefulWidget {
   const _ComposerPanel({
     super.key,
@@ -6753,6 +6771,8 @@ class _ComposerPanel extends StatefulWidget {
   State<_ComposerPanel> createState() => _ComposerPanelState();
 }
 
+/// 仅保存单个输入区的交互状态；提交后的共享状态由控制器接管。
+/// Holds only one composer's interaction state; shared state moves to the controller after submission.
 class _ComposerPanelState extends State<_ComposerPanel> {
   static const _clipboardFileReader = ClipboardFileReader();
   final List<_ComposerAttachment> _attachments = [];
@@ -6838,6 +6858,9 @@ class _ComposerPanelState extends State<_ComposerPanel> {
     if (turnEnded) _releaseDetachedAttachmentResources();
   }
 
+  /// 在平台已清除组合范围后，仍将确认输入法候选的 Enter 视为输入法操作。
+  /// Keeps the Enter that confirms an IME candidate from being mistaken for a
+  /// new send after the platform has already cleared the composing range.
   void _handleComposerEditingChanged() {
     final composing = composer.value.composing;
     if (composing.isValid && !composing.isCollapsed) {
@@ -6848,9 +6871,6 @@ class _ComposerPanelState extends State<_ComposerPanel> {
     }
     if (!_imeCompositionActive) return;
 
-    // Some platform IMEs clear this range before the Enter shortcut is
-    // dispatched. Briefly retain that transition so this Enter can finish the
-    // IME operation instead of sending the composer text.
     _imeCompositionActive = false;
     _imeCompositionJustEnded = true;
     _imeCompositionDeferral?.cancel();
@@ -6922,20 +6942,6 @@ class _ComposerPanelState extends State<_ComposerPanel> {
     return controller.status == RuntimeStatus.ready ? '任务已就绪' : '等待运行时连接';
   }
 
-  /// Keeps Enter available to the IME while it has an uncommitted composition.
-  /// This lets an input method cancel or commit its candidate text before a
-  /// subsequent Enter sends the composer content.
-  void _submitFromKeyboard() {
-    final composing = composer.value.composing;
-    if (composing.isValid && !composing.isCollapsed) return;
-    if (_imeCompositionJustEnded) {
-      _imeCompositionJustEnded = false;
-      _imeCompositionDeferral?.cancel();
-      return;
-    }
-    unawaited(_submit());
-  }
-
   Future<void> _submit() async {
     final submission = _ComposerSubmission(
       attachments: List.unmodifiable(_attachments),
@@ -6959,6 +6965,20 @@ class _ComposerPanelState extends State<_ComposerPanel> {
     if (controller.status != RuntimeStatus.running) {
       _releaseDetachedAttachmentResources();
     }
+  }
+
+  /// 先让平台输入法处理确认候选的 Enter，后续 Enter 才提交 Composer 内容。
+  /// Lets a platform IME finish its candidate-confirmation Enter before a
+  /// later Enter submits the Composer text.
+  void _submitFromKeyboard() {
+    final composing = composer.value.composing;
+    if (composing.isValid && !composing.isCollapsed) return;
+    if (_imeCompositionJustEnded) {
+      _imeCompositionJustEnded = false;
+      _imeCompositionDeferral?.cancel();
+      return;
+    }
+    unawaited(_submit());
   }
 
   Future<void> _handleAddAction(_AddMenuAction action) async {
@@ -7436,26 +7456,8 @@ class _ComposerPanelState extends State<_ComposerPanel> {
                               minHeight: 64,
                               maxHeight: 124,
                             ),
-                            child: CallbackShortcuts(
-                              bindings: {
-                                const SingleActivator(
-                                  LogicalKeyboardKey.enter,
-                                ): () {
-                                  _submitFromKeyboard();
-                                },
-                                const SingleActivator(
-                                  LogicalKeyboardKey.keyV,
-                                  meta: true,
-                                ): () {
-                                  unawaited(_pasteFromClipboard());
-                                },
-                                const SingleActivator(
-                                  LogicalKeyboardKey.keyV,
-                                  control: true,
-                                ): () {
-                                  unawaited(_pasteFromClipboard());
-                                },
-                              },
+                            child: ValueListenableBuilder<TextEditingValue>(
+                              valueListenable: composer,
                               child: TextField(
                                 key: const Key('composer-field'),
                                 controller: composer,
@@ -7483,6 +7485,36 @@ class _ComposerPanelState extends State<_ComposerPanel> {
                                   focusedErrorBorder: InputBorder.none,
                                 ),
                               ),
+                              builder: (context, value, child) {
+                                final composing = value.composing;
+                                final imeIsComposing =
+                                    composing.isValid && !composing.isCollapsed;
+                                return CallbackShortcuts(
+                                  bindings: {
+                                    // Do not register Enter while the IME owns
+                                    // an active composition. This lets macOS
+                                    // cancel or confirm its candidate instead
+                                    // of having the composer consume the key.
+                                    if (!imeIsComposing)
+                                      const SingleActivator(
+                                        LogicalKeyboardKey.enter,
+                                      ): _submitFromKeyboard,
+                                    const SingleActivator(
+                                      LogicalKeyboardKey.keyV,
+                                      meta: true,
+                                    ): () {
+                                      unawaited(_pasteFromClipboard());
+                                    },
+                                    const SingleActivator(
+                                      LogicalKeyboardKey.keyV,
+                                      control: true,
+                                    ): () {
+                                      unawaited(_pasteFromClipboard());
+                                    },
+                                  },
+                                  child: child!,
+                                );
+                              },
                             ),
                           ),
                           const SizedBox(height: 8),
@@ -7799,10 +7831,16 @@ class _ComposerPanelState extends State<_ComposerPanel> {
   }
 }
 
+/// 原生附件选择器的目标类型，决定允许的系统选择能力。
+/// Native attachment-picker target, which determines permitted system selection capability.
 enum _AttachmentPickerKind { files, folder }
 
+/// Composer “添加”菜单产生的结构化上下文类型。
+/// Structured context types emitted by the composer add menu.
 enum _AddMenuActionKind { files, workspace, goal, plan, recordSkill, skill }
 
+/// 将菜单项类型与可选负载组合，避免菜单直接依赖 Composer 私有状态。
+/// Couples a menu action kind with optional payload without exposing Composer private state.
 class _AddMenuAction {
   const _AddMenuAction(this.kind, [this.value]);
 
@@ -7810,6 +7848,8 @@ class _AddMenuAction {
   final String? value;
 }
 
+/// 单个待发送附件；临时图片会在不再被时间线引用后由原生侧回收。
+/// One pending attachment; native temporary images are reclaimed after no timeline references remain.
 class _ComposerAttachment {
   const _ComposerAttachment({
     required this.path,
@@ -7822,6 +7862,8 @@ class _ComposerAttachment {
   final bool isTemporary;
 }
 
+/// 一次 Composer 提交的不可变快照，供新 turn 与 turn/steer 共用。
+/// Immutable Composer submission snapshot shared by new turns and turn/steer.
 class _ComposerSubmission {
   const _ComposerSubmission({
     required this.attachments,
@@ -10673,9 +10715,10 @@ IconData _activityIcon(TimelineEntry entry) {
 }
 
 class _TimelineEntry extends StatelessWidget {
-  const _TimelineEntry(this.entry);
+  const _TimelineEntry(this.entry, {required this.workspacePath});
 
   final TimelineEntry entry;
+  final String? workspacePath;
 
   /// 按时间线条目类型构建消息或系统事件视图。
   /// Builds a message or system-event view based on the timeline entry kind.
@@ -10756,7 +10799,7 @@ class _TimelineEntry extends StatelessWidget {
         if (entry.detail.isNotEmpty) ...[
           const SizedBox(height: 8),
           if (entry.kind == TimelineKind.agent)
-            _AgentMarkdown(entry.detail)
+            _AgentMarkdown(entry.detail, workspacePath: workspacePath)
           else
             SelectionArea(child: Text(entry.detail)),
         ],
@@ -10764,6 +10807,81 @@ class _TimelineEntry extends StatelessWidget {
     );
   }
 }
+
+/// Displays a server-declared current activity. Unlike the generic thinking
+/// row, this wording is only used when App Server has identified the item.
+class _LiveActivityRow extends StatelessWidget {
+  const _LiveActivityRow({required this.activity});
+
+  final LiveTurnActivity activity;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final detail = activity.detail;
+    final semantics = detail.isEmpty
+        ? activity.label
+        : '${activity.label}：$detail';
+    return Semantics(
+      key: const Key('live-activity-row'),
+      liveRegion: true,
+      label: semantics,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(2, 3, 6, 3),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              _liveActivityIcon(activity.kind),
+              size: 18,
+              color: palette.muted,
+            ),
+            const SizedBox(width: 9),
+            Flexible(
+              child: _LiveActivityShimmer(
+                shimmerKey: const Key('live-activity-shimmer'),
+                child: Text.rich(
+                  TextSpan(
+                    children: [
+                      TextSpan(
+                        text: activity.label,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: palette.muted,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      if (detail.isNotEmpty)
+                        TextSpan(
+                          text: ' $detail',
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(color: palette.trace),
+                        ),
+                    ],
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+IconData _liveActivityIcon(String kind) => switch (kind) {
+  'skillRead' => Icons.auto_stories_outlined,
+  'reasoning' => Icons.psychology_outlined,
+  'agentMessage' => Icons.rate_review_outlined,
+  'webSearch' => Icons.search,
+  'mcpToolCall' || 'dynamicToolCall' => Icons.build_outlined,
+  'imageView' || 'imageGeneration' => Icons.image_outlined,
+  'sleep' => Icons.schedule_outlined,
+  'fileChange' => Icons.edit_note_outlined,
+  'enteredReviewMode' || 'exitedReviewMode' => Icons.fact_check_outlined,
+  _ => Icons.more_horiz,
+};
 
 /// A quiet, temporary command indicator matching Codex's activity stream.
 /// It is replaced by the existing collapsible command history once complete.
@@ -10787,32 +10905,108 @@ class _LiveCommandRow extends StatelessWidget {
             const SizedBox(width: 9),
             Expanded(
               child: SelectionArea(
-                child: Text.rich(
-                  TextSpan(
-                    children: [
-                      TextSpan(
-                        text: '正在运行 ',
-                        style: Theme.of(
-                          context,
-                        ).textTheme.bodyMedium?.copyWith(color: palette.muted),
-                      ),
-                      TextSpan(
-                        text: command,
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: palette.trace,
-                          fontFamily: 'monospace',
+                child: _LiveActivityShimmer(
+                  shimmerKey: const Key('live-command-shimmer'),
+                  child: Text.rich(
+                    TextSpan(
+                      children: [
+                        TextSpan(
+                          text: '正在运行 ',
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(color: palette.muted),
                         ),
-                      ),
-                    ],
+                        TextSpan(
+                          text: command,
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(
+                                color: palette.trace,
+                                fontFamily: 'monospace',
+                              ),
+                        ),
+                      ],
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// 为实时活动文字提供与“正在思考”一致的低干扰扫光效果。
+/// Applies the same subtle moving highlight used by “thinking” to live
+/// activity labels while respecting the platform's reduced-motion setting.
+class _LiveActivityShimmer extends StatefulWidget {
+  const _LiveActivityShimmer({required this.shimmerKey, required this.child});
+
+  final Key shimmerKey;
+  final Widget child;
+
+  @override
+  State<_LiveActivityShimmer> createState() => _LiveActivityShimmerState();
+}
+
+class _LiveActivityShimmerState extends State<_LiveActivityShimmer>
+    with SingleTickerProviderStateMixin {
+  static const _animationDuration = Duration(milliseconds: 760);
+
+  late final AnimationController _animationController = AnimationController(
+    vsync: this,
+    duration: _animationDuration,
+  );
+  var _reduceMotion = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _reduceMotion = MediaQuery.disableAnimationsOf(context);
+    if (_reduceMotion) {
+      _animationController.stop();
+    } else if (!_animationController.isAnimating) {
+      _animationController.repeat();
+    }
+  }
+
+  @override
+  void dispose() {
+    _animationController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final highlightColor = Color.lerp(
+      palette.trace,
+      Theme.of(context).colorScheme.onSurface,
+      0.38,
+    )!;
+    return AnimatedBuilder(
+      animation: _animationController,
+      child: widget.child,
+      builder: (context, child) {
+        final progress = _reduceMotion ? 0.5 : _animationController.value;
+        final highlightStart = -1.35 + (progress * 2.7);
+        return ShaderMask(
+          key: widget.shimmerKey,
+          blendMode: BlendMode.srcIn,
+          shaderCallback: (bounds) => LinearGradient(
+            begin: Alignment(highlightStart, 0),
+            end: Alignment(highlightStart + 0.8, 0),
+            colors: [
+              palette.muted.withValues(alpha: 0.78),
+              highlightColor,
+              palette.muted.withValues(alpha: 0.78),
+            ],
+          ).createShader(bounds),
+          child: child,
+        );
+      },
     );
   }
 }
@@ -10964,9 +11158,10 @@ class _TimelineImage extends StatelessWidget {
 /// 将 Codex 回复按 GitHub Flavored Markdown 渲染，并保持与工作台主题一致。
 /// Renders Codex replies as GitHub Flavored Markdown while matching the workbench theme.
 class _AgentMarkdown extends StatelessWidget {
-  const _AgentMarkdown(this.data);
+  const _AgentMarkdown(this.data, {required this.workspacePath});
 
   final String data;
+  final String? workspacePath;
 
   @override
   Widget build(BuildContext context) {
@@ -10979,16 +11174,17 @@ class _AgentMarkdown extends StatelessWidget {
         data: data,
         selectable: false,
         onTapLink: (_, href, _) async {
-          final uri = href == null ? null : Uri.tryParse(href);
-          if (uri == null ||
-              !const {
-                'http',
-                'https',
-                'mailto',
-              }.contains(uri.scheme.toLowerCase())) {
-            return;
+          final opened = await openAgentMarkdownLink(
+            href: href,
+            workspacePath: workspacePath,
+            launch: (uri) =>
+                launchUrl(uri, mode: LaunchMode.externalApplication),
+          );
+          if (!opened && context.mounted) {
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('无法打开此链接或项目内文件。')));
           }
-          await launchUrl(uri, mode: LaunchMode.externalApplication);
         },
         styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
           p: body,

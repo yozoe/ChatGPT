@@ -1,3 +1,5 @@
+/// App Server 结构化计划中单一步骤的执行状态。
+/// Execution state of one step in an App Server structured plan.
 enum TaskPlanStepStatus { pending, inProgress, completed }
 
 /// 描述 Codex 在当前 turn 中共享的一条结构化执行步骤。
