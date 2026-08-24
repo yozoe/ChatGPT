@@ -3473,7 +3473,7 @@ class _WorkspaceDetailsCard extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                        fontSize: 18,
+                        fontSize: 16,
                         fontWeight: FontWeight.w500,
                       ),
                     ),
@@ -3512,7 +3512,7 @@ class _WorkspaceDetailsCard extends StatelessWidget {
                     Text(
                       '编辑项目',
                       style: TextStyle(
-                        fontSize: 16,
+                        fontSize: 14,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -3553,7 +3553,7 @@ class _WorkspaceDetailsRow extends StatelessWidget {
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 16),
+              style: const TextStyle(fontSize: 14),
             ),
           ),
         ],
@@ -5089,78 +5089,124 @@ class _ArchivedThreadNotice extends StatelessWidget {
 /// A locally queued direction renders as a composer header rather than a
 /// conversation bubble. Its action intentionally sends directly.
 /// 本地暂存的方向显示为 Composer 顶部栏而非会话气泡；点击操作会直接发送。
-class _PendingTurnSteerPanel extends StatelessWidget {
-  const _PendingTurnSteerPanel({
-    required this.pending,
-    required this.sending,
+class _PendingTurnSteerQueue extends StatelessWidget {
+  const _PendingTurnSteerQueue({
+    required this.pendingItems,
+    required this.sendingAny,
+    required this.isSending,
     required this.onSend,
     required this.onDiscard,
   });
 
-  final PendingTurnSteer pending;
-  final bool sending;
-  final Future<bool> Function() onSend;
-  final VoidCallback onDiscard;
+  final List<PendingTurnSteer> pendingItems;
+  final bool sendingAny;
+  final bool Function(PendingTurnSteer) isSending;
+  final Future<bool> Function(PendingTurnSteer) onSend;
+  final void Function(PendingTurnSteer) onDiscard;
 
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
+    final maxQueueHeight = math.min(
+      220.0,
+      math.max(54.0, MediaQuery.sizeOf(context).height * 0.28),
+    );
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 14),
       child: Container(
         key: const Key('pending-turn-steer'),
         width: double.infinity,
-        padding: const EdgeInsets.fromLTRB(14, 9, 8, 10),
+        padding: const EdgeInsets.symmetric(vertical: 5),
         decoration: BoxDecoration(
           color: palette.raised,
           borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
           border: Border.all(color: palette.border),
         ),
-        child: Row(
-          children: [
-            Icon(
-              Icons.subdirectory_arrow_right,
-              size: 16,
-              color: palette.muted,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: maxQueueHeight),
+          child: SingleChildScrollView(
+            key: const Key('pending-turn-steer-scroll'),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final (index, pending) in pendingItems.indexed) ...[
+                  if (index > 0)
+                    Divider(
+                      height: 1,
+                      indent: 14,
+                      endIndent: 14,
+                      color: palette.border,
+                    ),
+                  Padding(
+                    key: ValueKey('pending-turn-steer-$index'),
+                    padding: const EdgeInsets.fromLTRB(14, 4, 8, 4),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.subdirectory_arrow_right,
+                          size: 16,
+                          color: palette.muted,
+                        ),
+                        const SizedBox(width: 7),
+                        Expanded(
+                          child: SelectionArea(
+                            child: Text(
+                              pending.displayText,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        TextButton.icon(
+                          key: index == 0
+                              ? const Key('adjust-direction-button')
+                              : ValueKey('adjust-direction-button-$index'),
+                          onPressed: sendingAny
+                              ? null
+                              : () => unawaited(onSend(pending)),
+                          icon: isSending(pending)
+                              ? const SizedBox.square(
+                                  dimension: 15,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.reply_outlined, size: 17),
+                          label: const Text('调整方向'),
+                          style: TextButton.styleFrom(
+                            foregroundColor: palette.muted,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        ),
+                        IconButton(
+                          key: index == 0
+                              ? const Key('discard-direction-button')
+                              : ValueKey('discard-direction-button-$index'),
+                          tooltip: '删除待发送方向',
+                          onPressed: isSending(pending)
+                              ? null
+                              : () => onDiscard(pending),
+                          icon: const Icon(Icons.delete_outline, size: 17),
+                          color: palette.muted,
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.all(6),
+                          constraints: const BoxConstraints(
+                            minWidth: 30,
+                            minHeight: 30,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
             ),
-            const SizedBox(width: 7),
-            Expanded(
-              child: SelectionArea(
-                child: Text(
-                  pending.displayText,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            TextButton.icon(
-              key: const Key('adjust-direction-button'),
-              onPressed: sending ? null : () => unawaited(onSend()),
-              icon: sending
-                  ? const SizedBox.square(
-                      dimension: 15,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.reply_outlined, size: 17),
-              label: const Text('调整方向'),
-              style: TextButton.styleFrom(
-                foregroundColor: palette.muted,
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                visualDensity: VisualDensity.compact,
-              ),
-            ),
-            IconButton(
-              key: const Key('discard-direction-button'),
-              tooltip: '删除待发送方向',
-              onPressed: sending ? null : onDiscard,
-              icon: const Icon(Icons.delete_outline, size: 17),
-              color: palette.muted,
-              visualDensity: VisualDensity.compact,
-              padding: const EdgeInsets.all(6),
-              constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -6563,16 +6609,14 @@ class _ComposerModelControls extends StatelessWidget {
                 key: const Key('model-option-follow-config'),
                 value: '',
                 checked: controller.selectedModelId == null,
-                child: Text('跟随 Codex 配置 · ${controller.configuredModelLabel}'),
+                child: const Text('默认'),
               ),
               ...controller.modelOptions.map(
                 (option) => CheckedPopupMenuItem(
                   key: ValueKey('model-option-${option.id}'),
                   value: option.id,
                   checked: controller.selectedModelId == option.id,
-                  child: Text(
-                    '新任务模型：${option.displayName}${option.displayName == option.id ? '' : ' · ${option.id}'}',
-                  ),
+                  child: Text(option.displayName),
                 ),
               ),
             ],
@@ -6583,14 +6627,6 @@ class _ComposerModelControls extends StatelessWidget {
                 padding: const EdgeInsets.only(left: 10, right: 5),
                 child: Row(
                   children: [
-                    Icon(
-                      selectionError == null
-                          ? Icons.smart_toy_outlined
-                          : Icons.error_outline,
-                      size: 15,
-                      color: contentColor,
-                    ),
-                    const SizedBox(width: 6),
                     Expanded(
                       child: Text(
                         controller.newTaskModelLabel,
@@ -7420,12 +7456,14 @@ class _ComposerPanelState extends State<_ComposerPanel> {
               label: _activityLabel,
               active: controller.status == RuntimeStatus.running,
             ),
-          if (controller.pendingTurnSteer case final pending?)
-            _PendingTurnSteerPanel(
-              pending: pending,
-              sending: controller.pendingTurnSteerSending,
-              onSend: controller.sendPendingTurnSteer,
-              onDiscard: controller.discardPendingTurnSteer,
+          if (controller.pendingTurnSteers.isNotEmpty)
+            _PendingTurnSteerQueue(
+              pendingItems: controller.pendingTurnSteers,
+              sendingAny: controller.pendingTurnSteerSending,
+              isSending: controller.isPendingTurnSteerSending,
+              onSend: (pending) => controller.sendPendingTurnSteer(pending),
+              onDiscard: (pending) =>
+                  controller.discardPendingTurnSteer(pending),
             ),
           Stack(
             clipBehavior: Clip.none,

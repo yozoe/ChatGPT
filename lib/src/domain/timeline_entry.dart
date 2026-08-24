@@ -20,6 +20,7 @@ class TimelineEntry {
     required this.detail,
     required this.createdAt,
     this.imagePaths = const [],
+    this.sourceItemId,
   });
 
   final TimelineKind kind;
@@ -28,15 +29,23 @@ class TimelineEntry {
   final DateTime createdAt;
   final List<String> imagePaths;
 
+  /// App Server item identifier when this entry was reconstructed from one.
+  final String? sourceItemId;
+
   /// 返回替换可选详情后的时间线条目副本。
   /// Returns a timeline entry copy with an optional replacement detail.
-  TimelineEntry copyWith({String? detail, List<String>? imagePaths}) {
+  TimelineEntry copyWith({
+    String? detail,
+    List<String>? imagePaths,
+    String? sourceItemId,
+  }) {
     return TimelineEntry(
       kind: kind,
       title: title,
       detail: detail ?? this.detail,
       createdAt: createdAt,
       imagePaths: imagePaths ?? this.imagePaths,
+      sourceItemId: sourceItemId ?? this.sourceItemId,
     );
   }
 
@@ -48,6 +57,7 @@ class TimelineEntry {
     'detail': detail,
     'createdAt': createdAt.toIso8601String(),
     'imagePaths': imagePaths,
+    'sourceItemId': ?sourceItemId,
   };
 
   /// 从本地历史缓存 JSON 恢复时间线条目。
@@ -68,6 +78,7 @@ class TimelineEntry {
                 .map((path) => path.toString())
                 .toList(growable: false)
           : const <String>[]),
+      sourceItemId: value['sourceItemId']?.toString(),
     );
   }
 }

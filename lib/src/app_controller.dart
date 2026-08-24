@@ -393,8 +393,14 @@ class CodexController extends ChangeNotifier {
   // app-server connection before it can receive a turn.
   bool _activeThreadAttached = false;
   String? activeTurnId;
-  PendingTurnSteer? pendingTurnSteer;
+  final List<PendingTurnSteer> _pendingTurnSteers = [];
+  List<PendingTurnSteer> get pendingTurnSteers =>
+      List.unmodifiable(_pendingTurnSteers);
+  PendingTurnSteer? get pendingTurnSteer => _pendingTurnSteers.firstOrNull;
   bool pendingTurnSteerSending = false;
+  PendingTurnSteer? _sendingPendingTurnSteer;
+  bool isPendingTurnSteerSending(PendingTurnSteer value) =>
+      pendingTurnSteerSending && identical(_sendingPendingTurnSteer, value);
   Object? _pendingTurnSteerSendToken;
   DateTime? _activeTurnStartedAt;
   String? _activeCommand;
@@ -966,7 +972,7 @@ class CodexController extends ChangeNotifier {
       activeTurnId != null;
 
   /// Whether the running turn can accept a new, locally queued direction.
-  bool get canQueueTurnSteer => canSteer && pendingTurnSteer == null;
+  bool get canQueueTurnSteer => canSteer;
 
   /// 当前 turn 中正执行的命令；命令完成后立即清除，不写入持久化状态。
   /// The command currently running in this turn. It is cleared on completion
@@ -1051,7 +1057,7 @@ class CodexController extends ChangeNotifier {
   /// Returns the model label that subsequent new tasks will use.
   String get newTaskModelLabel {
     final selected = selectedModelId;
-    if (selected == null) return configuredModelLabel;
+    if (selected == null) return '默认';
     for (final option in modelOptions) {
       if (option.id == selected) return option.displayName;
     }
@@ -1745,6 +1751,7 @@ class CodexController extends ChangeNotifier {
     String? goal,
     bool planMode = false,
     List<String> imagePaths = const [],
+    bool rollbackUserEntryOnFailure = false,
   }) async {
     final text = prompt.trim();
     if (text.isEmpty || !canSend) return false;
@@ -1763,7 +1770,12 @@ class CodexController extends ChangeNotifier {
     lastError = null;
     _clearStreamingState();
     _activeTurnStartedAt = DateTime.now();
-    _add(TimelineKind.user, '你', text, imagePaths: imagePaths);
+    final submittedEntry = _add(
+      TimelineKind.user,
+      '你',
+      text,
+      imagePaths: imagePaths,
+    );
     notifyListeners();
 
     String? requestedThreadId = activeThreadId;
@@ -1829,6 +1841,10 @@ class CodexController extends ChangeNotifier {
       if (requestedThreadId == null || activeThreadId == requestedThreadId) {
         status = _server.isRunning ? RuntimeStatus.ready : RuntimeStatus.failed;
         _clearStreamingState();
+        if (rollbackUserEntryOnFailure) {
+          _entries.removeWhere((entry) => identical(entry, submittedEntry));
+          _scheduleConversationHistorySave();
+        }
         lastError = _messageOf(error);
         _add(TimelineKind.error, '任务未能启动', lastError!);
       }
@@ -1983,27 +1999,36 @@ class CodexController extends ChangeNotifier {
   /// 将新的方向暂存在 Composer 顶部栏，等待用户明确发送至 `turn/steer`。
   bool queueTurnSteer(PendingTurnSteer value) {
     if (!canQueueTurnSteer || value.prompt.trim().isEmpty) return false;
-    pendingTurnSteer = value;
+    _pendingTurnSteers.add(value);
     notifyListeners();
     return true;
   }
 
   /// Discards a locally queued direction before it is sent.
   /// 丢弃尚未发送的本地方向调整。
-  void discardPendingTurnSteer() {
-    if (pendingTurnSteer == null || pendingTurnSteerSending) return;
-    pendingTurnSteer = null;
+  void discardPendingTurnSteer([PendingTurnSteer? value]) {
+    final pending = value ?? pendingTurnSteer;
+    if (pending == null || isPendingTurnSteerSending(pending)) return;
+    _pendingTurnSteers.removeWhere(
+      (candidate) => identical(candidate, pending),
+    );
     notifyListeners();
   }
 
   /// Sends the locally queued direction without opening a second editor.
   /// 直接发送暂存的方向，不再打开二次输入框。
-  Future<bool> sendPendingTurnSteer() async {
-    final pending = pendingTurnSteer;
+  Future<bool> sendPendingTurnSteer([PendingTurnSteer? value]) async {
+    final pending = value ?? pendingTurnSteer;
     if (pending == null || pendingTurnSteerSending) return false;
+    if (!_pendingTurnSteers.any((candidate) => identical(candidate, pending))) {
+      return false;
+    }
+    final workspace = workspacePath;
+    final threadId = activeThreadId;
     final sendToken = Object();
     _pendingTurnSteerSendToken = sendToken;
     pendingTurnSteerSending = true;
+    _sendingPendingTurnSteer = pending;
     notifyListeners();
     try {
       final sent = await steerCurrentTurn(
@@ -2011,17 +2036,78 @@ class CodexController extends ChangeNotifier {
         additionalInput: pending.additionalInput,
         imagePaths: pending.imagePaths,
       );
-      if (sent && identical(pendingTurnSteer, pending)) {
-        pendingTurnSteer = null;
+      if (sent) {
+        _pendingTurnSteers.removeWhere(
+          (candidate) => identical(candidate, pending),
+        );
+      }
+      if (!sent &&
+          _pendingTurnSteers.any(
+            (candidate) => identical(candidate, pending),
+          ) &&
+          workspacePath == workspace &&
+          activeThreadId == threadId &&
+          status == RuntimeStatus.ready &&
+          activeTurnId == null) {
+        return await _sendPendingTurnSteerAfterCompletion(pending);
       }
       return sent;
     } finally {
       if (identical(_pendingTurnSteerSendToken, sendToken)) {
         _pendingTurnSteerSendToken = null;
         pendingTurnSteerSending = false;
+        _sendingPendingTurnSteer = null;
         if (!_disposed) notifyListeners();
       }
     }
+  }
+
+  /// Sends a queued direction as the next turn when the turn it was meant to
+  /// steer has already completed.
+  Future<bool> _sendPendingTurnSteerAfterCompletion(
+    PendingTurnSteer pending,
+  ) async {
+    final pendingIndex = _pendingTurnSteers.indexWhere(
+      (candidate) => identical(candidate, pending),
+    );
+    if (pendingIndex < 0) return false;
+    _pendingTurnSteers.removeAt(pendingIndex);
+    final queuedAfterPending = List<PendingTurnSteer>.of(_pendingTurnSteers);
+    final workspace = workspacePath;
+    final threadId = activeThreadId;
+    pendingTurnSteerSending = true;
+    _sendingPendingTurnSteer = pending;
+    notifyListeners();
+    final sent = await sendPrompt(
+      pending.prompt,
+      additionalInput: pending.additionalInput,
+      imagePaths: pending.imagePaths,
+      rollbackUserEntryOnFailure: true,
+    );
+    final stillSameThread =
+        !_disposed && workspacePath == workspace && activeThreadId == threadId;
+    if (stillSameThread) {
+      for (final queued in queuedAfterPending.reversed) {
+        if (!_pendingTurnSteers.any(
+          (candidate) => identical(candidate, queued),
+        )) {
+          _pendingTurnSteers.insert(0, queued);
+        }
+      }
+      if (!sent &&
+          !_pendingTurnSteers.any(
+            (candidate) => identical(candidate, pending),
+          )) {
+        _pendingTurnSteers.insert(
+          pendingIndex.clamp(0, _pendingTurnSteers.length),
+          pending,
+        );
+      }
+    }
+    pendingTurnSteerSending = false;
+    _sendingPendingTurnSteer = null;
+    if (!_disposed) notifyListeners();
+    return sent;
   }
 
   /// 停止 App Server 并重置仅在运行期有效的状态。
@@ -2477,6 +2563,9 @@ class CodexController extends ChangeNotifier {
     final previousView = previousThreadId == null
         ? null
         : _currentThreadViewSnapshot();
+    final localTimelineEntries = previousThreadId == thread.id
+        ? List<TimelineEntry>.of(_entries)
+        : const <TimelineEntry>[];
     var viewLoaded = cachedView != null;
     activeThreadId = thread.id;
     _activeThreadAttached = false;
@@ -2519,6 +2608,7 @@ class CodexController extends ChangeNotifier {
                 );
           _resetConversationTimeline();
           _appendThreadHistory(history);
+          _restoreMissingCompletedCommands(localTimelineEntries);
           viewLoaded = true;
           if (openingRunningThread) {
             _restoreActiveTurnFromHistory(history);
@@ -3339,7 +3429,13 @@ class CodexController extends ChangeNotifier {
         }
         _add(TimelineKind.system, '任务完成', '你可以继续在同一线程追问。');
     }
-    _clearStreamingState();
+    // An explicit `turn/steer` request may race this completion event. Let
+    // that request settle; starting a second turn here would duplicate it.
+    final pendingDirection = pendingTurnSteerSending ? null : pendingTurnSteer;
+    _clearStreamingState(clearPendingTurnSteer: false);
+    if (pendingDirection != null) {
+      unawaited(_sendPendingTurnSteerAfterCompletion(pendingDirection));
+    }
   }
 
   /// Completes a task that remains on App Server after the user moved to a
@@ -3478,10 +3574,12 @@ class CodexController extends ChangeNotifier {
             _recordFileChanges(item['changes']);
           case 'mcpToolCall' ||
               'dynamicToolCall' ||
+              'collabToolCall' ||
               'webSearch' ||
               'imageView' ||
               'imageGeneration' ||
               'sleep' ||
+              'contextCompaction' ||
               'enteredReviewMode' ||
               'exitedReviewMode':
             _appendToolHistoryItem(item);
@@ -3529,7 +3627,8 @@ class CodexController extends ChangeNotifier {
   }
 
   /// Converts an App Server item into a concise, user-facing live activity.
-  /// Returning null for an unknown future item type keeps the fallback honest.
+  /// Unknown future operation types use a neutral label so a server-declared
+  /// item never looks like an unexplained, long-running thinking interval.
   LiveTurnActivity? _liveTurnActivityFor(JsonMap item) {
     final type = _label(item['type']);
     final itemId = _label(item['id']);
@@ -3545,6 +3644,7 @@ class CodexController extends ChangeNotifier {
     final (label, detail) = switch (type) {
       'reasoning' => ('正在分析', ''),
       'agentMessage' => ('正在撰写回复', ''),
+      'plan' => ('正在整理计划', ''),
       'commandExecution' => ('正在运行命令', _label(item['command'])),
       'mcpToolCall' => (
         '正在调用 MCP 工具',
@@ -3554,7 +3654,8 @@ class CodexController extends ChangeNotifier {
         '正在调用动态工具',
         _joinLiveActivityDetail(item['namespace'], item['tool']),
       ),
-      'webSearch' => ('正在搜索网页', _label(item['query'])),
+      'collabToolCall' => ('正在协调协作任务', _label(item['tool'])),
+      'webSearch' => _webSearchLiveActivity(item),
       'imageView' => ('正在查看图片', _label(item['path'])),
       'imageGeneration' => ('正在生成图片', ''),
       'sleep' => (
@@ -3564,9 +3665,11 @@ class CodexController extends ChangeNotifier {
             : '${_label(item['durationMs'])} ms',
       ),
       'fileChange' => ('正在整理文件变更', ''),
+      'contextCompaction' => ('正在压缩对话上下文', ''),
       'enteredReviewMode' => ('正在进入审查模式', ''),
       'exitedReviewMode' => ('正在退出审查模式', ''),
-      _ => (null, ''),
+      'userMessage' => (null, ''),
+      _ => ('正在执行操作', ''),
     };
     if (label == null) return null;
     return LiveTurnActivity(
@@ -3575,6 +3678,20 @@ class CodexController extends ChangeNotifier {
       label: label,
       detail: detail,
     );
+  }
+
+  (String, String) _webSearchLiveActivity(JsonMap item) {
+    final action = item['action'];
+    final actionMap = action is Map ? action : const <String, Object?>{};
+    final actionType = _label(actionMap['type']);
+    return switch (actionType) {
+      'openPage' => ('正在打开网页', _label(actionMap['url'] ?? item['url'])),
+      'findInPage' => (
+        '正在页内查找',
+        _label(actionMap['pattern'] ?? actionMap['query'] ?? item['query']),
+      ),
+      _ => ('正在搜索网页', _label(actionMap['query'] ?? item['query'])),
+    };
   }
 
   /// Recognizes the App Server's dynamic skill-reader without assigning the
@@ -3697,8 +3814,48 @@ class CodexController extends ChangeNotifier {
       command,
       output,
     ].where((value) => value.isNotEmpty).join('\n');
-    if (detail.isNotEmpty) _add(TimelineKind.command, '执行命令', detail);
+    if (detail.isNotEmpty) {
+      _add(
+        TimelineKind.command,
+        '执行命令',
+        detail,
+        sourceItemId: itemId.isEmpty ? null : itemId,
+      );
+    }
   }
+
+  /// Retains locally cached completed commands omitted by App Server history.
+  void _restoreMissingCompletedCommands(List<TimelineEntry> cachedEntries) {
+    final restoredCommands = _entries
+        .where((entry) => entry.kind == TimelineKind.command)
+        .toList(growable: false);
+    final restoredIds = restoredCommands
+        .map((entry) => entry.sourceItemId)
+        .whereType<String>()
+        .toSet();
+    final restoredCommandTexts = restoredCommands
+        .map(_commandIdentity)
+        .where((value) => value.isNotEmpty)
+        .toSet();
+    for (final entry in cachedEntries) {
+      final itemId = entry.sourceItemId;
+      if (entry.kind != TimelineKind.command) continue;
+      if (itemId != null && itemId.isNotEmpty) {
+        if (!restoredIds.add(itemId)) continue;
+        _entries.add(entry);
+        continue;
+      }
+      final commandText = _commandIdentity(entry);
+      if (commandText.isNotEmpty && !restoredCommandTexts.add(commandText)) {
+        continue;
+      }
+      _entries.add(entry);
+    }
+  }
+
+  /// Gives pre-ID command cache entries a conservative deduplication key.
+  String _commandIdentity(TimelineEntry entry) =>
+      entry.detail.split('\n').firstOrNull?.trim().toLowerCase() ?? '';
 
   void _appendTurnElapsed(JsonMap turn) {
     final duration = _turnDuration(turn);
@@ -3756,7 +3913,11 @@ class CodexController extends ChangeNotifier {
         _toolStatus(item),
       ),
       'dynamicToolCall' => (
-        '动态工具：${_label(item['namespace'])}/${_label(item['tool'])}',
+        '动态工具：${_joinLiveActivityDetail(item['namespace'], item['tool'])}',
+        _toolStatus(item),
+      ),
+      'collabToolCall' => (
+        '协作任务${_label(item['tool']).isEmpty ? '' : '：${_label(item['tool'])}'}',
         _toolStatus(item),
       ),
       'webSearch' => ('网页搜索', _searchDetail(item)),
@@ -3766,6 +3927,7 @@ class CodexController extends ChangeNotifier {
         _label(item['savedPath'] ?? item['status']),
       ),
       'sleep' => ('等待', '${_label(item['durationMs'])} ms'),
+      'contextCompaction' => ('压缩对话上下文', '已完成'),
       'enteredReviewMode' => ('进入审查模式', _label(item['review'])),
       'exitedReviewMode' => ('退出审查模式', _label(item['review'])),
       _ => ('工具事件', ''),
@@ -4802,13 +4964,16 @@ class CodexController extends ChangeNotifier {
 
   /// 取消流式更新计时器并清除 Agent 条目索引。
   /// Cancels streaming timers and clears the Agent-entry index.
-  void _clearStreamingState() {
+  void _clearStreamingState({bool clearPendingTurnSteer = true}) {
     _agentEntryIndexByItem.clear();
     _completedCommandItemIds.clear();
     activeTurnId = null;
-    pendingTurnSteer = null;
-    pendingTurnSteerSending = false;
-    _pendingTurnSteerSendToken = null;
+    if (clearPendingTurnSteer) {
+      _pendingTurnSteers.clear();
+      pendingTurnSteerSending = false;
+      _sendingPendingTurnSteer = null;
+      _pendingTurnSteerSendToken = null;
+    }
     _activeTurnStartedAt = null;
     _activeCommand = null;
     _activeCommandItemId = null;
@@ -5018,6 +5183,7 @@ class CodexController extends ChangeNotifier {
     String title,
     String detail, {
     List<String> imagePaths = const [],
+    String? sourceItemId,
   }) {
     return TimelineEntry(
       kind: kind,
@@ -5025,19 +5191,29 @@ class CodexController extends ChangeNotifier {
       detail: detail,
       createdAt: DateTime.now(),
       imagePaths: imagePaths,
+      sourceItemId: sourceItemId,
     );
   }
 
   /// 追加时间线条目并安排本地历史保存。
   /// Appends a timeline entry and schedules local history persistence.
-  void _add(
+  TimelineEntry _add(
     TimelineKind kind,
     String title,
     String detail, {
     List<String> imagePaths = const [],
+    String? sourceItemId,
   }) {
-    _entries.add(_entry(kind, title, detail, imagePaths: imagePaths));
+    final entry = _entry(
+      kind,
+      title,
+      detail,
+      imagePaths: imagePaths,
+      sourceItemId: sourceItemId,
+    );
+    _entries.add(entry);
     _scheduleConversationHistorySave();
+    return entry;
   }
 
   /// 释放计时器、事件订阅和 App Server 资源，并尝试保存最后的历史快照。

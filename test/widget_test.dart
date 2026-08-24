@@ -1437,6 +1437,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 1));
     expect(find.text('1 个任务'), findsOneWidget);
     expect(find.text('编辑项目'), findsOneWidget);
+    expect(tester.widget<Text>(find.text('1 个任务')).style?.fontSize, 14);
+    expect(tester.widget<Text>(find.text('编辑项目')).style?.fontSize, 14);
     // A project can receive new tasks after its count was first shown. Opening
     // its details again must reload the local cache instead of retaining 1.
     await tester.ensureVisible(secondTile);
@@ -1732,6 +1734,16 @@ void main() {
     expect((modelControls.decoration! as BoxDecoration).border, isNull);
     await tester.tap(find.byKey(const Key('model-selector')));
     await tester.pumpAndSettle();
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('model-option-follow-config')),
+        matching: find.text('默认'),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('fast-model'), findsOneWidget);
+    expect(find.text('新任务模型：fast-model'), findsNothing);
+    expect(find.textContaining('fast-model ·'), findsNothing);
     final fastModelItem = find.byKey(const Key('model-option-fast-model'));
     await tester.tapAt(tester.getTopLeft(fastModelItem) + const Offset(12, 12));
     await tester.pumpAndSettle();
@@ -2237,6 +2249,244 @@ void main() {
     },
   );
 
+  test(
+    'sends a queued direction as a new turn after the active turn completes',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..listResponse = [
+          {'id': 'thread-1', 'status': 'idle'},
+        ];
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..activeTurnId = 'turn-1';
+      controller.queueTurnSteer(
+        const PendingTurnSteer(displayText: '完成后继续处理', prompt: '完成后继续处理'),
+      );
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'thread-1',
+            'turn': {'status': 'completed'},
+          },
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(server.startedTurnThreadId, 'thread-1');
+      expect(server.startedTurnPrompt, '完成后继续处理');
+      expect(controller.pendingTurnSteer, isNull);
+      expect(controller.status, RuntimeStatus.running);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'does not auto-send while an explicit direction adjustment is pending',
+    () async {
+      final steerCompleter = Completer<String>();
+      final server = _FakeCodexAppServer()
+        ..steerCompleter = steerCompleter
+        ..listResponse = [
+          {'id': 'thread-1', 'status': 'idle'},
+        ];
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..activeTurnId = 'turn-1';
+      controller.queueTurnSteer(
+        const PendingTurnSteer(displayText: '只发送一次', prompt: '只发送一次'),
+      );
+
+      final steer = controller.sendPendingTurnSteer();
+      await Future<void>.delayed(Duration.zero);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'thread-1',
+            'turn': {'status': 'completed'},
+          },
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(server.startedTurnPrompt, isNull);
+      steerCompleter.complete('turn-2');
+      expect(await steer, isTrue);
+      expect(server.steeredTurnPrompt, '只发送一次');
+      controller.dispose();
+    },
+  );
+
+  test(
+    'sends the pending direction as a new turn when explicit steering loses the completion race',
+    () async {
+      final steerCompleter = Completer<String>();
+      final server = _FakeCodexAppServer()
+        ..steerCompleter = steerCompleter
+        ..listResponse = [
+          {'id': 'thread-1', 'status': 'idle'},
+        ];
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..activeTurnId = 'turn-1';
+      controller.queueTurnSteer(
+        const PendingTurnSteer(displayText: '下一轮继续', prompt: '下一轮继续'),
+      );
+
+      final steer = controller.sendPendingTurnSteer();
+      await Future<void>.delayed(Duration.zero);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'thread-1',
+            'turn': {'status': 'completed'},
+          },
+        ),
+      );
+      steerCompleter.completeError(StateError('turn already completed'));
+
+      expect(await steer, isTrue);
+      expect(server.startedTurnThreadId, 'thread-1');
+      expect(server.startedTurnPrompt, '下一轮继续');
+      expect(controller.pendingTurnSteer, isNull);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'keeps locally cached completed commands missing from server history',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..listResponse = [
+          {'id': 'thread-1', 'status': 'idle'},
+        ]
+        ..resumeResult = {
+          'thread': {
+            'turns': [
+              {
+                'id': 'turn-1',
+                'items': [
+                  {
+                    'type': 'commandExecution',
+                    'id': 'server-command',
+                    'command': 'git status',
+                    'aggregatedOutput': 'clean',
+                  },
+                  {
+                    'type': 'commandExecution',
+                    'id': 'shared-command',
+                    'command': 'dart analyze',
+                    'aggregatedOutput': 'No issues',
+                  },
+                ],
+              },
+            ],
+          },
+        };
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready
+        ..activeThreadId = 'thread-1';
+      controller.replaceTimelineEntriesForTesting([
+        TimelineEntry(
+          kind: TimelineKind.command,
+          title: '执行命令',
+          detail: 'git status\nlocal cached output',
+          createdAt: DateTime(2026),
+          sourceItemId: 'local-command',
+        ),
+        TimelineEntry(
+          kind: TimelineKind.command,
+          title: '执行命令',
+          detail: 'stale dart analyze',
+          createdAt: DateTime(2026),
+          sourceItemId: 'shared-command',
+        ),
+        TimelineEntry(
+          kind: TimelineKind.command,
+          title: '执行命令',
+          detail: 'legacy command',
+          createdAt: DateTime(2026),
+        ),
+      ]);
+
+      await controller.resumeThread(_thread(id: 'thread-1'));
+
+      final commands = controller.entries
+          .where((entry) => entry.kind == TimelineKind.command)
+          .toList();
+      expect(commands.map((entry) => entry.sourceItemId), [
+        'server-command',
+        'shared-command',
+        'local-command',
+        null,
+      ]);
+      expect(
+        commands.map((entry) => entry.detail),
+        contains('git status\nlocal cached output'),
+      );
+      expect(commands.map((entry) => entry.detail), contains('legacy command'));
+      expect(
+        commands.map((entry) => entry.detail),
+        isNot(contains('stale dart analyze')),
+      );
+      controller.dispose();
+    },
+  );
+
+  test('does not merge commands from the previously open thread', () async {
+    final server = _FakeCodexAppServer()
+      ..listResponse = [
+        {'id': 'thread-b', 'status': 'idle'},
+      ]
+      ..resumeResult = {
+        'thread': {
+          'turns': [
+            {
+              'id': 'turn-b',
+              'items': [
+                {'type': 'agentMessage', 'text': '线程 B 的回复'},
+              ],
+            },
+          ],
+        },
+      };
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..activeThreadId = 'thread-a';
+    controller.replaceTimelineEntriesForTesting([
+      TimelineEntry(
+        kind: TimelineKind.command,
+        title: '执行命令',
+        detail: 'thread-a command',
+        createdAt: DateTime(2026),
+        sourceItemId: 'thread-a-command',
+      ),
+    ]);
+
+    await controller.resumeThread(_thread(id: 'thread-b'));
+
+    expect(
+      controller.entries.map((entry) => entry.detail),
+      contains('线程 B 的回复'),
+    );
+    expect(
+      controller.entries.map((entry) => entry.detail),
+      isNot(contains('thread-a command')),
+    );
+    controller.dispose();
+  });
+
   testWidgets('does not queue an empty direction while a task is running', (
     tester,
   ) async {
@@ -2280,6 +2530,178 @@ void main() {
 
     expect(controller.pendingTurnSteer, isNull);
     expect(find.byKey(const Key('pending-turn-steer')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'queues multiple directions and controls each row independently',
+    (tester) async {
+      final server = _FakeCodexAppServer();
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..activeTurnId = 'turn-1';
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      final field = find.byKey(const Key('composer-field'));
+      for (final message in ['第一条调整', '第二条调整', '第三条调整']) {
+        await tester.enterText(field, message);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+      }
+
+      expect(controller.pendingTurnSteers.map((item) => item.displayText), [
+        '第一条调整',
+        '第二条调整',
+        '第三条调整',
+      ]);
+      expect(find.text('调整方向'), findsNWidgets(3));
+      await tester.tap(find.byKey(const Key('discard-direction-button-1')));
+      await tester.pump();
+      expect(controller.pendingTurnSteers.map((item) => item.displayText), [
+        '第一条调整',
+        '第三条调整',
+      ]);
+      await tester.tap(find.byKey(const Key('adjust-direction-button-1')));
+      await tester.pump();
+      expect(server.steeredTurnPrompt, '第三条调整');
+      expect(controller.pendingTurnSteers.single.displayText, '第一条调整');
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  test(
+    'auto-sends queued directions in order across completed turns',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..listResponse = [
+          {'id': 'thread-1', 'status': 'idle'},
+        ];
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..activeTurnId = 'turn-1';
+      for (final message in ['第一条', '第二条']) {
+        controller.queueTurnSteer(
+          PendingTurnSteer(displayText: message, prompt: message),
+        );
+      }
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'thread-1',
+            'turn': {'id': 'turn-1', 'status': 'completed'},
+          },
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(server.startedTurnPrompt, '第一条');
+      expect(controller.pendingTurnSteers.single.prompt, '第二条');
+
+      controller.handleServerEventForTesting(
+        ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'thread-1',
+            'turn': {'id': controller.activeTurnId, 'status': 'completed'},
+          },
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(server.startedTurnPrompt, '第二条');
+      expect(controller.pendingTurnSteers, isEmpty);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'restores the queue without a duplicate user entry when auto-send fails',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..startTurnError = StateError('turn rejected')
+        ..listResponse = [
+          {'id': 'thread-1', 'status': 'idle'},
+        ];
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..activeTurnId = 'turn-1';
+      for (final message in ['第一条', '第二条']) {
+        controller.queueTurnSteer(
+          PendingTurnSteer(displayText: message, prompt: message),
+        );
+      }
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'thread-1',
+            'turn': {'id': 'turn-1', 'status': 'completed'},
+          },
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(controller.pendingTurnSteers.map((item) => item.prompt), [
+        '第一条',
+        '第二条',
+      ]);
+      expect(
+        controller.entries.where(
+          (entry) => entry.kind == TimelineKind.user && entry.detail == '第一条',
+        ),
+        isEmpty,
+      );
+      expect(
+        controller.entries.map((entry) => entry.title),
+        contains('任务未能启动'),
+      );
+      controller.dispose();
+    },
+  );
+
+  testWidgets('bounds a long direction queue and disables parallel sends', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(700, 500));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final steerCompleter = Completer<String>();
+    final server = _FakeCodexAppServer()..steerCompleter = steerCompleter;
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+    for (var index = 0; index < 12; index++) {
+      controller.queueTurnSteer(
+        PendingTurnSteer(displayText: '方向 $index', prompt: '方向 $index'),
+      );
+    }
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final scroll = find.byKey(const Key('pending-turn-steer-scroll'));
+    expect(scroll, findsOneWidget);
+    expect(tester.getSize(scroll).height, lessThanOrEqualTo(220));
+    expect(find.byKey(const Key('composer-field')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('adjust-direction-button')));
+    await tester.pump();
+
+    final secondSend = tester.widget<TextButton>(
+      find.byKey(const Key('adjust-direction-button-1')),
+    );
+    expect(secondSend.onPressed, isNull);
+    steerCompleter.complete('turn-2');
+    await tester.pump();
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -3402,6 +3824,74 @@ void main() {
 
     expect(controller.activeLiveActivity?.kind, 'skillRead');
     expect(controller.activeLiveActivity?.label, '正在读取 Code Review 技能');
+    controller.dispose();
+  });
+
+  test(
+    'shows plan, collaboration, compaction, and unknown live activities',
+    () {
+      final controller = CodexController(server: CodexAppServer())
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..activeTurnId = 'turn-1';
+
+      void start(String id, String type, [JsonMap extra = const {}]) {
+        controller.handleServerEventForTesting(
+          ServerEvent(
+            method: 'item/started',
+            params: {
+              'threadId': 'thread-1',
+              'turnId': 'turn-1',
+              'item': {'id': id, 'type': type, ...extra},
+            },
+          ),
+        );
+      }
+
+      start('plan-1', 'plan');
+      expect(controller.activeLiveActivity?.label, '正在整理计划');
+      start('collab-1', 'collabToolCall', {'tool': 'spawnAgent'});
+      expect(controller.activeLiveActivity?.label, '正在协调协作任务');
+      expect(controller.activeLiveActivity?.detail, 'spawnAgent');
+      start('compact-1', 'contextCompaction');
+      expect(controller.activeLiveActivity?.label, '正在压缩对话上下文');
+      start('future-1', 'futureOperation', {'internal': 'do not expose'});
+      expect(controller.activeLiveActivity?.label, '正在执行操作');
+      expect(controller.activeLiveActivity?.detail, isEmpty);
+      start('user-1', 'userMessage');
+      expect(controller.activeLiveActivity?.itemId, 'future-1');
+      controller.dispose();
+    },
+  );
+
+  test('distinguishes web search action activities', () {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+
+    void start(String id, JsonMap action) {
+      controller.handleServerEventForTesting(
+        ServerEvent(
+          method: 'item/started',
+          params: {
+            'threadId': 'thread-1',
+            'turnId': 'turn-1',
+            'item': {'id': id, 'type': 'webSearch', 'action': action},
+          },
+        ),
+      );
+    }
+
+    start('search-1', {'type': 'search', 'query': 'Codex'});
+    expect(controller.activeLiveActivity?.label, '正在搜索网页');
+    expect(controller.activeLiveActivity?.detail, 'Codex');
+    start('open-1', {'type': 'openPage', 'url': 'https://example.com'});
+    expect(controller.activeLiveActivity?.label, '正在打开网页');
+    expect(controller.activeLiveActivity?.detail, 'https://example.com');
+    start('find-1', {'type': 'findInPage', 'pattern': 'ThreadItem'});
+    expect(controller.activeLiveActivity?.label, '正在页内查找');
+    expect(controller.activeLiveActivity?.detail, 'ThreadItem');
     controller.dispose();
   });
 
@@ -7739,6 +8229,39 @@ void main() {
       controller.dispose();
     },
   );
+
+  test('restores collaboration and context compaction history', () async {
+    final server = _FakeCodexAppServer()
+      ..resumeResult = {
+        'thread': {
+          'turns': [
+            {
+              'id': 'turn-1',
+              'items': [
+                {
+                  'id': 'collab-1',
+                  'type': 'collabToolCall',
+                  'tool': 'spawnAgent',
+                  'status': 'completed',
+                },
+                {'id': 'compact-1', 'type': 'contextCompaction'},
+              ],
+            },
+          ],
+        },
+      };
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+
+    await controller.resumeThread(_thread(id: 'activity-history-thread'));
+
+    expect(
+      controller.entries.map((entry) => entry.title),
+      containsAll(['协作任务：spawnAgent', '压缩对话上下文']),
+    );
+    controller.dispose();
+  });
 
   test(
     'does not show the prior timeline when item history hydration fails',
