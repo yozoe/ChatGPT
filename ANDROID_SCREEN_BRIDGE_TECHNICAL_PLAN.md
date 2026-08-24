@@ -4,10 +4,11 @@
 
 目标是在 Codex Desk 中连接 Android 设备，让 Codex 能够快速读取当前屏幕、执行用户授权的操作，并在每次操作后重新观察设备确认结果。应用内实时预览服务于用户监督，不是 Agent 识别和控制的唯一输入。
 
-本方案建议把能力拆为三个相互独立的平面：
+本方案建议把能力拆为四个相互独立的平面：
 
 - **观察平面**：通过 ADB 按需抓取无损屏幕帧，并在可用时补充 Android UI 层级；复用 Codex Desk 已有的 `localImage` 输入、图片附件、时间线缩略图和 `turn/start` / `turn/steer` 链路。
 - **操作平面**：通过带设备 serial、参数校验、权限门禁和结构化结果的工具执行点击、滑动、长按、系统键和有限文本输入。
+- **测试编排平面**：读取结构化测试用例，准备测试数据和入口，逐步调用观察/操作工具，执行确定性断言，并生成实时进度和测试报告。
 - **监督平面**：使用 scrcpy 或应用内预览向用户显示实时画面、当前控制状态和待确认操作。流畅视频预览不阻塞首版观察—操作闭环。
 
 设备权限的可信边界是应用持有的 Device Broker，而不是提示词、技能或通用命令审批。Codex 运行时只能通过受限工具 RPC 请求设备动作；它所在的命令沙箱不能直接访问 USB 设备、ADB Server、`adb`/scrcpy 控制入口或 Device Broker 之外的替代通道。若目标平台无法验证这一隔离，产品只能提供逐次人工确认的实验模式，不能宣称白名单和禁止动作不可绕过。
@@ -48,6 +49,8 @@ Codex Desk 已具备以下可复用能力：
 - 低延迟连续预览。
 - 完整 Unicode 文本输入、剪贴板同步和更低延迟的 scrcpy 控制通道。
 - 画面变化检测与交互后自动抓取。
+- 结构化真机测试用例、实时步骤执行、断言、失败证据和报告导出。
+- 通过 Deep Link、测试路由、固定数据和页面状态图进入深层功能页面。
 - 启动/停止指定应用和更丰富的设备诊断工具。
 - 无线 ADB 配对和连接。
 
@@ -93,6 +96,8 @@ Codex Desk 已具备以下可复用能力：
 scrcpy external preview ───── user-only real-time supervision
 
 Codex command sandbox ──X── ADB Server / USB / raw adb / scrcpy control
+
+Test Case ── Test Runner ── Agent tools ── assertions ── report/artifacts
 ```
 
 设备桥接不能直接并入 `CodexController`。Device Broker 在 Codex 命令沙箱之外持有 ADB 权限；Riverpod Notifier 管理其异步状态、进程生命周期、控制权限、缓存和错误恢复。Composer 只消费已经产生的图片附件，Agent Tool Gateway 只接受白名单动作。全局“帮我批准”只能处理普通 Codex 权限请求，不得授予或扩大设备控制租约。
@@ -176,18 +181,26 @@ scrcpy 的价值是让用户低延迟监督 Agent 正在做什么。后续若 AD
 lib/src/domain/android_device.dart
 lib/src/domain/device_action.dart
 lib/src/domain/device_screen_state.dart
+lib/src/domain/device_test_case.dart
+lib/src/domain/device_test_run.dart
 lib/src/services/android_debug_bridge.dart
 lib/src/services/android_ui_hierarchy_reader.dart
 lib/src/services/device_broker.dart
 lib/src/services/device_frame_store.dart
 lib/src/services/device_agent_tool_gateway.dart
 lib/src/services/device_tool_transport.dart
+lib/src/services/device_page_state_resolver.dart
+lib/src/services/device_test_runner.dart
+lib/src/services/device_test_report_store.dart
 lib/src/device_screen_controller.dart
 lib/src/presentation/device_screen_panel.dart
+lib/src/presentation/device_test_run_panel.dart
 test/android_debug_bridge_test.dart
 test/device_agent_tool_gateway_test.dart
 test/device_screen_controller_test.dart
 test/device_screen_panel_test.dart
+test/device_page_state_resolver_test.dart
+test/device_test_runner_test.dart
 ```
 
 ### 6.1 `AndroidDebugBridge`
@@ -303,6 +316,26 @@ M0 必须在真实 App Server turn 中选定并验证一种产品传输，M1 不
 
 两种传输都使用相同工具 schema、设备租约和审批语义。M0 需要记录最终选择、版本约束、插件发现方式、进程归属、IPC 路径权限、图像 content 支持、App Server 重启恢复和打包签名方式。不得使用通用 shell、自动发送 steer 或解析自然语言输出作为产品传输。
 
+### 6.7 `DeviceTestRunner` 与 `DevicePageStateResolver`
+
+`DeviceTestRunner` 负责测试用例生命周期，不直接执行 ADB：
+
+- 校验用例版本、目标 package、测试环境、数据准备动作和风险权限。
+- 同一设备串行运行测试；多设备可以各自持有独立 run，但共享 Device Broker 并发上限。
+- 通过 Agent Tool Gateway 执行观察和操作，沿用相同设备租约、Provider 授权和逐次确认策略。
+- 区分 `passed`、`failed`、`blocked`、`environmentError`、`cancelled`，不把设备断连或测试数据缺失误报为产品缺陷。
+- 为每一步保存开始/结束时间、动作、断言、前后 frame id 和失败证据。
+- 用户停止、设备切换、授权撤销或高风险动作阻塞时取消剩余步骤。
+
+`DevicePageStateResolver` 把页面识别从测试步骤中抽离：
+
+- 页面状态由 package/activity、稳定 resource id、关键节点状态、可选脱敏文字和可选图像锚点共同定义。
+- 先用确定性信号解析页面；只有信号不足时才请求 Codex 视觉判断，并在报告中标注视觉断言及置信边界。
+- 页面定义拥有稳定 id 和版本；测试用例引用 page id，不复制易漂移的坐标序列。
+- 页面间导航表示为有向边，每条边声明前置状态、动作、后置状态、超时和恢复策略。
+
+`DeviceTestReportStore` 输出机器可读 JSON 和 JUnit XML，并可生成面向用户的 Markdown 摘要。测试截图、UI 层级和可选录屏保持本地；只有明确标记为模型分析的帧才按第 10.1 节发送给当前 Provider。
+
 ## 7. 详细数据流
 
 ### 7.1 发现与选择设备
@@ -402,6 +435,89 @@ UI 层级读取只能使用本次会话的 shell 临时文件或标准输出，�
 - 用户在手机上手动操作导致画面偏离基准时，Agent 放弃旧计划，从新画面重新开始。
 - 每次批准绑定 `sessionId + serial + actionId + frameId + 精确参数`；其中任一值变化都必须重新批准。
 
+### 7.8 实时真机测试执行
+
+测试用例使用带版本号的声明式文件，建议扩展名为 `.device-test.yaml`。Runner 启动前先完整校验，不允许执行到中途才发现未知动作。示例：
+
+```yaml
+version: 1
+name: 登录失败时提示验证码为空
+target:
+  package: com.example.app.debug
+  environment: test
+setup:
+  fixture: logged_out_user
+entry:
+  page: login
+steps:
+  - id: submit_without_code
+    action:
+      tap_node: login_submit
+    expect:
+      page: login
+      text_exists: 验证码不能为空
+    timeout_ms: 5000
+```
+
+执行流程：
+
+1. **预检**：确认设备、package、构建类型、测试环境和控制模式；只有用例允许 Agent 视觉回退时才要求 Provider 授权。
+2. **准备**：加载允许的测试 fixture、账号会话和初始路由；禁止使用生产凭据。
+3. **到达入口**：按第 7.9 节选择 Deep Link、测试路由、检查点恢复或真实导航。
+4. **逐步执行**：每一步都走观察—操作—验证闭环，实时显示当前步骤和耗时。
+5. **断言**：优先验证 package/activity、page id、resource id、enabled/selected 等确定性状态；文字和视觉断言作为补充。
+6. **失败处理**：捕获失败帧、已脱敏 UI 摘要、实际页面状态和有限的应用日志，不盲目继续后续步骤。
+7. **报告**：生成用例结果、步骤时间线、期望/实际差异、frame id 和本地证据路径。
+
+上述 YAML Runner 是 Agent 黑盒真机测试引擎。已有 Flutter `integration_test` 继续作为互补引擎：由用户显式启动、应用侧受控进程运行器执行 `flutter test integration_test ... -d <serial>`，Runner 面板读取机器输出并关联本地 scrcpy 监督画面。它不通过 Agent Device Gateway 模拟点击，也不会因为正在录屏就把画面提交给模型。
+
+支持的第一批断言：
+
+| 断言 | 语义 |
+| --- | --- |
+| `page` | 当前页面状态 id 与期望一致 |
+| `node_exists` / `node_absent` | 指定稳定节点存在或不存在 |
+| `node_enabled` / `node_selected` | 节点交互状态符合预期 |
+| `text_exists` / `text_absent` | 已授权、已脱敏的可见文字符合预期 |
+| `activity` | 当前 Android activity 符合预期 |
+| `screen_changed` | 与基准帧相比发生超过阈值的变化 |
+| `visual_region` | 指定区域满足经版本管理的视觉基线；必须记录容差和设备规格 |
+
+scrcpy 或应用内预览只负责让用户实时监督，不作为唯一断言来源。Runner 面板显示“第 N/M 步”、当前动作、等待原因、最近断言和停止按钮；可选 scrcpy 录屏保存在本地，除非用户显式附加，否则不提交给模型。
+
+package/activity、UI 节点和页面状态断言默认在本地 Runner 内完成，不需要发送截图或 UI 文字给模型。只有确定性信号无法解析且用例允许 `agent_visual_fallback` 时，Runner 才在现有 Provider 授权范围内提交对应关键帧，并在报告中标记该步骤使用了模型判断。
+
+测试等待使用条件轮询而不是固定长 `sleep`：在步骤超时内观察页面状态、节点和帧稳定性；网络加载时间单独记录。单个断言失败默认停止当前用例，是否继续下一条用例由测试集策略决定。
+
+### 7.9 深层页面导航与恢复
+
+深层页面采用“直接入口优先、状态图导航兜底”的策略，避免每条测试从首页重复经过十几层页面：
+
+1. **Deep Link / App Link**：优先使用产品已有且对测试环境安全的深链。
+2. **测试专用路由**：仅 Debug/Test 构建暴露带签名或随机会话令牌的测试入口，Release 构建必须不存在或拒绝访问。
+3. **固定 fixture**：预置测试账号、权限和业务数据，使目标页面具备可复现前置条件。
+4. **页面状态图**：没有直接入口时，从已确认页面沿版本化导航边逐层进入；每层都验证后置 page id，不执行盲目坐标脚本。
+5. **检查点恢复**：从最近的可重建逻辑检查点重新准备状态；检查点描述账号、fixture、入口和页面状态，不保存不可移植的进程内存快照。
+
+每个深层功能至少保留两类测试：
+
+- **完整旅程测试**：从真实用户入口走完整路径，验证导航、权限和前置流程本身。
+- **目标页面测试**：通过受控直接入口到达深层页面，集中验证该页面的状态、交互和错误分支。
+
+页面状态图示例：
+
+```text
+home ──tap wallet──> wallet_list ──tap BTC──> asset_detail
+                                              │
+                                     tap withdraw
+                                              ▼
+                                      withdraw_form
+```
+
+如果出现已知弹窗，Resolver 先把它识别为显式 overlay 状态，再按测试策略关闭或标记阻塞；未知弹窗、页面指纹不匹配或用户手动改变页面时，废弃旧导航计划并重新解析当前位置。自动恢复设置最大次数，默认一次，避免在错误流程中循环。
+
+测试数据准备和清理属于独立白名单能力。`pm clear`、卸载、切换账号、修改权限和服务端数据重置只能作用于用户明确登记的测试 package/environment，并需要单独确认；生产 package、生产账号和未知签名一律拒绝。测试专用 Deep Link、fixture 和重置入口不得进入 Release 构建。
+
 ## 8. Agent 可见性边界
 
 “画面出现在应用里”不等于“Codex 在当前 turn 中自动看见画面”。方案提供两条路径：
@@ -438,6 +554,8 @@ UI 层级读取只能使用本次会话的 shell 临时文件或标准输出，�
 - 面板关闭后 2 秒内停止调度，不保留活动 Timer。
 - 设备切换后旧帧不得出现在新设备会话中。
 - 未被 Composer 或时间线引用的临时帧最多保留 3 张。
+- 测试 Runner 的步骤状态在动作或断言完成后 200 毫秒内更新到 UI；视频预览延迟不计入断言耗时。
+- 深层目标页面存在直接入口时，准备并到达入口的 P95 目标小于 10 秒；状态图真实导航单独统计各步骤耗时。
 
 模型提交不按固定 FPS 触发。若后续提供变化检测，只有感知哈希超过阈值且用户开启相应模式时才生成候选关键帧。
 
@@ -453,6 +571,8 @@ UI 层级读取只能使用本次会话的 shell 临时文件或标准输出，�
 首次使用模型分析前必须显示当前 Provider 名称、将发送的数据种类（截图，以及用户可选的已脱敏 UI 文字）和本地保留策略，并取得绑定 `device serial + Provider id + account/config identity` 的会话授权。Provider、账号或有效配置变化时授权立即失效；本地预览不会自动获得模型分析授权。
 
 `device_observe` 只有在模型分析授权有效时才能返回图像 content。默认不共享 UI 节点原始文本；密码节点始终脱敏。用户可以维护禁止模型观察的 package 列表，进入锁屏、系统凭据、支付或禁止 package 时 Gateway 停止返回帧并要求用户手动继续。界面和 README 必须说明：即使图片不写入日志，提交给模型仍属于向当前 Provider 发送数据。
+
+测试报告、失败截图、UI 摘要、应用日志和录屏默认只保存在本机的测试运行目录，按 run id 隔离并提供明确删除入口。报告导出前显示所含数据类型；任何证据只有在用户显式附加到对话后才进入模型 Provider。测试账号、fixture 密钥和服务端重置令牌不得写入报告。
 
 ### 10.2 动作授权
 
@@ -506,6 +626,10 @@ UI 层级读取只能使用本次会话的 shell 临时文件或标准输出，�
 | 帧租约已失效 | 工具引用的 frame id 已释放或过期 | 重新观察，不复用旧路径 |
 | 操作无变化 | 命令成功但后置帧未变化 | 重新分析，不自动重复点击 |
 | 高风险动作 | 命中确认或禁止规则 | 请求用户确认或拒绝执行 |
+| 测试入口不可用 | Deep Link/测试路由不存在或构建不允许 | 回退到状态图导航或标记 blocked |
+| 页面无法解析 | 页面指纹不足、冲突或出现未知 overlay | 停止当前步骤并保存失败证据 |
+| 测试数据不满足 | fixture、账号或服务端前置条件缺失 | 标记 environmentError，不计为产品断言失败 |
+| 测试断言失败 | 页面已稳定但实际状态不满足期望 | 标记 failed，保存期望/实际差异 |
 | App Server 发送失败 | `turn/start` / `turn/steer` 失败 | 保留截图附件，允许再次发送 |
 
 自动重试只用于短暂抓帧失败，采用有上限的退避；`unauthorized` 和“ADB 未找到”不做无意义重试。
@@ -531,6 +655,10 @@ UI 层级读取只能使用本次会话的 shell 临时文件或标准输出，�
 - 文本输入严格字符白名单、空格 keyevent 拆分，以及所有 Shell 元字符拒绝。
 - Provider/账号/配置变化会撤销模型观察授权，禁止 package 和 password 节点不泄漏内容。
 - 全局自动审批不能授予设备租约或放宽 Device Broker 沙箱。
+- 测试用例 schema、未知动作拒绝、超时、取消和失败分类。
+- 页面状态指纹冲突、导航图环路、最大恢复次数和检查点重建。
+- Deep Link/Test Route 只允许登记的测试 package、构建类型和环境。
+- 报告证据按 run 隔离、敏感字段脱敏、保留期限和显式清理。
 
 测试不得依赖真实 ADB 或真实手机，通过可注入的 Process Runner 和临时目录完成。
 
@@ -544,6 +672,8 @@ UI 层级读取只能使用本次会话的 shell 临时文件或标准输出，�
 - 运行中任务使用待发送方向栏，而不是直接自动 steer。
 - 切换项目或任务不会错误带入另一设备会话的截图。
 - 窄窗口、面板边界、悬停延迟、窗口关闭和异步回调后的生命周期。
+- 测试步骤实时进度、当前等待原因、失败证据、取消和报告入口。
+- 深层页面入口失败时展示回退路径，不能静默从首页执行不同流程。
 
 ### 12.3 集成与人工验证
 
@@ -558,6 +688,9 @@ UI 层级读取只能使用本次会话的 shell 临时文件或标准输出，�
 - 在全局“帮我批准”开启时运行直接 adb、复制/改名 adb、ADB Server 连接、scrcpy 控制和 Broker socket 绕过测试，全部失败。
 - 切换模型 Provider 后，旧观察授权失效；本地预览继续工作但模型无法取得新帧。
 - 连续执行超过 10 个动作，确认 Agent 前后帧在消费前可读、turn 结束后得到释放。
+- 用 Deep Link 和页面状态图分别到达同一深层页面，确认每层后置状态均被验证。
+- 运行一条完整旅程测试和一条目标页面测试，确认失败分类、检查点恢复和 JSON/JUnit 报告一致。
+- 在 Release 构建验证测试专用路由、fixture 重置和危险数据清理入口不可用。
 
 按仓库约定，实施提交前运行：
 
@@ -612,7 +745,19 @@ flutter test
 
 退出条件：用户手动干预、旋转或弹出意外对话框时能停止旧计划；连续控制可随时撤销且无迟到动作。
 
-### M3：低频应用内预览与 scrcpy 监督
+### M3：实时真机测试与深层页面
+
+- 实现版本化 `.device-test.yaml` 解析、预检、步骤执行、条件等待和失败分类。
+- 实现 DevicePageStateResolver、页面状态图和最多一次自动恢复。
+- 支持 Deep Link、仅测试构建路由、固定 fixture 和逻辑检查点。
+- 支持确定性节点/页面断言及带标记的视觉断言。
+- 提供 Flutter `integration_test` 外部运行适配器，实时展示机器输出，并与 Agent 黑盒用例明确区分。
+- 实时显示步骤进度、等待原因和失败证据，导出 JSON、JUnit XML 和 Markdown 摘要。
+- 每个深层功能保留至少一条完整旅程测试，其余目标页面用例优先走受控直接入口。
+
+退出条件：一条至少五层导航的完整旅程和一组直接进入目标页面的用例均可重复运行；入口失败能正确回退或标记 blocked；测试数据问题不会误报为产品失败；Release 构建不存在可用的测试后门。
+
+### M4：低频应用内预览与 scrcpy 监督
 
 - 增加 1～4 FPS 预览、去重、后台暂停与故障熔断。
 - 支持在独立 scrcpy 窗口中监督 Agent 操作，并只管理应用自身启动的进程。
@@ -621,7 +766,7 @@ flutter test
 
 退出条件：无并发抓帧堆积、无临时文件增长、面板关闭后无活动调度。
 
-### M4：流畅内嵌预览与增强控制
+### M5：流畅内嵌预览与增强控制
 
 - 对原生 H.264 插件和固定版本 scrcpy protocol 完成技术选型。
 - 实现 Flutter Texture/Platform View 的低延迟预览。
@@ -651,6 +796,20 @@ M1 完成时，下列场景必须成立：
 16. 包含 Shell 元字符、任意 Unicode 或未支持字符的文本输入会被 Gateway 拒绝，不会到达 Android 远端 Shell。
 17. 工具返回的前后帧在 App Server 消费前不会被清理，turn 结束或明确释放后能够回收。
 
+M3 完成时，下列测试场景必须成立：
+
+1. 用户选择一条结构化用例后能实时看到当前步骤、动作、等待原因、断言和耗时。
+2. 同一深层页面既能从完整用户旅程到达，也能通过仅测试构建开放的受控入口快速到达。
+3. 每层导航都验证 page id；中间页面不符合预期时不会继续执行后续坐标动作。
+4. 直接入口不可用时按用例策略回退到状态图，无法安全回退时标记 blocked，而不是误报 failed。
+5. 从逻辑检查点恢复会重新准备账号、fixture 和入口，不复用未知的进程内存或过期坐标。
+6. 断言失败输出期望/实际差异、失败 frame id、已脱敏 UI 摘要和步骤时间线。
+7. 设备断连和测试数据缺失报告为 environmentError；无法安全到达目标入口报告为 blocked；产品断言不满足报告为 failed。
+8. JSON、JUnit XML 和 Markdown 报告中的用例状态及耗时一致。
+9. 测试报告和录屏默认只保存在本地，只有显式附加后才发送给当前模型 Provider。
+10. Release 构建不能调用测试路由、fixture 重置、`pm clear` 或其他测试专用后门。
+11. Flutter `integration_test` 的机器输出可以实时显示和归档，但不会自动触发 Agent 视觉分析或上传 scrcpy 录屏。
+
 ## 15. 风险与待验证事项
 
 - `screencap` 在部分厂商设备或高分辨率设备上可能超过目标延迟，需要用实测决定是否默认缩放。
@@ -661,7 +820,10 @@ M1 完成时，下列场景必须成立：
 - 同一 macOS 用户下隔离 ADB Server、USB 与工具 IPC 需要真实沙箱验证；静态命令字符串拦截不能视为安全边界。
 - 视觉或 UI 节点无法可靠判断动作业务风险，因此连续控制只适用于确定性本地白名单，其他动作保持逐次确认。
 - 模型分析帧和可选 UI 文字会发送给当前 Provider；Provider 的实际数据处理和保留策略必须在授权界面如实展示或链接说明。
-- `screenrecord` 原始流可能存在时长限制、旋转重启和首帧延迟；M4 之前必须验证，不能把它视为已确定方案。
+- 深层测试入口和 fixture 若缺少构建隔离，可能成为生产后门；Release 构建必须有自动化反向验证。
+- 页面状态图会随产品导航演进，需要版本化指纹、失效提示和维护责任人，不能依赖永久坐标。
+- 视觉断言容易受字体、系统主题、动态内容和设备规格影响，必须限定设备矩阵、区域和容差。
+- `screenrecord` 原始流可能存在时长限制、旋转重启和首帧延迟；M5 之前必须验证，不能把它视为已确定方案。
 - scrcpy server protocol 不是 Codex Desk 的稳定公共依赖；若选择该方向必须固定版本并建立兼容测试。
 - App Server 本地工具扩展或 MCP 伴随进程必须在 M0 完成验证和冻结；验证失败会阻塞 M1 Agent 控制能力。
 
@@ -669,4 +831,4 @@ M1 完成时，下列场景必须成立：
 
 先交付 M0 的两项硬门槛：冻结真实 App Server 工具传输，并证明 Codex 通用命令无法绕过 Device Broker。通过后再进入 M1，用 ADB 打通“观察当前帧 → Codex 判断 → 用户授权操作 → 后置截图验证”的最短可靠路径。任何一项隔离验证失败，都只交付本地预览和 UI 逐次操作，不开放 Agent 连续控制。
 
-随后增加 UI 层级辅助、有限步连续控制和低频监督预览。只有在真实使用证明需要更高帧率、Unicode 或更低输入延迟时，再投入原生视频解码与固定版本 scrcpy 控制协议。该顺序优先交付 Agent 真正可用的手机操作闭环，同时保留升级为完整设备工作台的架构空间。
+随后增加 UI 层级辅助、有限步连续控制，再建立实时真机测试 Runner 和深层页面状态图；流畅预览不作为测试执行的前置条件。只有在真实使用证明需要更高帧率、Unicode 或更低输入延迟时，再投入原生视频解码与固定版本 scrcpy 控制协议。该顺序优先交付 Agent 真正可用的手机操作与测试闭环，同时保留升级为完整设备工作台的架构空间。

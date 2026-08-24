@@ -979,6 +979,11 @@ class CodexController extends ChangeNotifier {
   /// "thinking" fallback instead of inventing a more specific explanation.
   LiveTurnActivity? get activeLiveActivity => _activeLiveActivity;
 
+  /// 当前运行中 turn 的起始时刻；仅用于实时显示已处理时长，不会持久化。
+  /// Start time for the active turn, used only for the live elapsed display
+  /// and never persisted.
+  DateTime? get activeTurnStartedAt => _activeTurnStartedAt;
+
   /// 指示当前是否可以安全切换本地项目。
   /// Indicates whether it is safe to switch the local workspace.
   bool get canChooseWorkspace =>
@@ -3698,7 +3703,7 @@ class CodexController extends ChangeNotifier {
   void _appendTurnElapsed(JsonMap turn) {
     final duration = _turnDuration(turn);
     if (duration == null) return;
-    _add(TimelineKind.elapsed, '已处理 ${_formatTurnDuration(duration)}', '');
+    _add(TimelineKind.elapsed, '耗时 ${_formatTurnDuration(duration)}', '');
   }
 
   Duration? _turnDuration(JsonMap turn) {

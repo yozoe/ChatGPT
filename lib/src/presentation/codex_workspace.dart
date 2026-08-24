@@ -238,6 +238,9 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
           _controller.status != RuntimeStatus.running &&
           _controller.fileChanges.isNotEmpty,
       activeActivity: _controller.activeLiveActivity,
+      activeTurnStartedAt: _controller.status == RuntimeStatus.running
+          ? _controller.activeTurnStartedAt
+          : null,
       isThinking:
           _controller.status == RuntimeStatus.running &&
           _controller.activeLiveActivity == null,
@@ -5173,6 +5176,7 @@ class _TimelinePageData {
     required this.turnDiff,
     required this.showFileChangeSummary,
     required this.activeActivity,
+    required this.activeTurnStartedAt,
     required this.isThinking,
   });
 
@@ -5181,6 +5185,7 @@ class _TimelinePageData {
   final String? turnDiff;
   final bool showFileChangeSummary;
   final LiveTurnActivity? activeActivity;
+  final DateTime? activeTurnStartedAt;
   final bool isThinking;
 }
 
@@ -5218,6 +5223,7 @@ class _ConversationTimeline extends StatelessWidget {
     final timelineItems = _conversationTimelineItems(data.entries);
     final liveActivity = active ? data.activeActivity : null;
     final isThinking = active && data.isThinking && liveActivity == null;
+    final activeTurnStartedAt = active ? data.activeTurnStartedAt : null;
     return ListView.separated(
       key: PageStorageKey('conversation-timeline-${pageKey.storageKey}'),
       controller: scrollController,
@@ -5235,12 +5241,18 @@ class _ConversationTimeline extends StatelessWidget {
         if (index >= timelineItems.length) {
           var tailIndex = index - timelineItems.length;
           if (liveActivity != null && tailIndex-- == 0) {
-            return liveActivity.kind == 'commandExecution'
-                ? _LiveCommandRow(command: liveActivity.detail)
-                : _LiveActivityRow(activity: liveActivity);
+            return _LiveTurnProgress(
+              startedAt: activeTurnStartedAt,
+              child: liveActivity.kind == 'commandExecution'
+                  ? _LiveCommandRow(command: liveActivity.detail)
+                  : _LiveActivityRow(activity: liveActivity),
+            );
           }
           if (isThinking && tailIndex-- == 0) {
-            return const _LiveThinkingRow();
+            return _LiveTurnProgress(
+              startedAt: activeTurnStartedAt,
+              child: const _LiveThinkingRow(),
+            );
           }
           if (!data.showFileChangeSummary || tailIndex != 0) {
             throw StateError('Unexpected conversation timeline item index.');
@@ -5255,6 +5267,14 @@ class _ConversationTimeline extends StatelessWidget {
           );
         }
         final item = timelineItems[index];
+        if (item.completedTurnEntries case final entries?) {
+          return _CompletedTurnDisclosure(
+            key: ValueKey('completed-turn-disclosure-${item.entryIndex}'),
+            duration: item.entry!,
+            entries: entries,
+            workspacePath: pageKey.workspace,
+          );
+        }
         if (item.activities case final activities?) {
           final activityId = item.entryIndex.toString();
           return _TimelineActivityList(
@@ -10520,35 +10540,100 @@ List<_ConversationTimelineItem> _conversationTimelineItems(
   List<TimelineEntry> entries,
 ) {
   final items = <_ConversationTimelineItem>[];
-  var index = 0;
-  while (index < entries.length) {
+  final pendingTurnEntries = <_IndexedTimelineEntry>[];
+
+  void flushPendingTurnEntries() {
+    if (pendingTurnEntries.isEmpty) return;
+    _appendStandardTimelineItems(items, pendingTurnEntries);
+    pendingTurnEntries.clear();
+  }
+
+  for (var index = 0; index < entries.length; index++) {
     final entry = entries[index];
     // 旧版缓存可能仍含逐文件的协议记录。文件变更会由专用摘要卡片
     // 和审查入口呈现，不应占据会话流。
     // Older caches may retain per-file protocol records. File changes are
     // presented by the dedicated summary card and review entry instead.
     if (entry.title == '文件变更') {
-      index++;
       continue;
     }
-    if (!_isActivityEntry(entry)) {
+    if (entry.kind == TimelineKind.user) {
+      flushPendingTurnEntries();
       items.add(_ConversationTimelineItem.entry(entry, index));
+      continue;
+    }
+    if (entry.kind == TimelineKind.elapsed) {
+      // App Server emits the final agent message before the turn duration.
+      // Keep that last answer, approvals, and errors outside the disclosure:
+      // collapsing elapsed details must never hide the user-visible outcome or
+      // a decision/audit record.
+      final finalAgentIndex = pendingTurnEntries.lastIndexWhere(
+        (item) => item.entry.kind == TimelineKind.agent,
+      );
+      final processEntries = <_IndexedTimelineEntry>[];
+      final visibleEntries = <_IndexedTimelineEntry>[];
+      for (
+        var pendingIndex = 0;
+        pendingIndex < pendingTurnEntries.length;
+        pendingIndex++
+      ) {
+        final item = pendingTurnEntries[pendingIndex];
+        final staysVisible =
+            pendingIndex == finalAgentIndex ||
+            item.entry.kind == TimelineKind.approval ||
+            item.entry.kind == TimelineKind.error;
+        (staysVisible ? visibleEntries : processEntries).add(item);
+      }
+      // Keep audit records and the final answer at their original position
+      // relative to the duration. Moving them after the disclosure would make
+      // an approval or error that happened during the turn look post-completion.
+      _appendStandardTimelineItems(items, visibleEntries);
+      if (processEntries.isEmpty) {
+        items.add(_ConversationTimelineItem.entry(entry, index));
+      } else {
+        items.add(
+          _ConversationTimelineItem.completedTurn(
+            entry,
+            processEntries.map((item) => item.entry).toList(growable: false),
+            index,
+          ),
+        );
+      }
+      pendingTurnEntries.clear();
+      continue;
+    }
+    pendingTurnEntries.add(_IndexedTimelineEntry(entry, index));
+  }
+  flushPendingTurnEntries();
+  return items;
+}
+
+/// Adds uncompleted entries to the timeline, retaining compact tool groups.
+void _appendStandardTimelineItems(
+  List<_ConversationTimelineItem> items,
+  List<_IndexedTimelineEntry> entries,
+) {
+  var index = 0;
+  while (index < entries.length) {
+    final indexedEntry = entries[index];
+    if (!_isActivityEntry(indexedEntry.entry)) {
+      items.add(
+        _ConversationTimelineItem.entry(
+          indexedEntry.entry,
+          indexedEntry.entryIndex,
+        ),
+      );
       index++;
       continue;
     }
     final activities = <TimelineEntry>[];
-    final firstIndex = index;
-    while (index < entries.length && _isActivityEntry(entries[index])) {
-      if (entries[index].title != '文件变更') {
-        activities.add(entries[index]);
-      }
+    final firstIndex = indexedEntry.entryIndex;
+    while (index < entries.length && _isActivityEntry(entries[index].entry)) {
+      activities.add(entries[index].entry);
       index++;
     }
-    if (activities.isNotEmpty) {
-      items.add(_ConversationTimelineItem.activities(activities, firstIndex));
-    }
+    items.add(_ConversationTimelineItem.activities(activities, firstIndex));
   }
-  return items;
 }
 
 bool _isActivityEntry(TimelineEntry entry) =>
@@ -10556,14 +10641,150 @@ bool _isActivityEntry(TimelineEntry entry) =>
 
 class _ConversationTimelineItem {
   const _ConversationTimelineItem.entry(this.entry, this.entryIndex)
-    : activities = null;
+    : activities = null,
+      completedTurnEntries = null;
 
   const _ConversationTimelineItem.activities(this.activities, this.entryIndex)
-    : entry = null;
+    : entry = null,
+      completedTurnEntries = null;
+
+  const _ConversationTimelineItem.completedTurn(
+    this.entry,
+    this.completedTurnEntries,
+    this.entryIndex,
+  ) : activities = null;
 
   final TimelineEntry? entry;
   final List<TimelineEntry>? activities;
+  final List<TimelineEntry>? completedTurnEntries;
   final int entryIndex;
+}
+
+/// Couples a timeline entry to its stable source index while it is grouped.
+class _IndexedTimelineEntry {
+  const _IndexedTimelineEntry(this.entry, this.entryIndex);
+
+  final TimelineEntry entry;
+  final int entryIndex;
+}
+
+/// A completed turn's duration pill and its disclosure content, matching the
+/// Codex desktop timeline where the duration controls the turn details.
+class _CompletedTurnDisclosure extends StatefulWidget {
+  const _CompletedTurnDisclosure({
+    required this.duration,
+    required this.entries,
+    required this.workspacePath,
+    super.key,
+  });
+
+  final TimelineEntry duration;
+  final List<TimelineEntry> entries;
+  final String? workspacePath;
+
+  @override
+  State<_CompletedTurnDisclosure> createState() =>
+      _CompletedTurnDisclosureState();
+}
+
+class _CompletedTurnDisclosureState extends State<_CompletedTurnDisclosure> {
+  var _expanded = true;
+  final _collapsedActivityGroups = <int>{};
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final detailItems = <_ConversationTimelineItem>[];
+    _appendStandardTimelineItems(
+      detailItems,
+      widget.entries.indexed
+          .map((item) => _IndexedTimelineEntry(item.$2, item.$1))
+          .toList(growable: false),
+    );
+    return Semantics(
+      container: true,
+      button: true,
+      expanded: _expanded,
+      label: widget.duration.title,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              key: const Key('completed-turn-disclosure-toggle'),
+              onTap: () => setState(() => _expanded = !_expanded),
+              borderRadius: BorderRadius.circular(10),
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(7, 4, 5, 4),
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color: palette.active.withValues(alpha: 0.72),
+                  ),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      widget.duration.title,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: palette.muted,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 3),
+                    Icon(
+                      _expanded
+                          ? Icons.keyboard_arrow_down
+                          : Icons.keyboard_arrow_right,
+                      size: 16,
+                      color: palette.muted,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          if (_expanded && detailItems.isNotEmpty) ...[
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: Divider(height: 1),
+            ),
+            const SizedBox(height: 14),
+            for (var index = 0; index < detailItems.length; index++) ...[
+              _completedTurnDetail(detailItems[index]),
+              if (index != detailItems.length - 1) const SizedBox(height: 14),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _completedTurnDetail(_ConversationTimelineItem item) {
+    if (item.activities case final activities?) {
+      final activityId = item.entryIndex;
+      return _TimelineActivityList(
+        key: ValueKey('completed-turn-activity-$activityId'),
+        entries: activities,
+        // Expanding the turn should immediately reveal its operation rows,
+        // matching the Codex duration disclosure. The nested summary remains
+        // independently collapsible for long command/tool sequences.
+        expanded: !_collapsedActivityGroups.contains(activityId),
+        onExpandedChanged: (expanded) {
+          setState(() {
+            if (expanded) {
+              _collapsedActivityGroups.remove(activityId);
+            } else {
+              _collapsedActivityGroups.add(activityId);
+            }
+          });
+        },
+      );
+    }
+    return _TimelineEntry(item.entry!, workspacePath: widget.workspacePath);
+  }
 }
 
 class _TimelineActivityList extends StatelessWidget {
@@ -11009,6 +11230,123 @@ class _LiveActivityShimmerState extends State<_LiveActivityShimmer>
       },
     );
   }
+}
+
+/// 在任务运行期间每秒更新“已处理”时长，完成后由固定的“耗时”记录替代。
+/// Updates the in-progress “processed” time each second; completion replaces
+/// it with the permanent “duration” timeline record.
+class _LiveElapsedRow extends StatefulWidget {
+  const _LiveElapsedRow({required this.startedAt});
+
+  final DateTime startedAt;
+
+  @override
+  State<_LiveElapsedRow> createState() => _LiveElapsedRowState();
+}
+
+class _LiveElapsedRowState extends State<_LiveElapsedRow> {
+  late final Timer _timer;
+  late int _elapsedSeconds;
+
+  @override
+  void initState() {
+    super.initState();
+    _elapsedSeconds = _initialElapsedSeconds();
+    // Initialize eagerly: a `late` field initializer would not start this
+    // timer until the field was first read, which previously happened only in
+    // dispose and left the visible counter unchanged.
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      final measuredSeconds = _initialElapsedSeconds();
+      if (measuredSeconds == _elapsedSeconds) return;
+      // Timer callbacks can be skipped while the app is suspended or the UI
+      // isolate is busy. Deriving the value from the start time catches up on
+      // the next callback without over-counting if delayed callbacks bunch up.
+      setState(() => _elapsedSeconds = measuredSeconds);
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _LiveElapsedRow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.startedAt != widget.startedAt) {
+      _elapsedSeconds = _initialElapsedSeconds();
+    }
+  }
+
+  int _initialElapsedSeconds() {
+    final elapsed = DateTime.now().difference(widget.startedAt).inSeconds;
+    return elapsed < 0 ? 0 : elapsed;
+  }
+
+  @override
+  void dispose() {
+    _timer.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final label =
+        '已处理 ${_formatLiveElapsedDuration(Duration(seconds: _elapsedSeconds))}';
+    return Semantics(
+      key: const Key('live-elapsed-row'),
+      label: label,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(2, 2, 6, 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.timer_outlined, size: 17, color: palette.muted),
+            const SizedBox(width: 9),
+            Text(
+              label,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: palette.muted,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Keeps the live action and its elapsed counter together so both stay visible
+/// at the tail of a lazily built conversation list.
+class _LiveTurnProgress extends StatelessWidget {
+  const _LiveTurnProgress({required this.startedAt, required this.child});
+
+  final DateTime? startedAt;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      child,
+      if (startedAt != null) ...[
+        const SizedBox(height: 5),
+        _LiveElapsedRow(startedAt: startedAt!),
+      ],
+    ],
+  );
+}
+
+/// Formats a live duration without giving the running state a final outcome.
+String _formatLiveElapsedDuration(Duration duration) {
+  final seconds = duration.inSeconds;
+  final hours = seconds ~/ Duration.secondsPerHour;
+  final minutes =
+      (seconds % Duration.secondsPerHour) ~/ Duration.secondsPerMinute;
+  final remainingSeconds = seconds % Duration.secondsPerMinute;
+  final parts = <String>[];
+  if (hours > 0) parts.add('$hours 小时');
+  if (minutes > 0 || hours > 0) parts.add('$minutes 分钟');
+  parts.add('$remainingSeconds 秒');
+  return parts.join(' ');
 }
 
 /// A quiet, live turn indicator shown while Codex is deciding its next step.

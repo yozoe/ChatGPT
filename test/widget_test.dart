@@ -3287,7 +3287,7 @@ void main() {
     expect(controller.activeTurnId, isNull);
     expect(
       controller.entries.map((entry) => '${entry.title}:${entry.detail}'),
-      containsAll(['执行命令:dart test\nAll tests passed', '已处理 1 分钟 3 秒:']),
+      containsAll(['执行命令:dart test\nAll tests passed', '耗时 1 分钟 3 秒:']),
     );
 
     controller.handleServerEventForTesting(
@@ -3569,6 +3569,7 @@ void main() {
       ),
     );
 
+    expect(controller.activeTurnStartedAt, isNotNull);
     await tester.pumpWidget(
       MaterialApp(home: CodexWorkspace(controller: controller)),
     );
@@ -3576,6 +3577,20 @@ void main() {
     expect(find.byKey(const Key('live-command-row')), findsOneWidget);
     expect(find.byKey(const Key('live-command-shimmer')), findsOneWidget);
     expect(find.byKey(const Key('live-thinking-row')), findsNothing);
+    expect(find.byKey(const Key('live-elapsed-row')), findsOneWidget);
+    expect(find.text('已处理 0 秒'), findsOneWidget);
+    expect(
+      tester
+          .widget<Semantics>(find.byKey(const Key('live-elapsed-row')))
+          .properties
+          .liveRegion,
+      isNot(isTrue),
+    );
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 1100)),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('已处理 1 秒'), findsOneWidget);
 
     controller.handleServerEventForTesting(
       const ServerEvent(
@@ -3610,7 +3625,113 @@ void main() {
 
     expect(find.byKey(const Key('live-command-row')), findsNothing);
     expect(find.byKey(const Key('live-thinking-row')), findsNothing);
-    expect(find.text('已处理 1 分钟 3 秒'), findsOneWidget);
+    expect(find.text('耗时 1 分钟 3 秒'), findsOneWidget);
+    expect(find.text('已运行了命令'), findsOneWidget);
+    expect(find.text('已运行 /bin/zsh -lc dart test'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'elapsed disclosure hides process details but keeps the final answer visible',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1400, 1200));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final controller = CodexController(server: CodexAppServer());
+      controller.replaceTimelineEntriesForTesting([
+        TimelineEntry(
+          kind: TimelineKind.user,
+          title: '你',
+          detail: '请完成任务',
+          createdAt: DateTime(2026),
+        ),
+        TimelineEntry(
+          kind: TimelineKind.command,
+          title: '执行命令',
+          detail: 'flutter analyze\nNo issues found',
+          createdAt: DateTime(2026, 1, 1, 0, 0, 1),
+        ),
+        TimelineEntry(
+          kind: TimelineKind.approval,
+          title: '已批准命令',
+          detail: 'flutter analyze',
+          createdAt: DateTime(2026, 1, 1, 0, 0, 2),
+        ),
+        TimelineEntry(
+          kind: TimelineKind.agent,
+          title: 'Codex',
+          detail: '任务已经完成。',
+          createdAt: DateTime(2026, 1, 1, 0, 0, 3),
+        ),
+        TimelineEntry(
+          kind: TimelineKind.elapsed,
+          title: '耗时 4 秒',
+          detail: '',
+          createdAt: DateTime(2026, 1, 1, 0, 0, 4),
+        ),
+      ]);
+
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      expect(find.text('已运行 flutter analyze'), findsOneWidget);
+      expect(find.text('No issues found'), findsNothing);
+      expect(
+        tester.getTopLeft(find.text('已批准命令')).dy,
+        lessThan(tester.getTopLeft(find.text('耗时 4 秒')).dy),
+      );
+      expect(
+        tester.getTopLeft(find.text('任务已经完成。')).dy,
+        lessThan(tester.getTopLeft(find.text('耗时 4 秒')).dy),
+      );
+
+      await tester.tap(
+        find.byKey(const Key('completed-turn-disclosure-toggle')),
+      );
+      await tester.pump();
+
+      expect(find.text('已运行 flutter analyze'), findsNothing);
+      expect(find.text('已批准命令'), findsOneWidget);
+      expect(find.text('任务已经完成。'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('renders a plain duration when a turn has no process details', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer());
+    controller.replaceTimelineEntriesForTesting([
+      TimelineEntry(
+        kind: TimelineKind.user,
+        title: '你',
+        detail: '请直接回答',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.agent,
+        title: 'Codex',
+        detail: '这是直接回答。',
+        createdAt: DateTime(2026, 1, 1, 0, 0, 1),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.elapsed,
+        title: '耗时 1 秒',
+        detail: '',
+        createdAt: DateTime(2026, 1, 1, 0, 0, 2),
+      ),
+    ]);
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(find.text('这是直接回答。'), findsOneWidget);
+    expect(find.text('耗时 1 秒'), findsOneWidget);
+    expect(
+      find.byKey(const Key('completed-turn-disclosure-toggle')),
+      findsNothing,
+    );
     await tester.pumpWidget(const SizedBox());
   });
 
