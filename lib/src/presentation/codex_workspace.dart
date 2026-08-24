@@ -7249,49 +7249,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
 
   Future<void> _showImagePreview(String path) async {
     if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      barrierColor: Colors.black87,
-      builder: (dialogContext) => Dialog(
-        key: const Key('composer-image-preview-dialog'),
-        backgroundColor: Colors.black,
-        insetPadding: const EdgeInsets.all(24),
-        child: Stack(
-          children: [
-            InteractiveViewer(
-              minScale: 0.5,
-              maxScale: 5,
-              child: Image.file(
-                File(path),
-                key: const Key('composer-image-preview'),
-                fit: BoxFit.contain,
-                errorBuilder: (context, error, stackTrace) => const SizedBox(
-                  width: 420,
-                  height: 260,
-                  child: Center(
-                    child: Icon(
-                      Icons.broken_image_outlined,
-                      color: Colors.white54,
-                      size: 56,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            Positioned(
-              top: 8,
-              right: 8,
-              child: IconButton(
-                tooltip: '关闭预览',
-                color: Colors.white,
-                onPressed: () => Navigator.pop(dialogContext),
-                icon: const Icon(Icons.close),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+    await _showLocalImagePreview(context, path);
   }
 
   Future<void> _editGoal() async {
@@ -8089,6 +8047,492 @@ class _AddMenuRow extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// 为 Composer 附件和会话图片打开同一套沉浸式本地图片预览。
+/// Opens the same immersive local-image preview for Composer and timeline images.
+Future<void> _showLocalImagePreview(BuildContext context, String path) async {
+  if (!context.mounted) return;
+  await showGeneralDialog<void>(
+    context: context,
+    barrierDismissible: true,
+    barrierLabel: '关闭图片预览',
+    barrierColor: Colors.black.withValues(alpha: 0.88),
+    transitionDuration: MediaQuery.disableAnimationsOf(context)
+        ? Duration.zero
+        : const Duration(milliseconds: 140),
+    transitionBuilder: (context, animation, secondaryAnimation, child) =>
+        FadeTransition(opacity: animation, child: child),
+    pageBuilder: (dialogContext, animation, secondaryAnimation) =>
+        _LocalImagePreview(
+          key: const Key('composer-image-preview-dialog'),
+          path: path,
+          onOpenExternally: () => _openLocalImageExternally(context, path),
+          onSaveCopy: () => _saveLocalImageCopy(context, path),
+        ),
+  );
+}
+
+Future<void> _openLocalImageExternally(
+  BuildContext context,
+  String path,
+) async {
+  try {
+    final opened = await launchUrl(
+      Uri.file(path),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!opened && context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('无法在默认应用中打开图片。')));
+    }
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('无法在默认应用中打开图片。')));
+    }
+  }
+}
+
+Future<void> _saveLocalImageCopy(BuildContext context, String path) async {
+  try {
+    final extension = path.split('.').last.toLowerCase();
+    final segments = path
+        .split(Platform.pathSeparator)
+        .where((segment) => segment.isNotEmpty)
+        .toList(growable: false);
+    final location = await getSaveLocation(
+      suggestedName: segments.isEmpty ? path : segments.last,
+      acceptedTypeGroups: [
+        XTypeGroup(
+          label: '图片',
+          extensions: _isImagePath(path) ? [extension] : const [],
+        ),
+      ],
+      confirmButtonText: '保存图片',
+    );
+    if (location == null) return;
+    await XFile(path).saveTo(location.path);
+    if (context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('图片已保存。')));
+    }
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('无法保存图片。')));
+    }
+  }
+}
+
+/// Codex 风格的沉浸式本地图片预览，缩放状态只属于当前预览生命周期。
+/// Codex-style immersive local-image preview whose zoom state is local to this route.
+class _LocalImagePreview extends StatefulWidget {
+  const _LocalImagePreview({
+    required this.path,
+    required this.onOpenExternally,
+    required this.onSaveCopy,
+    super.key,
+  });
+
+  final String path;
+  final Future<void> Function() onOpenExternally;
+  final Future<void> Function() onSaveCopy;
+
+  @override
+  State<_LocalImagePreview> createState() => _LocalImagePreviewState();
+}
+
+class _LocalImagePreviewState extends State<_LocalImagePreview> {
+  static const _minimumActualScale = 0.1;
+  static const _maximumActualScale = 5.0;
+  static const _zoomFactor = 1.25;
+  static const _controlSurface = Color(0xFF252525);
+  static const _controlRaised = Color(0xFF383838);
+  static const _controlInk = Color(0xFFE7E7E7);
+  static const _controlMuted = Color(0xFFA8A8A8);
+
+  final TransformationController _transformationController =
+      TransformationController();
+  late final ImageStreamListener _imageStreamListener;
+  ImageStream? _imageStream;
+  Size? _imagePixelSize;
+  Size _viewportSize = Size.zero;
+  double _minimumTransformScale = 0.1;
+  double _maximumTransformScale = 5;
+  double _scale = 1;
+
+  @override
+  void initState() {
+    super.initState();
+    _imageStreamListener = ImageStreamListener(
+      _handleImageFrame,
+      // The visible Image widget owns the broken-image fallback. This second
+      // listener only observes intrinsic dimensions and must not surface the
+      // same file failure as an uncaught framework error.
+      onError: (error, stackTrace) {},
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _resolveImageSize();
+  }
+
+  @override
+  void didUpdateWidget(covariant _LocalImagePreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.path != widget.path) _resolveImageSize();
+  }
+
+  @override
+  void dispose() {
+    _imageStream?.removeListener(_imageStreamListener);
+    _transformationController.dispose();
+    super.dispose();
+  }
+
+  void _resolveImageSize() {
+    final stream = FileImage(
+      File(widget.path),
+    ).resolve(createLocalImageConfiguration(context));
+    if (_imageStream?.key == stream.key) return;
+    _imageStream?.removeListener(_imageStreamListener);
+    _imageStream = stream..addListener(_imageStreamListener);
+  }
+
+  void _handleImageFrame(ImageInfo info, bool synchronousCall) {
+    final next = Size(
+      info.image.width.toDouble(),
+      info.image.height.toDouble(),
+    );
+    if (_imagePixelSize == next) return;
+    if (synchronousCall) {
+      _imagePixelSize = next;
+    } else if (mounted) {
+      setState(() => _imagePixelSize = next);
+    }
+  }
+
+  void _close() => Navigator.of(context).pop();
+
+  void _setScale(double value) {
+    final next = value
+        .clamp(_minimumTransformScale, _maximumTransformScale)
+        .toDouble();
+    if (_viewportSize.isEmpty) {
+      _transformationController.value = Matrix4.diagonal3Values(next, next, 1);
+    } else {
+      final viewportCenter = _viewportSize.center(Offset.zero);
+      final sceneCenter = _transformationController.toScene(viewportCenter);
+      _transformationController.value = Matrix4.identity()
+        ..translateByDouble(viewportCenter.dx, viewportCenter.dy, 0, 1)
+        ..scaleByDouble(next, next, 1, 1)
+        ..translateByDouble(-sceneCenter.dx, -sceneCenter.dy, 0, 1);
+    }
+    setState(() => _scale = next);
+  }
+
+  void _zoomIn() => _setScale(_scale * _zoomFactor);
+
+  void _zoomOut() => _setScale(_scale / _zoomFactor);
+
+  void _resetScale() {
+    _transformationController.value = Matrix4.identity();
+    setState(() => _scale = 1);
+  }
+
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.escape) {
+      _close();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.equal || key == LogicalKeyboardKey.add) {
+      _zoomIn();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.minus ||
+        key == LogicalKeyboardKey.numpadSubtract) {
+      _zoomOut();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.digit0 &&
+        (HardwareKeyboard.instance.isMetaPressed ||
+            HardwareKeyboard.instance.isControlPressed)) {
+      _resetScale();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      type: MaterialType.transparency,
+      child: Focus(
+        autofocus: true,
+        onKeyEvent: _handleKeyEvent,
+        child: Semantics(
+          scopesRoute: true,
+          namesRoute: true,
+          explicitChildNodes: true,
+          label: '图片预览',
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _close,
+            child: SafeArea(
+              minimum: const EdgeInsets.all(16),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  _viewportSize = Size(
+                    math.max(0, constraints.maxWidth - 16),
+                    math.max(0, constraints.maxHeight - 124),
+                  );
+                  final pixelSize = _imagePixelSize;
+                  final baseScale =
+                      pixelSize == null ||
+                          pixelSize.isEmpty ||
+                          _viewportSize.isEmpty
+                      ? 1.0
+                      : math.min(
+                          1.0,
+                          math.min(
+                            _viewportSize.width / pixelSize.width,
+                            _viewportSize.height / pixelSize.height,
+                          ),
+                        );
+                  _minimumTransformScale = math.min(
+                    1.0,
+                    _minimumActualScale / baseScale,
+                  );
+                  _maximumTransformScale = math.max(
+                    1.0,
+                    _maximumActualScale / baseScale,
+                  );
+                  final zoomPercent = '${(baseScale * _scale * 100).round()}%';
+                  return Stack(
+                    children: [
+                      Positioned.fill(
+                        top: 58,
+                        bottom: 66,
+                        left: 8,
+                        right: 8,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () {},
+                          onDoubleTap: _scale == 1
+                              ? () => _setScale(2)
+                              : _resetScale,
+                          child: InteractiveViewer(
+                            key: const Key('composer-image-interactive-viewer'),
+                            transformationController: _transformationController,
+                            alignment: Alignment.topLeft,
+                            minScale: _minimumTransformScale,
+                            maxScale: _maximumTransformScale,
+                            onInteractionUpdate: (_) {
+                              final next = _transformationController.value
+                                  .getMaxScaleOnAxis()
+                                  .clamp(
+                                    _minimumTransformScale,
+                                    _maximumTransformScale,
+                                  )
+                                  .toDouble();
+                              if ((next - _scale).abs() < 0.001) return;
+                              setState(() => _scale = next);
+                            },
+                            child: SizedBox.expand(
+                              child: Image.file(
+                                File(widget.path),
+                                key: const Key('composer-image-preview'),
+                                fit: BoxFit.contain,
+                                errorBuilder: (context, error, stackTrace) =>
+                                    const Center(
+                                      child: Icon(
+                                        Icons.broken_image_outlined,
+                                        color: Colors.white54,
+                                        size: 56,
+                                      ),
+                                    ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        top: 0,
+                        right: 0,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _ImagePreviewAction(
+                              key: const Key('composer-image-open-button'),
+                              tooltip: '在默认应用中打开',
+                              icon: Icons.edit_outlined,
+                              onPressed: widget.onOpenExternally,
+                            ),
+                            const SizedBox(width: 8),
+                            _ImagePreviewAction(
+                              key: const Key('composer-image-save-button'),
+                              tooltip: '保存图片副本',
+                              icon: Icons.file_download_outlined,
+                              onPressed: widget.onSaveCopy,
+                            ),
+                            const SizedBox(width: 8),
+                            _ImagePreviewAction(
+                              key: const Key('composer-image-close-button'),
+                              tooltip: '关闭预览',
+                              icon: Icons.close,
+                              onPressed: _close,
+                            ),
+                          ],
+                        ),
+                      ),
+                      Positioned(
+                        bottom: 0,
+                        left: 0,
+                        right: 0,
+                        child: Center(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: _controlSurface,
+                              borderRadius: BorderRadius.circular(28),
+                              border: Border.all(color: Colors.white12),
+                              boxShadow: const [
+                                BoxShadow(
+                                  color: Colors.black38,
+                                  blurRadius: 18,
+                                  offset: Offset(0, 7),
+                                ),
+                              ],
+                            ),
+                            child: Padding(
+                              padding: const EdgeInsets.all(4),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  _ImagePreviewZoomButton(
+                                    key: const Key('composer-image-zoom-out'),
+                                    tooltip: '缩小',
+                                    icon: Icons.remove,
+                                    onPressed:
+                                        _scale <= _minimumTransformScale + 0.001
+                                        ? null
+                                        : _zoomOut,
+                                  ),
+                                  SizedBox(
+                                    width: 70,
+                                    child: Text(
+                                      zoomPercent,
+                                      key: const Key(
+                                        'composer-image-zoom-label',
+                                      ),
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(
+                                        color: _controlInk,
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600,
+                                        fontFeatures: [
+                                          FontFeature.tabularFigures(),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                  _ImagePreviewZoomButton(
+                                    key: const Key('composer-image-zoom-in'),
+                                    tooltip: '放大',
+                                    icon: Icons.add,
+                                    onPressed:
+                                        _scale >= _maximumTransformScale - 0.001
+                                        ? null
+                                        : _zoomIn,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ImagePreviewAction extends StatelessWidget {
+  const _ImagePreviewAction({
+    required this.tooltip,
+    required this.icon,
+    required this.onPressed,
+    super.key,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final FutureOr<void> Function() onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        color: _LocalImagePreviewState._controlSurface,
+        shape: BoxShape.circle,
+      ),
+      child: IconButton(
+        tooltip: tooltip,
+        constraints: const BoxConstraints.tightFor(width: 48, height: 48),
+        color: _LocalImagePreviewState._controlInk,
+        hoverColor: Colors.white12,
+        focusColor: const Color(0x336AA9DA),
+        onPressed: onPressed,
+        icon: Icon(icon, size: 22),
+      ),
+    );
+  }
+}
+
+class _ImagePreviewZoomButton extends StatelessWidget {
+  const _ImagePreviewZoomButton({
+    required this.tooltip,
+    required this.icon,
+    required this.onPressed,
+    super.key,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: tooltip,
+      constraints: const BoxConstraints.tightFor(width: 44, height: 44),
+      style: IconButton.styleFrom(
+        backgroundColor: _LocalImagePreviewState._controlRaised,
+        disabledBackgroundColor: _LocalImagePreviewState._controlRaised,
+      ),
+      color: _LocalImagePreviewState._controlInk,
+      disabledColor: _LocalImagePreviewState._controlMuted.withValues(
+        alpha: 0.38,
+      ),
+      hoverColor: Colors.white12,
+      onPressed: onPressed,
+      icon: Icon(icon, size: 21),
     );
   }
 }
@@ -11517,15 +11961,27 @@ class _TimelineImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(10),
-      child: Image.file(
-        File(path),
-        key: ValueKey('timeline-image-$path'),
-        width: 180,
-        height: 130,
-        fit: BoxFit.cover,
-        errorBuilder: (_, _, _) => const SizedBox.shrink(),
+    return Semantics(
+      button: true,
+      label: '打开图片预览',
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          key: ValueKey('timeline-image-preview-$path'),
+          behavior: HitTestBehavior.opaque,
+          onTap: () => unawaited(_showLocalImagePreview(context, path)),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: Image.file(
+              File(path),
+              key: ValueKey('timeline-image-$path'),
+              width: 180,
+              height: 130,
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => const SizedBox.shrink(),
+            ),
+          ),
+        ),
       ),
     );
   }

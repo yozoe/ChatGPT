@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:chatgpt/src/app.dart';
@@ -2922,7 +2924,8 @@ void main() {
     await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
     await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
 
     expect(
       find.byKey(const Key('composer-attachment-/tmp/copied.png')),
@@ -2945,6 +2948,24 @@ void main() {
   testWidgets('retains pasted screenshots for the timeline', (tester) async {
     const channel = MethodChannel('codex_desk/clipboard');
     const imagePath = '/tmp/CodexDeskClipboard/clipboard-image-42.png';
+    final imageProvider = FileImage(File(imagePath));
+    final recorder = ui.PictureRecorder();
+    ui.Canvas(recorder).drawRect(
+      const Rect.fromLTWH(0, 0, 1024, 1024),
+      Paint()..color = Colors.blue,
+    );
+    final picture = recorder.endRecording();
+    final testImage = await picture.toImage(1024, 1024);
+    picture.dispose();
+    PaintingBinding.instance.imageCache.putIfAbsent(
+      imageProvider,
+      () => OneFrameImageStreamCompleter(
+        Future.value(ImageInfo(image: testImage)),
+      ),
+    );
+    addTearDown(() {
+      PaintingBinding.instance.imageCache.evict(imageProvider);
+    });
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
     var deleteCalls = 0;
@@ -2981,11 +3002,10 @@ void main() {
     await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
     await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
 
-    final screenshotChip = find.byKey(
-      const Key('composer-attachment-$imagePath'),
-    );
+    final screenshotChip = find.byKey(Key('composer-attachment-$imagePath'));
     expect(screenshotChip, findsOneWidget);
     expect(
       find.descendant(
@@ -2995,20 +3015,65 @@ void main() {
       findsOneWidget,
     );
     await tester.tap(find.byKey(const Key('composer-image-thumbnail')));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
     expect(
       find.byKey(const Key('composer-image-preview-dialog')),
       findsOneWidget,
     );
     expect(find.byKey(const Key('composer-image-preview')), findsOneWidget);
-    tester
-        .widget<IconButton>(
-          find.byWidgetPredicate(
-            (widget) => widget is IconButton && widget.tooltip == '关闭预览',
-          ),
-        )
-        .onPressed!();
-    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('composer-image-interactive-viewer')),
+      findsOneWidget,
+    );
+    final viewerFinder = find.byKey(
+      const Key('composer-image-interactive-viewer'),
+    );
+    final viewportSize = tester.getSize(viewerFinder);
+    final fittedScale = math.min(
+      1.0,
+      math.min(viewportSize.width / 1024, viewportSize.height / 1024),
+    );
+    final fittedPercent = (fittedScale * 100).round();
+    expect(find.byKey(const Key('composer-image-open-button')), findsOneWidget);
+    expect(find.byKey(const Key('composer-image-save-button')), findsOneWidget);
+    expect(
+      find.byKey(const Key('composer-image-close-button')),
+      findsOneWidget,
+    );
+    expect(find.text('$fittedPercent%'), findsOneWidget);
+    expect(fittedPercent, lessThan(100));
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.byKey(const Key('composer-image-zoom-in')));
+    await tester.pump();
+    expect(find.text('${(fittedScale * 125).round()}%'), findsOneWidget);
+    await tester.drag(viewerFinder, const Offset(-60, -40));
+    await tester.pump();
+    final transformationController = tester
+        .widget<InteractiveViewer>(viewerFinder)
+        .transformationController!;
+    final viewportCenter = viewportSize.center(Offset.zero);
+    final sceneCenterBeforeZoom = transformationController.toScene(
+      viewportCenter,
+    );
+    await tester.tap(find.byKey(const Key('composer-image-zoom-in')));
+    await tester.pump();
+    final sceneCenterAfterZoom = transformationController.toScene(
+      viewportCenter,
+    );
+    expect(sceneCenterAfterZoom.dx, closeTo(sceneCenterBeforeZoom.dx, 0.01));
+    expect(sceneCenterAfterZoom.dy, closeTo(sceneCenterBeforeZoom.dy, 0.01));
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.digit0);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump();
+    expect(find.text('$fittedPercent%'), findsOneWidget);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
     expect(
       find.byKey(const Key('composer-image-preview-dialog')),
       findsNothing,
@@ -3039,9 +3104,24 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
     expect(deleteCalls, 0);
+    expect(find.byKey(ValueKey('timeline-image-$imagePath')), findsOneWidget);
+    await tester.tap(find.byKey(ValueKey('timeline-image-preview-$imagePath')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
     expect(
-      find.byKey(const ValueKey('timeline-image-$imagePath')),
+      find.byKey(const Key('composer-image-preview-dialog')),
       findsOneWidget,
+    );
+    expect(find.text('$fittedPercent%'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('composer-image-zoom-out')));
+    await tester.pump();
+    expect(find.text('${(fittedScale * 80).round()}%'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('composer-image-close-button')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(
+      find.byKey(const Key('composer-image-preview-dialog')),
+      findsNothing,
     );
 
     await tester.pumpWidget(const SizedBox());
