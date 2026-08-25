@@ -303,6 +303,10 @@ class CodexControllerNotifier extends Notifier<CodexController> {
 /// 应用的协调层：维护运行时、工作区、任务历史与实时 App Server 事件。
 /// Application coordinator for runtime, workspaces, task history, and live App Server events.
 class CodexController extends ChangeNotifier {
+  static const _welcomeTitle = '欢迎使用 Codex Desk';
+  static const _welcomeDetail =
+      '选择本地项目后启动 Codex App Server。模型、Provider 与凭据由 Codex 配置管理。';
+
   CodexController({
     CodexAppServer? server,
     RuntimeConfigurationStore? runtimeConfigurationStore,
@@ -325,13 +329,7 @@ class CodexController extends ChangeNotifier {
     _pluginStore =
         pluginStore ??
         CodexPluginStore(executableProvider: _server.resolveExecutable);
-    _entries.add(
-      _entry(
-        TimelineKind.system,
-        '欢迎使用 Codex Desk',
-        '选择本地项目后启动 Codex App Server。模型、Provider 与凭据由 Codex 配置管理。',
-      ),
-    );
+    _entries.add(_entry(TimelineKind.system, _welcomeTitle, _welcomeDetail));
     _runtimeLoad = _loadRuntimeConfiguration();
     _workspaceLoad = _loadWorkspace();
     _historyLoad = _loadConversationHistory();
@@ -6277,10 +6275,15 @@ class CodexController extends ChangeNotifier {
     _conversationViewRevision++;
     _clearFileChanges();
     if (_entries.isEmpty) return;
-    final welcome = _entries.first;
-    _entries
-      ..clear()
-      ..add(welcome);
+    final welcomeIndex = _entries.indexWhere(
+      (entry) =>
+          entry.kind == TimelineKind.system &&
+          entry.title == _welcomeTitle &&
+          entry.detail == _welcomeDetail,
+    );
+    final welcome = welcomeIndex < 0 ? null : _entries[welcomeIndex];
+    _entries.clear();
+    if (welcome != null) _entries.add(welcome);
   }
 
   /// 使正在进行的线程刷新结果失效，并重置刷新状态。

@@ -33,7 +33,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:yeknom_ui_kit/yeknom_workbench.dart';
+import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 
 class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
   String? workspace;
@@ -1003,7 +1003,29 @@ void main() {
       findsOneWidget,
     );
     expect(find.byKey(const Key('sidebar-plugins-button')), findsOneWidget);
-    expect(tester.widget<Text>(find.text('新对话')).style?.fontSize, 14);
+    expect(tester.widget<Text>(find.text('新对话')).style?.fontSize, 12);
+    expect(
+      tester
+          .widget<Icon>(
+            find.descendant(
+              of: find.byKey(const Key('sidebar-new-chat-button')),
+              matching: find.byIcon(Icons.edit_outlined),
+            ),
+          )
+          .size,
+      16,
+    );
+    expect(
+      tester
+          .widget<Icon>(
+            find.descendant(
+              of: find.byKey(const Key('task-search-button')),
+              matching: find.byIcon(Icons.search),
+            ),
+          )
+          .size,
+      17,
+    );
   });
 
   test('persists and cancels a scheduled prompt', () async {
@@ -1457,7 +1479,7 @@ void main() {
     },
   );
 
-  testWidgets('switches the UI Kit display mode from the theme menu', (
+  testWidgets('switches the project display mode from the theme menu', (
     tester,
   ) async {
     await tester.pumpWidget(const CodexDeskApp());
@@ -1638,8 +1660,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 1));
     expect(find.text('1 个任务'), findsOneWidget);
     expect(find.text('编辑项目'), findsOneWidget);
-    expect(tester.widget<Text>(find.text('1 个任务')).style?.fontSize, 14);
-    expect(tester.widget<Text>(find.text('编辑项目')).style?.fontSize, 14);
+    expect(tester.widget<Text>(find.text('1 个任务')).style?.fontSize, 12);
+    expect(tester.widget<Text>(find.text('编辑项目')).style?.fontSize, 12);
     // A project can receive new tasks after its count was first shown. Opening
     // its details again must reload the local cache instead of retaining 1.
     await tester.ensureVisible(secondTile);
@@ -2161,7 +2183,7 @@ void main() {
     );
     expect(
       tester.widget<TextField>(find.byKey(const Key('composer-field'))).style,
-      isA<TextStyle>().having((style) => style.fontSize, 'fontSize', 14),
+      isA<TextStyle>().having((style) => style.fontSize, 'fontSize', 13),
     );
 
     await tester.pumpWidget(const SizedBox());
@@ -3912,6 +3934,37 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  test('new thread discards the first user message from restored history', () {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    controller.replaceTimelineEntriesForTesting([
+      TimelineEntry(
+        kind: TimelineKind.user,
+        title: '你',
+        detail: '上一个任务的首条消息',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.agent,
+        title: 'Codex',
+        detail: '上一个任务的回复',
+        createdAt: DateTime(2026),
+      ),
+    ]);
+
+    controller.createThread();
+
+    expect(controller.entries, hasLength(1));
+    expect(controller.entries.single.kind, TimelineKind.system);
+    expect(controller.entries.single.title, '已新建任务');
+    expect(
+      controller.entries.map((entry) => entry.detail),
+      isNot(contains('上一个任务的首条消息')),
+    );
+    controller.dispose();
+  });
+
   test(
     'classifies server approval requests before JSON-RPC responses',
     () async {
@@ -4945,6 +4998,17 @@ void main() {
     expect(find.byKey(const Key('live-command-shimmer')), findsOneWidget);
     expect(find.byKey(const Key('live-thinking-row')), findsNothing);
     expect(find.byKey(const Key('live-elapsed-row')), findsOneWidget);
+    expect(find.byKey(const Key('live-elapsed-divider')), findsOneWidget);
+    final timeline = find.byKey(
+      const PageStorageKey<String>(
+        'conversation-timeline-no-workspace:thread-1',
+      ),
+    );
+    expect(timeline, findsOneWidget);
+    expect(
+      find.descendant(of: timeline, matching: find.byType(Divider)),
+      findsOneWidget,
+    );
     expect(find.text('已处理 0 秒'), findsOneWidget);
     expect(
       tester
@@ -5163,6 +5227,21 @@ void main() {
         tester.getTopLeft(find.text('任务已经完成。')).dy,
         lessThan(tester.getTopLeft(find.text('耗时 4 秒')).dy),
       );
+      final elapsedToggle = find.byKey(
+        const Key('completed-turn-disclosure-toggle'),
+      );
+      expect(
+        find.descendant(of: elapsedToggle, matching: find.byType(Container)),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const Key('completed-turn-disclosure-content')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('completed-turn-disclosure-divider')),
+        findsOneWidget,
+      );
 
       await tester.tap(find.text('已运行了命令'));
       await tester.pump();
@@ -5174,14 +5253,16 @@ void main() {
 
       expect(find.text('已运行 flutter analyze'), findsNothing);
 
-      await tester.tap(
-        find.byKey(const Key('completed-turn-disclosure-toggle')),
-      );
+      await tester.tap(elapsedToggle);
       await tester.pump();
 
       expect(find.text('已运行 flutter analyze'), findsNothing);
       expect(find.text('已批准命令'), findsOneWidget);
       expect(find.text('任务已经完成。'), findsOneWidget);
+      expect(
+        find.byKey(const Key('completed-turn-disclosure-divider')),
+        findsOneWidget,
+      );
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -9172,9 +9253,9 @@ void main() {
     final taskFilesLabel = tester.widget<Text>(
       find.descendant(of: cardFinder, matching: find.text('任务文件')),
     );
-    expect(environmentTitle.style?.fontSize, 18);
-    expect(changeLabel.style?.fontSize, 14);
-    expect(taskFilesLabel.style?.fontSize, 14);
+    expect(environmentTitle.style?.fontSize, 15);
+    expect(changeLabel.style?.fontSize, 13);
+    expect(taskFilesLabel.style?.fontSize, 13);
     expect(decoration.borderRadius, BorderRadius.circular(28));
     await tester.pumpWidget(const SizedBox());
   });

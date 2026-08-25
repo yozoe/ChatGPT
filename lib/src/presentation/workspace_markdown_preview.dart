@@ -6,9 +6,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 
 import '../services/agent_markdown_link.dart';
+import '../theme/yeknom_workbench.dart';
 
 const _maximumMarkdownBytes = 8 * 1024 * 1024;
 const _sourceLineExtent = 24.0;
@@ -793,18 +793,18 @@ class _ImageFallback extends StatelessWidget {
 MarkdownStyleSheet _markdownStyle(ThemeData theme, YeknomPalette palette) {
   final body = theme.textTheme.bodyMedium?.copyWith(
     color: palette.trace,
-    fontSize: 15,
-    height: 1.65,
+    fontSize: 13,
+    height: 1.55,
   );
   return MarkdownStyleSheet.fromTheme(theme).copyWith(
     p: body,
     pPadding: const EdgeInsets.only(bottom: 4),
-    h1: body?.copyWith(fontSize: 30, height: 1.25, fontWeight: FontWeight.w600),
-    h1Padding: const EdgeInsets.only(top: 8, bottom: 14),
-    h2: body?.copyWith(fontSize: 23, height: 1.3, fontWeight: FontWeight.w600),
-    h2Padding: const EdgeInsets.only(top: 18, bottom: 10),
-    h3: body?.copyWith(fontSize: 18, height: 1.35, fontWeight: FontWeight.w600),
-    h3Padding: const EdgeInsets.only(top: 14, bottom: 7),
+    h1: body?.copyWith(fontSize: 20, height: 1.25, fontWeight: FontWeight.w600),
+    h1Padding: const EdgeInsets.only(top: 8, bottom: 12),
+    h2: body?.copyWith(fontSize: 16, height: 1.3, fontWeight: FontWeight.w600),
+    h2Padding: const EdgeInsets.only(top: 16, bottom: 8),
+    h3: body?.copyWith(fontSize: 14, height: 1.35, fontWeight: FontWeight.w600),
+    h3Padding: const EdgeInsets.only(top: 12, bottom: 6),
     blockSpacing: 10,
     listIndent: 24,
     listBullet: body,

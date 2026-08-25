@@ -3,7 +3,7 @@ import 'package:chatgpt/src/theme_preferences_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:yeknom_ui_kit/yeknom_workbench.dart';
+import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 
 final class _MemoryThemeStore implements CodexThemePreferencesStore {
   final List<CodexThemePreferences> saved = [];

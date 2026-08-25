@@ -3,10 +3,10 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
-import 'package:yeknom_ui_kit/yeknom_workbench.dart';
+import '../theme/yeknom_workbench.dart';
 
-/// 用户选择的主题模式与 UI Kit 配色预设，可安全序列化到应用目录。
-/// User-selected theme mode and UI Kit preset, safely serializable in the app directory.
+/// 用户选择的主题模式与项目配色预设，可安全序列化到应用目录。
+/// User-selected theme mode and project-owned color preset, safely serializable in the app directory.
 @immutable
 final class CodexThemePreferences {
   const CodexThemePreferences({required this.mode, required this.preset});

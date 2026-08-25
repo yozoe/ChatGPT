@@ -42,11 +42,6 @@ dependencies:
   flutter_markdown_plus: ^1.0.7
   markdown: ^7.3.1
   url_launcher: ^6.3.2
-  yeknom_ui_kit:
-    git:
-      url: https://github.com/yozoe/yeknom-ui-kit.git
-      ref: dc1ee84289297c3e63867d94ea2a9d3122b2889f
-
 dev_dependencies:
   flutter_test:
     sdk: flutter

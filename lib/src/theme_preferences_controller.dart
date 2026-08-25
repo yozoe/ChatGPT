@@ -1,6 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/material.dart';
-import 'package:yeknom_ui_kit/yeknom_workbench.dart';
+import 'theme/yeknom_workbench.dart';
 
 import 'services/theme_preferences_store.dart';
 

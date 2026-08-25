@@ -2,12 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 
 import 'codex_hover_popup.dart';
 import 'presentation/codex_workspace.dart';
 import 'services/theme_preferences_store.dart';
 import 'theme_preferences_controller.dart';
+import 'theme/yeknom_workbench.dart';
 
 /// 挂载 Codex Desk 的根 Widget。
 /// Mounts the Codex Desk root widget.
@@ -72,8 +72,8 @@ class _CodexDeskAppViewState extends ConsumerState<_CodexDeskAppView> {
     unawaited(_updateThemePreferences(mode: value));
   }
 
-  /// 更新 UI Kit 配色预设，并重建明暗主题。
-  /// Updates the UI Kit color preset and rebuilds light and dark themes.
+  /// 更新项目内配色预设，并重建明暗主题。
+  /// Updates the project-owned color preset and rebuilds light and dark themes.
   void _setThemePreset(YeknomColorPreset value) {
     unawaited(_updateThemePreferences(preset: value));
   }

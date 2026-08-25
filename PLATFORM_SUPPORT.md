@@ -24,4 +24,4 @@ Codex Desk 当前仅支持 macOS 12.0 及以上版本。它依赖 macOS Keychain
 
 ## 结论
 
-云端 CI 已可通过固定 Git 提交获取 `yeknom_ui_kit`。在 macOS 正式发布并完成无障碍回归前，仍不启动 Windows/Linux 实现；跨平台工作应新建独立阶段，避免改变现有 macOS 的 Keychain 安全边界。
+云端 CI 已可通过项目内主题 Token 完成构建。在 macOS 正式发布并完成无障碍回归前，仍不启动 Windows/Linux 实现；跨平台工作应新建独立阶段，避免改变现有 macOS 的 Keychain 安全边界。

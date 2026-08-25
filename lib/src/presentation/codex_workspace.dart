@@ -15,7 +15,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:url_launcher/url_launcher.dart';
-import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 
 import '../app_controller.dart';
 import '../codex_hover_popup.dart';
@@ -33,6 +32,7 @@ import '../domain/timeline_entry.dart';
 import '../domain/workspace_configuration.dart';
 import '../services/agent_markdown_link.dart';
 import '../services/clipboard_file_reader.dart';
+import '../theme/yeknom_workbench.dart';
 import 'workspace_markdown_preview.dart';
 
 /// 仅根据常见扩展名决定附件是否应按图片预览；不读取文件内容。
@@ -2229,7 +2229,7 @@ class _CreateWorkspaceDialogState extends State<_CreateWorkspaceDialog> {
                         '创建项目',
                         style: Theme.of(context).textTheme.headlineSmall
                             ?.copyWith(
-                              fontSize: 34,
+                              fontSize: 24,
                               fontWeight: FontWeight.w700,
                               letterSpacing: -0.8,
                             ),
@@ -2241,7 +2241,7 @@ class _CreateWorkspaceDialogState extends State<_CreateWorkspaceDialog> {
                       onPressed: _creating
                           ? null
                           : () => Navigator.of(context).pop(),
-                      icon: const Icon(Icons.close, size: 25),
+                      icon: const Icon(Icons.close, size: 18),
                     ),
                   ],
                 ),
@@ -2255,7 +2255,7 @@ class _CreateWorkspaceDialogState extends State<_CreateWorkspaceDialog> {
                 Text(
                   '源文件夹',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontSize: 24,
+                    fontSize: 16,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
@@ -2310,7 +2310,7 @@ class _CreateWorkspaceDialogState extends State<_CreateWorkspaceDialog> {
                                       children: [
                                         Icon(
                                           Icons.folder_outlined,
-                                          size: 31,
+                                          size: 20,
                                           color: palette.trace,
                                         ),
                                         const SizedBox(height: 12),
@@ -2324,7 +2324,7 @@ class _CreateWorkspaceDialogState extends State<_CreateWorkspaceDialog> {
                                             overflow: TextOverflow.ellipsis,
                                             style: TextStyle(
                                               color: palette.trace,
-                                              fontSize: 20,
+                                              fontSize: 14,
                                               fontWeight: FontWeight.w600,
                                             ),
                                           ),
@@ -2347,7 +2347,7 @@ class _CreateWorkspaceDialogState extends State<_CreateWorkspaceDialog> {
                                                     .drive_folder_upload_outlined
                                               : Icons
                                                     .create_new_folder_outlined,
-                                          size: 31,
+                                          size: 20,
                                           color: palette.muted,
                                         ),
                                         const SizedBox(height: 13),
@@ -2358,7 +2358,7 @@ class _CreateWorkspaceDialogState extends State<_CreateWorkspaceDialog> {
                                           textAlign: TextAlign.center,
                                           style: TextStyle(
                                             color: palette.trace,
-                                            fontSize: 22,
+                                            fontSize: 14,
                                             fontWeight: FontWeight.w600,
                                           ),
                                         ),
@@ -2451,7 +2451,7 @@ class _WorkspaceNameField extends StatelessWidget {
             child: Center(
               child: Icon(
                 Icons.folder_outlined,
-                size: 29,
+                size: 20,
                 color: palette.trace,
               ),
             ),
@@ -2462,7 +2462,7 @@ class _WorkspaceNameField extends StatelessWidget {
               key: const Key('workspace-project-name-field'),
               controller: controller,
               textInputAction: TextInputAction.done,
-              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w500),
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
               decoration: InputDecoration(
                 // The surrounding container owns the field border. Explicitly
                 // override every themed state border so the TextField cannot
@@ -2540,6 +2540,7 @@ class _WorkspaceSourcesCard extends StatelessWidget {
                     children: [
                       Icon(
                         Icons.create_new_folder_outlined,
+                        size: 18,
                         color: palette.muted,
                       ),
                       const SizedBox(width: 17),
@@ -2547,7 +2548,7 @@ class _WorkspaceSourcesCard extends StatelessWidget {
                         '添加文件夹',
                         style: TextStyle(
                           color: palette.trace,
-                          fontSize: 18,
+                          fontSize: 13,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -2584,7 +2585,7 @@ class _WorkspaceSourceRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 18),
       child: Row(
         children: [
-          Icon(Icons.folder_outlined, size: 27, color: palette.muted),
+          Icon(Icons.folder_outlined, size: 18, color: palette.muted),
           const SizedBox(width: 17),
           Expanded(
             child: Tooltip(
@@ -2593,7 +2594,7 @@ class _WorkspaceSourceRow extends StatelessWidget {
                 _workspaceDirectoryName(path),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 18, color: palette.trace),
+                style: TextStyle(fontSize: 13, color: palette.trace),
               ),
             ),
           ),
@@ -2613,7 +2614,7 @@ class _WorkspaceSourceRow extends StatelessWidget {
           IconButton(
             tooltip: primary ? '移除本地项目' : '移除源文件夹',
             onPressed: onRemove,
-            icon: const Icon(Icons.close, size: 24),
+            icon: const Icon(Icons.close, size: 18),
             color: palette.muted,
           ),
         ],
@@ -2765,7 +2766,7 @@ class _TopBar extends StatelessWidget {
                     key: const Key('workbench-file-changes-button'),
                     tooltip: '查看文件变更',
                     onPressed: onShowFileChanges,
-                    icon: const Icon(Icons.difference_outlined, size: 19),
+                    icon: const Icon(Icons.difference_outlined, size: 16),
                   ),
                 ],
                 if (showControls) ...[
@@ -3177,7 +3178,7 @@ class _SidebarWorkspaceTileState extends State<_SidebarWorkspaceTile> {
                     widget.active
                         ? Icons.folder_special_outlined
                         : Icons.folder_outlined,
-                    size: 19,
+                    size: 16,
                     color: widget.active ? palette.active : palette.muted,
                   ),
                   const SizedBox(width: 9),
@@ -3188,7 +3189,7 @@ class _SidebarWorkspaceTileState extends State<_SidebarWorkspaceTile> {
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         color: widget.active ? palette.trace : palette.muted,
-                        fontSize: 14,
+                        fontSize: 12,
                         fontWeight: widget.active
                             ? FontWeight.w600
                             : FontWeight.w500,
@@ -3205,7 +3206,7 @@ class _SidebarWorkspaceTileState extends State<_SidebarWorkspaceTile> {
                       widget.expanded
                           ? Icons.keyboard_arrow_down
                           : Icons.keyboard_arrow_right,
-                      size: 18,
+                      size: 16,
                     ),
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints.tightFor(
@@ -3223,7 +3224,7 @@ class _SidebarWorkspaceTileState extends State<_SidebarWorkspaceTile> {
                       ),
                       tooltip: '项目菜单',
                       onPressed: () => widget.onMore(context),
-                      icon: const Icon(Icons.more_horiz, size: 19),
+                      icon: const Icon(Icons.more_horiz, size: 16),
                       padding: EdgeInsets.zero,
                       constraints: const BoxConstraints.tightFor(
                         width: 28,
@@ -3239,7 +3240,7 @@ class _SidebarWorkspaceTileState extends State<_SidebarWorkspaceTile> {
                       onPressed: widget.canCreateTask
                           ? () => widget.onEdit(context)
                           : null,
-                      icon: const Icon(Icons.edit_outlined, size: 18),
+                      icon: const Icon(Icons.edit_outlined, size: 16),
                       padding: EdgeInsets.zero,
                       constraints: const BoxConstraints.tightFor(
                         width: 28,
@@ -3328,7 +3329,7 @@ class _WorkspaceDetailsCard extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(16, 4, 12, 4),
               child: Row(
                 children: [
-                  const Icon(Icons.folder_outlined, size: 25),
+                  const Icon(Icons.folder_outlined, size: 18),
                   const SizedBox(width: 11),
                   Expanded(
                     child: Text(
@@ -3337,7 +3338,7 @@ class _WorkspaceDetailsCard extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                        fontSize: 16,
+                        fontSize: 14,
                         fontWeight: FontWeight.w500,
                       ),
                     ),
@@ -3347,7 +3348,7 @@ class _WorkspaceDetailsCard extends StatelessWidget {
                     onPressed: onTogglePin,
                     icon: Icon(
                       pinned ? Icons.push_pin : Icons.push_pin_outlined,
-                      size: 22,
+                      size: 17,
                     ),
                     visualDensity: VisualDensity.compact,
                   ),
@@ -3371,12 +3372,12 @@ class _WorkspaceDetailsCard extends StatelessWidget {
                 padding: EdgeInsets.fromLTRB(16, 12, 16, 12),
                 child: Row(
                   children: [
-                    Icon(Icons.settings_outlined, size: 23),
+                    Icon(Icons.settings_outlined, size: 17),
                     SizedBox(width: 11),
                     Text(
                       '编辑项目',
                       style: TextStyle(
-                        fontSize: 14,
+                        fontSize: 12,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -3410,14 +3411,14 @@ class _WorkspaceDetailsRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
       child: Row(
         children: [
-          Icon(icon, size: 23),
+          Icon(icon, size: 17),
           const SizedBox(width: 11),
           Expanded(
             child: Text(
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 14),
+              style: const TextStyle(fontSize: 12),
             ),
           ),
         ],
@@ -3712,7 +3713,7 @@ class _TaskSearchResultTile extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                        fontSize: 16,
+                        fontSize: 13,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -3721,7 +3722,7 @@ class _TaskSearchResultTile extends StatelessWidget {
                       '${result.workspaceName} · ${result.providerLabel}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: palette.muted, fontSize: 13),
+                      style: TextStyle(color: palette.muted, fontSize: 12),
                     ),
                   ],
                 ),
@@ -3764,7 +3765,7 @@ class _TaskSearchActionTile extends StatelessWidget {
             children: [
               Icon(
                 icon,
-                size: 22,
+                size: 16,
                 color: enabled ? palette.trace : palette.faint,
               ),
               const SizedBox(width: 13),
@@ -3773,7 +3774,7 @@ class _TaskSearchActionTile extends StatelessWidget {
                   label,
                   style: TextStyle(
                     color: enabled ? palette.trace : palette.faint,
-                    fontSize: 16,
+                    fontSize: 13,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -3847,13 +3848,13 @@ class _SidebarMenuAction extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             child: Row(
               children: [
-                Icon(icon, size: 22, color: color),
+                Icon(icon, size: 16, color: color),
                 const SizedBox(width: 12),
                 Text(
                   label,
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: color,
-                    fontSize: 14,
+                    fontSize: 12,
                     fontWeight: FontWeight.w600,
                     letterSpacing: -0.2,
                   ),
@@ -4370,7 +4371,7 @@ class _SidebarState extends State<_Sidebar> {
                   key: const Key('task-search-button'),
                   tooltip: '搜索聊天',
                   onPressed: _showTaskSearch,
-                  icon: const Icon(Icons.search, size: 20),
+                  icon: const Icon(Icons.search, size: 17),
                 ),
                 IconButton(
                   key: const Key('sidebar-create-workspace-button'),
@@ -4379,14 +4380,14 @@ class _SidebarState extends State<_Sidebar> {
                   onPressed: controller.canChangePrimaryWorkspace
                       ? widget.onCreateWorkspace
                       : null,
-                  icon: const Icon(Icons.add, size: 19),
+                  icon: const Icon(Icons.add, size: 17),
                 ),
                 IconButton(
                   key: const Key('sidebar-manage-workspaces-button'),
                   tooltip: '管理工作区',
                   visualDensity: VisualDensity.compact,
                   onPressed: widget.onChooseWorkspace,
-                  icon: const Icon(Icons.tune, size: 18),
+                  icon: const Icon(Icons.tune, size: 16),
                 ),
               ],
             ),
@@ -4480,7 +4481,7 @@ class _SidebarState extends State<_Sidebar> {
                               children: [
                                 Icon(
                                   Icons.create_new_folder_outlined,
-                                  size: 19,
+                                  size: 16,
                                 ),
                                 SizedBox(width: 9),
                                 Expanded(child: Text('新建第一个工作区')),
@@ -4625,7 +4626,7 @@ class _SidebarState extends State<_Sidebar> {
             const SizedBox(height: 12),
             OutlinedButton.icon(
               onPressed: widget.onConfigureRuntime,
-              icon: const Icon(Icons.memory_outlined, size: 18),
+              icon: const Icon(Icons.memory_outlined, size: 16),
               label: const Text('Codex CLI'),
             ),
             const SizedBox(height: 8),
@@ -4633,7 +4634,7 @@ class _SidebarState extends State<_Sidebar> {
               onPressed: controller.workspacePath == null
                   ? null
                   : widget.onShowGitProject,
-              icon: const Icon(Icons.account_tree_outlined, size: 18),
+              icon: const Icon(Icons.account_tree_outlined, size: 16),
               label: const Text('Git 项目'),
             ),
             const SizedBox(height: 10),
@@ -4933,7 +4934,7 @@ class _FailedTurnRetryNotice extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(Icons.error_outline, size: 17, color: palette.fault),
+          Icon(Icons.error_outline, size: 15, color: palette.fault),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
@@ -4993,7 +4994,7 @@ class _ArchivedThreadNotice extends StatelessWidget {
         ),
         child: Row(
           children: [
-            Icon(Icons.inventory_2_outlined, size: 18, color: palette.trace),
+            Icon(Icons.inventory_2_outlined, size: 16, color: palette.trace),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -5242,10 +5243,16 @@ class _ConversationTimeline extends StatelessWidget {
           (activeTurnStartedAt == null ? 0 : 1) +
           (hasLiveStatus ? 1 : 0) +
           (data.showFileChangeSummary ? 1 : 0),
-      separatorBuilder: (_, _) => const Padding(
-        padding: EdgeInsets.symmetric(vertical: 14),
-        child: Divider(height: 1),
-      ),
+      separatorBuilder: (_, index) {
+        if (activeTurnStartedAt != null && index == liveElapsedIndex) {
+          return const Padding(
+            key: Key('live-elapsed-divider'),
+            padding: EdgeInsets.symmetric(vertical: 14),
+            child: Divider(height: 1),
+          );
+        }
+        return const SizedBox(height: 29);
+      },
       itemBuilder: (context, index) {
         if (activeTurnStartedAt != null && index == liveElapsedIndex) {
           return _LiveElapsedRow(startedAt: activeTurnStartedAt);
@@ -5462,7 +5469,11 @@ class _FileChangeSummaryCard extends StatelessWidget {
                     color: palette.field,
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: Icon(Icons.edit_note_outlined, color: palette.muted),
+                  child: Icon(
+                    Icons.edit_note_outlined,
+                    size: 16,
+                    color: palette.muted,
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -7492,7 +7503,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
                                 textInputAction: TextInputAction.newline,
                                 style: TextStyle(
                                   color: palette.trace,
-                                  fontSize: 14,
+                                  fontSize: 13,
                                 ),
                                 decoration: InputDecoration(
                                   hintText: '随心输入',
@@ -8726,7 +8737,7 @@ class _Inspector extends StatelessWidget {
                     '环境信息',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                       color: palette.muted,
-                      fontSize: 18,
+                      fontSize: 15,
                       fontWeight: FontWeight.w700,
                       letterSpacing: -0.35,
                     ),
@@ -8739,7 +8750,7 @@ class _Inspector extends StatelessWidget {
                       _fileChangeCountLabel(controller.fileChanges.length),
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         color: palette.active,
-                        fontSize: 14,
+                        fontSize: 13,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -8772,7 +8783,7 @@ class _Inspector extends StatelessWidget {
                     label: '比较分支',
                     trailing: Icon(
                       Icons.north_east,
-                      size: 20,
+                      size: 16,
                       color: palette.muted,
                     ),
                     onTap: onShowGitProject,
@@ -8833,13 +8844,13 @@ class _InspectorSectionHeader extends StatelessWidget {
     final palette = YeknomPalette.of(context);
     return Row(
       children: [
-        Icon(icon, size: 19, color: palette.trace),
+        Icon(icon, size: 16, color: palette.trace),
         const SizedBox(width: 12),
         Expanded(
           child: Text(
             label,
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              fontSize: 14,
+              fontSize: 13,
               fontWeight: FontWeight.w600,
               letterSpacing: -0.2,
             ),
@@ -8876,7 +8887,7 @@ class _InspectorActionRow extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 3),
         child: Row(
           children: [
-            Icon(icon, size: 19, color: palette.trace),
+            Icon(icon, size: 16, color: palette.trace),
             const SizedBox(width: 12),
             Expanded(
               child: Text(
@@ -8884,7 +8895,7 @@ class _InspectorActionRow extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  fontSize: 14,
+                  fontSize: 13,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -8909,7 +8920,7 @@ class _InspectorThreadRow extends StatelessWidget {
     final palette = YeknomPalette.of(context);
     return Row(
       children: [
-        Icon(Icons.forum_outlined, size: 18, color: palette.muted),
+        Icon(Icons.forum_outlined, size: 15, color: palette.muted),
         const SizedBox(width: 10),
         Expanded(
           child: Text(
@@ -11980,14 +11991,9 @@ class _CompletedTurnDisclosureState extends State<_CompletedTurnDisclosure> {
               key: const Key('completed-turn-disclosure-toggle'),
               onTap: () => setState(() => _expanded = !_expanded),
               borderRadius: BorderRadius.circular(10),
-              child: Container(
+              child: Padding(
+                key: const Key('completed-turn-disclosure-content'),
                 padding: const EdgeInsets.fromLTRB(7, 4, 5, 4),
-                decoration: BoxDecoration(
-                  border: Border.all(
-                    color: palette.active.withValues(alpha: 0.72),
-                  ),
-                  borderRadius: BorderRadius.circular(10),
-                ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -12011,11 +12017,13 @@ class _CompletedTurnDisclosureState extends State<_CompletedTurnDisclosure> {
               ),
             ),
           ),
-          if (_expanded && detailItems.isNotEmpty) ...[
+          if (detailItems.isNotEmpty)
             const Padding(
+              key: Key('completed-turn-disclosure-divider'),
               padding: EdgeInsets.only(top: 8),
               child: Divider(height: 1),
             ),
+          if (_expanded && detailItems.isNotEmpty) ...[
             const SizedBox(height: 14),
             for (var index = 0; index < detailItems.length; index++) ...[
               _completedTurnDetail(detailItems[index]),
@@ -12347,7 +12355,7 @@ class _ConversationStatusActivityRow extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(2, 3, 6, 3),
         child: Row(
           children: [
-            Icon(Icons.build_outlined, size: 17, color: statusColor),
+            Icon(Icons.build_outlined, size: 15, color: statusColor),
             const SizedBox(width: 9),
             Expanded(
               child: Text(
@@ -12540,7 +12548,7 @@ class _LiveActivityRow extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (icon != null) ...[
-              Icon(icon, size: 18, color: palette.muted),
+              Icon(icon, size: 16, color: palette.muted),
               const SizedBox(width: 9),
             ],
             Flexible(
@@ -12613,7 +12621,7 @@ class _LiveCommandRow extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(2, 3, 6, 3),
         child: Row(
           children: [
-            Icon(Icons.terminal_outlined, size: 18, color: palette.muted),
+            Icon(Icons.terminal_outlined, size: 16, color: palette.muted),
             const SizedBox(width: 9),
             Expanded(
               child: SelectionArea(
@@ -12789,7 +12797,7 @@ class _LiveElapsedRowState extends State<_LiveElapsedRow> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.timer_outlined, size: 17, color: palette.muted),
+            Icon(Icons.timer_outlined, size: 15, color: palette.muted),
             const SizedBox(width: 9),
             Text(
               label,

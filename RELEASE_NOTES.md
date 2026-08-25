@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- 调整截图风格的视觉层级：正文收紧到 12–13px，侧栏和辅助信息使用更低对比度灰色，Markdown 标题与正文不再过大过亮；侧栏、顶部工具栏、环境信息和活动状态图标同步缩小，关键发送/停止操作保持原有辨识度。八套兼容预设现在拥有可区分的强调色，浅色主题按钮会自动选择满足对比度的前景色。
+- 移除已完成任务“耗时”展开按钮的外圈描边，文字、箭头、圆角点击反馈与下方分割线保持不变。
+- 会话时间线现在只在“已处理 X 秒”和完成后可展开的“耗时”下方保留分割线；其他消息、活动和系统记录之间仅保留原有空白间距。
+- 修复从历史任务进入“新对话”后，上一任务的首条用户消息仍会出现在空白时间线的问题；新建任务现在只保留真正的内置欢迎项。
 - 修复运行中“已处理”计时器始终跟随最新活动停在会话底部的问题；计时器现在固定在本轮用户消息之后，流式回复、文件操作与命令状态会像 Codex 桌面端一样继续显示在其下方。
 - 修复刚发送的剪贴板截图可能立即提示“图片临时文件已经失效”的问题；临时图片现在由会话控制器统一持有并记录 Composer 保留计数，在当前/缓存时间线、排队方向、运行中提交或失败重试仍引用时，不会再因切换功能页、Composer 重建或控制器切换被提前删除；最后引用消失时即使 Composer 未挂载也会主动清理，避免长时间运行后累积临时文件。
 - 修复会话文件行的安全与渲染回归：文件在条目显示后被替换为项目外符号链接时，点击、Markdown 预览读取和外部打开均会重新校验并拒绝越界；普通链接不再丢失粗体、行内代码或链接图片等嵌套 Markdown 样式，链接内本地图片也会限制在当前项目并向读屏软件提供替代文本；助手回复在隐藏可见身份标签时保留读屏语义，延迟完成布局的文件行即使位于 Markdown 表格内，也会在用户仍停留底部时继续贴底。
@@ -153,6 +157,6 @@ Initial macOS release.
 - Package the Release application with `./build_dmg.sh`; unsigned output remains the default while Developer ID credentials are unavailable.
 - Search and filter read-only Git changes, with an explicit warning when a large Diff preview is truncated.
 - Show plugin-operation progress, actionable CLI failure details, and persistent runtime-restart feedback.
-- Resolve `yeknom_ui_kit` from a pinned Git commit and verify formatting, analysis, tests, and the macOS Debug build in GitHub Actions.
+- Migrate the workbench theme tokens into the project and remove the external UI kit dependency; the default dark palette now follows the Codex-style graphite surfaces and semantic status colors shown in the reference UI.
 - Support Developer ID signing, notarization, stapling, and Gatekeeper assessment in `build_dmg.sh` when release credentials are supplied.
 - Align local development and CI on Flutter 3.47.1 / Dart 3.13.1 and migrate the macOS project to the Flutter-supported macOS 12.0 deployment target.
