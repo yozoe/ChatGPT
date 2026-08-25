@@ -202,6 +202,10 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     _pruneTimelineViewports();
     _captureActiveTimelinePage();
     if (widget.controller != null && mounted) setState(() {});
+    _scheduleCompletedThreadAcknowledgementAtBottom(
+      _displayedThreadKey,
+      _timelineScrollController,
+    );
     if (_threadHistoryLoading) {
       _finishFirstThreadViewport();
       return;
@@ -258,6 +262,34 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       return;
     }
     unawaited(_controller.acknowledgeCompletedThread(threadId));
+  }
+
+  /// Re-checks bottom visibility after layout so content collapse or viewport
+  /// resizing can acknowledge a completion without moving the user's scroll.
+  /// 布局结束后重新核对底部可见性，使内容收起或窗口缩放无需移动滚动位置即可确认完成提醒。
+  void _scheduleCompletedThreadAcknowledgementAtBottom(
+    _ThreadViewportKey viewportKey,
+    ScrollController scrollController,
+  ) {
+    final threadId = viewportKey.threadId;
+    if (!mounted ||
+        threadId == null ||
+        _controller.status != RuntimeStatus.ready ||
+        _controller.isCompletedThreadAcknowledged(threadId)) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _acknowledgeCompletedThreadAtBottom(viewportKey, scrollController);
+    });
+  }
+
+  void _handleTimelineMetricsChanged(_ThreadViewportKey viewportKey) {
+    final scrollController = _timelineScrollControllers[viewportKey];
+    if (scrollController == null) return;
+    _scheduleCompletedThreadAcknowledgementAtBottom(
+      viewportKey,
+      scrollController,
+    );
   }
 
   /// Switches to a task-specific viewport, preserving every visited task's
@@ -2053,6 +2085,8 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                                       activityExpanded: (pageKey, activityId) =>
                                           _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
                                           false,
+                                      onTimelineMetricsChanged:
+                                          _handleTimelineMetricsChanged,
                                       onActivityExpandedChanged:
                                           (pageKey, activityId, expanded) {
                                             setState(() {
@@ -4689,6 +4723,7 @@ class _ConversationPane extends StatelessWidget {
     required this.fileChangeSummaryExpanded,
     required this.onFileChangeSummaryExpandedChanged,
     required this.activityExpanded,
+    required this.onTimelineMetricsChanged,
     required this.onActivityExpandedChanged,
     required this.onSend,
     required this.onQueueSteer,
@@ -4708,6 +4743,7 @@ class _ConversationPane extends StatelessWidget {
   onFileChangeSummaryExpandedChanged;
   final bool Function(_ThreadViewportKey pageKey, String activityId)
   activityExpanded;
+  final ValueChanged<_ThreadViewportKey> onTimelineMetricsChanged;
   final void Function(
     _ThreadViewportKey pageKey,
     String activityId,
@@ -4790,6 +4826,8 @@ class _ConversationPane extends StatelessWidget {
                               ),
                           activityExpanded: (activityId) =>
                               activityExpanded(page.key, activityId),
+                          onMetricsChanged: () =>
+                              onTimelineMetricsChanged(page.key),
                           onActivityExpandedChanged: (activityId, expanded) =>
                               onActivityExpandedChanged(
                                 page.key,
@@ -5221,6 +5259,7 @@ class _ConversationTimeline extends StatelessWidget {
     required this.fileChangeSummaryExpanded,
     required this.onFileChangeSummaryExpandedChanged,
     required this.activityExpanded,
+    required this.onMetricsChanged,
     required this.onActivityExpandedChanged,
     required this.onReview,
     required this.onUndo,
@@ -5237,6 +5276,7 @@ class _ConversationTimeline extends StatelessWidget {
   final bool fileChangeSummaryExpanded;
   final ValueChanged<bool> onFileChangeSummaryExpandedChanged;
   final bool Function(String activityId) activityExpanded;
+  final VoidCallback onMetricsChanged;
   final void Function(String activityId, bool expanded)
   onActivityExpandedChanged;
   final Future<void> Function() onReview;
@@ -5263,80 +5303,86 @@ class _ConversationTimeline extends StatelessWidget {
         liveElapsedIndex = firstTurnOutputIndex;
       }
     }
-    return ListView.separated(
-      key: PageStorageKey('conversation-timeline-${pageKey.storageKey}'),
-      controller: scrollController,
-      padding: EdgeInsets.fromLTRB(24, 12, 24, bottomPadding),
-      itemCount:
-          timelineItems.length +
-          (activeTurnStartedAt == null ? 0 : 1) +
-          (hasLiveStatus ? 1 : 0) +
-          (data.showFileChangeSummary ? 1 : 0),
-      separatorBuilder: (_, index) {
-        if (activeTurnStartedAt != null && index == liveElapsedIndex) {
-          return const Padding(
-            key: Key('live-elapsed-divider'),
-            padding: EdgeInsets.symmetric(vertical: 14),
-            child: Divider(height: 1),
-          );
-        }
-        return const SizedBox(height: 29);
+    return NotificationListener<ScrollMetricsNotification>(
+      onNotification: (_) {
+        if (active) onMetricsChanged();
+        return false;
       },
-      itemBuilder: (context, index) {
-        if (activeTurnStartedAt != null && index == liveElapsedIndex) {
-          return _LiveElapsedRow(startedAt: activeTurnStartedAt);
-        }
-        final timelineIndex =
-            activeTurnStartedAt != null && index > liveElapsedIndex
-            ? index - 1
-            : index;
-        if (timelineIndex >= timelineItems.length) {
-          var tailIndex = timelineIndex - timelineItems.length;
-          if (hasLiveStatus && tailIndex-- == 0) {
-            if (liveActivity == null) return const _LiveThinkingRow();
-            return liveActivity.kind == 'commandExecution'
-                ? _LiveCommandRow(command: liveActivity.detail)
-                : _LiveActivityRow(activity: liveActivity);
+      child: ListView.separated(
+        key: PageStorageKey('conversation-timeline-${pageKey.storageKey}'),
+        controller: scrollController,
+        padding: EdgeInsets.fromLTRB(24, 12, 24, bottomPadding),
+        itemCount:
+            timelineItems.length +
+            (activeTurnStartedAt == null ? 0 : 1) +
+            (hasLiveStatus ? 1 : 0) +
+            (data.showFileChangeSummary ? 1 : 0),
+        separatorBuilder: (_, index) {
+          if (activeTurnStartedAt != null && index == liveElapsedIndex) {
+            return const Padding(
+              key: Key('live-elapsed-divider'),
+              padding: EdgeInsets.symmetric(vertical: 14),
+              child: Divider(height: 1),
+            );
           }
-          if (!data.showFileChangeSummary || tailIndex != 0) {
-            throw StateError('Unexpected conversation timeline item index.');
+          return const SizedBox(height: 29);
+        },
+        itemBuilder: (context, index) {
+          if (activeTurnStartedAt != null && index == liveElapsedIndex) {
+            return _LiveElapsedRow(startedAt: activeTurnStartedAt);
           }
-          return _FileChangeSummaryCard(
-            key: ValueKey('file-change-summary-${pageKey.storageKey}'),
-            changes: data.fileChanges,
-            turnDiff: data.turnDiff,
-            expanded: fileChangeSummaryExpanded,
-            onExpandedChanged: onFileChangeSummaryExpandedChanged,
-            onReview: onReview,
-            onUndo: onUndo,
-            canUndo: canUndo,
-            undoRunning: undoRunning,
-          );
-        }
-        final item = timelineItems[timelineIndex];
-        if (item.completedTurnEntries case final entries?) {
-          return _CompletedTurnDisclosure(
-            key: ValueKey('completed-turn-disclosure-${item.entryIndex}'),
-            duration: item.entry!,
-            entries: entries,
-            workspacePath: pageKey.workspace,
-          );
-        }
-        if (item.activities case final activities?) {
-          final activityId = item.entryIndex.toString();
-          return _TimelineActivityList(
-            key: ValueKey(
-              'timeline-activity-${pageKey.storageKey}-$activityId',
-            ),
-            entries: activities,
-            expanded: activityExpanded(activityId),
-            onExpandedChanged: (expanded) =>
-                onActivityExpandedChanged(activityId, expanded),
-          );
-        }
-        final entry = item.entry!;
-        return _TimelineEntry(entry, workspacePath: pageKey.workspace);
-      },
+          final timelineIndex =
+              activeTurnStartedAt != null && index > liveElapsedIndex
+              ? index - 1
+              : index;
+          if (timelineIndex >= timelineItems.length) {
+            var tailIndex = timelineIndex - timelineItems.length;
+            if (hasLiveStatus && tailIndex-- == 0) {
+              if (liveActivity == null) return const _LiveThinkingRow();
+              return liveActivity.kind == 'commandExecution'
+                  ? _LiveCommandRow(command: liveActivity.detail)
+                  : _LiveActivityRow(activity: liveActivity);
+            }
+            if (!data.showFileChangeSummary || tailIndex != 0) {
+              throw StateError('Unexpected conversation timeline item index.');
+            }
+            return _FileChangeSummaryCard(
+              key: ValueKey('file-change-summary-${pageKey.storageKey}'),
+              changes: data.fileChanges,
+              turnDiff: data.turnDiff,
+              expanded: fileChangeSummaryExpanded,
+              onExpandedChanged: onFileChangeSummaryExpandedChanged,
+              onReview: onReview,
+              onUndo: onUndo,
+              canUndo: canUndo,
+              undoRunning: undoRunning,
+            );
+          }
+          final item = timelineItems[timelineIndex];
+          if (item.completedTurnEntries case final entries?) {
+            return _CompletedTurnDisclosure(
+              key: ValueKey('completed-turn-disclosure-${item.entryIndex}'),
+              duration: item.entry!,
+              entries: entries,
+              workspacePath: pageKey.workspace,
+            );
+          }
+          if (item.activities case final activities?) {
+            final activityId = item.entryIndex.toString();
+            return _TimelineActivityList(
+              key: ValueKey(
+                'timeline-activity-${pageKey.storageKey}-$activityId',
+              ),
+              entries: activities,
+              expanded: activityExpanded(activityId),
+              onExpandedChanged: (expanded) =>
+                  onActivityExpandedChanged(activityId, expanded),
+            );
+          }
+          final entry = item.entry!;
+          return _TimelineEntry(entry, workspacePath: pageKey.workspace);
+        },
+      ),
     );
   }
 }

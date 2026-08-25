@@ -10090,6 +10090,80 @@ void main() {
     },
   );
 
+  testWidgets(
+    'clears the completion reminder when resizing reveals the timeline bottom',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(800, 500));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final initialEntries = List<TimelineEntry>.generate(
+        16,
+        (index) => TimelineEntry(
+          kind: TimelineKind.agent,
+          title: 'Codex',
+          detail: '历史消息 $index\n${'内容 ' * 12}',
+          createdAt: DateTime(2026, 1, 1, 0, 0, index),
+        ),
+      );
+      final controller = CodexController(server: CodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'current-thread'
+        ..threads = [_thread(id: 'current-thread', status: 'active')]
+        ..replaceTimelineEntriesForTesting(initialEntries);
+
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+      await tester.pump();
+
+      final timelineFinder = find.descendant(
+        of: find.byKey(
+          const ValueKey('conversation-timeline-/workspace:current-thread'),
+        ),
+        matching: find.byType(ListView),
+      );
+      final timeline = tester.widget<ListView>(timelineFinder);
+      timeline.controller!.jumpTo(
+        timeline.controller!.position.maxScrollExtent,
+      );
+      await tester.pump();
+      await tester.drag(timelineFinder, const Offset(0, 260));
+      await tester.pump();
+      expect(timeline.controller!.position.extentAfter, greaterThan(48));
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'turn': {'status': 'completed'},
+          },
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+      expect(
+        controller.isCompletedThreadAcknowledged('current-thread'),
+        isFalse,
+      );
+      expect(find.byKey(const Key('composer-activity-pill')), findsOneWidget);
+
+      await tester.binding.setSurfaceSize(const Size(800, 2600));
+      await tester.pumpAndSettle();
+
+      expect(timeline.controller!.position.extentAfter, lessThanOrEqualTo(48));
+      expect(
+        controller.isCompletedThreadAcknowledged('current-thread'),
+        isTrue,
+      );
+      expect(find.byKey(const Key('composer-activity-pill')), findsNothing);
+      expect(
+        find.byKey(const Key('sidebar-completed-task-indicator')),
+        findsNothing,
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   test(
     'starts a new task while the previous task runs in the background',
     () async {
