@@ -13,6 +13,7 @@ import 'package:chatgpt/src/domain/codex_file_change.dart';
 import 'package:chatgpt/src/domain/codex_plugin.dart';
 import 'package:chatgpt/src/domain/codex_skill.dart';
 import 'package:chatgpt/src/domain/codex_marketplace.dart';
+import 'package:chatgpt/src/domain/codex_mcp_server.dart';
 import 'package:chatgpt/src/domain/git_project_status.dart';
 import 'package:chatgpt/src/domain/task_plan.dart';
 import 'package:chatgpt/src/domain/scheduled_task.dart';
@@ -255,6 +256,7 @@ class _MemoryLocalSessionThreadStore extends LocalSessionThreadStore {
 
 class _MemoryCodexPluginStore extends CodexPluginStore {
   final plugins = <CodexPlugin>[];
+  final mcpServers = <CodexMcpServer>[];
   final addedMarketplaces = <String>[];
   final marketplaces = <CodexMarketplace>[];
   final installedPluginIds = <String>[];
@@ -262,11 +264,42 @@ class _MemoryCodexPluginStore extends CodexPluginStore {
   final upgradedMarketplaceNames = <String?>[];
   final removedMarketplaceNames = <String>[];
   final enabledChanges = <String, bool>{};
+  String? listedMcpWorkingDirectory;
+  String? updatedMcpWorkingDirectory;
 
   /// 从测试内存列表返回已安装与可安装插件。
   /// Returns installed and available plugins from the test memory list.
   @override
   Future<List<CodexPlugin>> listPlugins() async => List.of(plugins);
+
+  @override
+  Future<List<CodexMcpServer>> listMcpServers({
+    String? workingDirectory,
+  }) async {
+    listedMcpWorkingDirectory = workingDirectory;
+    return List.of(mcpServers);
+  }
+
+  @override
+  Future<void> addMcpServer({required String name, required String url}) async {
+    mcpServers.add(
+      CodexMcpServer(name: name, enabled: true, transportLabel: url),
+    );
+  }
+
+  @override
+  Future<void> setMcpServerEnabled(
+    CodexMcpServer server,
+    bool enabled, {
+    String? workingDirectory,
+  }) async {
+    updatedMcpWorkingDirectory = workingDirectory;
+    final index = mcpServers.indexWhere((value) => value.name == server.name);
+    if (index >= 0) mcpServers[index] = server.copyWith(enabled: enabled);
+  }
+
+  @override
+  Future<void> setSkillEnabled(CodexSkill skill, bool enabled) async {}
 
   /// 记录添加的本地 marketplace，供控制器行为断言。
   /// Records a local marketplace addition for controller behavior assertions.
@@ -318,6 +351,7 @@ class _MemoryCodexPluginStore extends CodexPluginStore {
         version: plugin.version,
         installPolicy: plugin.installPolicy,
         authPolicy: plugin.authPolicy,
+        description: plugin.description,
       );
     }
   }
@@ -342,6 +376,7 @@ class _MemoryCodexPluginStore extends CodexPluginStore {
 
 class _BlockingCodexPluginStore extends _MemoryCodexPluginStore {
   final installCompleter = Completer<void>();
+  final enabledCompleter = Completer<void>();
 
   /// 保持安装操作未完成，供界面断言进行中状态。
   /// Keeps installation pending so the interface can assert its progress state.
@@ -349,6 +384,24 @@ class _BlockingCodexPluginStore extends _MemoryCodexPluginStore {
   Future<void> installPlugin(CodexPlugin plugin) async {
     await installCompleter.future;
     await super.installPlugin(plugin);
+  }
+
+  @override
+  Future<void> setPluginEnabled(CodexPlugin plugin, bool enabled) async {
+    await enabledCompleter.future;
+    await super.setPluginEnabled(plugin, enabled);
+  }
+}
+
+class _BlockingMcpListCodexPluginStore extends _MemoryCodexPluginStore {
+  final requests =
+      <({String? workspace, Completer<List<CodexMcpServer>> completer})>[];
+
+  @override
+  Future<List<CodexMcpServer>> listMcpServers({String? workingDirectory}) {
+    final completer = Completer<List<CodexMcpServer>>();
+    requests.add((workspace: workingDirectory, completer: completer));
+    return completer.future;
   }
 }
 
@@ -358,6 +411,41 @@ class _FailingCodexPluginStore extends _MemoryCodexPluginStore {
   @override
   Future<void> installPlugin(CodexPlugin plugin) async {
     throw StateError('marketplace 无法访问');
+  }
+}
+
+class _FailingMcpCodexPluginStore extends _MemoryCodexPluginStore {
+  @override
+  Future<void> addMcpServer({required String name, required String url}) async {
+    throw StateError('MCP 配置不可写');
+  }
+
+  @override
+  Future<void> setMcpServerEnabled(
+    CodexMcpServer server,
+    bool enabled, {
+    String? workingDirectory,
+  }) async {
+    throw StateError('MCP 配置不可写');
+  }
+}
+
+class _McpAddWithRefreshWarningCodexPluginStore
+    extends _MemoryCodexPluginStore {
+  bool _added = false;
+
+  @override
+  Future<void> addMcpServer({required String name, required String url}) async {
+    await super.addMcpServer(name: name, url: url);
+    _added = true;
+  }
+
+  @override
+  Future<List<CodexMcpServer>> listMcpServers({
+    String? workingDirectory,
+  }) async {
+    if (_added) throw StateError('MCP 列表暂时不可用');
+    return super.listMcpServers(workingDirectory: workingDirectory);
   }
 }
 
@@ -377,9 +465,14 @@ class _FailOnSecondInstallCodexPluginStore extends _MemoryCodexPluginStore {
 class _FakeGitProjectService extends GitProjectService {
   GitProjectStatus status = const GitProjectStatus(isRepository: false);
   String diff = '';
+  String? reversedDiff;
+  List<String>? reversedExpectedPaths;
   GitProjectChange? requestedChange;
   int inspectCalls = 0;
+  int reverseCalls = 0;
   Object? stageError;
+  Object? reverseError;
+  Completer<void>? reverseCompleter;
 
   /// 返回预设的只读 Git 项目状态，并记录调用次数。
   /// Returns the preset read-only Git project status and records the call count.
@@ -418,6 +511,19 @@ class _FakeGitProjectService extends GitProjectService {
     required GitProjectChange change,
   }) async {
     if (stageError case final error?) throw error;
+  }
+
+  @override
+  Future<void> reverseApplyDiff({
+    required String workspace,
+    required String diff,
+    required Iterable<String> expectedPaths,
+  }) async {
+    reverseCalls++;
+    reversedDiff = diff;
+    reversedExpectedPaths = List.of(expectedPaths);
+    if (reverseError case final error?) throw error;
+    await reverseCompleter?.future;
   }
 }
 
@@ -458,12 +564,14 @@ class _FakeCodexAppServer extends CodexAppServer {
   JsonMap? startedConfig;
   List<JsonMap> skillListResponse = <JsonMap>[];
   String? startedTurnPrompt;
+  final List<String> startedTurnPrompts = [];
   String? startedTurnThreadId;
   final List<String> startedTurnThreadIds = [];
   final List<String> startThreadResponseIds = [];
   List<JsonMap> startedTurnAdditionalInput = <JsonMap>[];
   JsonMap? startedTurnCollaborationMode;
   Object? startTurnError;
+  Completer<void>? startTurnCompleter;
   String? steeredTurnThreadId;
   String? steeredTurnId;
   String? steeredTurnPrompt;
@@ -577,8 +685,10 @@ class _FakeCodexAppServer extends CodexAppServer {
     startedTurnThreadId = threadId;
     startedTurnThreadIds.add(threadId);
     startedTurnPrompt = prompt;
+    startedTurnPrompts.add(prompt);
     startedTurnAdditionalInput = List.of(additionalInput);
     startedTurnCollaborationMode = collaborationMode;
+    if (startTurnCompleter case final completer?) await completer.future;
     if (startTurnError case final error?) throw error;
   }
 
@@ -984,6 +1094,64 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('new-task entry points always return to the conversation', (
+    tester,
+  ) async {
+    final controller =
+        CodexController(
+            server: CodexAppServer(),
+            pluginStore: _MemoryCodexPluginStore(),
+          )
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready
+          ..activeThreadId = 'thread-1';
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    Future<void> openPlugins() async {
+      await tester.tap(find.byKey(const Key('sidebar-plugins-button')));
+      await tester.pump();
+      expect(find.byKey(const Key('plugins-page')), findsOneWidget);
+    }
+
+    void expectConversation() {
+      expect(find.byKey(const Key('plugins-page')), findsNothing);
+      expect(find.byKey(const Key('composer-field')), findsOneWidget);
+      expect(controller.activeThreadId, isNull);
+    }
+
+    await openPlugins();
+    await tester.tap(find.byKey(const Key('sidebar-new-chat-button')));
+    await tester.pump();
+    expectConversation();
+
+    controller.activeThreadId = 'thread-2';
+    await openPlugins();
+    await tester.tap(find.byKey(const Key('task-search-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('新聊天'));
+    await tester.pumpAndSettle();
+    expectConversation();
+
+    controller.activeThreadId = 'thread-3';
+    await openPlugins();
+    final workspaceTile = find.byKey(
+      const ValueKey('sidebar-workspace-/workspace'),
+    );
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.moveTo(tester.getCenter(workspaceTile));
+    await tester.pump();
+    await tester.tap(
+      find.byKey(const ValueKey('sidebar-workspace-edit-/workspace')),
+    );
+    await mouse.moveTo(Offset.zero);
+    await tester.pump();
+    expectConversation();
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('switches plugin library tabs and starts plugin or skill flows', (
     tester,
   ) async {
@@ -1206,7 +1374,7 @@ void main() {
   });
 
   testWidgets(
-    'provider updates keep the conversation timeline at the latest item',
+    'provider updates follow the latest item until the user scrolls up',
     (tester) async {
       final controller = CodexController(
         server: _FakeCodexAppServer(),
@@ -1254,6 +1422,35 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(timeline.controller!.position.extentAfter, lessThan(32));
+
+      controller.replaceTimelineEntriesForTesting([
+        ...controller.entries,
+        TimelineEntry(
+          kind: TimelineKind.agent,
+          title: 'Codex',
+          detail: '与上滑同一帧到达的状态更新',
+          createdAt: DateTime(2026, 1, 1, 0, 2),
+        ),
+      ]);
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byType(ListView)),
+      );
+      await gesture.moveBy(const Offset(0, 360));
+      await gesture.up();
+      expect(timeline.controller!.position.extentAfter, greaterThan(48));
+      final readingOffset = timeline.controller!.offset;
+
+      // The provider update above already queued a post-frame scroll. It must
+      // re-check the user's position instead of stealing the reading viewport.
+      await tester.pump();
+      await tester.pumpAndSettle();
+      expect(timeline.controller!.offset, closeTo(readingOffset, 0.1));
+
+      controller.replaceTimelineEntriesForTesting(controller.entries);
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(timeline.controller!.offset, closeTo(readingOffset, 0.1));
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -1520,8 +1717,8 @@ void main() {
     final runningTaskIndicator = tester.widget<SizedBox>(
       find.byKey(const Key('sidebar-running-task-indicator')),
     );
-    expect(runningTaskIndicator.width, 12);
-    expect(runningTaskIndicator.height, 12);
+    expect(runningTaskIndicator.width, 10);
+    expect(runningTaskIndicator.height, 10);
     expect(
       tester
           .widget<CircularProgressIndicator>(
@@ -1531,7 +1728,7 @@ void main() {
             ),
           )
           .strokeWidth,
-      1.5,
+      1.25,
     );
     expect(tester.widget<IconButton>(newTaskButton).onPressed, isNotNull);
     expect(
@@ -2095,6 +2292,58 @@ void main() {
   });
 
   test(
+    'keeps streaming reply indexes after inserting an accepted direction',
+    () async {
+      final steerCompleter = Completer<String>();
+      final server = _FakeCodexAppServer()..steerCompleter = steerCompleter;
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..activeTurnId = 'turn-1';
+
+      final steer = controller.steerCurrentTurn('继续，但换个方向');
+      await Future<void>.delayed(Duration.zero);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/agentMessage/delta',
+          params: {
+            'threadId': 'thread-1',
+            'turnId': 'turn-1',
+            'itemId': 'reply-after-steer',
+            'delta': '后续',
+          },
+        ),
+      );
+      steerCompleter.complete('turn-1');
+      expect(await steer, isTrue);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/agentMessage/delta',
+          params: {
+            'threadId': 'thread-1',
+            'turnId': 'turn-1',
+            'itemId': 'reply-after-steer',
+            'delta': '回复',
+          },
+        ),
+      );
+
+      final reply = controller.entries.singleWhere(
+        (entry) => entry.sourceItemId == null && entry.detail == '后续回复',
+      );
+      final direction = controller.entries.singleWhere(
+        (entry) => entry.kind == TimelineKind.user,
+      );
+      expect(
+        controller.entries.indexOf(direction),
+        lessThan(controller.entries.indexOf(reply)),
+      );
+      controller.dispose();
+    },
+  );
+
+  test(
     'does not write an in-flight direction into a newly opened task',
     () async {
       final steerCompleter = Completer<String>();
@@ -2122,6 +2371,58 @@ void main() {
         controller.entries.map((entry) => entry.detail),
         isNot(contains('旧任务方向')),
       );
+      controller.dispose();
+    },
+  );
+
+  test(
+    'does not duplicate a delayed direction after switching away and back',
+    () async {
+      final steerCompleter = Completer<String>();
+      final server = _FakeCodexAppServer()
+        ..steerCompleter = steerCompleter
+        ..turnPage = {
+          'data': [
+            {
+              'id': 'turn-1',
+              'status': 'inProgress',
+              'items': [
+                {
+                  'id': 'direction-item',
+                  'type': 'userMessage',
+                  'content': [
+                    {'type': 'text', 'text': '切回后不要重复'},
+                  ],
+                },
+                {
+                  'id': 'agent-item',
+                  'type': 'agentMessage',
+                  'text': '历史中的后续回复',
+                },
+              ],
+            },
+          ],
+        };
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-a'
+        ..activeTurnId = 'turn-1'
+        ..threads = [
+          _thread(id: 'thread-a', status: 'active'),
+          _thread(id: 'thread-b'),
+        ];
+
+      final steer = controller.steerCurrentTurn('切回后不要重复');
+      await Future<void>.delayed(Duration.zero);
+      await controller.resumeThread(_thread(id: 'thread-b'));
+      await controller.resumeThread(_thread(id: 'thread-a', status: 'active'));
+      steerCompleter.complete('turn-1');
+
+      expect(await steer, isTrue);
+      final details = controller.entries.map((entry) => entry.detail).toList();
+      expect(details.where((detail) => detail == '切回后不要重复'), hasLength(1));
+      expect(details.indexOf('切回后不要重复'), lessThan(details.indexOf('历史中的后续回复')));
       controller.dispose();
     },
   );
@@ -2301,7 +2602,14 @@ void main() {
         ..activeThreadId = 'thread-1'
         ..activeTurnId = 'turn-1';
       controller.queueTurnSteer(
-        const PendingTurnSteer(displayText: '只发送一次', prompt: '只发送一次'),
+        const PendingTurnSteer(
+          displayText: '只发送一次',
+          prompt: '只发送一次',
+          additionalInput: [
+            {'type': 'localImage', 'path': '/tmp/steer-race.png'},
+          ],
+          imagePaths: ['/tmp/steer-race.png'],
+        ),
       );
 
       final steer = controller.sendPendingTurnSteer();
@@ -2321,6 +2629,16 @@ void main() {
       steerCompleter.complete('turn-2');
       expect(await steer, isTrue);
       expect(server.steeredTurnPrompt, '只发送一次');
+      final acceptedDirection = controller.entries.singleWhere(
+        (entry) => entry.kind == TimelineKind.user && entry.detail == '只发送一次',
+      );
+      expect(acceptedDirection.imagePaths, ['/tmp/steer-race.png']);
+      final directionIndex = controller.entries.indexOf(acceptedDirection);
+      final completionIndex = controller.entries.indexWhere(
+        (entry) => entry.title == '任务完成',
+      );
+      expect(completionIndex, greaterThanOrEqualTo(0));
+      expect(directionIndex, lessThan(completionIndex));
       controller.dispose();
     },
   );
@@ -2766,6 +3084,82 @@ void main() {
       ]);
       expect(tester.widget<TextField>(field).controller!.text, isEmpty);
       await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'retains a temporary steering image when completion races the acknowledgement',
+    (tester) async {
+      const channel = MethodChannel('codex_desk/clipboard');
+      const imagePath = '/tmp/CodexDeskClipboard/steer-race.png';
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      var deleteCalls = 0;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        switch (call.method) {
+          case 'readFileItems':
+            return [
+              {'path': imagePath, 'isDirectory': false, 'isTemporary': true},
+            ];
+          case 'deleteTemporaryItem':
+            deleteCalls++;
+            return true;
+        }
+        return null;
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      final steerCompleter = Completer<String>();
+      final server = _FakeCodexAppServer()..steerCompleter = steerCompleter;
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..activeTurnId = 'turn-1';
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      final field = find.byKey(const Key('composer-field'));
+      await tester.tap(field);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await tester.pump();
+      await tester.enterText(field, '按截图调整');
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('adjust-direction-button')));
+      await tester.pump();
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'thread-1',
+            'turn': {'id': 'turn-1', 'status': 'completed'},
+          },
+        ),
+      );
+      await tester.pump();
+      expect(deleteCalls, 0);
+
+      steerCompleter.complete('turn-2');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      final acceptedDirection = controller.entries.singleWhere(
+        (entry) => entry.kind == TimelineKind.user && entry.detail == '按截图调整',
+      );
+      expect(acceptedDirection.imagePaths, [imagePath]);
+      expect(
+        find.byKey(const ValueKey('timeline-image-$imagePath')),
+        findsOneWidget,
+      );
+      expect(deleteCalls, 0);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
+      expect(deleteCalls, 1);
     },
   );
 
@@ -3730,6 +4124,51 @@ void main() {
     controller.dispose();
   });
 
+  test('throttles reasoning summary delta notifications', () async {
+    final controller = CodexController(server: CodexAppServer());
+    await controller.waitForInitialConfiguration();
+    controller
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/started',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {'id': 'reasoning-1', 'type': 'reasoning', 'summary': []},
+        },
+      ),
+    );
+    var notifications = 0;
+    controller.addListener(() => notifications += 1);
+
+    for (final delta in ['**Planning ', 'the regression fix**']) {
+      controller.handleServerEventForTesting(
+        ServerEvent(
+          method: 'item/reasoning/summaryTextDelta',
+          params: {
+            'threadId': 'thread-1',
+            'turnId': 'turn-1',
+            'itemId': 'reasoning-1',
+            'summaryIndex': 0,
+            'delta': delta,
+          },
+        ),
+      );
+    }
+
+    expect(notifications, 0);
+    expect(controller.activeLiveActivity?.label, 'Planning the regression fix');
+
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+
+    expect(notifications, 1);
+    expect(controller.activeLiveActivity?.label, 'Planning the regression fix');
+    controller.dispose();
+  });
+
   test('tracks a live command and persists the completed turn duration', () {
     final controller = CodexController(server: CodexAppServer())
       ..status = RuntimeStatus.running
@@ -3879,6 +4318,185 @@ void main() {
     controller.dispose();
   });
 
+  test('uses parsed command actions for specific filesystem statuses', () {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+
+    void startItem(Map<String, Object?> item) {
+      controller.handleServerEventForTesting(
+        ServerEvent(
+          method: 'item/started',
+          params: {'threadId': 'thread-1', 'turnId': 'turn-1', 'item': item},
+        ),
+      );
+    }
+
+    startItem({
+      'id': 'read-1',
+      'type': 'commandExecution',
+      'command': "sed -n '1,80p' test/app_shell_test.dart",
+      'commandActions': [
+        {
+          'type': 'read',
+          'command': "sed -n '1,80p' test/app_shell_test.dart",
+          'name': 'app_shell_test.dart',
+          'path': 'test/app_shell_test.dart',
+        },
+      ],
+    });
+    expect(controller.activeLiveActivity?.kind, 'fileRead');
+    expect(controller.activeLiveActivity?.label, '正在读取');
+    expect(controller.activeLiveActivity?.detail, 'app_shell_test.dart');
+    expect(controller.activeCommand, isNull);
+
+    startItem({
+      'id': 'search-1',
+      'type': 'commandExecution',
+      'command': 'rg AppDelegate.swift macos',
+      'commandActions': [
+        {
+          'type': 'search',
+          'command': 'rg AppDelegate.swift macos',
+          'query': 'AppDelegate.swift',
+          'path': 'macos',
+        },
+      ],
+    });
+    expect(controller.activeLiveActivity?.kind, 'fileSearch');
+    expect(controller.activeLiveActivity?.label, '正在搜索');
+    expect(
+      controller.activeLiveActivity?.detail,
+      '“AppDelegate.swift” · macos 文件夹',
+    );
+
+    startItem({
+      'id': 'list-1',
+      'type': 'commandExecution',
+      'command': 'find macos/Runner.xcodeproj/xcshareddata/xcschemes',
+      'commandActions': [
+        {
+          'type': 'listFiles',
+          'command': 'find macos/Runner.xcodeproj/xcshareddata/xcschemes',
+          'path': 'macos/Runner.xcodeproj/xcshareddata/xcschemes',
+        },
+      ],
+    });
+    expect(controller.activeLiveActivity?.kind, 'fileList');
+    expect(controller.activeLiveActivity?.label, '正在列出');
+    expect(controller.activeLiveActivity?.detail, 'xcschemes 文件夹中的文件');
+
+    startItem({
+      'id': 'compound-1',
+      'type': 'commandExecution',
+      'command': "sed -n '1,80p' lib/main.dart && flutter test",
+      'commandActions': [
+        {'type': 'read', 'name': 'main.dart', 'path': 'lib/main.dart'},
+        {'type': 'unknown', 'command': 'flutter test'},
+      ],
+    });
+    expect(controller.activeLiveActivity?.kind, 'commandExecution');
+    expect(controller.activeLiveActivity?.label, '正在运行命令');
+    expect(
+      controller.activeLiveActivity?.detail,
+      "sed -n '1,80p' lib/main.dart && flutter test",
+    );
+    expect(controller.activeCommand, contains('flutter test'));
+
+    startItem({
+      'id': 'edit-1',
+      'type': 'fileChange',
+      'status': 'inProgress',
+      'changes': [
+        {'path': 'lib/main.dart', 'kind': 'update'},
+      ],
+    });
+    expect(controller.activeLiveActivity?.kind, 'fileChange');
+    expect(controller.activeLiveActivity?.label, '正在编辑文件');
+    expect(controller.activeLiveActivity?.detail, isEmpty);
+    controller.dispose();
+  });
+
+  test('streams the current reasoning summary as the live status', () {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/started',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {'id': 'reasoning-1', 'type': 'reasoning', 'summary': []},
+        },
+      ),
+    );
+    expect(controller.activeLiveActivity?.label, '正在分析');
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/reasoning/summaryPartAdded',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'itemId': 'reasoning-1',
+          'summaryIndex': 0,
+        },
+      ),
+    );
+    for (final delta in ['**Planning ', 'Xcode unit test implementation**']) {
+      controller.handleServerEventForTesting(
+        ServerEvent(
+          method: 'item/reasoning/summaryTextDelta',
+          params: {
+            'threadId': 'thread-1',
+            'turnId': 'turn-1',
+            'itemId': 'reasoning-1',
+            'summaryIndex': 0,
+            'delta': delta,
+          },
+        ),
+      );
+    }
+    expect(controller.activeLiveActivity?.kind, 'reasoning');
+    expect(
+      controller.activeLiveActivity?.label,
+      'Planning Xcode unit test implementation',
+    );
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/started',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'command-1',
+            'type': 'commandExecution',
+            'command': 'flutter test',
+          },
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/reasoning/summaryTextDelta',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'itemId': 'reasoning-1',
+          'summaryIndex': 0,
+          'delta': ' ignored',
+        },
+      ),
+    );
+    expect(controller.activeLiveActivity?.kind, 'commandExecution');
+    expect(controller.activeCommand, 'flutter test');
+    controller.dispose();
+  });
+
   test('labels a dynamic skill reader with the skill name', () {
     final controller = CodexController(server: CodexAppServer())
       ..status = RuntimeStatus.running
@@ -3904,6 +4522,86 @@ void main() {
 
     expect(controller.activeLiveActivity?.kind, 'skillRead');
     expect(controller.activeLiveActivity?.label, '正在读取 Code Review 技能');
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'skill-reader-1',
+            'type': 'dynamicToolCall',
+            'namespace': 'skills',
+            'tool': 'read',
+            'status': 'completed',
+            'success': true,
+            'arguments': {'name': 'code-review'},
+          },
+        },
+      ),
+    );
+
+    expect(controller.activeLiveActivity, isNull);
+    final activity = controller.entries.singleWhere(
+      (entry) => entry.kind == TimelineKind.activity,
+    );
+    expect(activity.title, '已读取 Code Review 技能');
+    expect(activity.activityKind, 'skillRead');
+    expect(activity.activityStatus, 'completed');
+    controller.dispose();
+  });
+
+  test('updates one visible subagent activity through its lifecycle', () {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+
+    void complete(JsonMap item) {
+      controller.handleServerEventForTesting(
+        ServerEvent(
+          method: 'item/completed',
+          params: {'threadId': 'thread-1', 'turnId': 'turn-1', 'item': item},
+        ),
+      );
+    }
+
+    complete({
+      'id': 'spawn-1',
+      'type': 'collabToolCall',
+      'tool': 'spawnAgent',
+      'status': 'completed',
+      'newThreadId': 'review-thread',
+      'agentStatus': {'name': 'Independent review', 'status': 'running'},
+    });
+
+    var activity = controller.entries.singleWhere(
+      (entry) => entry.kind == TimelineKind.activity,
+    );
+    expect(activity.title, 'Independent review');
+    expect(activity.detail, '已开始工作');
+    expect(activity.activityKind, 'collaboration');
+    expect(activity.activityStatus, 'working');
+
+    complete({
+      'id': 'wait-1',
+      'type': 'collabToolCall',
+      'tool': 'waitAgent',
+      'status': 'completed',
+      'receiverThreadId': 'review-thread',
+      'agentStatus': {'status': 'completed'},
+    });
+
+    expect(
+      controller.entries.where((entry) => entry.kind == TimelineKind.activity),
+      hasLength(1),
+    );
+    activity = controller.entries.singleWhere(
+      (entry) => entry.kind == TimelineKind.activity,
+    );
+    expect(activity.title, 'Independent review');
+    expect(activity.detail, '已完成');
+    expect(activity.activityStatus, 'completed');
     controller.dispose();
   });
 
@@ -3931,8 +4629,8 @@ void main() {
       start('plan-1', 'plan');
       expect(controller.activeLiveActivity?.label, '正在整理计划');
       start('collab-1', 'collabToolCall', {'tool': 'spawnAgent'});
-      expect(controller.activeLiveActivity?.label, '正在协调协作任务');
-      expect(controller.activeLiveActivity?.detail, 'spawnAgent');
+      expect(controller.activeLiveActivity?.label, 'Independent task');
+      expect(controller.activeLiveActivity?.detail, '已开始工作');
       start('compact-1', 'contextCompaction');
       expect(controller.activeLiveActivity?.label, '正在压缩对话上下文');
       start('future-1', 'futureOperation', {'internal': 'do not expose'});
@@ -4197,6 +4895,11 @@ void main() {
     expect(find.byKey(const Key('live-thinking-row')), findsNothing);
     expect(find.text('耗时 1 分钟 3 秒'), findsOneWidget);
     expect(find.text('已运行了命令'), findsOneWidget);
+    expect(find.text('已运行 /bin/zsh -lc dart test'), findsNothing);
+
+    await tester.tap(find.text('已运行了命令'));
+    await tester.pump();
+
     expect(find.text('已运行 /bin/zsh -lc dart test'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
@@ -4244,7 +4947,8 @@ void main() {
         MaterialApp(home: CodexWorkspace(controller: controller)),
       );
 
-      expect(find.text('已运行 flutter analyze'), findsOneWidget);
+      expect(find.text('已运行了命令'), findsOneWidget);
+      expect(find.text('已运行 flutter analyze'), findsNothing);
       expect(find.text('No issues found'), findsNothing);
       expect(
         tester.getTopLeft(find.text('已批准命令')).dy,
@@ -4254,6 +4958,16 @@ void main() {
         tester.getTopLeft(find.text('任务已经完成。')).dy,
         lessThan(tester.getTopLeft(find.text('耗时 4 秒')).dy),
       );
+
+      await tester.tap(find.text('已运行了命令'));
+      await tester.pump();
+
+      expect(find.text('已运行 flutter analyze'), findsOneWidget);
+
+      await tester.tap(find.text('已运行了命令'));
+      await tester.pump();
+
+      expect(find.text('已运行 flutter analyze'), findsNothing);
 
       await tester.tap(
         find.byKey(const Key('completed-turn-disclosure-toggle')),
@@ -4353,6 +5067,195 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets(
+    'keeps skill and subagent status rows visible across live completion',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(620, 720));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final controller = CodexController(server: CodexAppServer())
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..activeTurnId = 'turn-1';
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'threadId': 'thread-1',
+            'turnId': 'turn-1',
+            'item': {
+              'id': 'skill-1',
+              'type': 'dynamicToolCall',
+              'namespace': 'skills',
+              'tool': 'read',
+              'status': 'completed',
+              'success': true,
+              'arguments': {'name': 'code-review'},
+            },
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/started',
+          params: {
+            'threadId': 'thread-1',
+            'turnId': 'turn-1',
+            'item': {
+              'id': 'spawn-1',
+              'type': 'collabToolCall',
+              'tool': 'spawnAgent',
+              'newThreadId': 'review-thread',
+              'agentStatus': {
+                'name': 'Independent review',
+                'status': 'running',
+              },
+            },
+          },
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      expect(find.text('已读取 Code Review 技能'), findsOneWidget);
+      expect(find.text('Independent review'), findsOneWidget);
+      expect(find.text('已开始工作'), findsOneWidget);
+      expect(find.byKey(const Key('live-activity-row')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'threadId': 'thread-1',
+            'turnId': 'turn-1',
+            'item': {
+              'id': 'spawn-1',
+              'type': 'collabToolCall',
+              'tool': 'spawnAgent',
+              'status': 'completed',
+              'newThreadId': 'review-thread',
+              'agentStatus': {
+                'name': 'Independent review',
+                'status': 'running',
+              },
+            },
+          },
+        ),
+      );
+      await tester.pump();
+
+      expect(find.byKey(const Key('live-activity-row')), findsNothing);
+      expect(
+        find.byKey(const Key('conversation-activity-review-thread')),
+        findsOneWidget,
+      );
+      expect(find.text('已开始工作'), findsOneWidget);
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'threadId': 'thread-1',
+            'turnId': 'turn-1',
+            'item': {
+              'id': 'wait-1',
+              'type': 'collabToolCall',
+              'tool': 'waitAgent',
+              'status': 'completed',
+              'receiverThreadId': 'review-thread',
+              'agentStatus': {'status': 'completed'},
+            },
+          },
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('Independent review'), findsOneWidget);
+      expect(find.text('已完成'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('renders filesystem actions and reasoning summaries like Codex', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/started',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'read-1',
+            'type': 'commandExecution',
+            'command': "sed -n '1,80p' test/app_shell_test.dart",
+            'commandActions': [
+              {
+                'type': 'read',
+                'command': "sed -n '1,80p' test/app_shell_test.dart",
+                'name': 'app_shell_test.dart',
+                'path': 'test/app_shell_test.dart',
+              },
+            ],
+          },
+        },
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final liveRow = find.byKey(const Key('live-activity-row'));
+    expect(find.text('正在读取 app_shell_test.dart'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: liveRow,
+        matching: find.byIcon(Icons.menu_book_outlined),
+      ),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('live-command-row')), findsNothing);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/started',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {'id': 'reasoning-1', 'type': 'reasoning', 'summary': []},
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/reasoning/summaryTextDelta',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'itemId': 'reasoning-1',
+          'summaryIndex': 0,
+          'delta': '**Clarifying window merge behavior**',
+        },
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 60));
+
+    expect(find.text('Clarifying window merge behavior'), findsOneWidget);
+    expect(
+      find.descendant(of: liveRow, matching: find.byType(Icon)),
+      findsNothing,
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('renders Codex replies as selectable Markdown', (tester) async {
     final controller = CodexController(server: CodexAppServer());
     controller.handleServerEventForTesting(
@@ -4384,6 +5287,132 @@ void main() {
     expect(text.toPlainText(), contains('严重'));
     expect(text.toPlainText(), isNot(contains('**')));
 
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('opens project Markdown links in an in-app formatted preview', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(680, 520));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    late Directory workspace;
+    late File document;
+    await tester.runAsync(() async {
+      workspace = await Directory.systemTemp.createTemp(
+        'codex-desk-markdown-preview-',
+      );
+      final guideDirectory = Directory('${workspace.path}/guide');
+      await guideDirectory.create();
+      document = File('${workspace.path}/product notes.md');
+      await document.writeAsString(
+        '# 产品说明\n\n[阅读下一页](guide/next.md)\n\n- 格式化条目\n\n'
+        '${List<String>.filled(5000, 'x').join()}',
+      );
+      final nextDocument = File('${guideDirectory.path}/next.md');
+      await nextDocument.writeAsString('# 下一页标题\n\n返回后继续阅读。');
+    });
+    addTearDown(() => workspace.delete(recursive: true));
+
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = workspace.path;
+    controller.handleServerEventForTesting(
+      ServerEvent(
+        method: 'item/agentMessage/delta',
+        params: {
+          'itemId': 'markdown-file-message',
+          'delta': '[打开文档](${document.uri}:3)',
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.pump(const Duration(milliseconds: 60));
+
+    TapGestureRecognizer linkRecognizer(String label) {
+      final richText = tester.widget<RichText>(
+        find
+            .byWidgetPredicate(
+              (widget) =>
+                  widget is RichText &&
+                  widget.text.toPlainText().contains(label),
+            )
+            .first,
+      );
+      TapGestureRecognizer? result;
+      void visit(InlineSpan span) {
+        if (span is! TextSpan) return;
+        if (span.text?.contains(label) ?? false) {
+          result = span.recognizer as TapGestureRecognizer?;
+        }
+        for (final child in span.children ?? const <InlineSpan>[]) {
+          visit(child);
+        }
+      }
+
+      visit(richText.text);
+      return result!;
+    }
+
+    await tester.runAsync(() async {
+      linkRecognizer('打开文档').onTap!();
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      await tester.pump();
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+    });
+    await tester.pump(const Duration(milliseconds: 220));
+
+    expect(find.byKey(const Key('markdown-preview-dialog')), findsOneWidget);
+    expect(find.text('product notes.md'), findsOneWidget);
+    expect(find.text('L3'), findsOneWidget);
+    expect(find.text('产品说明'), findsOneWidget);
+    expect(find.text('格式化条目'), findsOneWidget);
+
+    await tester.runAsync(() async {
+      await tester.tap(find.text('阅读下一页'));
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+    });
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(find.text('下一页标题'), findsOneWidget);
+    expect(
+      tester
+          .widget<IconButton>(
+            find.byKey(const Key('markdown-preview-back-button')),
+          )
+          .onPressed,
+      isNotNull,
+    );
+
+    await tester.runAsync(() async {
+      tester
+          .widget<IconButton>(
+            find.byKey(const Key('markdown-preview-back-button')),
+          )
+          .onPressed!();
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+    });
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(find.text('产品说明'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('markdown-source-mode-button')));
+    await tester.pump();
+    expect(find.byKey(const Key('markdown-source-view')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('markdown-source-line-3')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('此行过长，已截断显示'), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const Key('markdown-source-content'))).width,
+      lessThan(40000),
+    );
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 180));
+    expect(find.byKey(const Key('markdown-preview-dialog')), findsNothing);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -4434,6 +5463,98 @@ void main() {
 
     expect(didOpenIndirect, isFalse);
   });
+
+  test(
+    'opens Codex Markdown file links with line and column suffixes',
+    () async {
+      final workspace = await Directory.systemTemp.createTemp(
+        'codex-desk-markdown-location-link-',
+      );
+      final document = File('${workspace.path}/technical plan.md');
+      await document.writeAsString('# Technical plan');
+      addTearDown(() => workspace.delete(recursive: true));
+
+      final opened = <Uri>[];
+      Future<bool> launch(Uri uri) async {
+        opened.add(uri);
+        return true;
+      }
+
+      expect(
+        await openAgentMarkdownLink(
+          href: 'technical%20plan.md',
+          workspacePath: workspace.path,
+          launch: launch,
+        ),
+        isTrue,
+      );
+      expect(
+        opened.removeLast(),
+        Uri.file(await document.resolveSymbolicLinks()),
+      );
+
+      expect(
+        await openAgentMarkdownLink(
+          href: 'technical%20plan.md:12',
+          workspacePath: workspace.path,
+          launch: launch,
+        ),
+        isTrue,
+      );
+      expect(
+        opened.removeLast(),
+        Uri.file(await document.resolveSymbolicLinks()),
+      );
+
+      expect(
+        await openAgentMarkdownLink(
+          href: '${document.path}:18',
+          workspacePath: workspace.path,
+          launch: launch,
+        ),
+        isTrue,
+      );
+      expect(
+        opened.removeLast(),
+        Uri.file(await document.resolveSymbolicLinks()),
+      );
+
+      expect(
+        await openAgentMarkdownLink(
+          href: '${document.uri}:12:4',
+          workspacePath: workspace.path,
+          launch: launch,
+        ),
+        isTrue,
+      );
+      expect(
+        opened.removeLast(),
+        Uri.file(await document.resolveSymbolicLinks()),
+      );
+
+      final locatedReference = await resolveWorkspaceFileReference(
+        href: 'technical%20plan.md:27:6',
+        workspacePath: workspace.path,
+      );
+      expect(locatedReference?.path, await document.resolveSymbolicLinks());
+      expect(locatedReference?.line, 27);
+      expect(locatedReference?.column, 6);
+
+      final nestedDirectory = Directory('${workspace.path}/docs');
+      await nestedDirectory.create();
+      final nestedDocument = File('${nestedDirectory.path}/nested.md');
+      await nestedDocument.writeAsString('# Nested');
+      final relativeReference = await resolveWorkspaceFileReference(
+        href: 'nested.md',
+        workspacePath: workspace.path,
+        relativeToDirectoryPath: nestedDirectory.path,
+      );
+      expect(
+        relativeReference?.path,
+        await nestedDocument.resolveSymbolicLinks(),
+      );
+    },
+  );
 
   test('keeps command output delta protocol events out of the timeline', () {
     final controller = CodexController(server: CodexAppServer());
@@ -5464,7 +6585,7 @@ void main() {
       final controller = CodexController(server: CodexAppServer())
         ..workspacePath = '/workspace'
         ..status = RuntimeStatus.ready
-        ..threads = [_thread(id: 'alpha')];
+        ..threads = [_thread(id: 'alpha', status: 'idle')];
       await tester.pumpWidget(
         MaterialApp(home: CodexWorkspace(controller: controller)),
       );
@@ -5482,10 +6603,20 @@ void main() {
         find.descendant(of: taskTile, matching: find.byType(PopupMenuButton)),
         findsNothing,
       );
+      final completedIndicator = tester.widget<Icon>(
+        find.byKey(const Key('sidebar-completed-task-indicator')),
+      );
+      expect(completedIndicator.icon, Icons.circle);
+      expect(completedIndicator.size, 6);
+      expect(completedIndicator.color, const Color(0xFF0A84FF));
 
       final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
       await mouse.moveTo(tester.getCenter(taskTile));
       await tester.pump();
+      expect(
+        find.byKey(const Key('sidebar-completed-task-indicator')),
+        findsNothing,
+      );
       expect(
         find.byKey(const ValueKey('sidebar-thread-pin-alpha')),
         findsOneWidget,
@@ -5698,6 +6829,8 @@ void main() {
       expect(controller.pluginActionTargetId, plugin.id);
       expect(controller.pluginActionProgress, '正在安装插件 sample…');
       expect(controller.pluginRuntimeRestartRequired, isFalse);
+      expect(controller.canChooseWorkspace, isFalse);
+      expect(controller.canChangePrimaryWorkspace, isFalse);
 
       pluginStore.installCompleter.complete();
       await install;
@@ -5706,6 +6839,8 @@ void main() {
       expect(controller.pluginActionProgress, isNull);
       expect(controller.pluginActionResult, contains('重启运行时'));
       expect(controller.pluginRuntimeRestartRequired, isTrue);
+      expect(controller.canChooseWorkspace, isTrue);
+      expect(controller.canChangePrimaryWorkspace, isTrue);
       controller.dispose();
     },
   );
@@ -5847,6 +6982,451 @@ void main() {
     );
   });
 
+  test('lists MCP servers from Codex CLI JSON', () async {
+    final codexHome = await Directory.systemTemp.createTemp(
+      'codex-mcp-managed-home-',
+    );
+    addTearDown(() => codexHome.delete(recursive: true));
+    final store = CodexPluginStore(
+      codexHome: codexHome,
+      executableProvider: () => 'codex-test',
+      processRunner: (executable, arguments) async => ProcessResult(
+        1,
+        0,
+        '[{"name":"figma","enabled":true,"transport":{"type":"streamable_http","url":"https://mcp.figma.com/mcp"},"auth_status":"unknown"}]',
+        '',
+      ),
+    );
+
+    final servers = await store.listMcpServers();
+
+    expect(servers.single.name, 'figma');
+    expect(servers.single.enabled, isTrue);
+    expect(servers.single.transportLabel, 'https://mcp.figma.com/mcp');
+    expect(servers.single.scope, CodexMcpServerScope.managed);
+  });
+
+  test('ignores an older MCP refresh after the workspace changes', () async {
+    final store = _BlockingMcpListCodexPluginStore();
+    final controller = CodexController(
+      server: _FakeCodexAppServer(),
+      pluginStore: store,
+    )..workspacePath = '/workspace-a';
+
+    final firstRefresh = controller.refreshMcpServers();
+    expect(store.requests.single.workspace, '/workspace-a');
+
+    controller.workspacePath = '/workspace-b';
+    final secondRefresh = controller.refreshMcpServers();
+    expect(store.requests.last.workspace, '/workspace-b');
+    store.requests.last.completer.complete(const [
+      CodexMcpServer(
+        name: 'workspace-b-server',
+        enabled: true,
+        transportLabel: 'https://b.example/mcp',
+      ),
+    ]);
+    await secondRefresh;
+
+    store.requests.first.completer.complete(const [
+      CodexMcpServer(
+        name: 'workspace-a-server',
+        enabled: true,
+        transportLabel: 'https://a.example/mcp',
+      ),
+    ]);
+    await firstRefresh;
+
+    expect(controller.mcpServers.single.name, 'workspace-b-server');
+    expect(controller.mcpServersLoading, isFalse);
+    controller.dispose();
+  });
+
+  test('lists MCP servers from the selected workspace directory', () async {
+    final codexHome = await Directory.systemTemp.createTemp(
+      'codex-mcp-list-home-',
+    );
+    final workspace = await Directory.systemTemp.createTemp(
+      'codex-mcp-list-workspace-',
+    );
+    addTearDown(() async {
+      await codexHome.delete(recursive: true);
+      await workspace.delete(recursive: true);
+    });
+    await File(
+      '${codexHome.path}/config.toml',
+    ).writeAsString('[mcp_servers.figma]\nurl = "https://mcp.figma.com/mcp"\n');
+    String? launchedDirectory;
+    final store = CodexPluginStore(
+      codexHome: codexHome,
+      executableProvider: () => 'codex-test',
+      scopedProcessRunner: (executable, arguments, workingDirectory) async {
+        launchedDirectory = workingDirectory;
+        return ProcessResult(
+          1,
+          0,
+          '[{"name":"figma","enabled":true,"transport":{"type":"streamable_http","url":"https://mcp.figma.com/mcp"}}]',
+          '',
+        );
+      },
+    );
+
+    final servers = await store.listMcpServers(
+      workingDirectory: workspace.path,
+    );
+
+    expect(launchedDirectory, workspace.path);
+    expect(servers.single.scope, CodexMcpServerScope.user);
+    expect(servers.single.configurationPath, '${codexHome.path}/config.toml');
+  });
+
+  test('attributes a trusted project MCP server to its project config', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'codex-trusted-project-mcp-list-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final codexHome = Directory('${root.path}/home/.codex');
+    final workspace = Directory('${root.path}/workspace');
+    final projectConfig = File('${workspace.path}/.codex/config.toml');
+    final userConfig = File('${codexHome.path}/config.toml');
+    await projectConfig.parent.create(recursive: true);
+    await userConfig.parent.create(recursive: true);
+    await projectConfig.writeAsString(
+      '[mcp_servers.figma]\n'
+      'url = "https://mcp.figma.com/mcp"\n',
+    );
+    await userConfig.writeAsString(
+      '[projects."${workspace.path}"]\ntrust_level = "trusted"\n',
+    );
+    final store = CodexPluginStore(
+      codexHome: codexHome,
+      executableProvider: () => 'codex-test',
+      scopedProcessRunner: (executable, arguments, workingDirectory) async =>
+          ProcessResult(
+            1,
+            0,
+            '[{"name":"figma","enabled":true,"transport":{"type":"streamable_http","url":"https://mcp.figma.com/mcp"}}]',
+            '',
+          ),
+    );
+
+    final server = (await store.listMcpServers(
+      workingDirectory: workspace.path,
+    )).single;
+
+    expect(server.scope, CodexMcpServerScope.project);
+    expect(server.configurationPath, projectConfig.path);
+  });
+
+  test(
+    'recognizes literal quoted MCP and project tables when updating scopes',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-literal-quoted-mcp-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final codexHome = Directory('${root.path}/home/.codex');
+      final workspace = Directory('${root.path}/workspace');
+      final projectConfig = File('${workspace.path}/.codex/config.toml');
+      final userConfig = File('${codexHome.path}/config.toml');
+      await projectConfig.parent.create(recursive: true);
+      await userConfig.parent.create(recursive: true);
+      await projectConfig.writeAsString(
+        "[mcp_servers.'docs.prod']\n"
+        "url = 'https://project.example/mcp'\n"
+        'enabled = true\n',
+      );
+      await userConfig.writeAsString(
+        "[projects.'${workspace.path}']\n"
+        "trust_level = 'trusted'\n\n"
+        "[mcp_servers.'user.docs']\n"
+        "url = 'https://user.example/mcp'\n"
+        'enabled = true\n',
+      );
+      final store = CodexPluginStore(
+        codexHome: codexHome,
+        executableProvider: () => 'codex-test',
+        scopedProcessRunner: (executable, arguments, workingDirectory) async =>
+            ProcessResult(
+              1,
+              0,
+              '[{"name":"docs.prod","enabled":true,"transport":{"type":"streamable_http","url":"https://project.example/mcp"}},'
+                  '{"name":"user.docs","enabled":true,"transport":{"type":"streamable_http","url":"https://user.example/mcp"}}]',
+              '',
+            ),
+      );
+
+      final servers = await store.listMcpServers(
+        workingDirectory: workspace.path,
+      );
+      final projectServer = servers.singleWhere(
+        (server) => server.name == 'docs.prod',
+      );
+      final userServer = servers.singleWhere(
+        (server) => server.name == 'user.docs',
+      );
+      expect(projectServer.scope, CodexMcpServerScope.project);
+      expect(projectServer.configurationPath, projectConfig.path);
+      expect(userServer.scope, CodexMcpServerScope.user);
+      expect(userServer.configurationPath, userConfig.path);
+
+      await store.setMcpServerEnabled(
+        projectServer,
+        false,
+        workingDirectory: workspace.path,
+      );
+      await store.setMcpServerEnabled(
+        userServer,
+        false,
+        workingDirectory: workspace.path,
+      );
+
+      expect(
+        await projectConfig.readAsString(),
+        "[mcp_servers.'docs.prod']\n"
+        "url = 'https://project.example/mcp'\n"
+        'enabled = false\n',
+      );
+      expect(
+        await userConfig.readAsString(),
+        "[projects.'${workspace.path}']\n"
+        "trust_level = 'trusted'\n\n"
+        "[mcp_servers.'user.docs']\n"
+        "url = 'https://user.example/mcp'\n"
+        'enabled = false\n',
+      );
+    },
+  );
+
+  test('updates a project-scoped MCP server in its defining config', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'codex-project-mcp-config-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final codexHome = Directory('${root.path}/home/.codex');
+    final workspace = Directory('${root.path}/workspace');
+    final projectConfig = File('${workspace.path}/.codex/config.toml');
+    final userConfig = File('${codexHome.path}/config.toml');
+    await projectConfig.parent.create(recursive: true);
+    await userConfig.parent.create(recursive: true);
+    await projectConfig.writeAsString(
+      '[mcp_servers.figma]\n'
+      'url = "https://mcp.figma.com/mcp"\n'
+      'enabled = true\n',
+    );
+    await userConfig.writeAsString(
+      '[projects."${workspace.path}"]\n'
+      'trust_level = "trusted"\n\n'
+      '[mcp_servers.docs]\n'
+      'url = "https://developers.openai.com/mcp"\n',
+    );
+    final originalUserConfig = await userConfig.readAsString();
+
+    await CodexPluginStore(codexHome: codexHome).setMcpServerEnabled(
+      const CodexMcpServer(
+        name: 'figma',
+        enabled: true,
+        transportLabel: 'https://mcp.figma.com/mcp',
+      ),
+      false,
+      workingDirectory: workspace.path,
+    );
+
+    expect(await projectConfig.readAsString(), contains('enabled = false'));
+    expect(await userConfig.readAsString(), originalUserConfig);
+  });
+
+  test(
+    'does not attribute a user MCP server to an untrusted project config',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-untrusted-project-mcp-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final codexHome = Directory('${root.path}/home/.codex');
+      final workspace = Directory('${root.path}/workspace');
+      final projectConfig = File('${workspace.path}/.codex/config.toml');
+      final userConfig = File('${codexHome.path}/config.toml');
+      await projectConfig.parent.create(recursive: true);
+      await userConfig.parent.create(recursive: true);
+      await projectConfig.writeAsString(
+        '[mcp_servers.figma]\n'
+        'url = "https://untrusted.example/mcp"\n'
+        'enabled = true\n',
+      );
+      await userConfig.writeAsString(
+        '[mcp_servers.figma]\n'
+        'url = "https://mcp.figma.com/mcp"\n'
+        'enabled = true\n',
+      );
+      final store = CodexPluginStore(
+        codexHome: codexHome,
+        executableProvider: () => 'codex-test',
+        scopedProcessRunner: (executable, arguments, workingDirectory) async =>
+            ProcessResult(
+              1,
+              0,
+              '[{"name":"figma","enabled":true,"transport":{"type":"streamable_http","url":"https://mcp.figma.com/mcp"}}]',
+              '',
+            ),
+      );
+
+      final server = (await store.listMcpServers(
+        workingDirectory: workspace.path,
+      )).single;
+      expect(server.scope, CodexMcpServerScope.user);
+
+      await store.setMcpServerEnabled(
+        server,
+        false,
+        workingDirectory: workspace.path,
+      );
+
+      expect(await userConfig.readAsString(), contains('enabled = false'));
+      expect(await projectConfig.readAsString(), contains('enabled = true'));
+    },
+  );
+
+  test('refuses to update a project MCP server without a workspace', () async {
+    final codexHome = await Directory.systemTemp.createTemp(
+      'codex-project-mcp-missing-workspace-',
+    );
+    addTearDown(() => codexHome.delete(recursive: true));
+    final config = File('${codexHome.path}/config.toml');
+    await config.writeAsString(
+      '[mcp_servers.figma]\nurl = "https://mcp.figma.com/mcp"\n',
+    );
+
+    await expectLater(
+      CodexPluginStore(codexHome: codexHome).setMcpServerEnabled(
+        const CodexMcpServer(
+          name: 'figma',
+          enabled: true,
+          transportLabel: 'https://mcp.figma.com/mcp',
+          scope: CodexMcpServerScope.project,
+        ),
+        false,
+      ),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          contains('缺少当前项目目录'),
+        ),
+      ),
+    );
+    expect(await config.readAsString(), isNot(contains('enabled')));
+  });
+
+  test(
+    'updates MCP and skill enabled state without duplicating tables',
+    () async {
+      final codexHome = await Directory.systemTemp.createTemp(
+        'codex-extension-config-',
+      );
+      addTearDown(() => codexHome.delete(recursive: true));
+      final config = File('${codexHome.path}/config.toml');
+      await config.writeAsString(
+        '[mcp_servers.figma]\n'
+        'url = "https://mcp.figma.com/mcp"\n'
+        'enabled = true\n\n'
+        '[[skills.config]]\n'
+        'path = "/skills/review/SKILL.md"\n\n'
+        '[features]\n'
+        'web_search = true\n',
+      );
+      final store = CodexPluginStore(codexHome: codexHome);
+
+      await store.setMcpServerEnabled(
+        const CodexMcpServer(
+          name: 'figma',
+          enabled: true,
+          transportLabel: 'https://mcp.figma.com/mcp',
+        ),
+        false,
+      );
+      await store.setSkillEnabled(
+        const CodexSkill(
+          name: 'review',
+          path: '/skills/review/SKILL.md',
+          description: 'Review code',
+          enabled: true,
+          scope: 'user',
+        ),
+        false,
+      );
+
+      final updated = await config.readAsString();
+      expect(
+        RegExp(
+          r'^\[mcp_servers\.figma\]$',
+          multiLine: true,
+        ).allMatches(updated),
+        hasLength(1),
+      );
+      expect(
+        RegExp(
+          r'^\[\[skills\.config\]\]$',
+          multiLine: true,
+        ).allMatches(updated),
+        hasLength(1),
+      );
+      expect(
+        RegExp(r'^enabled = false$', multiLine: true).allMatches(updated),
+        hasLength(2),
+      );
+      expect(
+        updated.indexOf(
+          'enabled = false',
+          updated.indexOf('[[skills.config]]'),
+        ),
+        lessThan(updated.indexOf('[features]')),
+      );
+    },
+  );
+
+  test(
+    'updates a literal quoted skill path without duplicating its block',
+    () async {
+      final codexHome = await Directory.systemTemp.createTemp(
+        'codex-literal-skill-config-',
+      );
+      addTearDown(() => codexHome.delete(recursive: true));
+      final config = File('${codexHome.path}/config.toml');
+      await config.writeAsString(
+        '[[skills.config]] # keep this comment\n'
+        "path = '/skills/review/SKILL.md' # literal path\n"
+        'description = "Review code"\n'
+        'enabled = true # current state\n\n'
+        '[features]\n'
+        'web_search = true\n',
+      );
+
+      await CodexPluginStore(codexHome: codexHome).setSkillEnabled(
+        const CodexSkill(
+          name: 'review',
+          path: '/skills/review/SKILL.md',
+          description: 'Review code',
+          enabled: true,
+          scope: 'user',
+        ),
+        false,
+      );
+
+      final updated = await config.readAsString();
+      expect(
+        RegExp(r'^\[\[skills\.config\]\]', multiLine: true).allMatches(updated),
+        hasLength(1),
+      );
+      expect(
+        updated,
+        contains("path = '/skills/review/SKILL.md' # literal path"),
+      );
+      expect(updated, contains('description = "Review code"'));
+      expect(updated, contains('enabled = false # current state'));
+    },
+  );
+
   test(
     'writes only the selected plugin enabled state to Codex config',
     () async {
@@ -5966,6 +7546,217 @@ void main() {
     expect(find.text('Sample plugin'), findsOneWidget);
   });
 
+  testWidgets('opens plugin settings tabs from the plugin page gear', (
+    tester,
+  ) async {
+    final pluginStore = _MemoryCodexPluginStore()
+      ..plugins.add(
+        const CodexPlugin(
+          id: 'documents@openai',
+          name: 'Documents',
+          marketplaceName: 'openai',
+          installed: true,
+          enabled: true,
+          description: 'Create and edit documents',
+        ),
+      )
+      ..mcpServers.add(
+        const CodexMcpServer(
+          name: 'figma',
+          enabled: true,
+          transportLabel: 'https://mcp.figma.com/mcp',
+        ),
+      );
+    final server = _FakeCodexAppServer()
+      ..skillListResponse = const [
+        {
+          'name': 'code-review',
+          'path': '/skills/code-review/SKILL.md',
+          'description': 'Review code changes',
+          'enabled': true,
+          'scope': 'user',
+          'interface': {'displayName': '代码审查'},
+        },
+      ];
+    final controller = CodexController(server: server, pluginStore: pluginStore)
+      ..workspacePath = '/workspace';
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('sidebar-plugins-button')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('plugins-settings-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('plugin-manager-dialog')), findsOneWidget);
+    expect(find.text('插件  1'), findsOneWidget);
+    expect(find.text('MCP  1'), findsOneWidget);
+    expect(find.text('技能  1'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('plugin-manager-dialog')),
+        matching: find.text('Documents'),
+      ),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const Key('settings-mcp-tab')));
+    await tester.pumpAndSettle();
+    expect(find.text('服务器'), findsOneWidget);
+    expect(find.text('figma'), findsOneWidget);
+    expect(find.byKey(const Key('add-mcp-server-button')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('settings-skills-tab')));
+    await tester.pumpAndSettle();
+    expect(find.text('代码审查'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('plugin-manager-dialog')),
+        matching: find.text('个人'),
+      ),
+      findsOneWidget,
+    );
+
+    await tester.binding.setSurfaceSize(const Size(700, 560));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pump();
+    expect(find.byKey(const Key('extension-settings-search')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('shows MCP action failures in the MCP settings tab', (
+    tester,
+  ) async {
+    final pluginStore = _FailingMcpCodexPluginStore()
+      ..mcpServers.add(
+        const CodexMcpServer(
+          name: 'figma',
+          enabled: true,
+          transportLabel: 'https://mcp.figma.com/mcp',
+        ),
+      );
+    final controller = CodexController(pluginStore: pluginStore)
+      ..workspacePath = '/workspace';
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('plugin-manager-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-mcp-tab')));
+    await tester.pumpAndSettle();
+    final row = find.byKey(const ValueKey('settings-mcp-figma'));
+    await tester.tap(find.descendant(of: row, matching: find.byType(Switch)));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('plugin-action-error')), findsOneWidget);
+    expect(find.textContaining('MCP 配置不可写'), findsOneWidget);
+  });
+
+  testWidgets('keeps MCP add failures visible and prevents silent dismissal', (
+    tester,
+  ) async {
+    final controller = CodexController(
+      pluginStore: _FailingMcpCodexPluginStore(),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('plugin-manager-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-mcp-tab')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('add-mcp-server-button')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('mcp-server-name-field')),
+      'figma',
+    );
+    await tester.enterText(
+      find.byKey(const Key('mcp-server-url-field')),
+      'https://mcp.figma.com/mcp',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('submit-mcp-server-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('add-mcp-server-dialog')), findsOneWidget);
+    expect(find.byKey(const Key('add-mcp-server-error')), findsOneWidget);
+    expect(find.textContaining('MCP 配置不可写'), findsWidgets);
+  });
+
+  testWidgets(
+    'closes a successful MCP add when only the extension refresh warns',
+    (tester) async {
+      final pluginStore = _McpAddWithRefreshWarningCodexPluginStore();
+      final controller = CodexController(pluginStore: pluginStore);
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      await tester.tap(find.byKey(const Key('plugin-manager-button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('settings-mcp-tab')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('add-mcp-server-button')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const Key('mcp-server-name-field')),
+        'figma',
+      );
+      await tester.enterText(
+        find.byKey(const Key('mcp-server-url-field')),
+        'https://mcp.figma.com/mcp',
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('submit-mcp-server-button')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('add-mcp-server-dialog')), findsNothing);
+      expect(find.byKey(const Key('plugin-action-warning')), findsOneWidget);
+      expect(find.byKey(const Key('plugin-action-error')), findsNothing);
+      expect(find.textContaining('操作已完成'), findsOneWidget);
+      expect(find.textContaining('MCP 列表暂时不可用'), findsOneWidget);
+      expect(controller.pluginActionError, isNull);
+      expect(pluginStore.mcpServers.single.name, 'figma');
+    },
+  );
+
+  testWidgets('uninstalls an installed plugin from extension settings', (
+    tester,
+  ) async {
+    const plugin = CodexPlugin(
+      id: 'documents@openai',
+      name: 'Documents',
+      marketplaceName: 'openai',
+      installed: true,
+      enabled: true,
+    );
+    final pluginStore = _MemoryCodexPluginStore()..plugins.add(plugin);
+    final controller = CodexController(pluginStore: pluginStore);
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('plugin-manager-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('remove-plugin-documents@openai')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('remove-plugin-dialog')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('confirm-remove-plugin-button')));
+    await tester.pumpAndSettle();
+
+    expect(pluginStore.removedPluginIds, ['documents@openai']);
+    expect(
+      find.byKey(const ValueKey('settings-plugin-documents@openai')),
+      findsNothing,
+    );
+  });
+
   testWidgets('shows plugin progress and restart feedback in the manager', (
     tester,
   ) async {
@@ -5973,8 +7764,8 @@ void main() {
       id: 'available@local',
       name: 'Available plugin',
       marketplaceName: 'local',
-      installed: false,
-      enabled: false,
+      installed: true,
+      enabled: true,
     );
     final pluginStore = _BlockingCodexPluginStore()..plugins.add(plugin);
     final controller = CodexController(pluginStore: pluginStore);
@@ -5984,13 +7775,13 @@ void main() {
 
     await tester.tap(find.byKey(const Key('plugin-manager-button')));
     await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(FilledButton, '安装'));
+    await tester.tap(find.byType(Switch).first);
     await tester.pump();
 
     expect(find.byKey(const Key('plugin-action-progress')), findsOneWidget);
     expect(find.byKey(const Key('plugin-tile-progress')), findsOneWidget);
 
-    pluginStore.installCompleter.complete();
+    pluginStore.enabledCompleter.complete();
     await tester.pumpAndSettle();
 
     expect(find.byKey(const Key('plugin-action-result')), findsOneWidget);
@@ -6054,6 +7845,27 @@ void main() {
     expect(snapshot.fileChanges, isEmpty);
     expect(snapshot.pinnedThreadIds, {'kept-thread'});
     expect(snapshot.turnDiff, '123');
+  });
+
+  test('round-trips first-class conversation activity metadata', () {
+    final entry = TimelineEntry(
+      kind: TimelineKind.activity,
+      title: 'Independent review',
+      detail: '已完成',
+      createdAt: DateTime(2026, 8, 25, 10, 30),
+      sourceItemId: 'review-thread',
+      activityKind: 'collaboration',
+      activityStatus: 'completed',
+    );
+
+    final restored = TimelineEntry.fromJson(entry.toJson());
+
+    expect(restored.kind, TimelineKind.activity);
+    expect(restored.title, 'Independent review');
+    expect(restored.detail, '已完成');
+    expect(restored.sourceItemId, 'review-thread');
+    expect(restored.activityKind, 'collaboration');
+    expect(restored.activityStatus, 'completed');
   });
 
   test('rejects unsupported portable history schemas', () {
@@ -6123,6 +7935,99 @@ void main() {
     );
     controller.dispose();
   });
+
+  test(
+    'scopes the file summary to one turn and restores it when the next turn fails',
+    () async {
+      final server = _FakeCodexAppServer();
+      final git = _FakeGitProjectService();
+      final controller = CodexController(server: server, gitProjectService: git)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      const firstDiff =
+          'diff --git a/first.txt b/first.txt\n'
+          '--- a/first.txt\n'
+          '+++ b/first.txt\n'
+          '@@ -1 +1 @@\n-old\n+first';
+      const secondDiff =
+          'diff --git a/second.txt b/second.txt\n'
+          '--- a/second.txt\n'
+          '+++ b/second.txt\n'
+          '@@ -1 +1 @@\n-old\n+second';
+
+      expect(await controller.sendPrompt('first turn'), isTrue);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'item': {
+              'type': 'fileChange',
+              'changes': [
+                {'path': 'first.txt', 'kind': 'modified', 'diff': firstDiff},
+              ],
+            },
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/diff/updated',
+          params: {'diff': firstDiff},
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'turn': {'status': 'completed'},
+          },
+        ),
+      );
+
+      server.startTurnError = StateError('next turn rejected');
+      expect(await controller.sendPrompt('failed turn'), isFalse);
+      expect(controller.fileChanges.single.path, 'first.txt');
+      expect(controller.turnDiff, firstDiff);
+
+      server.startTurnError = null;
+      expect(await controller.sendPrompt('second turn'), isTrue);
+      expect(controller.fileChanges, isEmpty);
+      expect(controller.turnDiff, isNull);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'item': {
+              'type': 'fileChange',
+              'changes': [
+                {'path': 'second.txt', 'kind': 'modified', 'diff': secondDiff},
+              ],
+            },
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/diff/updated',
+          params: {'diff': secondDiff},
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'turn': {'status': 'completed'},
+          },
+        ),
+      );
+
+      expect(controller.fileChanges.single.path, 'second.txt');
+      expect(await controller.undoFileChanges(), isTrue);
+      expect(git.reversedDiff, secondDiff);
+      expect(git.reversedExpectedPaths, ['second.txt']);
+      controller.dispose();
+    },
+  );
 
   testWidgets('hides legacy per-file change records from the conversation', (
     tester,
@@ -6236,6 +8141,186 @@ void main() {
     expect(find.text('审查'), findsOneWidget);
     expect(find.text('lib/main.dart'), findsWidgets);
     expect(find.byType(SelectableText), findsWidgets);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'undo beside review reverses the exact turn diff and blocks duplicate taps',
+    (tester) async {
+      final pendingUndo = Completer<void>();
+      final git = _FakeGitProjectService()..reverseCompleter = pendingUndo;
+      final controller =
+          CodexController(server: CodexAppServer(), gitProjectService: git)
+            ..workspacePath = '/workspace'
+            ..status = RuntimeStatus.ready;
+      const taskDiff =
+          'diff --git a/lib/main.dart b/lib/main.dart\n'
+          '--- a/lib/main.dart\n'
+          '+++ b/lib/main.dart\n'
+          '@@ -1 +1 @@\n'
+          '-old\n'
+          '+new';
+
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'item': {
+              'type': 'fileChange',
+              'changes': [
+                {
+                  'path': 'lib/main.dart',
+                  'kind': 'modified',
+                  'diff': '@@ -1 +1 @@\n-old\n+new',
+                },
+              ],
+            },
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/diff/updated',
+          params: {'diff': taskDiff},
+        ),
+      );
+      await tester.pump();
+
+      final undo = find.byKey(const Key('undo-file-changes-button'));
+      final review = find.byKey(const Key('review-file-changes-button'));
+      await tester.ensureVisible(undo);
+      expect(tester.getCenter(undo).dx, lessThan(tester.getCenter(review).dx));
+      expect(tester.widget<TextButton>(undo).onPressed, isNotNull);
+
+      await tester.tap(undo);
+      await tester.pump();
+
+      expect(git.reverseCalls, 1);
+      expect(git.reversedDiff, taskDiff);
+      expect(git.reversedExpectedPaths, ['lib/main.dart']);
+      expect(tester.widget<TextButton>(undo).onPressed, isNull);
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+      expect(controller.canSend, isFalse);
+
+      await tester.tap(undo);
+      await tester.pump();
+      expect(git.reverseCalls, 1);
+
+      pendingUndo.complete();
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('file-change-summary-card')), findsNothing);
+      expect(find.text('已撤销本次任务的文件改动。'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  test(
+    'blocks task-diff undo while another task runs in the background',
+    () async {
+      final controller = CodexController(server: _FakeCodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      expect(await controller.sendPrompt('后台处理中'), isTrue);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/started',
+          params: {
+            'threadId': 'new-thread',
+            'turn': {'id': 'background-turn'},
+          },
+        ),
+      );
+      controller.createThread();
+      controller.activeThreadId = 'completed-thread';
+      const taskDiff =
+          'diff --git a/lib/main.dart b/lib/main.dart\n'
+          '--- a/lib/main.dart\n'
+          '+++ b/lib/main.dart\n'
+          '@@ -1 +1 @@\n'
+          '-old\n'
+          '+new';
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'threadId': 'completed-thread',
+            'item': {
+              'type': 'fileChange',
+              'changes': [
+                {'path': 'lib/main.dart', 'kind': 'modified'},
+              ],
+            },
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/diff/updated',
+          params: {'threadId': 'completed-thread', 'diff': taskDiff},
+        ),
+      );
+
+      expect(controller.hasRunningTasks, isTrue);
+      expect(controller.canUndoFileChanges, isFalse);
+      expect(await controller.undoFileChanges(), isFalse);
+      expect(controller.fileChangeUndoError, contains('仍有任务运行'));
+      controller.dispose();
+    },
+  );
+
+  testWidgets('keeps the file summary when undo cannot be applied safely', (
+    tester,
+  ) async {
+    final git = _FakeGitProjectService()
+      ..reverseError = StateError('patch does not apply');
+    final controller =
+        CodexController(server: CodexAppServer(), gitProjectService: git)
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready;
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {
+                'path': 'lib/main.dart',
+                'kind': 'modified',
+                'diff': '@@ -1 +1 @@\n-old\n+new',
+              },
+            ],
+          },
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/diff/updated',
+        params: {
+          'diff':
+              'diff --git a/lib/main.dart b/lib/main.dart\n'
+              '--- a/lib/main.dart\n'
+              '+++ b/lib/main.dart\n'
+              '@@ -1 +1 @@\n-old\n+new',
+        },
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('undo-file-changes-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('file-change-summary-card')), findsOneWidget);
+    expect(find.text('patch does not apply'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -6534,10 +8619,555 @@ void main() {
     expect(controller.status, RuntimeStatus.ready);
     expect(controller.lastError, 'request rejected');
     expect(controller.canSend, isTrue);
+    expect(controller.hasFailedTurnRetry, isFalse);
     controller.dispose();
   });
 
-  test('marks a completed thread for the sidebar status indicator', () {
+  test(
+    'records every App Server network retry without ending the active turn',
+    () {
+      final controller = CodexController(server: _FakeCodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..activeTurnId = 'turn-1';
+
+      void reconnecting() {
+        controller.handleServerEventForTesting(
+          const ServerEvent(
+            method: 'error',
+            params: {
+              'threadId': 'thread-1',
+              'turnId': 'turn-1',
+              'willRetry': true,
+              'error': {'message': 'network unavailable'},
+            },
+          ),
+        );
+      }
+
+      reconnecting();
+      reconnecting();
+
+      final retries = controller.entries
+          .where((entry) => entry.activityKind == 'networkRetry')
+          .toList();
+      expect(retries, hasLength(2));
+      expect(
+        retries.map((entry) => entry.title),
+        everyElement('Reconnecting... waiting for network'),
+      );
+      expect(retries.map((entry) => entry.activityStatus), [
+        'historical',
+        'waiting',
+      ]);
+      expect(retries.map((entry) => entry.sourceItemId).toSet(), hasLength(2));
+      expect(controller.status, RuntimeStatus.running);
+      expect(controller.canStop, isTrue);
+      expect(controller.lastError, isNull);
+      expect(controller.hasFailedTurnRetry, isFalse);
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/agentMessage/delta',
+          params: {
+            'threadId': 'thread-1',
+            'turnId': 'turn-1',
+            'itemId': 'answer-1',
+            'delta': '网络恢复后继续',
+          },
+        ),
+      );
+      expect(
+        controller.entries.any((entry) => entry.detail == '网络恢复后继续'),
+        isTrue,
+      );
+      expect(
+        controller.entries
+            .where((entry) => entry.activityKind == 'networkRetry')
+            .map((entry) => entry.activityStatus),
+        everyElement('historical'),
+      );
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'thread-1',
+            'turn': {'id': 'turn-1', 'status': 'completed'},
+          },
+        ),
+      );
+      expect(controller.status, RuntimeStatus.ready);
+      expect(controller.hasFailedTurnRetry, isFalse);
+      controller.dispose();
+    },
+  );
+
+  test('ignores non-retrying and incorrectly scoped network errors', () {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+
+    for (final params in <JsonMap>[
+      {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'willRetry': false,
+        'error': {'message': 'final failure'},
+      },
+      {
+        'threadId': 'thread-2',
+        'turnId': 'turn-1',
+        'willRetry': true,
+        'error': {'message': 'background retry'},
+      },
+      {
+        'threadId': 'thread-1',
+        'turnId': 'turn-2',
+        'willRetry': true,
+        'error': {'message': 'late retry'},
+      },
+    ]) {
+      controller.handleServerEventForTesting(
+        ServerEvent(method: 'error', params: params),
+      );
+    }
+
+    expect(
+      controller.entries.where((entry) => entry.activityKind == 'networkRetry'),
+      isEmpty,
+    );
+    expect(controller.status, RuntimeStatus.running);
+    expect(controller.lastError, isNull);
+    controller.dispose();
+  });
+
+  test(
+    'restores a background task network retry in its own timeline',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..listResponse = [
+          {'id': 'new-thread', 'preview': 'background', 'status': 'active'},
+        ]
+        ..turnPage = {
+          'data': [
+            {'id': 'turn-1', 'status': 'inProgress', 'items': <JsonMap>[]},
+          ],
+        };
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      expect(await controller.sendPrompt('后台任务'), isTrue);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/started',
+          params: {
+            'threadId': 'new-thread',
+            'turn': {'id': 'turn-1'},
+          },
+        ),
+      );
+      controller.createThread();
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'error',
+          params: {
+            'threadId': 'new-thread',
+            'turnId': 'turn-1',
+            'willRetry': true,
+            'error': {'message': 'offline'},
+          },
+        ),
+      );
+      expect(
+        controller.entries.where(
+          (entry) => entry.activityKind == 'networkRetry',
+        ),
+        isEmpty,
+      );
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/agentMessage/delta',
+          params: {
+            'threadId': 'new-thread',
+            'turnId': 'turn-1',
+            'itemId': 'answer-1',
+            'delta': '恢复后的后台回复',
+          },
+        ),
+      );
+      await controller.resumeThread(
+        _thread(id: 'new-thread', status: 'active'),
+      );
+
+      final retry = controller.entries.singleWhere(
+        (entry) => entry.activityKind == 'networkRetry',
+      );
+      expect(retry.title, 'Reconnecting... waiting for network');
+      expect(retry.activityStatus, 'historical');
+      expect(controller.activeThreadId, 'new-thread');
+      expect(controller.activeTurnId, 'turn-1');
+      controller.dispose();
+    },
+  );
+
+  testWidgets('renders retryable network errors like the Codex timeline', (
+    tester,
+  ) async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'error',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'willRetry': true,
+          'error': {'message': 'offline'},
+        },
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const Key('network-retry-activity')), findsOneWidget);
+    expect(find.byKey(const Key('network-retry-icon')), findsOneWidget);
+    expect(find.text('Reconnecting... waiting for network'), findsOneWidget);
+    expect(
+      tester.widget<Icon>(find.byKey(const Key('network-retry-icon'))).icon,
+      Icons.wifi,
+    );
+    expect(find.byKey(const Key('failed-turn-retry-notice')), findsNothing);
+
+    final retryEntry = controller.entries.singleWhere(
+      (entry) => entry.activityKind == 'networkRetry',
+    );
+    final retrySemantics = find.byKey(
+      ValueKey('conversation-activity-${retryEntry.sourceItemId}'),
+    );
+    expect(
+      tester.widget<Semantics>(retrySemantics).properties.liveRegion,
+      isTrue,
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/agentMessage/delta',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'itemId': 'answer-1',
+          'delta': 'continued',
+        },
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(
+      tester.widget<Semantics>(retrySemantics).properties.liveRegion,
+      isFalse,
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  test(
+    'offers manual retry only after automatic network waiting finally fails',
+    () async {
+      final server = _FakeCodexAppServer();
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      expect(await controller.sendPrompt('等待网络恢复'), isTrue);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/started',
+          params: {
+            'threadId': 'new-thread',
+            'turn': {'id': 'turn-1'},
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'error',
+          params: {
+            'threadId': 'new-thread',
+            'turnId': 'turn-1',
+            'willRetry': true,
+            'error': {'message': 'offline'},
+          },
+        ),
+      );
+      expect(controller.hasFailedTurnRetry, isFalse);
+      expect(controller.status, RuntimeStatus.running);
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'new-thread',
+            'turn': {
+              'id': 'turn-1',
+              'status': 'failed',
+              'error': {'message': 'network retries exhausted'},
+            },
+          },
+        ),
+      );
+      expect(controller.status, RuntimeStatus.ready);
+      expect(controller.hasFailedTurnRetry, isTrue);
+      expect(controller.failedTurnRetryError, 'network retries exhausted');
+      controller.dispose();
+    },
+  );
+
+  test('retries a failed turn with the exact original submission', () async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..selectedModelId = 'gpt-test'
+      ..modelOptions = const [
+        CodexModelOption(
+          id: 'gpt-test',
+          displayName: 'GPT Test',
+          description: '',
+          isDefault: true,
+        ),
+      ];
+    const additionalInput = [
+      {
+        'type': 'skill',
+        'name': 'documents',
+        'path': '/skills/documents/SKILL.md',
+      },
+      {'type': 'localImage', 'path': '/tmp/reference.png'},
+    ];
+
+    expect(
+      await controller.sendPrompt(
+        '修复断网重试',
+        additionalInput: additionalInput,
+        goal: '完成可靠重试',
+        planMode: true,
+        imagePaths: const ['/tmp/reference.png'],
+      ),
+      isTrue,
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'new-thread',
+          'turn': {
+            'status': 'failed',
+            'error': {'message': 'network disconnected'},
+          },
+        },
+      ),
+    );
+
+    expect(controller.hasFailedTurnRetry, isTrue);
+    expect(controller.failedTurnRetryError, 'network disconnected');
+    expect(await controller.retryFailedTurn(), isTrue);
+    expect(server.startedTurnPrompts, ['修复断网重试', '修复断网重试']);
+    expect(server.startedTurnAdditionalInput, additionalInput);
+    expect(server.startedTurnCollaborationMode?['mode'], 'plan');
+    expect(server.threadGoal, '完成可靠重试');
+    expect(
+      controller.entries.where((entry) => entry.kind == TimelineKind.user),
+      hasLength(1),
+    );
+    expect(controller.hasFailedTurnRetry, isFalse);
+    controller.dispose();
+  });
+
+  test(
+    'blocks duplicate failed-turn retries while the first is pending',
+    () async {
+      final server = _FakeCodexAppServer();
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      expect(await controller.sendPrompt('重试一次'), isTrue);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'new-thread',
+            'turn': {
+              'status': 'failed',
+              'error': {'message': 'offline'},
+            },
+          },
+        ),
+      );
+      server.startTurnCompleter = Completer<void>();
+
+      final firstRetry = controller.retryFailedTurn();
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.isRetryingFailedTurn, isTrue);
+      expect(await controller.retryFailedTurn(), isFalse);
+      expect(server.startedTurnPrompts, ['重试一次', '重试一次']);
+
+      server.startTurnCompleter!.complete();
+      expect(await firstRetry, isTrue);
+      expect(controller.isRetryingFailedTurn, isFalse);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'keeps a failed retry available without contaminating a new task',
+    () async {
+      final server = _FakeCodexAppServer();
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      expect(await controller.sendPrompt('原任务'), isTrue);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'new-thread',
+            'turn': {
+              'status': 'failed',
+              'error': {'message': 'offline'},
+            },
+          },
+        ),
+      );
+      server
+        ..startTurnCompleter = Completer<void>()
+        ..startTurnError = StateError('still offline');
+
+      final retry = controller.retryFailedTurn();
+      await Future<void>.delayed(Duration.zero);
+      controller.createThread();
+      expect(controller.activeThreadId, isNull);
+      server.startTurnCompleter!.complete();
+
+      expect(await retry, isFalse);
+      expect(controller.activeThreadId, isNull);
+      expect(controller.status, RuntimeStatus.ready);
+      expect(controller.lastError, isNull);
+      expect(controller.hasFailedTurnRetry, isFalse);
+      await controller.resumeThread(controller.threads.single);
+      expect(controller.hasFailedTurnRetry, isTrue);
+      expect(controller.failedTurnRetryError, contains('still offline'));
+      controller.dispose();
+    },
+  );
+
+  test(
+    'keeps retry available when the repeated turn still cannot start',
+    () async {
+      final server = _FakeCodexAppServer();
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      expect(await controller.sendPrompt('继续重试'), isTrue);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'new-thread',
+            'turn': {
+              'status': 'failed',
+              'error': {'message': 'offline'},
+            },
+          },
+        ),
+      );
+      server.startTurnError = StateError('network still unavailable');
+
+      expect(await controller.retryFailedTurn(), isFalse);
+      expect(controller.hasFailedTurnRetry, isTrue);
+      expect(
+        controller.failedTurnRetryError,
+        contains('network still unavailable'),
+      );
+      expect(controller.status, RuntimeStatus.ready);
+
+      server.startTurnError = null;
+      expect(await controller.retryFailedTurn(), isTrue);
+      expect(controller.hasFailedTurnRetry, isFalse);
+      controller.dispose();
+    },
+  );
+
+  test('does not offer retry after an interrupted turn', () async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    expect(await controller.sendPrompt('主动停止'), isTrue);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'new-thread',
+          'turn': {'status': 'interrupted'},
+        },
+      ),
+    );
+
+    expect(controller.hasFailedTurnRetry, isFalse);
+    expect(await controller.retryFailedTurn(), isFalse);
+    controller.dispose();
+  });
+
+  testWidgets('shows an inline retry action for a failed turn', (tester) async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    expect(await tester.runAsync(() => controller.sendPrompt('网络测试')), isTrue);
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'new-thread',
+          'turn': {
+            'status': 'failed',
+            'error': {'message': '连接已断开'},
+          },
+        },
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const Key('failed-turn-retry-notice')), findsOneWidget);
+    expect(find.text('连接已断开'), findsWidgets);
+    expect(find.byKey(const Key('failed-turn-retry-button')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('failed-turn-retry-button')));
+    await tester.pump();
+    expect(server.startedTurnPrompts, ['网络测试', '网络测试']);
+    expect(find.byKey(const Key('failed-turn-retry-notice')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  test('marks a newly completed thread as unacknowledged', () {
     final controller = CodexController(server: _FakeCodexAppServer())
       ..workspacePath = '/workspace'
       ..status = RuntimeStatus.running
@@ -6557,24 +9187,102 @@ void main() {
     expect(controller.threads.single.status, 'idle');
     expect(
       controller.isCompletedThreadAcknowledged('completed-thread'),
-      isTrue,
+      isFalse,
     );
     controller.dispose();
   });
 
+  test(
+    'acknowledges interrupted and cancelled outcomes without a blue dot',
+    () {
+      for (final completionStatus in ['interrupted', 'cancelled', 'canceled']) {
+        final controller = CodexController(server: _FakeCodexAppServer())
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.running
+          ..activeThreadId = 'stopped-thread'
+          ..threads = [_thread(id: 'stopped-thread', status: 'active')];
+
+        controller.handleServerEventForTesting(
+          ServerEvent(
+            method: 'turn/completed',
+            params: {
+              'turn': {'status': completionStatus},
+            },
+          ),
+        );
+
+        expect(controller.status, RuntimeStatus.ready);
+        expect(controller.threads.single.status, 'idle');
+        expect(
+          controller.isCompletedThreadAcknowledged('stopped-thread'),
+          isTrue,
+          reason: completionStatus,
+        );
+        controller.dispose();
+      }
+    },
+  );
+
+  testWidgets('does not show a completion reminder for an interrupted task', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'stopped-thread'
+      ..threads = [_thread(id: 'stopped-thread', status: 'active')];
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'turn': {'status': 'interrupted'},
+        },
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      find.byKey(const Key('sidebar-completed-task-indicator')),
+      findsNothing,
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
-    'does not show a completion reminder for the task currently open',
+    'shows a completion reminder for the current task until its row is clicked',
     (tester) async {
       final controller = CodexController(server: CodexAppServer())
         ..workspacePath = '/workspace'
-        ..status = RuntimeStatus.ready
+        ..status = RuntimeStatus.running
         ..activeThreadId = 'current-thread'
-        ..threads = [_thread(id: 'current-thread', status: 'idle')];
+        ..threads = [_thread(id: 'current-thread', status: 'active')];
 
       await tester.pumpWidget(
         MaterialApp(home: CodexWorkspace(controller: controller)),
       );
 
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'turn': {'status': 'completed'},
+          },
+        ),
+      );
+      await tester.pump();
+
+      expect(
+        find.byKey(const Key('sidebar-completed-task-indicator')),
+        findsOneWidget,
+      );
+      await tester.tap(
+        find.byKey(const ValueKey('sidebar-thread-tile-current-thread')),
+      );
+      await tester.pump();
       expect(
         find.byKey(const Key('sidebar-completed-task-indicator')),
         findsNothing,
@@ -6626,6 +9334,10 @@ void main() {
       expect(controller.isThreadRunning('background-thread'), isFalse);
       expect(controller.isThreadRunning('new-thread'), isTrue);
       expect(
+        controller.isCompletedThreadAcknowledged('background-thread'),
+        isFalse,
+      );
+      expect(
         controller.threads
             .firstWhere((thread) => thread.id == 'background-thread')
             .status,
@@ -6634,6 +9346,46 @@ void main() {
       controller.dispose();
     },
   );
+
+  test('does not mark a cancelled background task as newly completed', () {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'background-thread'
+      ..threads = [_thread(id: 'background-thread', status: 'active')];
+    controller.createThread();
+    controller
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'foreground-thread'
+      ..activeTurnId = 'foreground-turn'
+      ..threads = [
+        _thread(id: 'background-thread', status: 'active'),
+        _thread(id: 'foreground-thread', status: 'active'),
+      ];
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'background-thread',
+          'turn': {'status': 'cancelled'},
+        },
+      ),
+    );
+
+    expect(controller.isThreadRunning('background-thread'), isFalse);
+    expect(
+      controller.isCompletedThreadAcknowledged('background-thread'),
+      isTrue,
+    );
+    expect(
+      controller.threads
+          .firstWhere((thread) => thread.id == 'background-thread')
+          .status,
+      'idle',
+    );
+    controller.dispose();
+  });
 
   test(
     'opens another task while the current task continues in the background',
@@ -6933,6 +9685,47 @@ void main() {
   );
 
   test(
+    'keeps an unscoped cancelled background completion acknowledged',
+    () async {
+      final server = _FakeCodexAppServer()..queueListRequests = true;
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'background-thread';
+      controller.createThread();
+      controller
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'foreground-thread'
+        ..activeTurnId = 'foreground-turn';
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'turn': {'status': 'cancelled'},
+          },
+        ),
+      );
+      server.listRequests.single.complete([
+        {'id': 'background-thread', 'preview': 'background', 'status': 'idle'},
+        {
+          'id': 'foreground-thread',
+          'preview': 'foreground',
+          'status': 'active',
+        },
+      ]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.isThreadRunning('background-thread'), isFalse);
+      expect(
+        controller.isCompletedThreadAcknowledged('background-thread'),
+        isTrue,
+      );
+      controller.dispose();
+    },
+  );
+
+  test(
     'does not write an unscoped background completion into a new task',
     () async {
       final server = _FakeCodexAppServer()
@@ -7051,6 +9844,48 @@ void main() {
       );
       expect(bubble.right, closeTo(776, 1));
       await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'shows a user-message timestamp only while its bubble is hovered',
+    (tester) async {
+      final controller = CodexController(server: CodexAppServer())
+        ..workspacePath = '/workspace';
+      controller.replaceTimelineEntriesForTesting([
+        TimelineEntry(
+          kind: TimelineKind.user,
+          title: '你',
+          detail: 'review代码',
+          createdAt: DateTime(2026, 8, 25, 8, 53),
+        ),
+      ]);
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      expect(find.byKey(const Key('timeline-user-message-time')), findsNothing);
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.moveTo(
+        tester.getCenter(find.byKey(const Key('timeline-user-message'))),
+      );
+      await tester.pump();
+      expect(
+        find.byKey(const Key('timeline-user-message-time')),
+        findsOneWidget,
+      );
+      expect(find.text('8:53'), findsOneWidget);
+
+      await mouse.moveTo(Offset.zero);
+      await tester.pump();
+      expect(find.byKey(const Key('timeline-user-message-time')), findsNothing);
+      await mouse.moveTo(
+        tester.getCenter(find.byKey(const Key('timeline-user-message'))),
+      );
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox());
+      await mouse.removePointer();
+      expect(tester.takeException(), isNull);
     },
   );
 
@@ -7232,6 +10067,152 @@ void main() {
       expect(await File('${directory.path}/new_file.txt').exists(), isFalse);
     },
   );
+
+  test(
+    'reverse-applies an exact task diff and preserves files after a conflict',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'codex-undo-diff-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final initialized = await Process.run('git', [
+        'init',
+        '-q',
+      ], workingDirectory: directory.path);
+      expect(initialized.exitCode, 0);
+      final file = File('${directory.path}/new_file.txt');
+      await file.writeAsString('new content   \n');
+      final service = GitProjectService();
+      const change = GitProjectChange(code: '??', path: 'new_file.txt');
+      final diff = await service.readDiff(
+        workspace: directory.path,
+        change: change,
+      );
+
+      await file.writeAsString('new content   \nlater edit\n');
+      await expectLater(
+        service.reverseApplyDiff(
+          workspace: directory.path,
+          diff: diff,
+          expectedPaths: const ['new_file.txt'],
+        ),
+        throwsA(isA<StateError>()),
+      );
+      expect(await file.readAsString(), 'new content   \nlater edit\n');
+
+      await file.writeAsString('new content   \n');
+      await service.reverseApplyDiff(
+        workspace: directory.path,
+        diff: diff,
+        expectedPaths: [file.path],
+      );
+      expect(await file.exists(), isFalse);
+    },
+  );
+
+  test('rejects a task diff whose paths do not match the summary', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'codex-undo-paths-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final initialized = await Process.run('git', [
+      'init',
+      '-q',
+    ], workingDirectory: directory.path);
+    expect(initialized.exitCode, 0);
+    final secret = File('${directory.path}/secret.txt');
+    await secret.writeAsString('secret change\n');
+    final service = GitProjectService();
+    final diff = await service.readDiff(
+      workspace: directory.path,
+      change: const GitProjectChange(code: '??', path: 'secret.txt'),
+    );
+
+    await expectLater(
+      service.reverseApplyDiff(
+        workspace: directory.path,
+        diff: diff,
+        expectedPaths: const ['README.md'],
+      ),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          contains('文件列表不一致'),
+        ),
+      ),
+    );
+    expect(await secret.readAsString(), 'secret change\n');
+  });
+
+  test('refuses to undo a task diff that touches staged files', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'codex-undo-staged-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final initialized = await Process.run('git', [
+      'init',
+      '-q',
+    ], workingDirectory: directory.path);
+    expect(initialized.exitCode, 0);
+    final file = File('${directory.path}/tracked.txt');
+    await file.writeAsString('old\n');
+    expect(
+      (await Process.run('git', [
+        'add',
+        'tracked.txt',
+      ], workingDirectory: directory.path)).exitCode,
+      0,
+    );
+    expect(
+      (await Process.run('git', [
+        '-c',
+        'user.name=Codex Test',
+        '-c',
+        'user.email=codex@example.com',
+        'commit',
+        '-qm',
+        'initial',
+      ], workingDirectory: directory.path)).exitCode,
+      0,
+    );
+    await file.writeAsString('new\n');
+    final service = GitProjectService();
+    final diff = await service.readDiff(
+      workspace: directory.path,
+      change: const GitProjectChange(code: ' M', path: 'tracked.txt'),
+    );
+    expect(
+      (await Process.run('git', [
+        'add',
+        'tracked.txt',
+      ], workingDirectory: directory.path)).exitCode,
+      0,
+    );
+
+    await expectLater(
+      service.reverseApplyDiff(
+        workspace: directory.path,
+        diff: diff,
+        expectedPaths: const ['tracked.txt'],
+      ),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          contains('暂存改动'),
+        ),
+      ),
+    );
+    expect(await file.readAsString(), 'new\n');
+    final stagedDiff = await Process.run('git', [
+      'diff',
+      '--cached',
+      '--',
+      'tracked.txt',
+    ], workingDirectory: directory.path);
+    expect(stagedDiff.stdout, contains('+new'));
+  });
 
   test('retains Git operation failures for the interface to display', () async {
     final git = _FakeGitProjectService()
@@ -7910,6 +10891,44 @@ void main() {
     },
   );
 
+  test('restores file changes from only the latest historical turn', () async {
+    final server = _FakeCodexAppServer()
+      ..resumeResult = {
+        'thread': {
+          'turns': [
+            {
+              'id': 'turn-1',
+              'startedAt': 1,
+              'items': [
+                {
+                  'type': 'fileChange',
+                  'changes': [
+                    {'path': 'first.txt', 'kind': 'modified', 'diff': '+first'},
+                  ],
+                },
+              ],
+            },
+            {
+              'id': 'turn-2',
+              'startedAt': 2,
+              'items': [
+                {'type': 'agentMessage', 'text': 'No files changed.'},
+              ],
+            },
+          ],
+        },
+      };
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+
+    await controller.resumeThread(_thread(id: 'history-thread'));
+
+    expect(controller.fileChanges, isEmpty);
+    expect(controller.turnDiff, isNull);
+    controller.dispose();
+  });
+
   test(
     'marks thread history restoration separately from live output',
     () async {
@@ -8323,6 +11342,11 @@ void main() {
                   'type': 'collabToolCall',
                   'tool': 'spawnAgent',
                   'status': 'completed',
+                  'newThreadId': 'review-thread',
+                  'agentStatus': {
+                    'name': 'Independent review',
+                    'status': 'completed',
+                  },
                 },
                 {'id': 'compact-1', 'type': 'contextCompaction'},
               ],
@@ -8338,8 +11362,14 @@ void main() {
 
     expect(
       controller.entries.map((entry) => entry.title),
-      containsAll(['协作任务：spawnAgent', '压缩对话上下文']),
+      containsAll(['Independent review', '压缩对话上下文']),
     );
+    final activity = controller.entries.singleWhere(
+      (entry) => entry.kind == TimelineKind.activity,
+    );
+    expect(activity.detail, '已完成');
+    expect(activity.sourceItemId, 'review-thread');
+    expect(activity.activityStatus, 'completed');
     controller.dispose();
   });
 
@@ -8552,6 +11582,60 @@ void main() {
             .detail,
         '已归档 2 个任务。',
       );
+      controller.dispose();
+    },
+  );
+
+  test(
+    'keeps an archived task hidden when an older active refresh completes',
+    () async {
+      final server = _FakeCodexAppServer()..queueListRequests = true;
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready
+        ..threads = [_thread(id: 'archive-me')];
+
+      final staleRefresh = controller.refreshThreads();
+      expect(server.listRequests, hasLength(1));
+
+      await controller.archiveThread(controller.threads.single);
+      expect(controller.threads, isEmpty);
+
+      server.listRequests.single.complete([
+        {'id': 'archive-me', 'preview': 'stale active task'},
+      ]);
+      await staleRefresh;
+
+      expect(controller.threads, isEmpty);
+      expect(controller.threadsLoading, isFalse);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'does not restore an archived task from local session fallback',
+    () async {
+      final localSessions = _MemoryLocalSessionThreadStore()
+        ..threadsByWorkspace['/workspace'] = [_thread(id: 'archive-me')];
+      final server = _FakeCodexAppServer();
+      final controller =
+          CodexController(
+              server: server,
+              localSessionThreadStore: localSessions,
+            )
+            ..workspacePath = '/workspace'
+            ..status = RuntimeStatus.ready
+            ..threads = [_thread(id: 'archive-me')];
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'thread/archived',
+          params: {'threadId': 'archive-me'},
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.threads, isEmpty);
       controller.dispose();
     },
   );

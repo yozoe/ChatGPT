@@ -11,6 +11,7 @@ import 'domain/codex_thread.dart';
 import 'domain/codex_plugin.dart';
 import 'domain/codex_skill.dart';
 import 'domain/codex_marketplace.dart';
+import 'domain/codex_mcp_server.dart';
 import 'domain/codex_file_change.dart';
 import 'domain/git_project_status.dart';
 import 'domain/pending_approval.dart';
@@ -37,6 +38,8 @@ enum AuthStatus { checking, signedOut, chatgpt, apiKey, external }
 /// App Server 请求额外权限时采用的本地决策策略。
 /// Local decision policy for App Server approval requests.
 enum ApprovalMode { manual, autoApprove }
+
+enum _TurnCompletionOutcome { succeeded, stopped, failed, unknown }
 
 /// App Server 明确报告、但尚未完成的当前 turn 活动。
 /// A transient activity that App Server has explicitly reported for the
@@ -131,6 +134,46 @@ class PendingTurnSteer {
   final List<JsonMap> additionalInput;
   final List<String> imagePaths;
 }
+
+/// Exact inputs for a turn that can be submitted again after a task failure.
+/// 可在任务失败后原样再次提交的 turn 输入；仅保留在当前应用进程内。
+@immutable
+class _TurnSubmission {
+  _TurnSubmission({
+    required this.workspace,
+    required this.threadId,
+    required this.prompt,
+    required List<JsonMap> additionalInput,
+    required this.goal,
+    required JsonMap? collaborationMode,
+    required List<String> imagePaths,
+  }) : additionalInput = List.unmodifiable(
+         additionalInput.map((item) => _cloneJsonMap(item)),
+       ),
+       collaborationMode = collaborationMode == null
+           ? null
+           : _cloneJsonMap(collaborationMode),
+       imagePaths = List.unmodifiable(imagePaths);
+
+  final String workspace;
+  final String threadId;
+  final String prompt;
+  final List<JsonMap> additionalInput;
+  final String? goal;
+  final JsonMap? collaborationMode;
+  final List<String> imagePaths;
+}
+
+@immutable
+class _FailedTurnRetry {
+  const _FailedTurnRetry({required this.submission, required this.error});
+
+  final _TurnSubmission submission;
+  final String error;
+}
+
+JsonMap _cloneJsonMap(JsonMap value) =>
+    JsonMap.from(jsonDecode(jsonEncode(value)) as Map);
 
 /// 将本地存储的审批模式转换为受支持的安全值。
 /// Converts a locally stored approval mode into a supported safe value.
@@ -327,14 +370,20 @@ class CodexController extends ChangeNotifier {
   // output by the presentation layer.  The workspace uses this to position
   // the restored timeline without playing a smooth scroll animation.
   bool _resumingThread = false;
+  // Async actions that retain a timeline index must not reuse it after the
+  // user replaces or reloads the visible conversation, even if they later
+  // return to the same thread ID.
+  int _conversationViewRevision = 0;
   // 每次显式停止、重连或释放都会推进代次，使仍在 await 的旧启动流程失效。
   // Explicit stops, reconnects, and disposal advance this epoch to invalidate stale awaited startup work.
   int _runtimeConnectionEpoch = 0;
   Timer? _runtimeReconnectTimer;
   int _runtimeReconnectAttempt = 0;
+  int _networkRetryEventSequence = 0;
   int _threadRefreshEpoch = 0;
   int _threadRefreshRequest = 0;
   int _archivedThreadRefreshRequest = 0;
+  int _mcpServerRefreshRequest = 0;
   final Set<String> _unarchivingThreadIds = {};
   final Set<String> _archivingThreadIds = {};
   final Set<String> _deletingThreadIds = {};
@@ -376,6 +425,12 @@ class CodexController extends ChangeNotifier {
   // is intentionally independent of [status], which describes the task that
   // is currently open in the workbench.
   final Set<String> _runningThreadIds = {};
+  final Map<String, String> _runningTurnIdsByThread = {};
+  final Map<String, List<TimelineEntry>> _pendingNetworkRetryEntriesByThread =
+      {};
+  final Map<String, _TurnSubmission> _runningTurnSubmissions = {};
+  final Map<String, _FailedTurnRetry> _failedTurnRetries = {};
+  String? _retryingFailedTurnThreadId;
   String? activeThreadId;
 
   /// Whether the completion reminder for a thread has been viewed.
@@ -406,6 +461,7 @@ class CodexController extends ChangeNotifier {
   String? _activeCommand;
   String? _activeCommandItemId;
   LiveTurnActivity? _activeLiveActivity;
+  final Map<String, Map<int, String>> _reasoningSummaryParts = {};
   TaskPlan? activeTaskPlan;
   String? lastError;
   _ThreadWriterConflict? _threadWriterConflict;
@@ -424,6 +480,25 @@ class CodexController extends ChangeNotifier {
       _threadWriterConflict?.operation == _ThreadWriterConflictOperation.resume;
 
   bool get isRetryingThreadWriterConflict => _retryingThreadWriterConflict;
+
+  _FailedTurnRetry? get _activeFailedTurnRetry {
+    final threadId = activeThreadId;
+    final retry = threadId == null ? null : _failedTurnRetries[threadId];
+    return retry?.submission.workspace == workspacePath ? retry : null;
+  }
+
+  /// Whether the selected failed task still has its exact in-memory inputs.
+  /// 当前失败任务是否仍保留可安全原样重发的内存输入。
+  bool get hasFailedTurnRetry => _activeFailedTurnRetry != null;
+
+  String? get failedTurnRetryError => _activeFailedTurnRetry?.error;
+
+  bool get isRetryingFailedTurn =>
+      _retryingFailedTurnThreadId != null &&
+      _retryingFailedTurnThreadId == activeThreadId;
+
+  bool get canRetryFailedTurn =>
+      hasFailedTurnRetry && !isRetryingFailedTurn && canSend;
 
   bool get hasArchivedThreadRestore =>
       _archivedThreadRestore?.workspace == workspacePath;
@@ -577,10 +652,15 @@ class CodexController extends ChangeNotifier {
   bool pluginsLoading = false;
   bool pluginSaving = false;
   String? pluginsError;
+  String? pluginActionError;
+  String? pluginActionWarning;
   String? pluginActionProgress;
   String? pluginActionResult;
   String? pluginActionTargetId;
   bool pluginRuntimeRestartRequired = false;
+  List<CodexMcpServer> mcpServers = const [];
+  bool mcpServersLoading = false;
+  String? mcpServersError;
   List<CodexSkill> skills = const [];
   bool skillsLoading = false;
   String? skillsError;
@@ -596,6 +676,8 @@ class CodexController extends ChangeNotifier {
   bool gitDiffTruncated = false;
   bool gitOperationRunning = false;
   String? gitOperationError;
+  bool fileChangeUndoRunning = false;
+  String? fileChangeUndoError;
 
   /// 返回不含主目录且不可由外部修改的附加工作区目录。
   /// Returns additional workspace directories, excluding the primary directory and preventing external mutation.
@@ -743,6 +825,22 @@ class CodexController extends ChangeNotifier {
   List<CodexFileChange> get fileChanges =>
       List.unmodifiable(_fileChangesByPath.values);
   String? turnDiff;
+
+  /// 撤销只对完整、带文件头的任务 Diff 开放；仅有统计或 hunk 时保持禁用。
+  /// Undo is available only for a complete turn diff with file headers, never for stats-only or hunk-only data.
+  bool get canUndoFileChanges {
+    final diff = turnDiff?.trim();
+    return workspacePath != null &&
+        !hasRunningTasks &&
+        !fileChangeUndoRunning &&
+        fileChanges.isNotEmpty &&
+        diff != null &&
+        diff.isNotEmpty &&
+        !diff.contains(GitProjectService.truncatedDiffMarker) &&
+        (diff.contains('diff --git ') ||
+            ((diff.startsWith('--- ') || diff.contains('\n--- ')) &&
+                diff.contains('\n+++ ')));
+  }
 
   /// 返回最近的已脱敏运行时日志；日志仅保留在本次应用进程的内存中。
   /// Returns recent redacted runtime logs; logs are retained only in this app process's memory.
@@ -922,6 +1020,7 @@ class CodexController extends ChangeNotifier {
   /// Indicates whether the current state permits sending a new task.
   bool get canSend =>
       status == RuntimeStatus.ready &&
+      !fileChangeUndoRunning &&
       workspacePath != null &&
       (activeThreadId == null || _activeThreadAttached) &&
       (activeThreadId == null || !isThreadRunning(activeThreadId!)) &&
@@ -993,13 +1092,17 @@ class CodexController extends ChangeNotifier {
   /// 指示当前是否可以安全切换本地项目。
   /// Indicates whether it is safe to switch the local workspace.
   bool get canChooseWorkspace =>
-      status == RuntimeStatus.stopped ||
-      (status == RuntimeStatus.failed && !_server.isRunning);
+      !pluginSaving &&
+      (status == RuntimeStatus.stopped ||
+          (status == RuntimeStatus.failed && !_server.isRunning));
 
   /// 指示当前任务状态是否允许新建或切换工作区并重建运行时连接。
   /// Indicates whether the current task state permits creating or switching workspaces and rebuilding the runtime connection.
   bool get canChangePrimaryWorkspace =>
-      !_startingRuntime && status != RuntimeStatus.starting && !hasRunningTasks;
+      !_startingRuntime &&
+      status != RuntimeStatus.starting &&
+      !hasRunningTasks &&
+      !pluginSaving;
 
   /// 指示本地 App Server 是否可以停止。
   /// Indicates whether the local App Server can be stopped.
@@ -1194,7 +1297,7 @@ class CodexController extends ChangeNotifier {
   /// Validates, selects, and persists a local workspace, then restores its local history.
   Future<void> selectWorkspace(String path) async {
     if (!canChooseWorkspace) {
-      lastError = '请先停止当前运行时，再切换项目。';
+      lastError = pluginSaving ? '请等待扩展配置更新完成后再切换项目。' : '请先停止当前运行时，再切换项目。';
       _add(TimelineKind.error, '无法切换项目', lastError!);
       notifyListeners();
       return;
@@ -1243,8 +1346,14 @@ class CodexController extends ChangeNotifier {
       ..addAll(nextAdditionalPaths.where((path) => path != canonicalPath));
     _updateCurrentWorkspaceConfiguration();
     _clearRuntimeResolvedConfiguration();
+    _resetMcpServersForWorkspaceChange();
     _threadViewCache.clear();
     _runningThreadIds.clear();
+    _runningTurnIdsByThread.clear();
+    _pendingNetworkRetryEntriesByThread.clear();
+    _runningTurnSubmissions.clear();
+    _failedTurnRetries.clear();
+    _retryingFailedTurnThreadId = null;
     _acknowledgedCompletedThreadIds.clear();
     activeThreadId = null;
     _activeThreadAttached = false;
@@ -1317,7 +1426,9 @@ class CodexController extends ChangeNotifier {
       return true;
     }
     if (!canChangePrimaryWorkspace) {
-      lastError = status == RuntimeStatus.running
+      lastError = pluginSaving
+          ? '请等待扩展配置更新完成后再新建或切换工作区。'
+          : status == RuntimeStatus.running
           ? '请等待当前任务完成后再新建或切换工作区。'
           : '运行时正在自动连接，请稍后再新建或切换工作区。';
       _add(TimelineKind.error, '无法切换工作区', lastError!);
@@ -1425,6 +1536,7 @@ class CodexController extends ChangeNotifier {
     _clearThreadWriterConflict();
     _clearArchivedThreadRestore();
     workspacePath = null;
+    _resetMcpServersForWorkspaceChange();
     _additionalWorkspacePaths.clear();
     activeThreadId = null;
     _activeThreadAttached = false;
@@ -1762,10 +1874,12 @@ class CodexController extends ChangeNotifier {
       return false;
     }
     final workspace = workspacePath!;
+    final previousFileChanges = List<CodexFileChange>.of(fileChanges);
+    final previousTurnDiff = turnDiff;
     if (activeThreadId == null) {
       _resetConversationTimeline();
-      _clearFileChanges();
     }
+    _clearFileChanges();
     status = RuntimeStatus.running;
     lastError = null;
     _clearStreamingState();
@@ -1790,6 +1904,28 @@ class CodexController extends ChangeNotifier {
         config: _newThreadConfig(),
       );
       final threadId = requestedThreadId;
+      final objective = goal?.trim();
+      final collaborationMode = _newThreadModelId == null
+          ? null
+          : <String, dynamic>{
+              'mode': planMode ? 'plan' : 'default',
+              'settings': {
+                'model': _newThreadModelId,
+                'reasoning_effort': reasoningEffort.configValue,
+                'developer_instructions': null,
+              },
+            };
+      final submission = _TurnSubmission(
+        workspace: workspace,
+        threadId: threadId,
+        prompt: text,
+        additionalInput: additionalInput,
+        goal: objective == null || objective.isEmpty ? null : objective,
+        collaborationMode: collaborationMode,
+        imagePaths: imagePaths,
+      );
+      _failedTurnRetries.remove(threadId);
+      _runningTurnSubmissions[threadId] = submission;
       if (activeThreadId == null) {
         activeThreadId = threadId;
         _activeThreadAttached = true;
@@ -1805,7 +1941,6 @@ class CodexController extends ChangeNotifier {
       _acknowledgedCompletedThreadIds.remove(threadId);
       _updateThreadStatus(threadId, 'active');
       _scheduleConversationHistorySave();
-      final objective = goal?.trim();
       if (objective != null && objective.isNotEmpty) {
         await _server.setThreadGoal(threadId: threadId, objective: objective);
       }
@@ -1820,38 +1955,105 @@ class CodexController extends ChangeNotifier {
         prompt: text,
         workingDirectory: workspace,
         additionalInput: additionalInput,
-        collaborationMode: _newThreadModelId == null
-            ? null
-            : {
-                'mode': planMode ? 'plan' : 'default',
-                'settings': {
-                  'model': _newThreadModelId,
-                  'reasoning_effort': reasoningEffort.configValue,
-                  'developer_instructions': null,
-                },
-              },
+        collaborationMode: collaborationMode,
       );
       notifyListeners();
       return true;
     } catch (error) {
       _runningThreadIds.remove(requestedThreadId);
+      final failedSubmission = requestedThreadId == null
+          ? null
+          : _runningTurnSubmissions.remove(requestedThreadId);
+      final failureMessage = _messageOf(error);
+      if (failedSubmission != null) {
+        _failedTurnRetries[failedSubmission.threadId] = _FailedTurnRetry(
+          submission: failedSubmission,
+          error: failureMessage,
+        );
+      }
       _updateThreadStatus(requestedThreadId, 'systemError');
       // Another task may have become active while this request was awaiting
       // App Server. Never replace that task's UI state with an old failure.
       if (requestedThreadId == null || activeThreadId == requestedThreadId) {
         status = _server.isRunning ? RuntimeStatus.ready : RuntimeStatus.failed;
         _clearStreamingState();
+        _replaceFileChanges(previousFileChanges, previousTurnDiff);
         if (rollbackUserEntryOnFailure) {
           _entries.removeWhere((entry) => identical(entry, submittedEntry));
           _scheduleConversationHistorySave();
         }
-        lastError = _messageOf(error);
+        lastError = failureMessage;
         _add(TimelineKind.error, '任务未能启动', lastError!);
       }
     }
     if (status == RuntimeStatus.failed) _scheduleRuntimeReconnect();
     notifyListeners();
     return false;
+  }
+
+  /// Replays the exact inputs of the selected failed turn without adding a
+  /// duplicate optimistic user bubble. A task switch while awaiting App
+  /// Server is allowed, but the result remains scoped to the original thread.
+  /// 原样重发当前失败 turn；等待期间即使切换任务，结果也只归属原线程。
+  Future<bool> retryFailedTurn() async {
+    final retry = _activeFailedTurnRetry;
+    final threadId = retry?.submission.threadId;
+    if (retry == null ||
+        threadId == null ||
+        _retryingFailedTurnThreadId != null ||
+        !canSend ||
+        activeThreadId != threadId) {
+      return false;
+    }
+    final submission = retry.submission;
+    _retryingFailedTurnThreadId = threadId;
+    _runningTurnSubmissions[threadId] = submission;
+    _runningThreadIds.add(threadId);
+    status = RuntimeStatus.running;
+    lastError = null;
+    _clearFileChanges();
+    _clearStreamingState();
+    _activeTurnStartedAt = DateTime.now();
+    _acknowledgedCompletedThreadIds.remove(threadId);
+    _updateThreadStatus(threadId, 'active');
+    notifyListeners();
+    try {
+      final objective = submission.goal;
+      if (objective != null && objective.isNotEmpty) {
+        await _server.setThreadGoal(threadId: threadId, objective: objective);
+      }
+      await _server.startTurn(
+        threadId: threadId,
+        prompt: submission.prompt,
+        workingDirectory: submission.workspace,
+        additionalInput: submission.additionalInput,
+        collaborationMode: submission.collaborationMode,
+      );
+      _failedTurnRetries.remove(threadId);
+      return true;
+    } catch (error) {
+      _runningThreadIds.remove(threadId);
+      _runningTurnSubmissions.remove(threadId);
+      final message = _messageOf(error);
+      _failedTurnRetries[threadId] = _FailedTurnRetry(
+        submission: submission,
+        error: message,
+      );
+      _updateThreadStatus(threadId, 'systemError');
+      if (activeThreadId == threadId && workspacePath == submission.workspace) {
+        status = _server.isRunning ? RuntimeStatus.ready : RuntimeStatus.failed;
+        _clearStreamingState();
+        lastError = message;
+        _add(TimelineKind.error, '重试失败', message);
+        if (status == RuntimeStatus.failed) _scheduleRuntimeReconnect();
+      }
+      return false;
+    } finally {
+      if (_retryingFailedTurnThreadId == threadId) {
+        _retryingFailedTurnThreadId = null;
+      }
+      if (!_disposed) notifyListeners();
+    }
   }
 
   /// Keeps the just-created active thread visible while the server list catches up.
@@ -1878,6 +2080,10 @@ class CodexController extends ChangeNotifier {
   }) async {
     final workspace = workspacePath;
     if (!_server.isRunning || workspace == null || skillsLoading) return;
+    if (!pluginSaving) {
+      pluginActionError = null;
+      pluginActionWarning = null;
+    }
     skillsLoading = true;
     skillsError = null;
     if (notify && !_disposed) notifyListeners();
@@ -1890,7 +2096,6 @@ class CodexController extends ChangeNotifier {
       skills = rows
           .map(CodexSkill.fromJson)
           .whereType<CodexSkill>()
-          .where((skill) => skill.enabled)
           .toList(growable: false);
     } catch (error) {
       if (_disposed || workspacePath != workspace) return;
@@ -1961,6 +2166,19 @@ class CodexController extends ChangeNotifier {
       return false;
     }
     lastError = null;
+    // Preserve the position at which the user sent this direction. App Server
+    // can acknowledge `turn/steer` after the same turn's completion event, but
+    // the accepted direction must still appear before completion metadata and
+    // activities that were recorded later.
+    final insertionIndex = _entries.length;
+    final conversationViewRevision = _conversationViewRevision;
+    final directionEntry = _entry(
+      TimelineKind.user,
+      '你',
+      text,
+      imagePaths: imagePaths,
+    );
+    final equivalentDirectionCount = _equivalentUserEntryCount(directionEntry);
     try {
       final nextTurnId = await _server.steerTurn(
         threadId: threadId,
@@ -1968,15 +2186,27 @@ class CodexController extends ChangeNotifier {
         prompt: text,
         additionalInput: additionalInput,
       );
-      final stillCurrent =
+      final stillSameConversation =
           !_disposed &&
           workspacePath == workspace &&
-          status == RuntimeStatus.running &&
-          activeThreadId == threadId &&
-          activeTurnId == turnId;
-      if (stillCurrent) {
-        activeTurnId = nextTurnId;
-        _add(TimelineKind.user, '你', text, imagePaths: imagePaths);
+          activeThreadId == threadId;
+      if (stillSameConversation) {
+        // The turn can complete while App Server is acknowledging this steer.
+        // The accepted user direction still belongs in the open conversation,
+        // including its local image references, even though the runtime has
+        // already moved back to the ready state.
+        if (status == RuntimeStatus.running && activeTurnId == turnId) {
+          activeTurnId = nextTurnId;
+        }
+        if (conversationViewRevision == _conversationViewRevision) {
+          _insertTimelineEntry(insertionIndex, directionEntry);
+        } else if (_equivalentUserEntryCount(directionEntry) <=
+            equivalentDirectionCount) {
+          // The same thread was reloaded while App Server acknowledged the
+          // steer. Its authoritative history may already contain the accepted
+          // direction, so never insert again at the stale pre-reload index.
+          _insertTimelineEntry(_entries.length, directionEntry);
+        }
         notifyListeners();
       }
       return true;
@@ -2123,6 +2353,11 @@ class CodexController extends ChangeNotifier {
       _clearRuntimeResolvedConfiguration();
       status = RuntimeStatus.stopped;
       _runningThreadIds.clear();
+      _runningTurnIdsByThread.clear();
+      _pendingNetworkRetryEntriesByThread.clear();
+      _runningTurnSubmissions.clear();
+      _failedTurnRetries.clear();
+      _retryingFailedTurnThreadId = null;
       activeThreadId = null;
       _activeThreadAttached = false;
       _pendingApprovals.clear();
@@ -2180,13 +2415,14 @@ class CodexController extends ChangeNotifier {
   /// 从 App Server 分页刷新当前工作区的活跃线程列表。
   /// Refreshes the current workspace's active thread list from App Server pages.
   ///
-  /// 当删除通知或删除请求刚完成时，服务端空列表是权威结果，不应由旧本地
-  /// session 元数据重新填充。
-  /// When a deletion event or request has just completed, an empty server list is
-  /// authoritative and must not be repopulated from stale local session metadata.
+  /// 当归档/删除通知或对应请求刚完成时，服务端空列表是权威结果，不应由
+  /// 旧本地 session 元数据重新填充。
+  /// When an archive/deletion event or request has just completed, an empty server
+  /// list is authoritative and must not be repopulated from stale local session metadata.
   Future<void> refreshThreads({
     bool allowLocalSessionFallback = true,
     bool reconcileUnidentifiedBackgroundCompletion = false,
+    String? unidentifiedCompletionStatus,
   }) async {
     final workspace = workspacePath;
     if (!_server.isRunning || workspace == null) return;
@@ -2201,7 +2437,10 @@ class CodexController extends ChangeNotifier {
       )).map(CodexThread.fromJson).toList(growable: false);
       if (_isCurrentThreadRefresh(request, epoch, workspace) &&
           reconcileUnidentifiedBackgroundCompletion) {
-        _reconcileUnidentifiedCompletion(fetchedServerThreads);
+        _reconcileUnidentifiedCompletion(
+          fetchedServerThreads,
+          eventCompletionStatus: unidentifiedCompletionStatus,
+        );
       }
       final serverThreads = fetchedServerThreads
           .map((thread) {
@@ -2371,6 +2610,8 @@ class CodexController extends ChangeNotifier {
   /// Refreshes installed and available plugins from the local Codex CLI.
   Future<void> refreshPlugins() async {
     if (pluginSaving) return;
+    pluginActionError = null;
+    pluginActionWarning = null;
     pluginsLoading = true;
     pluginsError = null;
     if (!_disposed) notifyListeners();
@@ -2382,6 +2623,54 @@ class CodexController extends ChangeNotifier {
       pluginsLoading = false;
       if (!_disposed) notifyListeners();
     }
+  }
+
+  /// 从本机 Codex CLI 刷新 MCP 服务器。
+  /// Refreshes MCP servers from the local Codex CLI.
+  Future<void> refreshMcpServers() async {
+    if (pluginSaving) return;
+    final workspace = workspacePath;
+    final request = ++_mcpServerRefreshRequest;
+    pluginActionError = null;
+    pluginActionWarning = null;
+    mcpServersLoading = true;
+    mcpServersError = null;
+    if (!_disposed) notifyListeners();
+    try {
+      final servers = await _pluginStore.listMcpServers(
+        workingDirectory: workspace,
+      );
+      if (_disposed ||
+          request != _mcpServerRefreshRequest ||
+          workspacePath != workspace) {
+        return;
+      }
+      mcpServers = servers;
+    } catch (error) {
+      if (_disposed ||
+          request != _mcpServerRefreshRequest ||
+          workspacePath != workspace) {
+        return;
+      }
+      mcpServersError = _messageOf(error);
+    } finally {
+      if (!_disposed &&
+          request == _mcpServerRefreshRequest &&
+          workspacePath == workspace) {
+        mcpServersLoading = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  /// Invalidates workspace-scoped MCP reads and clears rows that belonged to
+  /// the previously selected project.
+  /// 使旧项目的 MCP 读取失效，并清除不再属于当前项目的列表状态。
+  void _resetMcpServersForWorkspaceChange() {
+    _mcpServerRefreshRequest++;
+    mcpServers = const [];
+    mcpServersLoading = false;
+    mcpServersError = null;
   }
 
   /// 从本机 Codex CLI 刷新 marketplace 来源列表。
@@ -2473,6 +2762,43 @@ class CodexController extends ChangeNotifier {
       '${enabled ? '已启用' : '已停用'}插件：${plugin.name}',
       progressMessage: '正在${enabled ? '启用' : '停用'}插件 ${plugin.name}…',
       targetId: plugin.id,
+    );
+  }
+
+  /// 添加 HTTP MCP 服务器，并重启运行时加载新配置。
+  /// Adds an HTTP MCP server and restarts the runtime to load it.
+  Future<bool> addMcpServer({required String name, required String url}) {
+    return _runPluginAction(
+      () => _pluginStore.addMcpServer(name: name, url: url),
+      '已添加 MCP 服务器：$name',
+      progressMessage: '正在添加 MCP 服务器 $name…',
+      targetId: name,
+    );
+  }
+
+  /// 更新 MCP 服务器启用状态。
+  /// Updates an MCP server enabled state.
+  Future<void> setMcpServerEnabled(CodexMcpServer server, bool enabled) async {
+    await _runPluginAction(
+      () => _pluginStore.setMcpServerEnabled(
+        server,
+        enabled,
+        workingDirectory: workspacePath,
+      ),
+      '${enabled ? '已启用' : '已停用'} MCP 服务器：${server.name}',
+      progressMessage: '正在${enabled ? '启用' : '停用'} MCP 服务器 ${server.name}…',
+      targetId: server.name,
+    );
+  }
+
+  /// 更新技能启用状态。
+  /// Updates a skill enabled state.
+  Future<void> setSkillEnabled(CodexSkill skill, bool enabled) async {
+    await _runPluginAction(
+      () => _pluginStore.setSkillEnabled(skill, enabled),
+      '${enabled ? '已启用' : '已停用'}技能：${skill.label}',
+      progressMessage: '正在${enabled ? '启用' : '停用'}技能 ${skill.label}…',
+      targetId: skill.path,
     );
   }
 
@@ -2637,6 +2963,8 @@ class CodexController extends ChangeNotifier {
       }
       if (viewLoaded) _cacheActiveThreadView();
       await refreshThreads();
+      _appendPendingNetworkRetryEntries(thread.id);
+      if (viewLoaded) _cacheActiveThreadView();
     } catch (error) {
       activeThreadId = previousThreadId;
       _activeThreadAttached = previousThreadAttached;
@@ -2773,10 +3101,18 @@ class CodexController extends ChangeNotifier {
           break;
         }
         if (_disposed || workspacePath != workspace) return archivedIds;
+        // A refresh started before the archive may still contain this task.
+        // Invalidate it before applying the authoritative local removal.
+        _invalidateActiveThreadRefresh();
         archivedIds.add(thread.id);
         _localThreadStatuses.remove(thread.id);
         _acknowledgedCompletedThreadIds.remove(thread.id);
         _threadViewCache.remove(thread.id);
+        _runningTurnSubmissions.remove(thread.id);
+        _failedTurnRetries.remove(thread.id);
+        if (_retryingFailedTurnThreadId == thread.id) {
+          _retryingFailedTurnThreadId = null;
+        }
         threads = threads
             .where((value) => value.id != thread.id)
             .toList(growable: false);
@@ -2842,6 +3178,13 @@ class CodexController extends ChangeNotifier {
       _localThreadStatuses.remove(thread.id);
       _acknowledgedCompletedThreadIds.remove(thread.id);
       _threadViewCache.remove(thread.id);
+      _runningTurnIdsByThread.remove(thread.id);
+      _pendingNetworkRetryEntriesByThread.remove(thread.id);
+      _runningTurnSubmissions.remove(thread.id);
+      _failedTurnRetries.remove(thread.id);
+      if (_retryingFailedTurnThreadId == thread.id) {
+        _retryingFailedTurnThreadId = null;
+      }
       _pinnedThreadIds.remove(thread.id);
       if (activeThreadId == thread.id) {
         activeThreadId = null;
@@ -3196,7 +3539,20 @@ class CodexController extends ChangeNotifier {
       return;
     }
 
+    if (_isTurnProgressNotification(event.method)) {
+      final threadId = _threadIdFromEvent(event.params);
+      final turnId = _turnIdFromEvent(event.params);
+      if (threadId != null && turnId != null) {
+        _markNetworkRetryActivitiesHistorical(
+          threadId: threadId,
+          turnId: turnId,
+        );
+      }
+    }
+
     switch (event.method) {
+      case 'error':
+        _recordNetworkRetryActivity(event.params);
       case 'account/updated':
         _updateAccount(event.params);
       case 'account/login/completed':
@@ -3215,8 +3571,15 @@ class CodexController extends ChangeNotifier {
         return;
       case 'turn/started':
         final turn = event.params['turn'];
+        final threadId = _threadIdFromEvent(event.params);
+        final turnId = turn is Map ? _label(turn['id']) : '';
+        if (threadId != null &&
+            turnId.isNotEmpty &&
+            isThreadRunning(threadId)) {
+          _runningTurnIdsByThread[threadId] = turnId;
+        }
         if (_isEventForActiveThread(event.params) && turn is Map) {
-          activeTurnId = turn['id']?.toString();
+          activeTurnId = turnId.isEmpty ? null : turnId;
           _activeTurnStartedAt =
               _turnStartedAt(JsonMap.from(turn)) ??
               _activeTurnStartedAt ??
@@ -3224,6 +3587,16 @@ class CodexController extends ChangeNotifier {
         }
       case 'item/started':
         _recordStartedLiveActivity(event.params);
+      case 'item/reasoning/summaryPartAdded':
+        if (_isEventForActiveTurn(event.params)) {
+          _recordReasoningSummaryPart(event.params);
+        }
+      case 'item/reasoning/summaryTextDelta':
+        if (_isEventForActiveTurn(event.params)) {
+          _appendReasoningSummaryDelta(event.params);
+          _scheduleDeltaNotification();
+        }
+        return;
       case 'turn/plan/updated':
         if (_isEventForActiveTurn(event.params)) {
           _updateTaskPlan(event.params);
@@ -3259,9 +3632,18 @@ class CodexController extends ChangeNotifier {
           refreshThreads(
             reconcileUnidentifiedBackgroundCompletion:
                 backgroundCompletionNeedsReconciliation,
+            unidentifiedCompletionStatus:
+                backgroundCompletionNeedsReconciliation
+                ? _completionStatusFromParams(event.params)
+                : null,
           ),
         );
       case 'thread/archived':
+        // The archive notification makes an empty active list authoritative.
+        // Do not let stale local session metadata restore the archived task.
+        _invalidateActiveThreadRefresh();
+        unawaited(refreshThreads(allowLocalSessionFallback: false));
+        unawaited(refreshArchivedThreads());
       case 'thread/unarchived':
       case 'thread/name/updated':
         unawaited(refreshThreads());
@@ -3275,6 +3657,13 @@ class CodexController extends ChangeNotifier {
       case 'runtime/exited':
         // 只有进程退出才会使连接失败；单个 turn 失败仍可继续复用当前连接。
         // Only process exit fails the connection; an individual failed turn remains recoverable in-place.
+        for (final turn in _runningTurnIdsByThread.entries.toList()) {
+          _markNetworkRetryActivitiesHistorical(
+            threadId: turn.key,
+            turnId: turn.value,
+          );
+        }
+        _runningTurnIdsByThread.clear();
         status = RuntimeStatus.failed;
         _runningThreadIds.clear();
         // The next runtime process must attach the retained thread again.
@@ -3301,6 +3690,97 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Records each App Server-managed network retry as a Codex-style timeline
+  /// activity while leaving the active turn and its error state untouched.
+  /// 在 App Server 自动等待网络时逐次记录 Codex 风格活动，不提前结束 turn 或写入错误状态。
+  void _recordNetworkRetryActivity(JsonMap params) {
+    if (params['willRetry'] != true) return;
+    final threadId = _label(params['threadId']);
+    final turnId = _label(params['turnId']);
+    final isActiveTurn =
+        status == RuntimeStatus.running && threadId == activeThreadId;
+    final expectedTurnId = isActiveTurn
+        ? activeTurnId
+        : _runningTurnIdsByThread[threadId];
+    if (threadId.isEmpty ||
+        turnId.isEmpty ||
+        expectedTurnId == null ||
+        turnId != expectedTurnId) {
+      return;
+    }
+    _markNetworkRetryActivitiesHistorical(threadId: threadId, turnId: turnId);
+    final entry = _entry(
+      TimelineKind.activity,
+      'Reconnecting... waiting for network',
+      '',
+      sourceItemId: 'network-retry-$turnId-${_networkRetryEventSequence++}',
+      activityKind: 'networkRetry',
+      activityStatus: 'waiting',
+    );
+    if (isActiveTurn) {
+      _entries.add(entry);
+      _scheduleConversationHistorySave();
+    } else {
+      _pendingNetworkRetryEntriesByThread
+          .putIfAbsent(threadId, () => <TimelineEntry>[])
+          .add(entry);
+    }
+  }
+
+  bool _isTurnProgressNotification(String method) =>
+      method.startsWith('item/') ||
+      method == 'turn/plan/updated' ||
+      method == 'turn/diff/updated' ||
+      method == 'turn/completed';
+
+  String? _turnIdFromEvent(JsonMap params) {
+    final direct = _label(params['turnId']);
+    if (direct.isNotEmpty) return direct;
+    final turn = params['turn'];
+    final nested = turn is Map ? _label(turn['id']) : '';
+    return nested.isEmpty ? null : nested;
+  }
+
+  void _markNetworkRetryActivitiesHistorical({
+    required String threadId,
+    required String turnId,
+  }) {
+    final expectedTurnId = threadId == activeThreadId
+        ? activeTurnId
+        : _runningTurnIdsByThread[threadId];
+    if (expectedTurnId != turnId) return;
+    var currentTimelineChanged = false;
+    if (threadId == activeThreadId) {
+      for (var index = 0; index < _entries.length; index++) {
+        final entry = _entries[index];
+        if (entry.activityKind != 'networkRetry' ||
+            entry.activityStatus != 'waiting') {
+          continue;
+        }
+        _entries[index] = entry.copyWith(activityStatus: 'historical');
+        currentTimelineChanged = true;
+      }
+    }
+    final pending = _pendingNetworkRetryEntriesByThread[threadId];
+    if (pending != null) {
+      for (var index = 0; index < pending.length; index++) {
+        final entry = pending[index];
+        if (entry.activityKind == 'networkRetry' &&
+            entry.activityStatus == 'waiting') {
+          pending[index] = entry.copyWith(activityStatus: 'historical');
+        }
+      }
+    }
+    if (currentTimelineChanged) _scheduleConversationHistorySave();
+  }
+
+  void _appendPendingNetworkRetryEntries(String threadId) {
+    final pending = _pendingNetworkRetryEntriesByThread.remove(threadId);
+    if (pending == null || pending.isEmpty) return;
+    _entries.addAll(pending);
+    _scheduleConversationHistorySave();
+  }
+
   @visibleForTesting
   /// 将服务器事件注入控制器，供测试验证事件处理。
   /// Injects a server event into the controller for event-handling tests.
@@ -3311,6 +3791,7 @@ class CodexController extends ChangeNotifier {
   /// 供展示层测试直接替换时间线内容，无需模拟完整的 App Server 历史恢复会话。
   /// Replaces timeline content for presentation tests without emulating a full App Server history-resume session.
   void replaceTimelineEntriesForTesting(Iterable<TimelineEntry> values) {
+    _conversationViewRevision++;
     _entries
       ..clear()
       ..addAll(values);
@@ -3393,11 +3874,17 @@ class CodexController extends ChangeNotifier {
     final turnMap = turn is Map
         ? JsonMap.from(turn)
         : const <String, dynamic>{};
-    final completionStatus =
-        turnMap['status']?.toString() ??
-        params['status']?.toString() ??
-        'completed';
+    final completionStatus = _completionStatusFromParams(params);
+    final completionOutcome = _turnCompletionOutcome(completionStatus);
     final completedThreadId = activeThreadId;
+    final failedTurnError = _findText(turnMap['error']).isNotEmpty
+        ? _findText(turnMap['error'])
+        : 'Codex 未能完成当前任务。';
+    _recordTurnCompletionRetry(
+      completedThreadId,
+      completionOutcome,
+      failedTurnError,
+    );
     if (completedThreadId != null) _runningThreadIds.remove(completedThreadId);
     // A task opened from read-only history cannot accept a new turn while its
     // writer is active. The finished turn releases that restriction.
@@ -3405,29 +3892,33 @@ class CodexController extends ChangeNotifier {
     _appendTurnElapsed(turnMap);
     _clearPendingApprovalsForThread(completedThreadId);
     approvalResponding = false;
-    switch (completionStatus) {
-      case 'failed':
+    switch (completionOutcome) {
+      case _TurnCompletionOutcome.failed:
         // Turn 失败属于任务级错误，不代表 stdio 运行时已断开。
         // A failed turn is a task-level error and does not imply that the stdio runtime disconnected.
         status = RuntimeStatus.ready;
-        lastError = _findText(turnMap['error']).isNotEmpty
-            ? _findText(turnMap['error'])
-            : 'Codex 未能完成当前任务。';
+        lastError = failedTurnError;
         _updateThreadStatus(activeThreadId, 'systemError');
         _add(TimelineKind.error, '任务失败', lastError!);
-      case 'interrupted':
+        _setCompletionReminder(completedThreadId, visible: false);
+      case _TurnCompletionOutcome.stopped:
         status = RuntimeStatus.ready;
         _updateThreadStatus(activeThreadId, 'idle');
+        _setCompletionReminder(completedThreadId, visible: false);
         _add(TimelineKind.system, '任务已停止', '可以继续在同一线程追问。');
-      default:
+      case _TurnCompletionOutcome.succeeded:
         status = RuntimeStatus.ready;
         _updateThreadStatus(activeThreadId, 'idle');
-        // The task is already open in the focused workbench, so its success
-        // is not a new completion the user needs to be reminded about.
-        if (completedThreadId != null) {
-          unawaited(acknowledgeCompletedThread(completedThreadId));
-        }
+        // A newly finished task remains identifiable in the sidebar even
+        // while its conversation is open. The next explicit task-row visit
+        // acknowledges this completion reminder.
+        _setCompletionReminder(completedThreadId, visible: true);
         _add(TimelineKind.system, '任务完成', '你可以继续在同一线程追问。');
+      case _TurnCompletionOutcome.unknown:
+        status = RuntimeStatus.ready;
+        _updateThreadStatus(activeThreadId, 'idle');
+        _setCompletionReminder(completedThreadId, visible: false);
+        _add(TimelineKind.system, '任务已结束', '可以继续在同一线程追问。');
     }
     // An explicit `turn/steer` request may race this completion event. Let
     // that request settle; starting a second turn here would duplicate it.
@@ -3444,20 +3935,50 @@ class CodexController extends ChangeNotifier {
   void _handleBackgroundTurnCompleted(JsonMap params) {
     final threadId = _threadIdFromEvent(params);
     if (threadId == null || !_runningThreadIds.remove(threadId)) return;
+    final completionStatus = _completionStatusFromParams(params);
+    final completionOutcome = _turnCompletionOutcome(completionStatus);
     final turn = params['turn'];
     final turnMap = turn is Map
         ? JsonMap.from(turn)
         : const <String, dynamic>{};
-    final completionStatus =
-        turnMap['status']?.toString() ??
-        params['status']?.toString() ??
-        'completed';
+    final failedTurnError = _findText(turnMap['error']).isNotEmpty
+        ? _findText(turnMap['error'])
+        : 'Codex 未能完成当前任务。';
+    _recordTurnCompletionRetry(threadId, completionOutcome, failedTurnError);
     _threadViewCache.remove(threadId);
     _updateThreadStatus(
       threadId,
-      completionStatus == 'failed' ? 'systemError' : 'idle',
+      completionOutcome == _TurnCompletionOutcome.failed
+          ? 'systemError'
+          : 'idle',
+    );
+    _setCompletionReminder(
+      threadId,
+      visible: completionOutcome == _TurnCompletionOutcome.succeeded,
     );
     _clearPendingApprovalsForThread(threadId);
+  }
+
+  void _recordTurnCompletionRetry(
+    String? threadId,
+    _TurnCompletionOutcome outcome,
+    String error,
+  ) {
+    if (threadId == null) return;
+    final turnId = _runningTurnIdsByThread[threadId];
+    if (turnId != null) {
+      _markNetworkRetryActivitiesHistorical(threadId: threadId, turnId: turnId);
+    }
+    _runningTurnIdsByThread.remove(threadId);
+    final submission = _runningTurnSubmissions.remove(threadId);
+    if (outcome == _TurnCompletionOutcome.failed && submission != null) {
+      _failedTurnRetries[threadId] = _FailedTurnRetry(
+        submission: submission,
+        error: error,
+      );
+    } else {
+      _failedTurnRetries.remove(threadId);
+    }
   }
 
   /// Reconciles legacy unscoped completion events after an authoritative
@@ -3466,7 +3987,10 @@ class CodexController extends ChangeNotifier {
   /// state can safely release a matching background or focused task.
   /// 旧运行时完成事件没有任务 ID 时，先刷新权威任务列表再对账。多个任务并行时
   /// 不能安全归属该事件；仅服务端明确报告终态后，才释放对应的后台或当前任务。
-  void _reconcileUnidentifiedCompletion(Iterable<CodexThread> serverThreads) {
+  void _reconcileUnidentifiedCompletion(
+    Iterable<CodexThread> serverThreads, {
+    String? eventCompletionStatus,
+  }) {
     final serverThreadById = {
       for (final thread in serverThreads) thread.id: thread,
     };
@@ -3482,7 +4006,7 @@ class CodexController extends ChangeNotifier {
       // is terminal. This also replaces the local `active` status before it
       // can override the server result during the merge below.
       _handleTurnCompleted({
-        'turn': {'status': currentStatus},
+        'turn': {'status': eventCompletionStatus ?? currentStatus},
       });
     }
     final completedIds = _runningThreadIds
@@ -3495,10 +4019,68 @@ class CodexController extends ChangeNotifier {
     for (final threadId in completedIds) {
       _runningThreadIds.remove(threadId);
       _threadViewCache.remove(threadId);
-      final status = serverThreadById[threadId]?.status;
-      _updateThreadStatus(threadId, status ?? 'idle');
+      final serverStatus = serverThreadById[threadId]?.status;
+      final completionStatus = completedIds.length == 1
+          ? eventCompletionStatus ?? serverStatus
+          : serverStatus;
+      final completionOutcome = _turnCompletionOutcome(completionStatus);
+      _recordTurnCompletionRetry(
+        threadId,
+        completionOutcome,
+        'Codex 未能完成当前任务。',
+      );
+      _updateThreadStatus(
+        threadId,
+        completionOutcome == _TurnCompletionOutcome.failed
+            ? 'systemError'
+            : 'idle',
+      );
+      _setCompletionReminder(
+        threadId,
+        visible: completionOutcome == _TurnCompletionOutcome.succeeded,
+      );
       _clearPendingApprovalsForThread(threadId);
     }
+  }
+
+  String _completionStatusFromParams(JsonMap params) {
+    final turn = params['turn'];
+    final turnMap = turn is Map
+        ? JsonMap.from(turn)
+        : const <String, dynamic>{};
+    return turnMap['status']?.toString() ?? params['status']?.toString() ?? '';
+  }
+
+  _TurnCompletionOutcome _turnCompletionOutcome(String? status) {
+    final normalized = status?.trim().toLowerCase().replaceAll(
+      RegExp(r'[^a-z]'),
+      '',
+    );
+    return switch (normalized) {
+      'completed' ||
+      'complete' ||
+      'done' ||
+      'success' ||
+      'succeeded' ||
+      'idle' => _TurnCompletionOutcome.succeeded,
+      'interrupted' ||
+      'cancelled' ||
+      'canceled' => _TurnCompletionOutcome.stopped,
+      'failed' ||
+      'failure' ||
+      'error' ||
+      'errored' ||
+      'systemerror' => _TurnCompletionOutcome.failed,
+      _ => _TurnCompletionOutcome.unknown,
+    };
+  }
+
+  void _setCompletionReminder(String? threadId, {required bool visible}) {
+    if (threadId == null) return;
+    final changed = visible
+        ? _acknowledgedCompletedThreadIds.remove(threadId)
+        : _acknowledgedCompletedThreadIds.add(threadId);
+    if (changed) _scheduleConversationHistorySave();
   }
 
   bool _isTerminalThreadStatus(String? status) {
@@ -3549,8 +4131,14 @@ class CodexController extends ChangeNotifier {
     final turns = result['turns'];
     if (turns is! Iterable) return;
     for (final rawTurn in turns) {
-      if (rawTurn is! Map || rawTurn['items'] is! Iterable) continue;
-      for (final rawItem in rawTurn['items'] as Iterable) {
+      if (rawTurn is! Map) continue;
+      _clearFileChanges();
+      final rawItems = rawTurn['items'];
+      if (rawItems is! Iterable) {
+        _appendTurnElapsed(JsonMap.from(rawTurn));
+        continue;
+      }
+      for (final rawItem in rawItems) {
         if (rawItem is! Map) continue;
         final item = JsonMap.from(rawItem);
         switch (item['type']) {
@@ -3572,9 +4160,11 @@ class CodexController extends ChangeNotifier {
             }
           case 'fileChange':
             _recordFileChanges(item['changes']);
+          case 'dynamicToolCall' || 'collabToolCall':
+            if (!_appendConversationActivityItem(item)) {
+              _appendToolHistoryItem(item);
+            }
           case 'mcpToolCall' ||
-              'dynamicToolCall' ||
-              'collabToolCall' ||
               'webSearch' ||
               'imageView' ||
               'imageGeneration' ||
@@ -3598,6 +4188,9 @@ class CodexController extends ChangeNotifier {
     final item = JsonMap.from(rawItem);
     final activity = _liveTurnActivityFor(item);
     if (activity == null) return;
+    if (activity.kind == 'reasoning') {
+      _reasoningSummaryParts.remove(activity.itemId);
+    }
     _activeLiveActivity = activity;
     if (activity.kind == 'commandExecution') {
       _activeCommand = activity.detail;
@@ -3614,6 +4207,7 @@ class CodexController extends ChangeNotifier {
     if (rawItem is! Map) return;
     final item = JsonMap.from(rawItem);
     final itemId = _label(item['id']);
+    if (itemId.isNotEmpty) _reasoningSummaryParts.remove(itemId);
     if (itemId.isEmpty || itemId == _activeLiveActivity?.itemId) {
       _activeLiveActivity = null;
     }
@@ -3623,6 +4217,8 @@ class CodexController extends ChangeNotifier {
         _activeCommandItemId = null;
       }
       _appendCompletedCommandItem(item);
+    } else {
+      _appendConversationActivityItem(item);
     }
   }
 
@@ -3641,8 +4237,35 @@ class CodexController extends ChangeNotifier {
         label: _skillReadLabel(item),
       );
     }
+    if (type == 'reasoning') {
+      final summary = _reasoningSummaryFromItem(item);
+      return LiveTurnActivity(
+        itemId: itemId,
+        kind: type,
+        label: summary.isEmpty ? '正在分析' : summary,
+      );
+    }
+    if (type == 'commandExecution') {
+      final commandAction = _commandActionLiveActivity(item);
+      if (commandAction != null) {
+        return LiveTurnActivity(
+          itemId: itemId,
+          kind: commandAction.$1,
+          label: commandAction.$2,
+          detail: commandAction.$3,
+        );
+      }
+    }
+    if (type == 'collabToolCall') {
+      final status = _collaborationStatus(item, live: true);
+      return LiveTurnActivity(
+        itemId: itemId,
+        kind: type,
+        label: _collaborationName(item),
+        detail: status.$2,
+      );
+    }
     final (label, detail) = switch (type) {
-      'reasoning' => ('正在分析', ''),
       'agentMessage' => ('正在撰写回复', ''),
       'plan' => ('正在整理计划', ''),
       'commandExecution' => ('正在运行命令', _label(item['command'])),
@@ -3654,7 +4277,6 @@ class CodexController extends ChangeNotifier {
         '正在调用动态工具',
         _joinLiveActivityDetail(item['namespace'], item['tool']),
       ),
-      'collabToolCall' => ('正在协调协作任务', _label(item['tool'])),
       'webSearch' => _webSearchLiveActivity(item),
       'imageView' => ('正在查看图片', _label(item['path'])),
       'imageGeneration' => ('正在生成图片', ''),
@@ -3664,7 +4286,7 @@ class CodexController extends ChangeNotifier {
             ? ''
             : '${_label(item['durationMs'])} ms',
       ),
-      'fileChange' => ('正在整理文件变更', ''),
+      'fileChange' => ('正在编辑文件', ''),
       'contextCompaction' => ('正在压缩对话上下文', ''),
       'enteredReviewMode' => ('正在进入审查模式', ''),
       'exitedReviewMode' => ('正在退出审查模式', ''),
@@ -3678,6 +4300,120 @@ class CodexController extends ChangeNotifier {
       label: label,
       detail: detail,
     );
+  }
+
+  /// Uses App Server's parsed command actions to describe common filesystem
+  /// work without exposing the shell command as the primary status.
+  (String, String, String)? _commandActionLiveActivity(JsonMap item) {
+    final rawActions =
+        item['commandActions'] ??
+        item['command_actions'] ??
+        item['parsedCmd'] ??
+        item['parsed_cmd'];
+    if (rawActions is! Iterable) return null;
+    final actions = rawActions.whereType<Map>().toList(growable: false);
+    // A compound shell command can contain a recognized read/search action and
+    // a long-running build or test action. Describing the whole lifecycle as
+    // only its first filesystem action is misleading, so specialize only an
+    // unambiguous single parsed action.
+    if (actions.length != 1) return null;
+    final action = JsonMap.from(actions.single);
+    switch (_label(action['type'])) {
+      case 'read':
+        final target = _fileActivityTarget(
+          action['name'],
+          fallback: action['path'],
+        );
+        return ('fileRead', '正在读取', target);
+      case 'search':
+        final query = _label(action['query']);
+        final folder = _fileActivityTarget(action['path']);
+        final detail = switch ((query, folder)) {
+          ('', '') => '文件夹中的文件',
+          ('', final folder) => '$folder 文件夹中的文件',
+          (final query, '') => '“$query”',
+          (final query, final folder) => '“$query” · $folder 文件夹',
+        };
+        return ('fileSearch', '正在搜索', detail);
+      case 'listFiles':
+        final target = _fileActivityTarget(action['path']);
+        return (
+          'fileList',
+          '正在列出',
+          target.isEmpty ? '当前文件夹中的文件' : '$target 文件夹中的文件',
+        );
+    }
+    return null;
+  }
+
+  String _fileActivityTarget(Object? value, {Object? fallback}) {
+    final raw = _label(value).isEmpty ? _label(fallback) : _label(value);
+    if (raw.isEmpty) return '';
+    final normalized = raw.replaceFirst(RegExp(r'[/\\]+$'), '');
+    return normalized.split(RegExp(r'[/\\]')).last;
+  }
+
+  void _recordReasoningSummaryPart(JsonMap params) {
+    final itemId = _label(params['itemId']);
+    if (!_canUpdateReasoningSummary(itemId)) return;
+    final summaryIndex = _reasoningSummaryIndex(params['summaryIndex']);
+    _reasoningSummaryParts
+        .putIfAbsent(itemId, () => <int, String>{})
+        .putIfAbsent(summaryIndex, () => '');
+  }
+
+  void _appendReasoningSummaryDelta(JsonMap params) {
+    final itemId = _label(params['itemId']);
+    if (!_canUpdateReasoningSummary(itemId)) return;
+    final delta = params['delta']?.toString() ?? '';
+    if (delta.isEmpty) return;
+    final summaryIndex = _reasoningSummaryIndex(params['summaryIndex']);
+    final parts = _reasoningSummaryParts.putIfAbsent(
+      itemId,
+      () => <int, String>{},
+    );
+    parts[summaryIndex] = '${parts[summaryIndex] ?? ''}$delta';
+    final label = _cleanReasoningSummary(parts[summaryIndex]!);
+    if (label.isEmpty) return;
+    _activeLiveActivity = LiveTurnActivity(
+      itemId: itemId,
+      kind: 'reasoning',
+      label: label,
+    );
+  }
+
+  bool _canUpdateReasoningSummary(String itemId) {
+    if (itemId.isEmpty) return false;
+    final active = _activeLiveActivity;
+    return active?.kind == 'reasoning' && active?.itemId == itemId;
+  }
+
+  int _reasoningSummaryIndex(Object? value) => switch (value) {
+    int index => index,
+    num index => index.toInt(),
+    _ => int.tryParse(_label(value)) ?? 0,
+  };
+
+  String _reasoningSummaryFromItem(JsonMap item) {
+    final summaries = item['summary'];
+    if (summaries is! Iterable) return '';
+    for (final summary in summaries.toList().reversed) {
+      final text = summary is Map ? _label(summary['text']) : _label(summary);
+      final cleaned = _cleanReasoningSummary(text);
+      if (cleaned.isNotEmpty) return cleaned;
+    }
+    return '';
+  }
+
+  String _cleanReasoningSummary(String value) {
+    var result = value.replaceAll(RegExp(r'\s+'), ' ').trim();
+    result = result.replaceFirst(RegExp(r'^#{1,6}\s*'), '');
+    result = result
+        .replaceAll('**', '')
+        .replaceAll('__', '')
+        .replaceAll('`', '')
+        .trim();
+    return result;
   }
 
   (String, String) _webSearchLiveActivity(JsonMap item) {
@@ -3903,6 +4639,202 @@ class CodexController extends ChangeNotifier {
     return parts.join(' ');
   }
 
+  /// Promotes skill reads and subagent lifecycles to first-class conversation
+  /// activities instead of hiding them inside the generic tool disclosure.
+  bool _appendConversationActivityItem(JsonMap item) {
+    final type = _label(item['type']);
+    if (type == 'skill' ||
+        (type == 'dynamicToolCall' && _isSkillReadActivity(item))) {
+      final itemId = _label(item['id']);
+      final skillName = _skillNameFor(item);
+      final skillLabel = skillName.isEmpty ? '技能' : '$skillName 技能';
+      final failed = item['success'] == false || _itemStatusFailed(item);
+      final error = failed ? _findText(item['error'] ?? item['result']) : '';
+      _upsertConversationActivity(
+        sourceItemId: itemId,
+        title: failed ? '读取 $skillLabel 失败' : '已读取 $skillLabel',
+        detail: error,
+        activityKind: 'skillRead',
+        activityStatus: failed ? 'failed' : 'completed',
+      );
+      return true;
+    }
+    if (type != 'collabToolCall') return false;
+
+    final sourceItemId = _collaborationActivityId(item);
+    final status = _collaborationStatus(item, live: false);
+    var title = _collaborationName(item);
+    final existingIndex = _conversationActivityIndex(sourceItemId);
+    if (existingIndex >= 0 &&
+        _isGenericCollaborationName(title) &&
+        !_isGenericCollaborationName(_entries[existingIndex].title)) {
+      title = _entries[existingIndex].title;
+    }
+    _upsertConversationActivity(
+      sourceItemId: sourceItemId,
+      title: title,
+      detail: status.$2,
+      activityKind: 'collaboration',
+      activityStatus: status.$1,
+    );
+    return true;
+  }
+
+  void _upsertConversationActivity({
+    required String sourceItemId,
+    required String title,
+    required String detail,
+    required String activityKind,
+    required String activityStatus,
+  }) {
+    final index = _conversationActivityIndex(sourceItemId);
+    if (index >= 0) {
+      _entries[index] = _entries[index].copyWith(
+        title: title,
+        detail: detail,
+        activityKind: activityKind,
+        activityStatus: activityStatus,
+      );
+      _scheduleConversationHistorySave();
+      return;
+    }
+    _add(
+      TimelineKind.activity,
+      title,
+      detail,
+      sourceItemId: sourceItemId.isEmpty ? null : sourceItemId,
+      activityKind: activityKind,
+      activityStatus: activityStatus,
+    );
+  }
+
+  int _conversationActivityIndex(String sourceItemId) {
+    if (sourceItemId.isEmpty) return -1;
+    return _entries.lastIndexWhere(
+      (entry) =>
+          entry.kind == TimelineKind.activity &&
+          entry.sourceItemId == sourceItemId,
+    );
+  }
+
+  bool _itemStatusFailed(JsonMap item) {
+    final status = _normalizedActivityValue(item['status']);
+    return status == 'failed' || status == 'failure' || status == 'error';
+  }
+
+  String _collaborationActivityId(JsonMap item) {
+    for (final key in ['receiverThreadId', 'newThreadId', 'id']) {
+      final value = _label(item[key]);
+      if (value.isNotEmpty) return value;
+    }
+    return '';
+  }
+
+  String _collaborationName(JsonMap item) {
+    for (final value in [item['agentStatus'], item]) {
+      final name = _collaborationNameFromValue(value);
+      if (name.isNotEmpty) return name;
+    }
+    final prompt = _label(item['prompt']).toLowerCase();
+    if (prompt.contains('review') || prompt.contains('审查')) {
+      return 'Independent review';
+    }
+    return 'Independent task';
+  }
+
+  String _collaborationNameFromValue(Object? value) {
+    if (value is! Map) return '';
+    for (final key in [
+      'displayName',
+      'display_name',
+      'taskName',
+      'task_name',
+      'agentName',
+      'agent_name',
+      'name',
+      'label',
+    ]) {
+      final candidate = _label(value[key]);
+      if (candidate.isNotEmpty && candidate.length <= 80) return candidate;
+    }
+    for (final candidate in value.values) {
+      final nested = _collaborationNameFromValue(candidate);
+      if (nested.isNotEmpty) return nested;
+    }
+    return '';
+  }
+
+  bool _isGenericCollaborationName(String value) =>
+      value == 'Independent task' || value == '协作任务';
+
+  (String, String) _collaborationStatus(JsonMap item, {required bool live}) {
+    var rawStatus = _collaborationStatusFromValue(item['agentStatus']);
+    final tool = _normalizedActivityValue(item['tool']);
+    if (rawStatus.isEmpty) {
+      if (tool.contains('spawn')) {
+        rawStatus = 'working';
+      } else if (tool.contains('interrupt') || tool.contains('close')) {
+        rawStatus = 'stopped';
+      } else if (tool.contains('wait') || tool.contains('join')) {
+        rawStatus = live ? 'working' : _normalizedActivityValue(item['status']);
+      } else {
+        rawStatus = _normalizedActivityValue(item['status']);
+      }
+    }
+    final normalized = switch (rawStatus) {
+      'pending' ||
+      'starting' ||
+      'inprogress' ||
+      'running' ||
+      'working' => 'working',
+      'completed' ||
+      'complete' ||
+      'done' ||
+      'success' ||
+      'succeeded' ||
+      'idle' => 'completed',
+      'failed' || 'failure' || 'error' || 'errored' => 'failed',
+      'interrupted' ||
+      'cancelled' ||
+      'canceled' ||
+      'stopped' ||
+      'shutdown' => 'stopped',
+      _ => live ? 'working' : 'unknown',
+    };
+    final label = switch (normalized) {
+      'working' => '已开始工作',
+      'completed' => '已完成',
+      'failed' => '失败',
+      'stopped' => '已停止',
+      _ => '状态已更新',
+    };
+    return (normalized, label);
+  }
+
+  String _collaborationStatusFromValue(Object? value) {
+    if (value is String) return _normalizedActivityValue(value);
+    if (value is! Map) return '';
+    for (final key in [
+      'status',
+      'state',
+      'type',
+      'agentStatus',
+      'agent_status',
+    ]) {
+      final status = _collaborationStatusFromValue(value[key]);
+      if (status.isNotEmpty) return status;
+    }
+    for (final candidate in value.values) {
+      if (candidate is! Map) continue;
+      final status = _collaborationStatusFromValue(candidate);
+      if (status.isNotEmpty) return status;
+    }
+    return '';
+  }
+
+  String _normalizedActivityValue(Object? value) =>
+      _label(value).toLowerCase().replaceAll(RegExp(r'[^a-z]'), '');
+
   /// 将专用工具历史项转换为可读的时间线条目。
   /// Converts a specialized tool-history item into a readable timeline entry.
   void _appendToolHistoryItem(JsonMap item) {
@@ -4054,9 +4986,18 @@ class CodexController extends ChangeNotifier {
         latest = turn;
       }
     }
-    if (latest == null) return;
+    final threadId = activeThreadId;
+    if (latest == null) {
+      activeTurnId = threadId == null
+          ? null
+          : _runningTurnIdsByThread[threadId];
+      return;
+    }
     activeTurnId = _label(latest['id']);
     _activeTurnStartedAt = _turnStartedAt(latest) ?? _activeTurnStartedAt;
+    if (threadId != null && activeTurnId != null) {
+      _runningTurnIdsByThread[threadId] = activeTurnId!;
+    }
   }
 
   /// 分页获取单个 turn 的项目，并报告是否在安全页数内完成。
@@ -4200,6 +5141,67 @@ class CodexController extends ChangeNotifier {
   /// 确保当前任务的文件变更尽可能包含只读工作区 Diff。
   /// Ensures the current task's file changes include a best-effort read-only workspace Diff.
   Future<void> ensureFileChangeDiffs() => _hydrateMissingFileChangeDiffs();
+
+  /// 安全反向应用当前任务的完整 Diff；失败时保留摘要和工作区现状供用户检查。
+  /// Safely reverse-applies the current task diff, retaining the summary and workspace state on failure.
+  Future<bool> undoFileChanges() async {
+    if (!canUndoFileChanges) {
+      fileChangeUndoError = hasRunningTasks
+          ? '当前项目仍有任务运行，结束后才能安全撤销文件改动。'
+          : turnDiff?.trim().isEmpty ?? true
+          ? '当前任务没有可安全撤销的完整 Diff。'
+          : '当前任务的 Diff 不完整，无法安全撤销。';
+      if (!_disposed) notifyListeners();
+      return false;
+    }
+    final workspace = workspacePath!;
+    final threadId = activeThreadId;
+    final diff = turnDiff!;
+    final expectedPaths = fileChanges
+        .map((change) => change.path)
+        .toList(growable: false);
+    fileChangeUndoRunning = true;
+    fileChangeUndoError = null;
+    notifyListeners();
+    try {
+      await _gitProjectService.reverseApplyDiff(
+        workspace: workspace,
+        diff: diff,
+        expectedPaths: expectedPaths,
+      );
+      if (_disposed) return true;
+      if (workspacePath == workspace &&
+          activeThreadId == threadId &&
+          turnDiff == diff) {
+        _clearFileChanges();
+        _scheduleConversationHistorySave();
+      } else if (workspacePath == workspace && threadId != null) {
+        final cached = _threadViewCache.remove(threadId);
+        if (cached != null && cached.turnDiff == diff) {
+          _threadViewCache[threadId] = _ThreadViewSnapshot(
+            entries: cached.entries,
+            fileChanges: const [],
+            turnDiff: null,
+          );
+        } else if (cached != null) {
+          _threadViewCache[threadId] = cached;
+        }
+      }
+      if (workspacePath == workspace) await refreshGitProject();
+      return true;
+    } catch (error) {
+      if (!_disposed &&
+          workspacePath == workspace &&
+          activeThreadId == threadId &&
+          turnDiff == diff) {
+        fileChangeUndoError = _messageOf(error);
+      }
+      return false;
+    } finally {
+      fileChangeUndoRunning = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
 
   /// Compares an App Server path with Git's workspace-relative path.
   bool _sameWorkspaceChangePath(
@@ -4916,50 +5918,83 @@ class CodexController extends ChangeNotifier {
 
   /// 执行一个插件配置变更，避免在任务执行中修改运行时配置。
   /// Runs a plugin configuration change while avoiding runtime changes mid-turn.
-  Future<void> _runPluginAction(
+  Future<bool> _runPluginAction(
     Future<void> Function() action,
     String successMessage, {
     required String progressMessage,
     String? targetId,
   }) async {
     if (hasRunningTasks) {
-      pluginsError = '请等待当前任务完成后再变更插件。';
+      pluginActionError = '请等待当前任务完成后再变更扩展配置。';
+      pluginsError = pluginActionError;
       if (!_disposed) notifyListeners();
-      return;
+      return false;
     }
-    if (pluginSaving) return;
+    if (pluginSaving) return false;
     pluginSaving = true;
     pluginsError = null;
+    pluginActionError = null;
+    pluginActionWarning = null;
     pluginActionProgress = progressMessage;
     if (!pluginRuntimeRestartRequired) pluginActionResult = null;
     pluginActionTargetId = targetId;
     if (!_disposed) notifyListeners();
+    var actionSucceeded = false;
     try {
       await action();
+      actionSucceeded = true;
       pluginRuntimeRestartRequired = true;
       pluginActionResult = '$successMessage。应用会自动重启运行时，使变更用于后续新任务。';
       _add(TimelineKind.system, successMessage, '应用会在安全状态下自动重连，以加载最新插件。');
+      final refreshErrors = <String>[];
       try {
         plugins = await _pluginStore.listPlugins();
-        marketplaces = await _pluginStore.listMarketplaces();
+        pluginsError = null;
       } catch (error) {
-        pluginsError = '操作已完成，但刷新插件状态失败：${_messageOf(error)}';
+        pluginsError = _messageOf(error);
+        refreshErrors.add('插件：$pluginsError');
+      }
+      try {
+        marketplaces = await _pluginStore.listMarketplaces();
+        marketplacesError = null;
+      } catch (error) {
+        marketplacesError = _messageOf(error);
+        refreshErrors.add('插件市场：$marketplacesError');
+      }
+      try {
+        mcpServers = await _pluginStore.listMcpServers(
+          workingDirectory: workspacePath,
+        );
+        mcpServersError = null;
+      } catch (error) {
+        mcpServersError = _messageOf(error);
+        refreshErrors.add('MCP：$mcpServersError');
+      }
+      if (refreshErrors.isNotEmpty) {
+        pluginActionWarning = '操作已完成，但刷新扩展状态失败：${refreshErrors.join('；')}';
       }
       if (workspacePath != null && status != RuntimeStatus.starting) {
         await reconnectRuntime();
+        await refreshSkills(forceReload: true);
         if (status == RuntimeStatus.failed) {
           pluginActionResult = '$successMessage，但自动重连失败：$lastError';
         }
       }
     } catch (error) {
-      final actionLabel = progressMessage.replaceFirst(RegExp(r'…$'), '');
-      pluginsError = '$actionLabel失败：${_messageOf(error)}';
+      if (actionSucceeded) {
+        pluginActionWarning = '操作已完成，但后续处理失败：${_messageOf(error)}';
+      } else {
+        final actionLabel = progressMessage.replaceFirst(RegExp(r'…$'), '');
+        pluginActionError = '$actionLabel失败：${_messageOf(error)}';
+        pluginsError = pluginActionError;
+      }
     } finally {
       pluginSaving = false;
       pluginActionProgress = null;
       pluginActionTargetId = null;
       if (!_disposed) notifyListeners();
     }
+    return actionSucceeded;
   }
 
   /// 取消流式更新计时器并清除 Agent 条目索引。
@@ -4978,6 +6013,7 @@ class CodexController extends ChangeNotifier {
     _activeCommand = null;
     _activeCommandItemId = null;
     _activeLiveActivity = null;
+    _reasoningSummaryParts.clear();
     activeTaskPlan = null;
     _deltaNotificationTimer?.cancel();
     _deltaNotificationTimer = null;
@@ -5048,6 +6084,17 @@ class CodexController extends ChangeNotifier {
   void _clearFileChanges() {
     _fileChangesByPath.clear();
     turnDiff = null;
+    fileChangeUndoError = null;
+  }
+
+  /// 用一轮任务的文件集合替换当前摘要；用于启动失败时恢复上一轮状态。
+  /// Replaces the current summary with one turn's file set, restoring the previous turn after start failure.
+  void _replaceFileChanges(Iterable<CodexFileChange> changes, String? diff) {
+    _fileChangesByPath
+      ..clear()
+      ..addEntries(changes.map((change) => MapEntry(change.path, change)));
+    turnDiff = diff;
+    fileChangeUndoError = null;
   }
 
   /// Caches the current attached task before switching to another task.
@@ -5080,6 +6127,7 @@ class CodexController extends ChangeNotifier {
   /// Clears any previous task content before first-time history hydration.
   /// 首次加载任务历史前清除前一任务内容，避免在失败时串到新任务。
   void _clearThreadTimelineForRestoration() {
+    _conversationViewRevision++;
     _entries.clear();
     _clearFileChanges();
   }
@@ -5087,6 +6135,7 @@ class CodexController extends ChangeNotifier {
   /// Restores a cached task view into the shared controller state.
   /// 将缓存的任务页面恢复到共享控制器状态。
   void _restoreThreadView(_ThreadViewSnapshot snapshot) {
+    _conversationViewRevision++;
     _entries
       ..clear()
       ..addAll(snapshot.entries);
@@ -5101,6 +6150,7 @@ class CodexController extends ChangeNotifier {
   /// 保留欢迎项并清空与当前线程相关的时间线内容。
   /// Retains the welcome item while clearing timeline content for the current thread.
   void _resetConversationTimeline() {
+    _conversationViewRevision++;
     _clearFileChanges();
     if (_entries.isEmpty) return;
     final welcome = _entries.first;
@@ -5113,12 +6163,18 @@ class CodexController extends ChangeNotifier {
   /// Invalidates in-flight thread refreshes and resets refresh state.
   void _invalidateThreadRefreshes() {
     _threadRefreshEpoch++;
-    _threadRefreshRequest++;
+    _invalidateActiveThreadRefresh();
     _archivedThreadRefreshRequest++;
-    threadsLoading = false;
-    threadsError = null;
     archivedThreadsLoading = false;
     archivedThreadsError = null;
+  }
+
+  /// 只使活跃线程刷新失效，避免归档成功后旧响应把任务重新放回列表。
+  /// Invalidates only active-thread refreshes so a stale response cannot restore an archived task.
+  void _invalidateActiveThreadRefresh() {
+    _threadRefreshRequest++;
+    threadsLoading = false;
+    threadsError = null;
   }
 
   /// 判断活跃线程刷新结果是否仍属于当前运行时与项目。
@@ -5184,6 +6240,8 @@ class CodexController extends ChangeNotifier {
     String detail, {
     List<String> imagePaths = const [],
     String? sourceItemId,
+    String? activityKind,
+    String? activityStatus,
   }) {
     return TimelineEntry(
       kind: kind,
@@ -5192,6 +6250,8 @@ class CodexController extends ChangeNotifier {
       createdAt: DateTime.now(),
       imagePaths: imagePaths,
       sourceItemId: sourceItemId,
+      activityKind: activityKind,
+      activityStatus: activityStatus,
     );
   }
 
@@ -5203,6 +6263,8 @@ class CodexController extends ChangeNotifier {
     String detail, {
     List<String> imagePaths = const [],
     String? sourceItemId,
+    String? activityKind,
+    String? activityStatus,
   }) {
     final entry = _entry(
       kind,
@@ -5210,10 +6272,35 @@ class CodexController extends ChangeNotifier {
       detail,
       imagePaths: imagePaths,
       sourceItemId: sourceItemId,
+      activityKind: activityKind,
+      activityStatus: activityStatus,
     );
     _entries.add(entry);
     _scheduleConversationHistorySave();
     return entry;
+  }
+
+  /// Inserts a timeline entry at its original event position while keeping
+  /// streaming agent item indexes aligned with the shifted list.
+  /// 按原始事件位置插入时间线条目，并同步后移仍在流式更新的回复索引。
+  void _insertTimelineEntry(int index, TimelineEntry entry) {
+    final target = index.clamp(0, _entries.length);
+    _agentEntryIndexByItem.updateAll(
+      (_, value) => value >= target ? value + 1 : value,
+    );
+    _entries.insert(target, entry);
+    _scheduleConversationHistorySave();
+  }
+
+  int _equivalentUserEntryCount(TimelineEntry expected) {
+    return _entries
+        .where(
+          (entry) =>
+              entry.kind == TimelineKind.user &&
+              entry.detail == expected.detail &&
+              listEquals(entry.imagePaths, expected.imagePaths),
+        )
+        .length;
   }
 
   /// 释放计时器、事件订阅和 App Server 资源，并尝试保存最后的历史快照。

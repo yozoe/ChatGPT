@@ -33,6 +33,16 @@ class CodexSkill {
       ? shortDescription!.trim()
       : description.trim();
 
+  CodexSkill copyWith({bool? enabled}) => CodexSkill(
+    name: name,
+    path: path,
+    description: description,
+    enabled: enabled ?? this.enabled,
+    scope: scope,
+    displayName: displayName,
+    shortDescription: shortDescription,
+  );
+
   /// Parses a skill row returned by `skills/list`.
   static CodexSkill? fromJson(Map<String, dynamic> json) {
     final name = json['name']?.toString().trim() ?? '';

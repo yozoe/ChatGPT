@@ -4,6 +4,23 @@ import 'dart:io';
 /// Platform external-link launcher called only after a user activates Markdown content.
 typedef AgentMarkdownUriLauncher = Future<bool> Function(Uri uri);
 
+/// A workspace-local file resolved from Markdown, including optional Codex
+/// source-location metadata.
+class WorkspaceFileReference {
+  const WorkspaceFileReference({required this.uri, this.line, this.column});
+
+  final Uri uri;
+  final int? line;
+  final int? column;
+
+  String get path => uri.toFilePath(windows: Platform.isWindows);
+}
+
+bool isMarkdownFilePath(String path) {
+  final lower = path.toLowerCase();
+  return lower.endsWith('.md') || lower.endsWith('.markdown');
+}
+
 /// Opens a Markdown link from an agent reply.
 ///
 /// Web and email links retain their normal behavior. Relative links and
@@ -18,9 +35,8 @@ Future<bool> openAgentMarkdownLink({
 }) async {
   if (href == null || href.trim().isEmpty) return false;
   final uri = Uri.tryParse(href.trim());
-  if (uri == null) return false;
-
-  if (const {'http', 'https', 'mailto'}.contains(uri.scheme.toLowerCase())) {
+  if (uri != null &&
+      const {'http', 'https', 'mailto'}.contains(uri.scheme.toLowerCase())) {
     return launch(uri);
   }
 
@@ -36,34 +52,133 @@ Future<bool> openAgentMarkdownLink({
 Future<Uri?> resolveWorkspaceFileLink({
   required String href,
   required String? workspacePath,
+  String? relativeToDirectoryPath,
+}) async {
+  final reference = await resolveWorkspaceFileReference(
+    href: href,
+    workspacePath: workspacePath,
+    relativeToDirectoryPath: relativeToDirectoryPath,
+  );
+  return reference?.uri;
+}
+
+/// Resolves a workspace-local Markdown destination without allowing path or
+/// symbolic-link traversal beyond the active project.
+Future<WorkspaceFileReference?> resolveWorkspaceFileReference({
+  required String href,
+  required String? workspacePath,
+  String? relativeToDirectoryPath,
 }) async {
   if (workspacePath == null || workspacePath.trim().isEmpty) return null;
-  final uri = Uri.tryParse(href.trim());
-  if (uri == null || !{'', 'file'}.contains(uri.scheme.toLowerCase())) {
-    return null;
-  }
-  if (uri.scheme == 'file' && uri.host.isNotEmpty && uri.host != 'localhost') {
-    return null;
-  }
-
-  final path = uri.scheme == 'file' ? uri.toFilePath() : uri.path;
-  if (path.isEmpty || path.contains('\u0000')) return null;
-  final isAbsolute =
-      uri.scheme == 'file' ||
-      path.startsWith(Platform.pathSeparator) ||
-      (Platform.isWindows && RegExp(r'^[A-Za-z]:[\\/]').hasMatch(path));
-  final candidate = File(
-    isAbsolute ? path : '$workspacePath${Platform.pathSeparator}$path',
-  );
-
   try {
     final workspace = await Directory(workspacePath).resolveSymbolicLinks();
-    final file = await candidate.resolveSymbolicLinks();
-    final workspacePrefix = '$workspace${Platform.pathSeparator}';
-    if (!file.startsWith(workspacePrefix)) return null;
-    if (!await File(file).exists()) return null;
-    return Uri.file(file, windows: Platform.isWindows);
+    final destinations = <_FileDestination>[_FileDestination(href.trim())];
+    final location = _textLocation(href.trim());
+    if (location != null && location.destination != destinations.first.value) {
+      destinations.add(
+        _FileDestination(
+          location.destination,
+          line: location.line,
+          column: location.column,
+        ),
+      );
+    }
+
+    for (final destination in destinations) {
+      final localPath = _localFilePath(destination.value);
+      if (localPath == null || localPath.path.contains('\u0000')) continue;
+      final candidate = File(
+        localPath.isAbsolute
+            ? localPath.path
+            : '${relativeToDirectoryPath ?? workspacePath}'
+                  '${Platform.pathSeparator}${localPath.path}',
+      );
+      try {
+        final file = await candidate.resolveSymbolicLinks();
+        final workspacePrefix = '$workspace${Platform.pathSeparator}';
+        if (file != workspace && !file.startsWith(workspacePrefix)) continue;
+        if (!await File(file).exists()) continue;
+        return WorkspaceFileReference(
+          uri: Uri.file(file, windows: Platform.isWindows),
+          line: destination.line,
+          column: destination.column,
+        );
+      } on FileSystemException {
+        continue;
+      }
+    }
   } on FileSystemException {
     return null;
   }
+  return null;
+}
+
+class _FileDestination {
+  const _FileDestination(this.value, {this.line, this.column});
+
+  final String value;
+  final int? line;
+  final int? column;
+}
+
+({String path, bool isAbsolute})? _localFilePath(String destination) {
+  final isWindowsAbsolute = RegExp(r'^[A-Za-z]:[\\/]').hasMatch(destination);
+  if (isWindowsAbsolute) {
+    if (!Platform.isWindows) return null;
+    return (path: destination, isAbsolute: true);
+  }
+
+  final uri = Uri.tryParse(destination);
+  if (uri == null || !{'', 'file'}.contains(uri.scheme.toLowerCase())) {
+    return null;
+  }
+  if (uri.host.isNotEmpty && uri.host != 'localhost') return null;
+
+  try {
+    final path = uri.scheme == 'file'
+        ? uri.toFilePath()
+        : Uri.decodeComponent(uri.path);
+    if (path.isEmpty) return null;
+    return (
+      path: path,
+      isAbsolute:
+          uri.scheme == 'file' || path.startsWith(Platform.pathSeparator),
+    );
+  } on FormatException {
+    return null;
+  } on UnsupportedError {
+    return null;
+  }
+}
+
+/// Codex file references can append `:line` or `:line:column` to their target.
+/// The suffix is editor metadata rather than part of the file name. The exact
+/// destination is still tried first so a real POSIX file ending in digits is
+/// not shadowed.
+({String destination, int line, int? column})? _textLocation(
+  String destination,
+) {
+  final match = RegExp(
+    r'^(.*?):([1-9][0-9]*)(?::([1-9][0-9]*))?([?#].*)?$',
+  ).firstMatch(destination);
+  if (match == null) return null;
+
+  final fileTarget = match.group(1)!;
+  final looksLikeFileTarget =
+      fileTarget.toLowerCase().startsWith('file:') ||
+      fileTarget.startsWith('/') ||
+      fileTarget.startsWith('./') ||
+      fileTarget.startsWith('../') ||
+      fileTarget.contains('/') ||
+      fileTarget.contains(r'\') ||
+      fileTarget.split(RegExp(r'[/\\]')).last.contains('.');
+  if (!looksLikeFileTarget) return null;
+  return (
+    destination: '$fileTarget${match.group(4) ?? ''}',
+    line: int.parse(match.group(2)!),
+    column: switch (match.group(3)) {
+      final value? => int.parse(value),
+      null => null,
+    },
+  );
 }

@@ -87,6 +87,164 @@ class GitProjectService {
     ]);
   }
 
+  /// 反向应用任务级统一 Diff；先执行完整检查，避免文件后续变化时产生部分撤销。
+  /// Reverse-applies a turn-level unified diff after a full dry-run check so later edits cannot cause a partial undo.
+  Future<void> reverseApplyDiff({
+    required String workspace,
+    required String diff,
+    required Iterable<String> expectedPaths,
+  }) async {
+    final patch = diff;
+    if (patch.trim().isEmpty) throw StateError('没有可撤销的任务 Diff。');
+    if (patch.contains(truncatedDiffMarker)) {
+      throw StateError('任务 Diff 已截断，无法安全撤销。');
+    }
+    final normalizedExpectedPaths = <String>{};
+    for (final path in expectedPaths) {
+      final normalized = _workspaceRelativePath(workspace, path);
+      if (normalized == null) {
+        throw StateError('文件变更路径不在当前项目内，无法安全撤销：$path');
+      }
+      normalizedExpectedPaths.add(normalized);
+    }
+    if (normalizedExpectedPaths.isEmpty) {
+      throw StateError('没有可核对的文件变更路径。');
+    }
+    final patchPaths = await _readPatchPaths(workspace, patch);
+    if (patchPaths.length != normalizedExpectedPaths.length ||
+        !patchPaths.containsAll(normalizedExpectedPaths)) {
+      throw StateError('任务 Diff 与摘要中的文件列表不一致，无法安全撤销。');
+    }
+    await _rejectStagedPatchPaths(workspace, normalizedExpectedPaths);
+    const arguments = [
+      'apply',
+      '--reverse',
+      '--whitespace=nowarn',
+      '--recount',
+      '-',
+    ];
+    final check = await _runWriteProcessWithInput(
+      'git',
+      [...arguments.take(arguments.length - 1), '--check', '-'],
+      workspace,
+      patch,
+    );
+    if (check.exitCode != 0) {
+      throw StateError('文件已发生变化，无法安全撤销：${_errorOf(check)}');
+    }
+    final result = await _runWriteProcessWithInput(
+      'git',
+      arguments,
+      workspace,
+      patch,
+    );
+    if (result.exitCode != 0) {
+      throw StateError('撤销文件改动失败：${_errorOf(result)}');
+    }
+  }
+
+  /// 让 Git 解析补丁路径，避免自行处理引号、空格、重命名和转义规则。
+  /// Lets Git parse patch paths so quoting, spaces, renames, and escapes follow Git's own rules.
+  Future<Set<String>> _readPatchPaths(String workspace, String patch) async {
+    final result = await _runWriteProcessWithInput(
+      'git',
+      const ['apply', '--numstat', '-z', '-'],
+      workspace,
+      patch,
+    );
+    if (result.exitCode != 0) {
+      throw StateError('任务 Diff 格式无效：${_errorOf(result)}');
+    }
+    final paths = _parseNullTerminatedNumstat(result.stdout.toString());
+    if (paths.isEmpty) throw StateError('任务 Diff 没有可撤销的文件。');
+    return paths;
+  }
+
+  /// 若目标文件有暂存改动则拒绝撤销，避免仅恢复工作树而把旧改动留在 index。
+  /// Rejects staged target paths so undo cannot restore only the worktree while leaving changes in the index.
+  Future<void> _rejectStagedPatchPaths(
+    String workspace,
+    Set<String> paths,
+  ) async {
+    final repository = await _run(workspace, const [
+      'rev-parse',
+      '--is-inside-work-tree',
+    ]);
+    if (repository.exitCode != 0 || repository.stdout.trim() != 'true') return;
+    final staged = await _run(workspace, [
+      'diff',
+      '--cached',
+      '--name-only',
+      '-z',
+      '--',
+      ...paths,
+    ]);
+    if (staged.exitCode != 0) throw StateError(_errorOf(staged));
+    final stagedPaths = staged.stdout
+        .toString()
+        .split('\u0000')
+        .where((path) => path.isNotEmpty)
+        .toList(growable: false);
+    if (stagedPaths.isNotEmpty) {
+      throw StateError('以下文件包含暂存改动，请先处理暂存区后再撤销：${stagedPaths.join('、')}');
+    }
+  }
+
+  /// 解析 `git apply --numstat -z`，普通路径和重命名前后路径均以 NUL 分隔。
+  /// Parses `git apply --numstat -z`, including NUL-delimited pre/post paths for renames.
+  Set<String> _parseNullTerminatedNumstat(String raw) {
+    final paths = <String>{};
+    var cursor = 0;
+    while (cursor < raw.length) {
+      final additionsEnd = raw.indexOf('\t', cursor);
+      if (additionsEnd < 0) break;
+      final deletionsEnd = raw.indexOf('\t', additionsEnd + 1);
+      if (deletionsEnd < 0) break;
+      cursor = deletionsEnd + 1;
+      if (cursor < raw.length && raw.codeUnitAt(cursor) == 0) {
+        cursor++;
+        final previousEnd = raw.indexOf('\u0000', cursor);
+        if (previousEnd < 0) break;
+        final previous = raw.substring(cursor, previousEnd);
+        if (previous.isNotEmpty) paths.add(previous);
+        cursor = previousEnd + 1;
+        final nextEnd = raw.indexOf('\u0000', cursor);
+        if (nextEnd < 0) break;
+        final next = raw.substring(cursor, nextEnd);
+        if (next.isNotEmpty) paths.add(next);
+        cursor = nextEnd + 1;
+        continue;
+      }
+      final pathEnd = raw.indexOf('\u0000', cursor);
+      if (pathEnd < 0) break;
+      final path = raw.substring(cursor, pathEnd);
+      if (path.isNotEmpty) paths.add(path);
+      cursor = pathEnd + 1;
+    }
+    return paths;
+  }
+
+  /// 将 App Server 路径规范化为项目内相对路径；拒绝绝对越界和 `..`。
+  /// Normalizes an App Server path to a workspace-relative path, rejecting absolute escapes and `..`.
+  String? _workspaceRelativePath(String workspace, String value) {
+    var path = value;
+    if (path.trim().isEmpty || path.contains('\u0000')) return null;
+    final root = workspace.replaceFirst(RegExp(r'/+$'), '');
+    if (path == root) return null;
+    if (path.startsWith('$root/')) {
+      path = path.substring(root.length + 1);
+    } else if (path.startsWith('/')) {
+      return null;
+    }
+    final segments = <String>[];
+    for (final segment in path.split('/')) {
+      if (segment.isEmpty || segment == '.') continue;
+      if (segment == '..') return null;
+      segments.add(segment);
+    }
+    return segments.isEmpty ? null : segments.join('/');
+  }
+
   /// 以用户提供的消息创建提交；不会自动暂存任何文件。
   /// Creates a commit with the user-provided message without staging files automatically.
   Future<void> commit({required String workspace, required String message}) =>
@@ -216,6 +374,40 @@ class GitProjectService {
         // The operating system may need more time to reap a network command.
       }
       throw TimeoutException('Git 写入操作超时，已请求终止。');
+    }
+  }
+
+  /// 运行接收标准输入的受限写入命令；任务 Diff 直接写入 stdin，不创建临时补丁文件。
+  /// Runs a bounded write command with stdin so a turn diff never needs a temporary patch file.
+  Future<ProcessResult> _runWriteProcessWithInput(
+    String executable,
+    List<String> arguments,
+    String workspace,
+    String input,
+  ) async {
+    final process = await Process.start(
+      executable,
+      arguments,
+      workingDirectory: workspace,
+      runInShell: false,
+    );
+    final stdout = process.stdout.transform(utf8.decoder).join();
+    final stderr = process.stderr.transform(utf8.decoder).join();
+    try {
+      return await (() async {
+        process.stdin.add(utf8.encode(input));
+        await process.stdin.close();
+        final exitCode = await process.exitCode;
+        return ProcessResult(process.pid, exitCode, await stdout, await stderr);
+      })().timeout(const Duration(seconds: 60));
+    } on TimeoutException {
+      process.kill();
+      try {
+        await process.exitCode.timeout(const Duration(seconds: 2));
+      } on TimeoutException {
+        // The operating system may need more time to reap the command.
+      }
+      throw TimeoutException('撤销操作超时，已请求终止。');
     }
   }
 

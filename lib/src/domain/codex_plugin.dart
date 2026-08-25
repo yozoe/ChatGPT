@@ -12,6 +12,7 @@ class CodexPlugin {
     this.version,
     this.installPolicy,
     this.authPolicy,
+    this.description,
   });
 
   final String id;
@@ -22,6 +23,7 @@ class CodexPlugin {
   final String? version;
   final String? installPolicy;
   final String? authPolicy;
+  final String? description;
 
   /// 返回适合在界面中展示的来源名称。
   /// Returns the source name suitable for UI display.
@@ -54,6 +56,7 @@ class CodexPlugin {
     version: version,
     installPolicy: installPolicy,
     authPolicy: authPolicy,
+    description: description,
   );
 
   /// 从 CLI JSON 映射读取插件；缺少必要字段时返回空值。
@@ -71,6 +74,7 @@ class CodexPlugin {
       version: json['version']?.toString(),
       installPolicy: json['installPolicy']?.toString(),
       authPolicy: json['authPolicy']?.toString(),
+      description: json['description']?.toString(),
     );
   }
 }

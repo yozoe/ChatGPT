@@ -4,11 +4,20 @@ import 'dart:io';
 
 import '../domain/codex_plugin.dart';
 import '../domain/codex_marketplace.dart';
+import '../domain/codex_mcp_server.dart';
+import '../domain/codex_skill.dart';
 
 /// 可替换的 CLI 执行边界，使插件命令可在测试中脱离真实子进程验证。
 /// Replaceable CLI runner boundary for testing plugin commands without real subprocesses.
 typedef CodexPluginProcessRunner =
     Future<ProcessResult> Function(String executable, List<String> arguments);
+
+typedef CodexPluginScopedProcessRunner =
+    Future<ProcessResult> Function(
+      String executable,
+      List<String> arguments,
+      String workingDirectory,
+    );
 
 /// 延迟解析实际 Codex CLI 路径，支持 App Server 已发现的可执行文件。
 /// Lazily resolves the actual Codex CLI path, including one discovered by App Server.
@@ -25,13 +34,21 @@ class CodexPluginStore {
     CodexPluginExecutableProvider? executableProvider,
     Directory? codexHome,
     CodexPluginProcessRunner? processRunner,
+    CodexPluginScopedProcessRunner? scopedProcessRunner,
   }) : _executableProvider = executableProvider ?? _defaultExecutable,
        _codexHome = codexHome,
-       _processRunner = processRunner ?? _defaultProcessRunner;
+       _processRunner = processRunner ?? _defaultProcessRunner,
+       _scopedProcessRunner =
+           scopedProcessRunner ??
+           (processRunner == null
+               ? _defaultScopedProcessRunner
+               : (executable, arguments, _) =>
+                     processRunner(executable, arguments));
 
   final CodexPluginExecutableProvider _executableProvider;
   final Directory? _codexHome;
   final CodexPluginProcessRunner _processRunner;
+  final CodexPluginScopedProcessRunner _scopedProcessRunner;
   Future<void> _configWriteQueue = Future.value();
 
   /// 返回已安装及当前 marketplace 可安装的插件列表。
@@ -66,6 +83,120 @@ class CodexPluginStore {
       return left.name.toLowerCase().compareTo(right.name.toLowerCase());
     });
   }
+
+  /// 返回当前 Codex 配置中的 MCP 服务器。
+  /// Returns MCP servers from the active Codex configuration.
+  Future<List<CodexMcpServer>> listMcpServers({
+    String? workingDirectory,
+  }) async {
+    final decoded = jsonDecode(
+      await _run(const [
+        'mcp',
+        'list',
+        '--json',
+      ], workingDirectory: workingDirectory),
+    );
+    if (decoded is! Iterable) {
+      throw const FormatException('Codex CLI 返回了无效的 MCP 服务器列表。');
+    }
+    final servers = decoded
+        .whereType<Map>()
+        .map(
+          (value) => CodexMcpServer.fromJson(Map<String, dynamic>.from(value)),
+        )
+        .whereType<CodexMcpServer>()
+        .toList(growable: false);
+    final userConfig = _userConfigFile();
+    final userContents = await _readConfig(userConfig);
+    final projectTrusted =
+        workingDirectory != null &&
+        _isProjectTrusted(userContents, workingDirectory);
+    final projectConfig = workingDirectory == null
+        ? null
+        : File(
+            '$workingDirectory${Platform.pathSeparator}.codex${Platform.pathSeparator}config.toml',
+          );
+    final projectContents = projectTrusted && projectConfig != null
+        ? await _readConfig(projectConfig)
+        : '';
+    return servers
+        .map((server) {
+          if (projectConfig != null &&
+              _findTableHeader(
+                    projectContents,
+                    tableNamespace: 'mcp_servers',
+                    id: server.name,
+                  ) !=
+                  null) {
+            return server.copyWith(
+              scope: CodexMcpServerScope.project,
+              configurationPath: projectConfig.path,
+            );
+          }
+          if (_findTableHeader(
+                userContents,
+                tableNamespace: 'mcp_servers',
+                id: server.name,
+              ) !=
+              null) {
+            return server.copyWith(
+              scope: CodexMcpServerScope.user,
+              configurationPath: userConfig.path,
+            );
+          }
+          return server.copyWith(scope: CodexMcpServerScope.managed);
+        })
+        .toList(growable: false);
+  }
+
+  /// 添加一个 HTTP MCP 服务器。
+  /// Adds an HTTP MCP server.
+  Future<void> addMcpServer({required String name, required String url}) async {
+    final serverName = name.trim();
+    final serverUrl = url.trim();
+    if (serverName.isEmpty || serverUrl.isEmpty) {
+      throw const FormatException('请输入服务器名称和 URL。');
+    }
+    final uri = Uri.tryParse(serverUrl);
+    if (uri == null ||
+        !const {'http', 'https'}.contains(uri.scheme) ||
+        !uri.hasAuthority) {
+      throw const FormatException('请输入有效的 MCP 服务器 URL。');
+    }
+    await _run(['mcp', 'add', serverName, '--url', serverUrl]);
+  }
+
+  /// 更新 MCP 服务器启用状态。
+  /// Updates an MCP server enabled state.
+  Future<void> setMcpServerEnabled(
+    CodexMcpServer server,
+    bool enabled, {
+    String? workingDirectory,
+  }) async {
+    if (!server.canChangeEnabled) {
+      throw StateError('该 MCP 服务器由插件或其他配置来源管理，无法在此直接启停。');
+    }
+    final config = await _mcpConfigFileFor(
+      server,
+      workingDirectory: workingDirectory,
+    );
+    await _queueConfigFileWrite(
+      config,
+      (current) => _replaceTableEnabledValue(
+        current,
+        tableNamespace: 'mcp_servers',
+        id: server.name,
+        enabled: enabled,
+      ),
+    );
+  }
+
+  /// 更新本地技能启用状态。
+  /// Updates a local skill enabled state.
+  Future<void> setSkillEnabled(CodexSkill skill, bool enabled) =>
+      _queueConfigWrite(
+        (current) => _replaceSkillEnabledValue(current, skill.path, enabled),
+      );
 
   /// 注册一个本地插件 marketplace 目录，供兼容现有调用方使用。
   /// Registers a local plugin marketplace directory for existing callers.
@@ -153,11 +284,41 @@ class CodexPluginStore {
   /// 串行且原子地写入插件启用状态，避免应用内并发操作损坏配置文件。
   /// Serially and atomically writes plugin state to prevent in-app concurrent operations from corrupting the config file.
   Future<void> _writePluginEnabled(CodexPlugin plugin, bool enabled) async {
-    final config = File(
-      '${(_codexHome ?? _defaultCodexHome()).path}/config.toml',
+    await _writeConfig(
+      (current) => _replaceTableEnabledValue(
+        current,
+        tableNamespace: 'plugins',
+        id: plugin.id,
+        enabled: enabled,
+      ),
     );
+  }
+
+  Future<void> _queueConfigWrite(String Function(String) transform) {
+    return _queueConfigFileWrite(_userConfigFile(), transform);
+  }
+
+  Future<void> _queueConfigFileWrite(
+    File config,
+    String Function(String) transform,
+  ) {
+    final operation = _configWriteQueue.then(
+      (_) => _writeConfigFile(config, transform),
+    );
+    _configWriteQueue = operation.then<void>((_) {}, onError: (_, _) {});
+    return operation;
+  }
+
+  Future<void> _writeConfig(String Function(String) transform) async {
+    await _writeConfigFile(_userConfigFile(), transform);
+  }
+
+  Future<void> _writeConfigFile(
+    File config,
+    String Function(String) transform,
+  ) async {
     final current = await config.exists() ? await config.readAsString() : '';
-    final next = _replaceEnabledValue(current, plugin.id, enabled);
+    final next = transform(current);
     final writeTarget = await _configWriteTarget(config);
     await writeTarget.parent.create(recursive: true);
     final temporary = File(
@@ -171,6 +332,59 @@ class CodexPluginStore {
     }
   }
 
+  File _userConfigFile() => File(
+    '${(_codexHome ?? _defaultCodexHome()).path}${Platform.pathSeparator}config.toml',
+  );
+
+  Future<String> _readConfig(File config) async =>
+      await config.exists() ? config.readAsString() : '';
+
+  Future<File> _mcpConfigFileFor(
+    CodexMcpServer server, {
+    String? workingDirectory,
+  }) async {
+    if (server.scope == CodexMcpServerScope.project &&
+        workingDirectory == null) {
+      throw StateError('缺少当前项目目录，无法安全更新 MCP 服务器 ${server.name}。');
+    }
+    final userConfig = _userConfigFile();
+    final userContents = await _readConfig(userConfig);
+    final projectTrusted =
+        workingDirectory != null &&
+        _isProjectTrusted(userContents, workingDirectory);
+    if (server.scope == CodexMcpServerScope.project && !projectTrusted) {
+      throw StateError('当前项目配置未受 Codex 信任，无法安全更新 MCP 服务器 ${server.name}。');
+    }
+    if (workingDirectory != null &&
+        projectTrusted &&
+        (server.scope != CodexMcpServerScope.user ||
+            server.configurationPath == null)) {
+      final projectConfig = File(
+        '$workingDirectory${Platform.pathSeparator}.codex${Platform.pathSeparator}config.toml',
+      );
+      if (_findTableHeader(
+            await _readConfig(projectConfig),
+            tableNamespace: 'mcp_servers',
+            id: server.name,
+          ) !=
+          null) {
+        return projectConfig;
+      }
+      if (server.scope == CodexMcpServerScope.project) {
+        throw StateError('当前项目中已找不到 MCP 服务器 ${server.name} 的定义，请刷新列表后重试。');
+      }
+    }
+    if (_findTableHeader(
+          userContents,
+          tableNamespace: 'mcp_servers',
+          id: server.name,
+        ) !=
+        null) {
+      return userConfig;
+    }
+    throw StateError('找不到 MCP 服务器 ${server.name} 的配置来源，请刷新列表后重试。');
+  }
+
   /// 返回配置写入的实际目标，保留用户通过符号链接维护的 `config.toml`。
   /// Returns the actual config write target while preserving a user-managed `config.toml` symlink.
   Future<File> _configWriteTarget(File config) async {
@@ -181,16 +395,20 @@ class CodexPluginStore {
 
   /// 执行 CLI 子命令并将失败信息转换为可展示的错误。
   /// Runs a CLI subcommand and converts failures into displayable errors.
-  Future<String> _run(List<String> arguments) async {
+  Future<String> _run(
+    List<String> arguments, {
+    String? workingDirectory,
+  }) async {
     // The executable provider may scan PATH entries asynchronously. Keep that
     // work inside the same bounded user-visible operation as the CLI command.
     final executable = await Future<String>.sync(
       _executableProvider,
     ).timeout(_commandTimeout);
-    final result = await _processRunner(
-      executable,
-      arguments,
-    ).timeout(_commandTimeout);
+    final result =
+        await (workingDirectory == null
+                ? _processRunner(executable, arguments)
+                : _scopedProcessRunner(executable, arguments, workingDirectory))
+            .timeout(_commandTimeout);
     if (result.exitCode != 0) {
       final detail = result.stderr.toString().trim();
       throw StateError(detail.isEmpty ? 'Codex CLI 插件命令执行失败。' : detail);
@@ -200,14 +418,19 @@ class CodexPluginStore {
 
   /// 在 TOML 中替换或添加指定插件表内的 `enabled` 键。
   /// Replaces or adds the `enabled` key in the target plugin's TOML table.
-  String _replaceEnabledValue(String config, String pluginId, bool enabled) {
-    final escapedId = pluginId.replaceAll('\\', r'\\').replaceAll('"', r'\"');
-    final header = '[plugins."$escapedId"]';
-    final headerMatch = RegExp(
-      '^${RegExp.escape(header)}'
-      r'[ \t]*(?:#.*)?$',
-      multiLine: true,
-    ).firstMatch(config);
+  String _replaceTableEnabledValue(
+    String config, {
+    required String tableNamespace,
+    required String id,
+    required bool enabled,
+  }) {
+    final escapedId = id.replaceAll('\\', r'\\').replaceAll('"', r'\"');
+    final header = '[$tableNamespace."$escapedId"]';
+    final headerMatch = _findTableHeader(
+      config,
+      tableNamespace: tableNamespace,
+      id: id,
+    );
     final line = 'enabled = $enabled';
     if (headerMatch == null) {
       if (config.isEmpty) return '$header\n$line\n';
@@ -234,6 +457,108 @@ class CodexPluginStore {
     return '${config.substring(0, headerMatch.end)}\n$line${config.substring(headerMatch.end)}';
   }
 
+  RegExpMatch? _findTableHeader(
+    String config, {
+    required String tableNamespace,
+    required String id,
+  }) {
+    final escapedId = id.replaceAll('\\', r'\\').replaceAll('"', r'\"');
+    final quotedHeader = '[$tableNamespace."$escapedId"]';
+    final bareHeader = RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(id)
+        ? '[$tableNamespace.$id]'
+        : null;
+    final literalHeader = id.contains("'") ? null : "[$tableNamespace.'$id']";
+    final headerPattern = [
+      quotedHeader,
+      ?literalHeader,
+      ?bareHeader,
+    ].map(RegExp.escape).join('|');
+    return RegExp(
+      '^(?:$headerPattern)'
+      r'[ \t]*(?:#.*)?$',
+      multiLine: true,
+    ).firstMatch(config);
+  }
+
+  bool _isProjectTrusted(String userConfig, String workingDirectory) {
+    final projectHeader = _findTableHeader(
+      userConfig,
+      tableNamespace: 'projects',
+      id: workingDirectory,
+    );
+    if (projectHeader == null) return false;
+    final tableEnd = _tableEndAfterHeader(userConfig, projectHeader);
+    final body = userConfig.substring(projectHeader.end, tableEnd);
+    final trustLevel = RegExp(
+      r'''^[ \t]*trust_level[ \t]*=[ \t]*(?:"trusted"|'trusted')[ \t]*(?:#.*)?$''',
+      multiLine: true,
+    );
+    return trustLevel.hasMatch(body);
+  }
+
+  int _tableEndAfterHeader(String config, RegExpMatch header) {
+    final nextHeaders = RegExp(
+      r'^\[',
+      multiLine: true,
+    ).allMatches(config).where((match) => match.start >= header.end);
+    return nextHeaders.isEmpty ? config.length : nextHeaders.first.start;
+  }
+
+  String _replaceSkillEnabledValue(
+    String config,
+    String skillPath,
+    bool enabled,
+  ) {
+    final blocks = RegExp(
+      r'^\[\[skills\.config\]\][ \t]*(?:#.*)?$',
+      multiLine: true,
+    ).allMatches(config).toList(growable: false);
+    final headers = RegExp(r'^\[\[?', multiLine: true).allMatches(config);
+    for (final block in blocks) {
+      final followingHeaders = headers.where(
+        (header) => header.start > block.start,
+      );
+      final end = followingHeaders.isEmpty
+          ? config.length
+          : followingHeaders.first.start;
+      final body = config.substring(block.end, end);
+      final pathMatch = RegExp(
+        r'''^[ \t]*path[ \t]*=[ \t]*(?:"((?:\\.|[^"\\])*)"|'([^'\r\n]*)')[ \t]*(?:#.*)?$''',
+        multiLine: true,
+      ).firstMatch(body);
+      final basicPath = pathMatch?.group(1);
+      final configuredPath = basicPath == null
+          ? pathMatch?.group(2)
+          : _unescapeToml(basicPath);
+      if (configuredPath != skillPath) {
+        continue;
+      }
+      final enabledMatch = RegExp(
+        r'^([ \t]*enabled[ \t]*=[ \t]*)(?:true|false)([ \t]*(?:#.*)?)$',
+        multiLine: true,
+      ).firstMatch(body);
+      if (enabledMatch != null) {
+        final start = block.end + enabledMatch.start;
+        final finish = block.end + enabledMatch.end;
+        return '${config.substring(0, start)}${enabledMatch.group(1)}$enabled${enabledMatch.group(2)}${config.substring(finish)}';
+      }
+      return '${config.substring(0, end).trimRight()}\nenabled = $enabled\n${config.substring(end)}';
+    }
+    final escapedPath = skillPath
+        .replaceAll('\\', r'\\')
+        .replaceAll('"', r'\"')
+        .replaceAll('\n', r'\n');
+    final separator = config.isEmpty
+        ? ''
+        : (config.endsWith('\n') ? '\n' : '\n\n');
+    return '$config$separator[[skills.config]]\npath = "$escapedPath"\nenabled = $enabled\n';
+  }
+
+  String _unescapeToml(String value) => value
+      .replaceAll(r'\n', '\n')
+      .replaceAll(r'\"', '"')
+      .replaceAll(r'\\', '\\');
+
   /// 返回默认 Codex CLI 可执行文件名称。
   /// Returns the default Codex CLI executable name.
   static String _defaultExecutable() =>
@@ -245,6 +570,17 @@ class CodexPluginStore {
     String executable,
     List<String> arguments,
   ) => Process.run(executable, arguments, runInShell: false);
+
+  static Future<ProcessResult> _defaultScopedProcessRunner(
+    String executable,
+    List<String> arguments,
+    String workingDirectory,
+  ) => Process.run(
+    executable,
+    arguments,
+    workingDirectory: workingDirectory,
+    runInShell: false,
+  );
 
   /// 返回当前 Codex 用户配置目录，优先使用 `CODEX_HOME`。
   /// Returns the current Codex user configuration directory, preferring `CODEX_HOME`.

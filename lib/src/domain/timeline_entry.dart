@@ -4,6 +4,7 @@ enum TimelineKind {
   system,
   user,
   agent,
+  activity,
   command,
   tool,
   approval,
@@ -21,6 +22,8 @@ class TimelineEntry {
     required this.createdAt,
     this.imagePaths = const [],
     this.sourceItemId,
+    this.activityKind,
+    this.activityStatus,
   });
 
   final TimelineKind kind;
@@ -32,20 +35,31 @@ class TimelineEntry {
   /// App Server item identifier when this entry was reconstructed from one.
   final String? sourceItemId;
 
+  /// Stable presentation category for a first-class conversation activity.
+  final String? activityKind;
+
+  /// Machine-readable lifecycle state retained for status styling.
+  final String? activityStatus;
+
   /// 返回替换可选详情后的时间线条目副本。
   /// Returns a timeline entry copy with an optional replacement detail.
   TimelineEntry copyWith({
+    String? title,
     String? detail,
     List<String>? imagePaths,
     String? sourceItemId,
+    String? activityKind,
+    String? activityStatus,
   }) {
     return TimelineEntry(
       kind: kind,
-      title: title,
+      title: title ?? this.title,
       detail: detail ?? this.detail,
       createdAt: createdAt,
       imagePaths: imagePaths ?? this.imagePaths,
       sourceItemId: sourceItemId ?? this.sourceItemId,
+      activityKind: activityKind ?? this.activityKind,
+      activityStatus: activityStatus ?? this.activityStatus,
     );
   }
 
@@ -58,6 +72,8 @@ class TimelineEntry {
     'createdAt': createdAt.toIso8601String(),
     'imagePaths': imagePaths,
     'sourceItemId': ?sourceItemId,
+    'activityKind': ?activityKind,
+    'activityStatus': ?activityStatus,
   };
 
   /// 从本地历史缓存 JSON 恢复时间线条目。
@@ -79,6 +95,8 @@ class TimelineEntry {
                 .toList(growable: false)
           : const <String>[]),
       sourceItemId: value['sourceItemId']?.toString(),
+      activityKind: value['activityKind']?.toString(),
+      activityStatus: value['activityStatus']?.toString(),
     );
   }
 }
