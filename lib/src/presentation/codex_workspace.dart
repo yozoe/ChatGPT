@@ -13,6 +13,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
+import 'package:markdown/markdown.dart' as md;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 
@@ -321,6 +322,20 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       final position = controller.position;
       position.jumpTo(position.maxScrollExtent);
       _timelineFollowsLatest[viewportKey] = true;
+      // Markdown can finish a second layout pass after this callback (for
+      // example when a custom link widget replaces inline text). Reconfirm the
+      // bottom on the following frame while the user still wants live follow.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted ||
+            generation != _timelineScrollGeneration ||
+            viewportKey != _displayedThreadKey ||
+            !(_timelineFollowsLatest[viewportKey] ?? true) ||
+            !controller.hasClients) {
+          return;
+        }
+        final nextPosition = controller.position;
+        nextPosition.jumpTo(nextPosition.maxScrollExtent);
+      });
     });
   }
 
@@ -12193,6 +12208,11 @@ class _TimelineEntry extends StatelessWidget {
     if (entry.kind == TimelineKind.activity) {
       return _ConversationStatusActivityRow(entry: entry);
     }
+    if (entry.kind == TimelineKind.agent) {
+      return entry.detail.isEmpty
+          ? const SizedBox.shrink()
+          : _AgentMarkdown(entry.detail, workspacePath: workspacePath);
+    }
 
     final color = switch (entry.kind) {
       TimelineKind.agent => palette.ack,
@@ -12214,10 +12234,7 @@ class _TimelineEntry extends StatelessWidget {
         ),
         if (entry.detail.isNotEmpty) ...[
           const SizedBox(height: 8),
-          if (entry.kind == TimelineKind.agent)
-            _AgentMarkdown(entry.detail, workspacePath: workspacePath)
-          else
-            SelectionArea(child: Text(entry.detail)),
+          SelectionArea(child: Text(entry.detail)),
         ],
       ],
     );
@@ -12968,34 +12985,8 @@ class _AgentMarkdown extends StatelessWidget {
       child: MarkdownBody(
         data: data,
         selectable: false,
-        onTapLink: (_, href, _) async {
-          final reference = workspacePath == null || href == null
-              ? null
-              : await resolveWorkspaceFileReference(
-                  href: href,
-                  workspacePath: workspacePath,
-                );
-          if (reference != null && isMarkdownFilePath(reference.path)) {
-            if (context.mounted) {
-              await showWorkspaceMarkdownPreview(
-                context,
-                reference: reference,
-                workspacePath: workspacePath!,
-              );
-            }
-            return;
-          }
-          final opened = await openAgentMarkdownLink(
-            href: href,
-            workspacePath: workspacePath,
-            launch: (uri) =>
-                launchUrl(uri, mode: LaunchMode.externalApplication),
-          );
-          if (!opened && context.mounted) {
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(const SnackBar(content: Text('无法打开此链接或项目内文件。')));
-          }
+        builders: {
+          'a': _AgentMarkdownLinkBuilder(workspacePath: workspacePath),
         },
         styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
           p: body,
@@ -13034,6 +13025,255 @@ class _AgentMarkdown extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// Builds normal web links as text and upgrades existing project-local files
+/// to Codex-style file rows after the workspace boundary has been verified.
+class _AgentMarkdownLinkBuilder extends MarkdownElementBuilder {
+  _AgentMarkdownLinkBuilder({required this.workspacePath});
+
+  final String? workspacePath;
+
+  @override
+  Widget visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final href = element.attributes['href'] ?? '';
+    return _AgentMarkdownLink(
+      key: ValueKey('agent-markdown-resolver-$href'),
+      href: href,
+      label: element.textContent.isEmpty ? href : element.textContent,
+      workspacePath: workspacePath,
+      style: preferredStyle ?? parentStyle,
+    );
+  }
+}
+
+/// Resolves a Markdown destination asynchronously so the renderer never
+/// treats a missing, out-of-project, or escaping symbolic link as a file row.
+class _AgentMarkdownLink extends StatefulWidget {
+  const _AgentMarkdownLink({
+    super.key,
+    required this.href,
+    required this.label,
+    required this.workspacePath,
+    required this.style,
+  });
+
+  final String href;
+  final String label;
+  final String? workspacePath;
+  final TextStyle? style;
+
+  @override
+  State<_AgentMarkdownLink> createState() => _AgentMarkdownLinkState();
+}
+
+class _AgentMarkdownLinkState extends State<_AgentMarkdownLink> {
+  WorkspaceFileReference? _reference;
+
+  @visibleForTesting
+  Future<void> resolveForTesting() => _resolve();
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_resolve());
+  }
+
+  @override
+  void didUpdateWidget(covariant _AgentMarkdownLink oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.href != widget.href ||
+        oldWidget.workspacePath != widget.workspacePath) {
+      _reference = null;
+      unawaited(_resolve());
+    }
+  }
+
+  Future<void> _resolve() async {
+    final workspacePath = widget.workspacePath;
+    final href = widget.href;
+    final reference = workspacePath == null || href.isEmpty
+        ? null
+        : await resolveWorkspaceFileReference(
+            href: href,
+            workspacePath: workspacePath,
+          );
+    if (!mounted ||
+        workspacePath != widget.workspacePath ||
+        href != widget.href) {
+      return;
+    }
+    setState(() => _reference = reference);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final reference = _reference;
+    if (reference != null) {
+      return _AgentFileLink(
+        href: widget.href,
+        reference: reference,
+        workspacePath: widget.workspacePath!,
+      );
+    }
+    return _AgentTextLink(
+      href: widget.href,
+      label: widget.label,
+      workspacePath: widget.workspacePath,
+      style: widget.style,
+    );
+  }
+}
+
+class _AgentTextLink extends StatelessWidget {
+  const _AgentTextLink({
+    required this.href,
+    required this.label,
+    required this.workspacePath,
+    required this.style,
+  });
+
+  final String href;
+  final String label;
+  final String? workspacePath;
+  final TextStyle? style;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      link: true,
+      label: label,
+      excludeSemantics: true,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          key: ValueKey('agent-markdown-link-$href'),
+          behavior: HitTestBehavior.opaque,
+          onTap: () => unawaited(
+            _openAgentMarkdownDestination(
+              context,
+              href: href,
+              workspacePath: workspacePath,
+            ),
+          ),
+          child: Text(label, style: style),
+        ),
+      ),
+    );
+  }
+}
+
+class _AgentFileLink extends StatelessWidget {
+  const _AgentFileLink({
+    required this.href,
+    required this.reference,
+    required this.workspacePath,
+  });
+
+  final String href;
+  final WorkspaceFileReference reference;
+  final String workspacePath;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final fileName = reference.path.split(Platform.pathSeparator).last;
+    return Semantics(
+      button: true,
+      label: '打开文件 $fileName',
+      excludeSemantics: true,
+      child: Tooltip(
+        message: reference.path,
+        waitDuration: const Duration(milliseconds: 450),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            key: ValueKey('agent-file-link-${reference.path}'),
+            borderRadius: BorderRadius.circular(5),
+            hoverColor: palette.raised,
+            onTap: () => unawaited(
+              _openAgentMarkdownDestination(
+                context,
+                href: href,
+                workspacePath: workspacePath,
+                reference: reference,
+              ),
+            ),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 360),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.insert_drive_file_outlined,
+                      size: 16,
+                      color: palette.active,
+                    ),
+                    const SizedBox(width: 5),
+                    Flexible(
+                      child: Text(
+                        fileName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: palette.active,
+                          height: 1.35,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+Future<void> _openAgentMarkdownDestination(
+  BuildContext context, {
+  required String href,
+  required String? workspacePath,
+  WorkspaceFileReference? reference,
+}) async {
+  final resolvedReference =
+      reference ??
+      (workspacePath == null
+          ? null
+          : await resolveWorkspaceFileReference(
+              href: href,
+              workspacePath: workspacePath,
+            ));
+  if (resolvedReference != null && isMarkdownFilePath(resolvedReference.path)) {
+    if (context.mounted) {
+      await showWorkspaceMarkdownPreview(
+        context,
+        reference: resolvedReference,
+        workspacePath: workspacePath!,
+      );
+    }
+    return;
+  }
+
+  final opened = await openAgentMarkdownLink(
+    href: href,
+    workspacePath: workspacePath,
+    launch: (uri) => launchUrl(uri, mode: LaunchMode.externalApplication),
+  );
+  if (!opened && context.mounted) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('无法打开此链接或项目内文件。')));
   }
 }
 

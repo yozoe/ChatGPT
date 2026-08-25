@@ -28,8 +28,8 @@ import 'package:chatgpt/src/services/git_project_service.dart';
 import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'package:chatgpt/src/services/theme_preferences_store.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -1432,10 +1432,12 @@ void main() {
           createdAt: DateTime(2026, 1, 1, 0, 2),
         ),
       ]);
+      final timelineRect = tester.getRect(find.byType(ListView));
       final gesture = await tester.startGesture(
-        tester.getCenter(find.byType(ListView)),
+        Offset(timelineRect.left + 8, timelineRect.center.dy),
       );
       await gesture.moveBy(const Offset(0, 360));
+      await tester.pump();
       await gesture.up();
       expect(timeline.controller!.position.extentAfter, greaterThan(48));
       final readingOffset = timeline.controller!.offset;
@@ -4981,43 +4983,45 @@ void main() {
     },
   );
 
-  testWidgets('renders a plain duration when a turn has no process details', (
-    tester,
-  ) async {
-    final controller = CodexController(server: CodexAppServer());
-    controller.replaceTimelineEntriesForTesting([
-      TimelineEntry(
-        kind: TimelineKind.user,
-        title: '你',
-        detail: '请直接回答',
-        createdAt: DateTime(2026),
-      ),
-      TimelineEntry(
-        kind: TimelineKind.agent,
-        title: 'Codex',
-        detail: '这是直接回答。',
-        createdAt: DateTime(2026, 1, 1, 0, 0, 1),
-      ),
-      TimelineEntry(
-        kind: TimelineKind.elapsed,
-        title: '耗时 1 秒',
-        detail: '',
-        createdAt: DateTime(2026, 1, 1, 0, 0, 2),
-      ),
-    ]);
+  testWidgets(
+    'renders agent replies without a Codex label and keeps plain duration',
+    (tester) async {
+      final controller = CodexController(server: CodexAppServer());
+      controller.replaceTimelineEntriesForTesting([
+        TimelineEntry(
+          kind: TimelineKind.user,
+          title: '你',
+          detail: '请直接回答',
+          createdAt: DateTime(2026),
+        ),
+        TimelineEntry(
+          kind: TimelineKind.agent,
+          title: 'Codex',
+          detail: '这是直接回答。',
+          createdAt: DateTime(2026, 1, 1, 0, 0, 1),
+        ),
+        TimelineEntry(
+          kind: TimelineKind.elapsed,
+          title: '耗时 1 秒',
+          detail: '',
+          createdAt: DateTime(2026, 1, 1, 0, 0, 2),
+        ),
+      ]);
 
-    await tester.pumpWidget(
-      MaterialApp(home: CodexWorkspace(controller: controller)),
-    );
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
 
-    expect(find.text('这是直接回答。'), findsOneWidget);
-    expect(find.text('耗时 1 秒'), findsOneWidget);
-    expect(
-      find.byKey(const Key('completed-turn-disclosure-toggle')),
-      findsNothing,
-    );
-    await tester.pumpWidget(const SizedBox());
-  });
+      expect(find.text('Codex'), findsNothing);
+      expect(find.text('这是直接回答。'), findsOneWidget);
+      expect(find.text('耗时 1 秒'), findsOneWidget);
+      expect(
+        find.byKey(const Key('completed-turn-disclosure-toggle')),
+        findsNothing,
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   testWidgets('renders the server-declared live activity before thinking', (
     tester,
@@ -5290,6 +5294,85 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('renders project files as compact conversation file rows', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(680, 520));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    late Directory workspace;
+    late Directory outside;
+    late File artifact;
+    late File outsideFile;
+    late String artifactPath;
+    await tester.runAsync(() async {
+      workspace = await Directory.systemTemp.createTemp(
+        'codex-desk-agent-file-row-',
+      );
+      outside = await Directory.systemTemp.createTemp(
+        'codex-desk-agent-file-row-outside-',
+      );
+      final buildDirectory = Directory('${workspace.path}/build/output');
+      await buildDirectory.create(recursive: true);
+      artifact = File('${buildDirectory.path}/app-debug.apk');
+      outsideFile = File('${outside.path}/secret.zip');
+      await artifact.writeAsBytes(const [0, 1, 2]);
+      await outsideFile.writeAsBytes(const [3, 4, 5]);
+      artifactPath = await artifact.resolveSymbolicLinks();
+      final reference = await resolveWorkspaceFileReference(
+        href: artifact.uri.toString(),
+        workspacePath: workspace.path,
+      );
+      expect(reference?.path, artifactPath);
+    });
+    addTearDown(() async {
+      await workspace.delete(recursive: true);
+      await outside.delete(recursive: true);
+    });
+
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = workspace.path;
+    controller.handleServerEventForTesting(
+      ServerEvent(
+        method: 'item/agentMessage/delta',
+        params: {
+          'itemId': 'artifact-message',
+          'delta':
+              '新的 debug APK 已生成：\n\n[download](${artifact.uri})'
+              '\n\n[项目外文件](${outsideFile.uri})',
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    final resolver = find.byKey(
+      ValueKey('agent-markdown-resolver-${artifact.uri}'),
+    );
+    final resolverState = tester.state(resolver) as dynamic;
+    await tester.runAsync(
+      () => resolverState.resolveForTesting() as Future<void>,
+    );
+    await tester.pump();
+
+    final fileRow = find.byKey(ValueKey('agent-file-link-$artifactPath'));
+    expect(fileRow, findsOneWidget);
+    expect(find.text('app-debug.apk'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: fileRow,
+        matching: find.byIcon(Icons.insert_drive_file_outlined),
+      ),
+      findsOneWidget,
+    );
+    expect(tester.getSize(fileRow).width, lessThanOrEqualTo(360));
+    expect(
+      find.byKey(ValueKey('agent-markdown-link-${outsideFile.uri}')),
+      findsOneWidget,
+    );
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('opens project Markdown links in an in-app formatted preview', (
     tester,
   ) async {
@@ -5297,6 +5380,7 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
     late Directory workspace;
     late File document;
+    late String documentPath;
     await tester.runAsync(() async {
       workspace = await Directory.systemTemp.createTemp(
         'codex-desk-markdown-preview-',
@@ -5310,6 +5394,7 @@ void main() {
       );
       final nextDocument = File('${guideDirectory.path}/next.md');
       await nextDocument.writeAsString('# 下一页标题\n\n返回后继续阅读。');
+      documentPath = await document.resolveSymbolicLinks();
     });
     addTearDown(() => workspace.delete(recursive: true));
 
@@ -5329,33 +5414,20 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 60));
 
-    TapGestureRecognizer linkRecognizer(String label) {
-      final richText = tester.widget<RichText>(
-        find
-            .byWidgetPredicate(
-              (widget) =>
-                  widget is RichText &&
-                  widget.text.toPlainText().contains(label),
+    final resolverState =
+        tester.state(
+              find.byKey(ValueKey('agent-markdown-resolver-${document.uri}:3')),
             )
-            .first,
-      );
-      TapGestureRecognizer? result;
-      void visit(InlineSpan span) {
-        if (span is! TextSpan) return;
-        if (span.text?.contains(label) ?? false) {
-          result = span.recognizer as TapGestureRecognizer?;
-        }
-        for (final child in span.children ?? const <InlineSpan>[]) {
-          visit(child);
-        }
-      }
-
-      visit(richText.text);
-      return result!;
-    }
+            as dynamic;
+    await tester.runAsync(
+      () => resolverState.resolveForTesting() as Future<void>,
+    );
+    await tester.pump();
+    final fileRow = find.byKey(ValueKey('agent-file-link-$documentPath'));
+    expect(fileRow, findsOneWidget);
 
     await tester.runAsync(() async {
-      linkRecognizer('打开文档').onTap!();
+      tester.widget<InkWell>(fileRow).onTap!();
       await Future<void>.delayed(const Duration(milliseconds: 80));
       await tester.pump();
       await Future<void>.delayed(const Duration(milliseconds: 80));
@@ -5363,7 +5435,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 220));
 
     expect(find.byKey(const Key('markdown-preview-dialog')), findsOneWidget);
-    expect(find.text('product notes.md'), findsOneWidget);
+    expect(find.byKey(const Key('markdown-preview-file-name')), findsOneWidget);
     expect(find.text('L3'), findsOneWidget);
     expect(find.text('产品说明'), findsOneWidget);
     expect(find.text('格式化条目'), findsOneWidget);
