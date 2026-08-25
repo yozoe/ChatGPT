@@ -3344,6 +3344,11 @@ void main() {
   testWidgets('retains pasted screenshots for the timeline', (tester) async {
     const channel = MethodChannel('codex_desk/clipboard');
     const imagePath = '/tmp/CodexDeskClipboard/clipboard-image-42.png';
+    final temporaryImage = File(imagePath);
+    temporaryImage.parent.createSync(recursive: true);
+    addTearDown(() {
+      if (temporaryImage.existsSync()) temporaryImage.deleteSync();
+    });
     final imageProvider = FileImage(File(imagePath));
     final recorder = ui.PictureRecorder();
     ui.Canvas(recorder).drawRect(
@@ -3353,6 +3358,11 @@ void main() {
     final picture = recorder.endRecording();
     final testImage = await picture.toImage(1024, 1024);
     picture.dispose();
+    temporaryImage.writeAsBytesSync(
+      base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL9WQAAAABJRU5ErkJggg==',
+      ),
+    );
     PaintingBinding.instance.imageCache.putIfAbsent(
       imageProvider,
       () => OneFrameImageStreamCompleter(
@@ -3374,6 +3384,7 @@ void main() {
         case 'deleteTemporaryItem':
           expect(call.arguments, imagePath);
           deleteCalls++;
+          if (temporaryImage.existsSync()) temporaryImage.deleteSync();
           return true;
       }
       return null;
@@ -3488,18 +3499,7 @@ void main() {
       {'type': 'localImage', 'path': imagePath},
     ]);
     expect(deleteCalls, 0);
-
-    controller.handleServerEventForTesting(
-      const ServerEvent(
-        method: 'turn/completed',
-        params: {
-          'turn': {'status': 'completed'},
-        },
-      ),
-    );
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 100));
-    expect(deleteCalls, 0);
+    expect(temporaryImage.existsSync(), isTrue);
     expect(find.byKey(ValueKey('timeline-image-$imagePath')), findsOneWidget);
     await tester.tap(find.byKey(ValueKey('timeline-image-preview-$imagePath')));
     await tester.pump();
@@ -3520,9 +3520,103 @@ void main() {
       findsNothing,
     );
 
+    // Navigating away disposes the Composer while the controller and turn
+    // remain alive. The submitted image must outlive that short-lived widget.
+    await tester.tap(find.byKey(const Key('sidebar-scheduled-tasks-button')));
+    await tester.pump();
+    expect(find.byKey(const Key('composer-panel')), findsNothing);
+    expect(deleteCalls, 0);
+    expect(temporaryImage.existsSync(), isTrue);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'turn': {'status': 'completed'},
+        },
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(deleteCalls, 0);
+    expect(temporaryImage.existsSync(), isTrue);
+
+    // The Composer is no longer mounted, so the controller itself must prune
+    // the file when creating a task removes the final timeline reference.
+    controller.createThread();
+    await tester.pump();
+    expect(deleteCalls, 1);
+    expect(temporaryImage.existsSync(), isFalse);
+
     await tester.pumpWidget(const SizedBox());
     await tester.pump();
     expect(deleteCalls, 1);
+    expect(temporaryImage.existsSync(), isFalse);
+  });
+
+  testWidgets('transfers an unsent screenshot when the controller changes', (
+    tester,
+  ) async {
+    const channel = MethodChannel('codex_desk/clipboard');
+    const imagePath = '/tmp/CodexDeskClipboard/controller-transfer-image.png';
+    final temporaryImage = File(imagePath);
+    temporaryImage.parent.createSync(recursive: true);
+    temporaryImage.writeAsBytesSync(
+      base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL9WQAAAABJRU5ErkJggg==',
+      ),
+    );
+    addTearDown(() {
+      if (temporaryImage.existsSync()) temporaryImage.deleteSync();
+    });
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    var deleteCalls = 0;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      switch (call.method) {
+        case 'readFileItems':
+          return [
+            {'path': imagePath, 'isDirectory': false, 'isTemporary': true},
+          ];
+        case 'deleteTemporaryItem':
+          expect(call.arguments, imagePath);
+          deleteCalls++;
+          if (temporaryImage.existsSync()) temporaryImage.deleteSync();
+          return true;
+      }
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final firstController = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    final secondController = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: firstController)),
+    );
+    await tester.tap(find.byKey(const Key('composer-field')));
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump();
+    expect(find.byKey(Key('composer-attachment-$imagePath')), findsOneWidget);
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: secondController)),
+    );
+    await tester.pump();
+    expect(deleteCalls, 0);
+    expect(temporaryImage.existsSync(), isTrue);
+    expect(find.byKey(Key('composer-attachment-$imagePath')), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    expect(deleteCalls, 1);
+    expect(temporaryImage.existsSync(), isFalse);
+    secondController.dispose();
   });
 
   testWidgets('falls back to normal text paste when no file is copied', (
@@ -4813,6 +4907,8 @@ void main() {
   testWidgets('renders the quiet live command row and completed duration', (
     tester,
   ) async {
+    await tester.binding.setSurfaceSize(const Size(1400, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
     final controller = CodexController(server: CodexAppServer())
       ..status = RuntimeStatus.running
       ..activeThreadId = 'thread-1';
@@ -4843,6 +4939,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(home: CodexWorkspace(controller: controller)),
     );
+    await tester.pump();
 
     expect(find.byKey(const Key('live-command-row')), findsOneWidget);
     expect(find.byKey(const Key('live-command-shimmer')), findsOneWidget);
@@ -4905,6 +5002,112 @@ void main() {
     expect(find.text('已运行 /bin/zsh -lc dart test'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets(
+    'keeps processed time above the active reply and after older replies',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1200, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final controller = CodexController(server: CodexAppServer())
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..replaceTimelineEntriesForTesting([
+          TimelineEntry(
+            kind: TimelineKind.agent,
+            title: 'Codex',
+            detail: '上一轮回复',
+            createdAt: DateTime(2026),
+          ),
+          TimelineEntry(
+            kind: TimelineKind.user,
+            title: '你',
+            detail: '修复',
+            createdAt: DateTime.now(),
+          ),
+        ]);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/started',
+          params: {
+            'threadId': 'thread-1',
+            'turn': {'id': 'turn-1'},
+          },
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      final elapsed = find.byKey(const Key('live-elapsed-row'));
+      expect(
+        tester.getTopLeft(find.text('修复')).dy,
+        lessThan(tester.getTopLeft(elapsed).dy),
+      );
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/agentMessage/delta',
+          params: {
+            'threadId': 'thread-1',
+            'turnId': 'turn-1',
+            'itemId': 'active-reply',
+            'delta': '当前流式回复',
+          },
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 60));
+
+      final previousReplyTop = tester.getTopLeft(find.text('上一轮回复')).dy;
+      final userPromptTop = tester.getTopLeft(find.text('修复')).dy;
+      final elapsedTop = tester.getTopLeft(elapsed).dy;
+      final activeReplyTop = tester.getTopLeft(find.text('当前流式回复')).dy;
+      final respondingTop = tester.getTopLeft(find.text('正在撰写回复')).dy;
+      expect(previousReplyTop, lessThan(userPromptTop));
+      expect(userPromptTop, lessThan(elapsedTop));
+      expect(elapsedTop, lessThan(activeReplyTop));
+      expect(activeReplyTop, lessThan(respondingTop));
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'threadId': 'thread-1',
+            'turnId': 'turn-1',
+            'item': {'id': 'active-reply', 'type': 'agentMessage'},
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/started',
+          params: {
+            'threadId': 'thread-1',
+            'turnId': 'turn-1',
+            'item': {
+              'id': 'active-command',
+              'type': 'commandExecution',
+              'command': 'flutter test',
+            },
+          },
+        ),
+      );
+      await tester.pump();
+
+      expect(
+        tester.getTopLeft(elapsed).dy,
+        lessThan(tester.getTopLeft(find.text('当前流式回复')).dy),
+      );
+      expect(
+        tester.getTopLeft(find.text('当前流式回复')).dy,
+        lessThan(
+          tester.getTopLeft(find.byKey(const Key('live-command-row'))).dy,
+        ),
+      );
+
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   testWidgets(
     'elapsed disclosure hides process details but keeps the final answer visible',
@@ -4986,6 +5189,7 @@ void main() {
   testWidgets(
     'renders agent replies without a Codex label and keeps plain duration',
     (tester) async {
+      final semantics = tester.ensureSemantics();
       final controller = CodexController(server: CodexAppServer());
       controller.replaceTimelineEntriesForTesting([
         TimelineEntry(
@@ -5013,6 +5217,7 @@ void main() {
       );
 
       expect(find.text('Codex'), findsNothing);
+      expect(find.bySemanticsLabel(RegExp(r'^Codex 回复')), findsOneWidget);
       expect(find.text('这是直接回答。'), findsOneWidget);
       expect(find.text('耗时 1 秒'), findsOneWidget);
       expect(
@@ -5020,6 +5225,7 @@ void main() {
         findsNothing,
       );
       await tester.pumpWidget(const SizedBox());
+      semantics.dispose();
     },
   );
 
@@ -5294,6 +5500,129 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('preserves nested formatting inside ordinary Markdown links', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer());
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/agentMessage/delta',
+        params: {
+          'itemId': 'formatted-link-message',
+          'delta': '[**重要** 与 `code`](https://example.com)',
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.pump(const Duration(milliseconds: 60));
+
+    final linkText = tester.widget<Text>(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is Text && widget.textSpan?.toPlainText() == '重要 与 code',
+      ),
+    );
+    final spans = <TextSpan>[];
+    void collect(InlineSpan span) {
+      if (span is! TextSpan) return;
+      spans.add(span);
+      for (final child in span.children ?? const <InlineSpan>[]) {
+        collect(child);
+      }
+    }
+
+    collect(linkText.textSpan!);
+    expect(
+      spans.singleWhere((span) => span.text == '重要').style?.fontWeight,
+      FontWeight.w700,
+    );
+    expect(
+      spans.singleWhere((span) => span.text == 'code').style?.fontFamily,
+      'monospace',
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'keeps linked local images inside the workspace and exposes their alt text',
+    (tester) async {
+      final semantics = tester.ensureSemantics();
+      late Directory workspace;
+      late Directory outside;
+      late File insideImage;
+      late File outsideImage;
+      late String insideImagePath;
+      late String outsideImagePath;
+      await tester.runAsync(() async {
+        workspace = await Directory.systemTemp.createTemp(
+          'codex-desk-linked-image-',
+        );
+        outside = await Directory.systemTemp.createTemp(
+          'codex-desk-linked-image-outside-',
+        );
+        final png = base64Decode(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+'
+          'A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        );
+        insideImage = File('${workspace.path}/inside.png');
+        outsideImage = File('${outside.path}/outside.png');
+        await insideImage.writeAsBytes(png);
+        await outsideImage.writeAsBytes(png);
+        insideImagePath = await insideImage.resolveSymbolicLinks();
+        outsideImagePath = await outsideImage.resolveSymbolicLinks();
+      });
+      addTearDown(() async {
+        await workspace.delete(recursive: true);
+        await outside.delete(recursive: true);
+      });
+
+      final controller = CodexController(server: CodexAppServer())
+        ..workspacePath = workspace.path;
+      controller.handleServerEventForTesting(
+        ServerEvent(
+          method: 'item/agentMessage/delta',
+          params: {
+            'itemId': 'linked-local-images',
+            'delta':
+                '[![项目内图片](${insideImage.uri})](https://example.com/inside) '
+                '[![项目外图片](${outsideImage.uri})](https://example.com/outside)',
+          },
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+      final linkedImages = find.byWidgetPredicate(
+        (widget) => widget.runtimeType.toString() == '_AgentLinkedImage',
+      );
+      for (final element in linkedImages.evaluate()) {
+        final state =
+            tester.state(
+                  find.byElementPredicate((candidate) => candidate == element),
+                )
+                as dynamic;
+        await tester.runAsync(() => state.resolveForTesting() as Future<void>);
+      }
+      await tester.pump();
+
+      final fileImages = tester
+          .widgetList<Image>(find.byType(Image))
+          .where((image) => image.image is FileImage)
+          .map((image) => (image.image as FileImage).file.path)
+          .toList();
+      expect(fileImages, [insideImagePath]);
+      expect(fileImages, isNot(contains(outsideImagePath)));
+      expect(find.text('项目外图片'), findsOneWidget);
+      expect(find.bySemanticsLabel('项目内图片'), findsOneWidget);
+      expect(find.bySemanticsLabel('项目外图片'), findsOneWidget);
+
+      await tester.pumpWidget(const SizedBox());
+      semantics.dispose();
+    },
+  );
+
   testWidgets('renders project files as compact conversation file rows', (
     tester,
   ) async {
@@ -5345,16 +5674,21 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(home: CodexWorkspace(controller: controller)),
     );
-    final resolver = find.byKey(
-      ValueKey('agent-markdown-resolver-${artifact.uri}'),
-    );
+    final resolver = find
+        .byWidgetPredicate(
+          (widget) => widget.runtimeType.toString() == '_AgentMarkdownLink',
+        )
+        .first;
     final resolverState = tester.state(resolver) as dynamic;
     await tester.runAsync(
       () => resolverState.resolveForTesting() as Future<void>,
     );
     await tester.pump();
 
-    final fileRow = find.byKey(ValueKey('agent-file-link-$artifactPath'));
+    final fileRow = find.ancestor(
+      of: find.text('app-debug.apk'),
+      matching: find.byType(InkWell),
+    );
     expect(fileRow, findsOneWidget);
     expect(find.text('app-debug.apk'), findsOneWidget);
     expect(
@@ -5365,13 +5699,242 @@ void main() {
       findsOneWidget,
     );
     expect(tester.getSize(fileRow).width, lessThanOrEqualTo(360));
-    expect(
-      find.byKey(ValueKey('agent-markdown-link-${outsideFile.uri}')),
-      findsOneWidget,
-    );
+    expect(find.text('项目外文件'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets('revalidates a cached Markdown file before opening its preview', (
+    tester,
+  ) async {
+    late Directory workspace;
+    late Directory outside;
+    late File document;
+    late File outsideDocument;
+    await tester.runAsync(() async {
+      workspace = await Directory.systemTemp.createTemp(
+        'codex-desk-markdown-revalidation-',
+      );
+      outside = await Directory.systemTemp.createTemp(
+        'codex-desk-markdown-revalidation-outside-',
+      );
+      document = File('${workspace.path}/guide.md');
+      outsideDocument = File('${outside.path}/secret.md');
+      await document.writeAsString('# Safe');
+      await outsideDocument.writeAsString('outside secret');
+    });
+    addTearDown(() async {
+      await workspace.delete(recursive: true);
+      await outside.delete(recursive: true);
+    });
+
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = workspace.path;
+    controller.handleServerEventForTesting(
+      ServerEvent(
+        method: 'item/agentMessage/delta',
+        params: {
+          'itemId': 'revalidated-markdown-message',
+          'delta': '[guide](${document.uri})',
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    final resolverState =
+        tester.state(
+              find
+                  .byWidgetPredicate(
+                    (widget) =>
+                        widget.runtimeType.toString() == '_AgentMarkdownLink',
+                  )
+                  .first,
+            )
+            as dynamic;
+    await tester.runAsync(
+      () => resolverState.resolveForTesting() as Future<void>,
+    );
+    await tester.pump();
+    final fileRow = find
+        .ancestor(of: find.text('guide.md'), matching: find.byType(InkWell))
+        .first;
+    expect(fileRow, findsOneWidget);
+
+    await tester.runAsync(() async {
+      await document.delete();
+      await Link(document.path).create(outsideDocument.path);
+      tester.widget<InkWell>(fileRow).onTap!();
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+    });
+    await tester.pump();
+
+    expect(find.byKey(const Key('markdown-preview-dialog')), findsNothing);
+    expect(find.text('无法打开此链接或项目内文件。'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('keeps the timeline pinned when a file row resolves late', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(680, 520));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    late Directory workspace;
+    late File artifact;
+    await tester.runAsync(() async {
+      workspace = await Directory.systemTemp.createTemp(
+        'codex-desk-file-row-scroll-',
+      );
+      artifact = File(
+        '${workspace.path}/${'long-artifact-name-' * 7}release.zip',
+      );
+      await artifact.writeAsBytes(const [0]);
+    });
+    addTearDown(() => workspace.delete(recursive: true));
+
+    final initialEntries = List<TimelineEntry>.generate(
+      28,
+      (index) => TimelineEntry(
+        kind: TimelineKind.agent,
+        title: 'Codex',
+        detail: '历史消息 $index\n${'内容 ' * 12}',
+        createdAt: DateTime(2026, 1, 1, 0, 0, index),
+      ),
+    );
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = workspace.path
+      ..replaceTimelineEntriesForTesting(initialEntries);
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.pump();
+
+    controller.replaceTimelineEntriesForTesting([
+      ...initialEntries,
+      TimelineEntry(
+        kind: TimelineKind.agent,
+        title: 'Codex',
+        detail: '${'收尾内容 ' * 6}[x](${artifact.uri})${' 后续' * 6}',
+        createdAt: DateTime(2026, 1, 1, 0, 1),
+      ),
+    ]);
+    await tester.pump();
+    await tester.pumpAndSettle();
+
+    final timeline = tester.widget<ListView>(find.byType(ListView));
+    timeline.controller!.jumpTo(timeline.controller!.position.maxScrollExtent);
+    await tester.pump();
+    expect(timeline.controller!.position.extentAfter, lessThan(1));
+    final previousMaximum = timeline.controller!.position.maxScrollExtent;
+    final resolverState =
+        tester.state(
+              find
+                  .byWidgetPredicate(
+                    (widget) =>
+                        widget.runtimeType.toString() == '_AgentMarkdownLink',
+                  )
+                  .last,
+            )
+            as dynamic;
+    await tester.runAsync(
+      () => resolverState.resolveForTesting() as Future<void>,
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      timeline.controller!.position.maxScrollExtent,
+      greaterThan(previousMaximum),
+    );
+    expect(timeline.controller!.position.extentAfter, lessThan(1));
+
+    await tester.runAsync(
+      () => resolverState.resolveForTesting() as Future<void>,
+    );
+    final readingOffset = timeline.controller!.position.maxScrollExtent - 72;
+    timeline.controller!.jumpTo(readingOffset);
+    await tester.pump();
+    expect(timeline.controller!.offset, closeTo(readingOffset, 0.1));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'keeps the timeline pinned for a file row inside a Markdown table',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(680, 520));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      late Directory workspace;
+      late File artifact;
+      await tester.runAsync(() async {
+        workspace = await Directory.systemTemp.createTemp(
+          'codex-desk-table-file-row-scroll-',
+        );
+        artifact = File('${workspace.path}/table-artifact.zip');
+        await artifact.writeAsBytes(const [0]);
+      });
+      addTearDown(() => workspace.delete(recursive: true));
+
+      final initialEntries = List<TimelineEntry>.generate(
+        48,
+        (index) => TimelineEntry(
+          kind: TimelineKind.agent,
+          title: 'Codex',
+          detail: '历史消息 $index',
+          createdAt: DateTime(2026, 1, 1, 0, 0, index),
+        ),
+      );
+      final controller = CodexController(server: CodexAppServer())
+        ..workspacePath = workspace.path
+        ..replaceTimelineEntriesForTesting(initialEntries);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(
+            textTheme: const TextTheme(
+              bodyMedium: TextStyle(fontSize: 4, height: 1),
+            ),
+          ),
+          home: CodexWorkspace(controller: controller),
+        ),
+      );
+      await tester.pump();
+
+      controller.replaceTimelineEntriesForTesting([
+        ...initialEntries,
+        TimelineEntry(
+          kind: TimelineKind.agent,
+          title: 'Codex',
+          detail: '| 结果 |\n| --- |\n| [x](${artifact.uri}) |',
+          createdAt: DateTime(2026, 1, 1, 0, 1),
+        ),
+      ]);
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      final timeline = tester.widget<ListView>(find.byType(ListView));
+      timeline.controller!.jumpTo(
+        timeline.controller!.position.maxScrollExtent,
+      );
+      await tester.pump();
+      final previousMaximum = timeline.controller!.position.maxScrollExtent;
+      final resolver = find.byWidgetPredicate(
+        (widget) => widget.runtimeType.toString() == '_AgentMarkdownLink',
+      );
+      final resolverState = tester.state(resolver) as dynamic;
+
+      await tester.runAsync(
+        () => resolverState.resolveForTesting() as Future<void>,
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(
+        timeline.controller!.position.maxScrollExtent,
+        greaterThan(previousMaximum),
+      );
+      expect(timeline.controller!.position.extentAfter, lessThan(1));
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   testWidgets('opens project Markdown links in an in-app formatted preview', (
     tester,
@@ -5380,7 +5943,6 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
     late Directory workspace;
     late File document;
-    late String documentPath;
     await tester.runAsync(() async {
       workspace = await Directory.systemTemp.createTemp(
         'codex-desk-markdown-preview-',
@@ -5394,7 +5956,6 @@ void main() {
       );
       final nextDocument = File('${guideDirectory.path}/next.md');
       await nextDocument.writeAsString('# 下一页标题\n\n返回后继续阅读。');
-      documentPath = await document.resolveSymbolicLinks();
     });
     addTearDown(() => workspace.delete(recursive: true));
 
@@ -5416,14 +5977,24 @@ void main() {
 
     final resolverState =
         tester.state(
-              find.byKey(ValueKey('agent-markdown-resolver-${document.uri}:3')),
+              find
+                  .byWidgetPredicate(
+                    (widget) =>
+                        widget.runtimeType.toString() == '_AgentMarkdownLink',
+                  )
+                  .first,
             )
             as dynamic;
     await tester.runAsync(
       () => resolverState.resolveForTesting() as Future<void>,
     );
     await tester.pump();
-    final fileRow = find.byKey(ValueKey('agent-file-link-$documentPath'));
+    final fileRow = find
+        .ancestor(
+          of: find.text('product notes.md'),
+          matching: find.byType(InkWell),
+        )
+        .first;
     expect(fileRow, findsOneWidget);
 
     await tester.runAsync(() async {
@@ -11107,6 +11678,60 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets('merges auto-approved commands into one activity list', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer());
+    controller.replaceTimelineEntriesForTesting([
+      TimelineEntry(
+        kind: TimelineKind.command,
+        title: '执行命令',
+        detail: 'first command',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.system,
+        title: '已自动批准本次操作',
+        detail: '命令执行请求',
+        createdAt: DateTime(2026, 1, 1, 0, 0, 1),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.command,
+        title: '执行命令',
+        detail: 'second command',
+        createdAt: DateTime(2026, 1, 1, 0, 0, 2),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.system,
+        title: '已自动批准本次操作',
+        detail: '命令执行请求',
+        createdAt: DateTime(2026, 1, 1, 0, 0, 3),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.command,
+        title: '执行命令',
+        detail: 'third command',
+        createdAt: DateTime(2026, 1, 1, 0, 0, 4),
+      ),
+    ]);
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(find.text('已运行了命令'), findsOneWidget);
+    expect(find.text('已自动批准本次操作'), findsNothing);
+
+    await tester.tap(find.text('已运行了命令'));
+    await tester.pump();
+
+    expect(find.text('已运行 first command'), findsOneWidget);
+    expect(find.text('已运行 second command'), findsOneWidget);
+    expect(find.text('已运行 third command'), findsOneWidget);
+    expect(find.text('已自动批准本次操作'), findsNWidgets(2));
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('keeps separate activity groups with matching timestamps', (
     tester,

@@ -21,6 +21,7 @@ import 'domain/task_plan.dart';
 import 'domain/timeline_entry.dart';
 import 'domain/workspace_configuration.dart';
 import 'services/codex_app_server.dart';
+import 'services/clipboard_file_reader.dart';
 import 'services/codex_plugin_store.dart';
 import 'services/conversation_history_store.dart';
 import 'services/git_project_service.dart';
@@ -337,6 +338,8 @@ class CodexController extends ChangeNotifier {
   }
 
   final CodexAppServer _server;
+  static const _clipboardFileReader = ClipboardFileReader();
+  static final Map<String, int> _temporaryAttachmentOwnerCounts = {};
 
   @visibleForTesting
   static ConversationHistoryStore? testingConversationHistoryStore;
@@ -349,6 +352,8 @@ class CodexController extends ChangeNotifier {
   late final CodexPluginStore _pluginStore;
   StreamSubscription<ServerEvent>? _eventSubscription;
   final List<TimelineEntry> _entries = [];
+  final Set<String> _temporaryAttachmentPaths = {};
+  final Map<String, int> _composerTemporaryAttachmentRetains = {};
   final Map<String, CodexFileChange> _fileChangesByPath = {};
   final Set<String> _pinnedThreadIds = {};
   final Set<String> _acknowledgedCompletedThreadIds = {};
@@ -805,6 +810,125 @@ class CodexController extends ChangeNotifier {
   /// 返回不可修改的当前时间线副本视图。
   /// Returns an unmodifiable view of the current timeline.
   List<TimelineEntry> get entries => List.unmodifiable(_entries);
+
+  /// Transfers ownership of a clipboard-created file from a short-lived
+  /// composer to the conversation controller.
+  /// 将剪贴板临时文件的所有权从短生命周期 Composer 转交给会话控制器。
+  void retainTemporaryAttachment(String path) {
+    if (path.isEmpty) return;
+    if (_temporaryAttachmentPaths.add(path)) {
+      _temporaryAttachmentOwnerCounts.update(
+        path,
+        (count) => count + 1,
+        ifAbsent: () => 1,
+      );
+    }
+    _composerTemporaryAttachmentRetains.update(
+      path,
+      (count) => count + 1,
+      ifAbsent: () => 1,
+    );
+  }
+
+  /// Moves one composer's ownership to another controller without creating a
+  /// deletion window between the two owners.
+  /// 在两个控制器之间转移一次 Composer 所有权，期间不产生可删除窗口。
+  void transferTemporaryAttachmentTo(String path, CodexController target) {
+    if (identical(this, target) ||
+        (_composerTemporaryAttachmentRetains[path] ?? 0) == 0) {
+      return;
+    }
+    target.retainTemporaryAttachment(path);
+    _decrementComposerTemporaryAttachmentRetain(path);
+    releaseDetachedTemporaryAttachments();
+  }
+
+  /// Whether any live, cached, queued, running, or retryable conversation
+  /// input still needs [path].
+  /// 当前、缓存、排队、运行中或可重试的会话输入是否仍引用 [path]。
+  bool isAttachmentPathReferenced(String path) {
+    bool contains(Iterable<String> paths) => paths.contains(path);
+
+    return _entries.any((entry) => contains(entry.imagePaths)) ||
+        _pendingTurnSteers.any((pending) => contains(pending.imagePaths)) ||
+        _runningTurnSubmissions.values.any(
+          (submission) => contains(submission.imagePaths),
+        ) ||
+        _failedTurnRetries.values.any(
+          (retry) => contains(retry.submission.imagePaths),
+        ) ||
+        _threadViewCache.values.any(
+          (snapshot) =>
+              snapshot.entries.any((entry) => contains(entry.imagePaths)),
+        );
+  }
+
+  /// Releases one clipboard-created file once no conversation state needs it.
+  /// 仅在所有会话状态均不再需要时释放一个剪贴板临时文件。
+  void releaseTemporaryAttachment(String path) {
+    _decrementComposerTemporaryAttachmentRetain(path);
+    _releaseTemporaryAttachmentIfDetached(path);
+  }
+
+  /// Removes clipboard-created files that are no longer attached anywhere.
+  /// 清理不再被输入框或任何会话状态引用的剪贴板临时文件。
+  void releaseDetachedTemporaryAttachments() {
+    final detachedPaths = _temporaryAttachmentPaths
+        .where(
+          (path) =>
+              (_composerTemporaryAttachmentRetains[path] ?? 0) == 0 &&
+              !isAttachmentPathReferenced(path),
+        )
+        .toList(growable: false);
+    for (final path in detachedPaths) {
+      _forgetTemporaryAttachmentPath(path);
+    }
+  }
+
+  void _decrementComposerTemporaryAttachmentRetain(String path) {
+    final count = _composerTemporaryAttachmentRetains[path];
+    if (count == null) return;
+    if (count <= 1) {
+      _composerTemporaryAttachmentRetains.remove(path);
+    } else {
+      _composerTemporaryAttachmentRetains[path] = count - 1;
+    }
+  }
+
+  void _releaseTemporaryAttachmentIfDetached(String path) {
+    if ((_composerTemporaryAttachmentRetains[path] ?? 0) != 0 ||
+        isAttachmentPathReferenced(path)) {
+      return;
+    }
+    _forgetTemporaryAttachmentPath(path);
+  }
+
+  void _forgetTemporaryAttachmentPath(String path) {
+    if (!_temporaryAttachmentPaths.remove(path)) return;
+    final ownerCount = _temporaryAttachmentOwnerCounts[path] ?? 0;
+    if (ownerCount > 1) {
+      _temporaryAttachmentOwnerCounts[path] = ownerCount - 1;
+      return;
+    }
+    _temporaryAttachmentOwnerCounts.remove(path);
+    unawaited(_clipboardFileReader.deleteTemporaryItem(path));
+  }
+
+  void _releaseAllTemporaryAttachments() {
+    final paths = _temporaryAttachmentPaths.toList(growable: false);
+    _composerTemporaryAttachmentRetains.clear();
+    for (final path in paths) {
+      _forgetTemporaryAttachmentPath(path);
+    }
+  }
+
+  /// Prunes controller-owned clipboard files whenever a state transition may
+  /// have removed their final timeline, queue, running, or retry reference.
+  @override
+  void notifyListeners() {
+    if (!_disposed) releaseDetachedTemporaryAttachments();
+    super.notifyListeners();
+  }
 
   /// 是否正在加载切换后任务的历史记录。
   /// Whether the selected thread's history is currently being restored.
@@ -6317,6 +6441,7 @@ class CodexController extends ChangeNotifier {
     _runtimeConnectionEpoch++;
     unawaited(_saveConversationHistory());
     _disposed = true;
+    _releaseAllTemporaryAttachments();
     _clearStreamingState();
     unawaited(_eventSubscription?.cancel());
     unawaited(_server.dispose());

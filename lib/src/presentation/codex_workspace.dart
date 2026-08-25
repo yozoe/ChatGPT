@@ -322,9 +322,9 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       final position = controller.position;
       position.jumpTo(position.maxScrollExtent);
       _timelineFollowsLatest[viewportKey] = true;
-      // Markdown can finish a second layout pass after this callback (for
-      // example when a custom link widget replaces inline text). Reconfirm the
-      // bottom on the following frame while the user still wants live follow.
+      // Markdown can complete another synchronous layout pass on the next
+      // frame. Async file-link resolution performs its own guarded follow-up
+      // when it finishes later than this immediate pass.
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted ||
             generation != _timelineScrollGeneration ||
@@ -333,8 +333,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
             !controller.hasClients) {
           return;
         }
-        final nextPosition = controller.position;
-        nextPosition.jumpTo(nextPosition.maxScrollExtent);
+        controller.jumpTo(controller.position.maxScrollExtent);
       });
     });
   }
@@ -5221,35 +5220,47 @@ class _ConversationTimeline extends StatelessWidget {
     final liveActivity = active ? data.activeActivity : null;
     final isThinking = active && data.isThinking && liveActivity == null;
     final activeTurnStartedAt = active ? data.activeTurnStartedAt : null;
+    final hasLiveStatus = liveActivity != null || isThinking;
+    var liveElapsedIndex = timelineItems.length;
+    if (activeTurnStartedAt != null) {
+      final firstTurnOutputIndex = timelineItems.indexWhere((item) {
+        final sourceEntry = item.entry ?? item.activities?.firstOrNull;
+        return sourceEntry != null &&
+            sourceEntry.kind != TimelineKind.user &&
+            !sourceEntry.createdAt.isBefore(activeTurnStartedAt);
+      });
+      if (firstTurnOutputIndex >= 0) {
+        liveElapsedIndex = firstTurnOutputIndex;
+      }
+    }
     return ListView.separated(
       key: PageStorageKey('conversation-timeline-${pageKey.storageKey}'),
       controller: scrollController,
       padding: EdgeInsets.fromLTRB(24, 12, 24, bottomPadding),
       itemCount:
           timelineItems.length +
-          (liveActivity == null ? 0 : 1) +
-          (isThinking ? 1 : 0) +
+          (activeTurnStartedAt == null ? 0 : 1) +
+          (hasLiveStatus ? 1 : 0) +
           (data.showFileChangeSummary ? 1 : 0),
       separatorBuilder: (_, _) => const Padding(
         padding: EdgeInsets.symmetric(vertical: 14),
         child: Divider(height: 1),
       ),
       itemBuilder: (context, index) {
-        if (index >= timelineItems.length) {
-          var tailIndex = index - timelineItems.length;
-          if (liveActivity != null && tailIndex-- == 0) {
-            return _LiveTurnProgress(
-              startedAt: activeTurnStartedAt,
-              child: liveActivity.kind == 'commandExecution'
-                  ? _LiveCommandRow(command: liveActivity.detail)
-                  : _LiveActivityRow(activity: liveActivity),
-            );
-          }
-          if (isThinking && tailIndex-- == 0) {
-            return _LiveTurnProgress(
-              startedAt: activeTurnStartedAt,
-              child: const _LiveThinkingRow(),
-            );
+        if (activeTurnStartedAt != null && index == liveElapsedIndex) {
+          return _LiveElapsedRow(startedAt: activeTurnStartedAt);
+        }
+        final timelineIndex =
+            activeTurnStartedAt != null && index > liveElapsedIndex
+            ? index - 1
+            : index;
+        if (timelineIndex >= timelineItems.length) {
+          var tailIndex = timelineIndex - timelineItems.length;
+          if (hasLiveStatus && tailIndex-- == 0) {
+            if (liveActivity == null) return const _LiveThinkingRow();
+            return liveActivity.kind == 'commandExecution'
+                ? _LiveCommandRow(command: liveActivity.detail)
+                : _LiveActivityRow(activity: liveActivity);
           }
           if (!data.showFileChangeSummary || tailIndex != 0) {
             throw StateError('Unexpected conversation timeline item index.');
@@ -5266,7 +5277,7 @@ class _ConversationTimeline extends StatelessWidget {
             undoRunning: undoRunning,
           );
         }
-        final item = timelineItems[index];
+        final item = timelineItems[timelineIndex];
         if (item.completedTurnEntries case final entries?) {
           return _CompletedTurnDisclosure(
             key: ValueKey('completed-turn-disclosure-${item.entryIndex}'),
@@ -6862,6 +6873,9 @@ class _ComposerPanelState extends State<_ComposerPanel> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.controller != controller) {
       oldWidget.controller.removeListener(_handleControllerChanged);
+      for (final path in _temporaryAttachmentPaths) {
+        oldWidget.controller.transferTemporaryAttachmentTo(path, controller);
+      }
       controller.addListener(_handleControllerChanged);
       _releaseDetachedAttachmentResources();
     }
@@ -6889,8 +6903,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
   }
 
   void _handleControllerChanged() {
-    final status = controller.status;
-    if (status != RuntimeStatus.running) {
+    if (controller.status != RuntimeStatus.running) {
       _releaseDetachedAttachmentResources();
     }
   }
@@ -6921,40 +6934,35 @@ class _ComposerPanelState extends State<_ComposerPanel> {
     final attachedPaths = _attachments
         .map((attachment) => attachment.path)
         .toSet();
-    final timelineImagePaths = controller.entries
-        .expand((entry) => entry.imagePaths)
-        .toSet();
-    final pendingDirectionImagePaths = controller.pendingTurnSteers
-        .expand((pending) => pending.imagePaths)
-        .toSet();
-    final paths =
-        <String>{..._securityBookmarks.keys, ..._temporaryAttachmentPaths}
-            .where(
-              (path) =>
-                  !attachedPaths.contains(path) &&
-                  !timelineImagePaths.contains(path) &&
-                  !pendingDirectionImagePaths.contains(path),
-            )
-            .toList(growable: false);
-    for (final path in paths) {
-      _releaseAttachmentResources(path);
+    final detachedBookmarkPaths = _securityBookmarks.keys
+        .where(
+          (path) =>
+              !attachedPaths.contains(path) &&
+              !controller.isAttachmentPathReferenced(path),
+        )
+        .toList(growable: false);
+    for (final path in detachedBookmarkPaths) {
+      _releaseSecurityBookmark(path);
     }
+    controller.releaseDetachedTemporaryAttachments();
   }
 
   void _releaseAllAttachmentResources() {
-    final paths = <String>{
-      ..._securityBookmarks.keys,
-      ..._temporaryAttachmentPaths,
-    };
-    for (final path in paths) {
-      _releaseAttachmentResources(path);
+    final bookmarkPaths = _securityBookmarks.keys.toList(growable: false);
+    for (final path in bookmarkPaths) {
+      _releaseSecurityBookmark(path);
+    }
+    final temporaryPaths = _temporaryAttachmentPaths.toList(growable: false);
+    _temporaryAttachmentPaths.clear();
+    for (final path in temporaryPaths) {
+      controller.releaseTemporaryAttachment(path);
     }
   }
 
   void _releaseAttachmentResources(String path) {
     _releaseSecurityBookmark(path);
     if (_temporaryAttachmentPaths.remove(path)) {
-      unawaited(_clipboardFileReader.deleteTemporaryItem(path));
+      controller.releaseTemporaryAttachment(path);
     }
   }
 
@@ -6996,6 +7004,10 @@ class _ComposerPanelState extends State<_ComposerPanel> {
         ? await widget.onQueueSteer(submission)
         : await widget.onSend(submission);
     if (!submitted || !mounted) return;
+    final submittedTemporaryPaths = submission.attachments
+        .where((attachment) => attachment.isTemporary)
+        .map((attachment) => attachment.path)
+        .toList(growable: false);
     setState(() {
       composer.clear();
       _attachments.clear();
@@ -7003,6 +7015,10 @@ class _ComposerPanelState extends State<_ComposerPanel> {
       _includeWorkspace = false;
       _recordSkill = false;
     });
+    for (final path in submittedTemporaryPaths) {
+      _temporaryAttachmentPaths.remove(path);
+      controller.releaseTemporaryAttachment(path);
+    }
     if (controller.status != RuntimeStatus.running) {
       _releaseDetachedAttachmentResources();
     }
@@ -7208,7 +7224,9 @@ class _ComposerPanelState extends State<_ComposerPanel> {
       for (final attachment in attachments) {
         if (attachment.path.isEmpty) continue;
         if (attachment.isTemporary) {
-          _temporaryAttachmentPaths.add(attachment.path);
+          if (_temporaryAttachmentPaths.add(attachment.path)) {
+            controller.retainTemporaryAttachment(attachment.path);
+          }
         }
         final index = _attachments.indexWhere(
           (existing) => existing.path == attachment.path,
@@ -11879,7 +11897,12 @@ void _appendStandardTimelineItems(
 }
 
 bool _isActivityEntry(TimelineEntry entry) =>
-    entry.kind == TimelineKind.tool || entry.kind == TimelineKind.command;
+    entry.kind == TimelineKind.tool ||
+    entry.kind == TimelineKind.command ||
+    _isAutoApprovalActivity(entry);
+
+bool _isAutoApprovalActivity(TimelineEntry entry) =>
+    entry.kind == TimelineKind.system && entry.title == '已自动批准本次操作';
 
 class _ConversationTimelineItem {
   const _ConversationTimelineItem.entry(this.entry, this.entryIndex)
@@ -12101,6 +12124,7 @@ class _TimelineActivityList extends StatelessWidget {
 String _activitySummary(List<TimelineEntry> entries) {
   final actions = <String>{};
   for (final entry in entries) {
+    if (_isAutoApprovalActivity(entry)) continue;
     final label = '${entry.title}\n${entry.detail}'.toLowerCase();
     if (entry.kind == TimelineKind.command) {
       actions.add('运行了命令');
@@ -12112,6 +12136,7 @@ String _activitySummary(List<TimelineEntry> entries) {
       actions.add('使用了工具');
     }
   }
+  if (actions.isEmpty) return '已批准了操作';
   return '已${actions.join('并')}';
 }
 
@@ -12211,7 +12236,11 @@ class _TimelineEntry extends StatelessWidget {
     if (entry.kind == TimelineKind.agent) {
       return entry.detail.isEmpty
           ? const SizedBox.shrink()
-          : _AgentMarkdown(entry.detail, workspacePath: workspacePath);
+          : Semantics(
+              container: true,
+              label: 'Codex 回复',
+              child: _AgentMarkdown(entry.detail, workspacePath: workspacePath),
+            );
     }
 
     final color = switch (entry.kind) {
@@ -12776,27 +12805,6 @@ class _LiveElapsedRowState extends State<_LiveElapsedRow> {
   }
 }
 
-/// Keeps the live action and its elapsed counter together so both stay visible
-/// at the tail of a lazily built conversation list.
-class _LiveTurnProgress extends StatelessWidget {
-  const _LiveTurnProgress({required this.startedAt, required this.child});
-
-  final DateTime? startedAt;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      child,
-      if (startedAt != null) ...[
-        const SizedBox(height: 5),
-        _LiveElapsedRow(startedAt: startedAt!),
-      ],
-    ],
-  );
-}
-
 /// Formats a live duration without giving the running state a final outcome.
 String _formatLiveElapsedDuration(Duration duration) {
   final seconds = duration.inSeconds;
@@ -13043,31 +13051,67 @@ class _AgentMarkdownLinkBuilder extends MarkdownElementBuilder {
     TextStyle? parentStyle,
   ) {
     final href = element.attributes['href'] ?? '';
+    final palette = YeknomPalette.of(context);
+    final linkStyle = preferredStyle ?? parentStyle;
     return _AgentMarkdownLink(
-      key: ValueKey('agent-markdown-resolver-$href'),
       href: href,
-      label: element.textContent.isEmpty ? href : element.textContent,
+      label: _agentMarkdownLinkLabel(element, href),
+      nodes: element.children ?? const <md.Node>[],
       workspacePath: workspacePath,
-      style: preferredStyle ?? parentStyle,
+      style: linkStyle,
+      codeStyle: linkStyle?.copyWith(
+        color: palette.trace,
+        fontFamily: 'monospace',
+        fontSize: 12,
+        backgroundColor: palette.field,
+      ),
     );
   }
+}
+
+String _agentMarkdownLinkLabel(md.Element element, String fallback) {
+  final buffer = StringBuffer();
+
+  void appendNodes(List<md.Node> nodes) {
+    for (final node in nodes) {
+      if (node is md.Text) {
+        buffer.write(node.text);
+        continue;
+      }
+      if (node is! md.Element) continue;
+      if (node.tag == 'img') {
+        buffer.write(node.attributes['alt'] ?? '');
+      } else if (node.tag == 'br') {
+        buffer.write('\n');
+      } else {
+        appendNodes(node.children ?? const <md.Node>[]);
+      }
+    }
+  }
+
+  appendNodes(element.children ?? const <md.Node>[]);
+  final label = buffer.toString();
+  return label.trim().isEmpty ? fallback : label;
 }
 
 /// Resolves a Markdown destination asynchronously so the renderer never
 /// treats a missing, out-of-project, or escaping symbolic link as a file row.
 class _AgentMarkdownLink extends StatefulWidget {
   const _AgentMarkdownLink({
-    super.key,
     required this.href,
     required this.label,
+    required this.nodes,
     required this.workspacePath,
     required this.style,
+    required this.codeStyle,
   });
 
   final String href;
   final String label;
+  final List<md.Node> nodes;
   final String? workspacePath;
   final TextStyle? style;
+  final TextStyle? codeStyle;
 
   @override
   State<_AgentMarkdownLink> createState() => _AgentMarkdownLinkState();
@@ -13082,7 +13126,9 @@ class _AgentMarkdownLinkState extends State<_AgentMarkdownLink> {
   @override
   void initState() {
     super.initState();
-    unawaited(_resolve());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_resolve());
+    });
   }
 
   @override
@@ -13109,7 +13155,21 @@ class _AgentMarkdownLinkState extends State<_AgentMarkdownLink> {
         href != widget.href) {
       return;
     }
+    final position = Scrollable.maybeOf(context, axis: Axis.vertical)?.position;
+    final followedLatest =
+        position != null && position.hasPixels && position.extentAfter <= 48;
+    final previousPixels = position?.pixels;
     setState(() => _reference = reference);
+    if (followedLatest && previousPixels != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted ||
+            !position.hasPixels ||
+            (position.pixels - previousPixels).abs() > 0.5) {
+          return;
+        }
+        position.jumpTo(position.maxScrollExtent);
+      });
+    }
   }
 
   @override
@@ -13125,8 +13185,10 @@ class _AgentMarkdownLinkState extends State<_AgentMarkdownLink> {
     return _AgentTextLink(
       href: widget.href,
       label: widget.label,
+      nodes: widget.nodes,
       workspacePath: widget.workspacePath,
       style: widget.style,
+      codeStyle: widget.codeStyle,
     );
   }
 }
@@ -13135,14 +13197,18 @@ class _AgentTextLink extends StatelessWidget {
   const _AgentTextLink({
     required this.href,
     required this.label,
+    required this.nodes,
     required this.workspacePath,
     required this.style,
+    required this.codeStyle,
   });
 
   final String href;
   final String label;
+  final List<md.Node> nodes;
   final String? workspacePath;
   final TextStyle? style;
+  final TextStyle? codeStyle;
 
   @override
   Widget build(BuildContext context) {
@@ -13153,7 +13219,6 @@ class _AgentTextLink extends StatelessWidget {
       child: MouseRegion(
         cursor: SystemMouseCursors.click,
         child: GestureDetector(
-          key: ValueKey('agent-markdown-link-$href'),
           behavior: HitTestBehavior.opaque,
           onTap: () => unawaited(
             _openAgentMarkdownDestination(
@@ -13162,11 +13227,170 @@ class _AgentTextLink extends StatelessWidget {
               workspacePath: workspacePath,
             ),
           ),
-          child: Text(label, style: style),
+          child: Text.rich(
+            TextSpan(
+              style: style,
+              children: _agentMarkdownLinkSpans(
+                nodes.isEmpty ? <md.Node>[md.Text(label)] : nodes,
+                style: style,
+                codeStyle: codeStyle,
+                workspacePath: workspacePath,
+              ),
+            ),
+          ),
         ),
       ),
     );
   }
+}
+
+List<InlineSpan> _agentMarkdownLinkSpans(
+  List<md.Node> nodes, {
+  required TextStyle? style,
+  required TextStyle? codeStyle,
+  required String? workspacePath,
+}) {
+  final spans = <InlineSpan>[];
+  for (final node in nodes) {
+    if (node is md.Text) {
+      spans.add(TextSpan(text: node.text, style: style));
+      continue;
+    }
+    if (node is! md.Element) continue;
+    if (node.tag == 'br') {
+      spans.add(TextSpan(text: '\n', style: style));
+      continue;
+    }
+    if (node.tag == 'img') {
+      spans.add(
+        WidgetSpan(
+          alignment: PlaceholderAlignment.middle,
+          child: _AgentLinkedImage(
+            source: node.attributes['src'] ?? '',
+            alt: node.attributes['alt'] ?? '',
+            workspacePath: workspacePath,
+            fallbackStyle: style,
+          ),
+        ),
+      );
+      continue;
+    }
+    final childStyle = switch (node.tag) {
+      'strong' => style?.copyWith(fontWeight: FontWeight.w700),
+      'em' => style?.copyWith(fontStyle: FontStyle.italic),
+      'code' => style?.merge(codeStyle),
+      'del' => style?.copyWith(
+        decoration: TextDecoration.combine([
+          if (style.decoration != null) style.decoration!,
+          TextDecoration.lineThrough,
+        ]),
+      ),
+      _ => style,
+    };
+    spans.addAll(
+      _agentMarkdownLinkSpans(
+        node.children ?? const <md.Node>[],
+        style: childStyle,
+        codeStyle: codeStyle,
+        workspacePath: workspacePath,
+      ),
+    );
+  }
+  return spans;
+}
+
+class _AgentLinkedImage extends StatefulWidget {
+  const _AgentLinkedImage({
+    required this.source,
+    required this.alt,
+    required this.workspacePath,
+    required this.fallbackStyle,
+  });
+
+  final String source;
+  final String alt;
+  final String? workspacePath;
+  final TextStyle? fallbackStyle;
+
+  @override
+  State<_AgentLinkedImage> createState() => _AgentLinkedImageState();
+}
+
+class _AgentLinkedImageState extends State<_AgentLinkedImage> {
+  WorkspaceFileReference? _localReference;
+
+  @visibleForTesting
+  Future<void> resolveForTesting() => _resolveLocalReference();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_resolveLocalReference());
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _AgentLinkedImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.source != widget.source ||
+        oldWidget.workspacePath != widget.workspacePath) {
+      _localReference = null;
+      unawaited(_resolveLocalReference());
+    }
+  }
+
+  Future<void> _resolveLocalReference() async {
+    final source = widget.source;
+    final workspacePath = widget.workspacePath;
+    final uri = Uri.tryParse(source);
+    final isWindowsPath = RegExp(r'^[A-Za-z]:[\\/]').hasMatch(source);
+    final isLocal =
+        uri != null &&
+        (uri.scheme.isEmpty || uri.scheme == 'file' || isWindowsPath);
+    final reference = isLocal && workspacePath != null
+        ? await resolveWorkspaceFileReference(
+            href: source,
+            workspacePath: workspacePath,
+          )
+        : null;
+    if (!mounted ||
+        source != widget.source ||
+        workspacePath != widget.workspacePath) {
+      return;
+    }
+    setState(() => _localReference = reference);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final uri = Uri.tryParse(widget.source);
+    if (uri == null) return _fallback();
+    Widget errorBuilder(BuildContext _, Object _, StackTrace? _) => _fallback();
+    if (uri.scheme == 'http' || uri.scheme == 'https') {
+      return Image.network(widget.source, errorBuilder: errorBuilder);
+    }
+    if (uri.scheme == 'data') {
+      final data = uri.data;
+      if (data != null) {
+        return Image.memory(data.contentAsBytes(), errorBuilder: errorBuilder);
+      }
+      return _fallback();
+    }
+    if (uri.scheme == 'resource') {
+      return Image.asset(uri.path, errorBuilder: errorBuilder);
+    }
+    final reference = _localReference;
+    if (reference != null) {
+      return Image.file(File(reference.path), errorBuilder: errorBuilder);
+    }
+    return _fallback();
+  }
+
+  Widget _fallback() => Text(
+    widget.alt.isEmpty ? '无法显示图片' : widget.alt,
+    style: widget.fallbackStyle,
+  );
 }
 
 class _AgentFileLink extends StatelessWidget {
@@ -13194,7 +13418,6 @@ class _AgentFileLink extends StatelessWidget {
         child: Material(
           color: Colors.transparent,
           child: InkWell(
-            key: ValueKey('agent-file-link-${reference.path}'),
             borderRadius: BorderRadius.circular(5),
             hoverColor: palette.raised,
             onTap: () => unawaited(
@@ -13202,7 +13425,6 @@ class _AgentFileLink extends StatelessWidget {
                 context,
                 href: href,
                 workspacePath: workspacePath,
-                reference: reference,
               ),
             ),
             child: ConstrainedBox(
@@ -13244,16 +13466,16 @@ Future<void> _openAgentMarkdownDestination(
   BuildContext context, {
   required String href,
   required String? workspacePath,
-  WorkspaceFileReference? reference,
 }) async {
-  final resolvedReference =
-      reference ??
-      (workspacePath == null
-          ? null
-          : await resolveWorkspaceFileReference(
-              href: href,
-              workspacePath: workspacePath,
-            ));
+  // A reference resolved while rendering is presentation data only. Always
+  // authorize the target again at activation time so a file replaced by a
+  // symbolic link cannot escape the workspace boundary.
+  final resolvedReference = workspacePath == null
+      ? null
+      : await resolveWorkspaceFileReference(
+          href: href,
+          workspacePath: workspacePath,
+        );
   if (resolvedReference != null && isMarkdownFilePath(resolvedReference.path)) {
     if (context.mounted) {
       await showWorkspaceMarkdownPreview(

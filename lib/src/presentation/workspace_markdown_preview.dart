@@ -96,7 +96,13 @@ class _WorkspaceMarkdownPreviewState extends State<_WorkspaceMarkdownPreview> {
       _sourceLines = const [];
     });
     try {
-      final file = File(reference.path);
+      final validatedReference = await _validatedReference(reference);
+      if (validatedReference == null) {
+        throw const FormatException('文件已缺失或不再位于当前项目内。');
+      }
+      if (!mounted || revision != _loadRevision) return;
+      _reference = validatedReference;
+      final file = File(validatedReference.path);
       if (await file.length() > _maximumMarkdownBytes) {
         throw const FormatException('文件超过 8 MB，无法在应用内预览。');
       }
@@ -161,14 +167,34 @@ class _WorkspaceMarkdownPreviewState extends State<_WorkspaceMarkdownPreview> {
 
   Future<void> _openExternally() async {
     try {
+      final reference = await _validatedReference(_reference);
+      if (reference == null) {
+        _showMessage('文件已缺失或不再位于当前项目内。');
+        return;
+      }
       final opened = await launchUrl(
-        _reference.uri,
+        reference.uri,
         mode: LaunchMode.externalApplication,
       );
       if (!opened) _showMessage('无法在默认应用中打开此文档。');
     } catch (_) {
       _showMessage('无法在默认应用中打开此文档。');
     }
+  }
+
+  Future<WorkspaceFileReference?> _validatedReference(
+    WorkspaceFileReference reference,
+  ) async {
+    final resolved = await resolveWorkspaceFileReference(
+      href: reference.uri.toString(),
+      workspacePath: widget.workspacePath,
+    );
+    if (resolved == null) return null;
+    return WorkspaceFileReference(
+      uri: resolved.uri,
+      line: reference.line,
+      column: reference.column,
+    );
   }
 
   Future<void> _handleLink(String? href) async {
