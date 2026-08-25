@@ -227,10 +227,37 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
             controller.position.userScrollDirection == ScrollDirection.idle) {
           return;
         }
-        _timelineFollowsLatest[key] = controller.position.extentAfter <= 48;
+        final reachedBottom = controller.position.extentAfter <= 48;
+        _timelineFollowsLatest[key] = reachedBottom;
+        if (reachedBottom) {
+          _acknowledgeCompletedThreadAtBottom(key, controller);
+        }
       });
       return controller;
     });
+  }
+
+  /// Clears the current task's completion reminder once its latest timeline
+  /// content is visible, without acknowledging a background task.
+  /// 当前任务的最新时间线内容可见后清除完成提醒，且不误确认后台任务。
+  void _acknowledgeCompletedThreadAtBottom(
+    _ThreadViewportKey viewportKey,
+    ScrollController scrollController,
+  ) {
+    if (!mounted ||
+        viewportKey != _displayedThreadKey ||
+        viewportKey != _viewportKey(_controller.activeThreadId) ||
+        _controller.status != RuntimeStatus.ready ||
+        !scrollController.hasClients ||
+        scrollController.position.extentAfter > 48) {
+      return;
+    }
+    final threadId = viewportKey.threadId;
+    if (threadId == null ||
+        _controller.isCompletedThreadAcknowledged(threadId)) {
+      return;
+    }
+    unawaited(_controller.acknowledgeCompletedThread(threadId));
   }
 
   /// Switches to a task-specific viewport, preserving every visited task's
@@ -322,6 +349,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       final position = controller.position;
       position.jumpTo(position.maxScrollExtent);
       _timelineFollowsLatest[viewportKey] = true;
+      _acknowledgeCompletedThreadAtBottom(viewportKey, controller);
       // Markdown can complete another synchronous layout pass on the next
       // frame. Async file-link resolution performs its own guarded follow-up
       // when it finishes later than this immediate pass.
@@ -334,6 +362,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
           return;
         }
         controller.jumpTo(controller.position.maxScrollExtent);
+        _acknowledgeCompletedThreadAtBottom(viewportKey, controller);
       });
     });
   }
@@ -5058,99 +5087,118 @@ class _PendingTurnSteerQueue extends StatelessWidget {
     );
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 14),
-      child: Container(
+      child: ConstrainedBox(
         key: const Key('pending-turn-steer'),
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 5),
-        decoration: BoxDecoration(
-          color: palette.raised,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
-          border: Border.all(color: palette.border),
-        ),
-        child: ConstrainedBox(
-          constraints: BoxConstraints(maxHeight: maxQueueHeight),
-          child: SingleChildScrollView(
-            key: const Key('pending-turn-steer-scroll'),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (final (index, pending) in pendingItems.indexed) ...[
-                  if (index > 0)
-                    Divider(
-                      height: 1,
-                      indent: 14,
-                      endIndent: 14,
-                      color: palette.border,
-                    ),
-                  Padding(
-                    key: ValueKey('pending-turn-steer-$index'),
-                    padding: const EdgeInsets.fromLTRB(14, 4, 8, 4),
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.subdirectory_arrow_right,
-                          size: 16,
-                          color: palette.muted,
-                        ),
-                        const SizedBox(width: 7),
-                        Expanded(
-                          child: SelectionArea(
-                            child: Text(
-                              pending.displayText,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
+        constraints: BoxConstraints(maxHeight: maxQueueHeight),
+        child: SingleChildScrollView(
+          key: const Key('pending-turn-steer-scroll'),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final layerCount = pendingItems.length - 1;
+              final maximumIndent = math.min(96.0, constraints.maxWidth * 0.24);
+              final layerStep = layerCount == 0
+                  ? 0.0
+                  : math.min(12.0, maximumIndent / layerCount);
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  for (final (index, pending) in pendingItems.indexed)
+                    Padding(
+                      padding: EdgeInsets.only(
+                        bottom: index == pendingItems.length - 1 ? 0 : 4,
+                      ),
+                      child: SizedBox(
+                        key: ValueKey('pending-turn-steer-$index'),
+                        width:
+                            constraints.maxWidth -
+                            (pendingItems.length - 1 - index) * layerStep,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: palette.raised,
+                            borderRadius: BorderRadius.circular(12),
                           ),
-                        ),
-                        const SizedBox(width: 12),
-                        TextButton.icon(
-                          key: index == 0
-                              ? const Key('adjust-direction-button')
-                              : ValueKey('adjust-direction-button-$index'),
-                          onPressed: sendingAny
-                              ? null
-                              : () => unawaited(onSend(pending)),
-                          icon: isSending(pending)
-                              ? const SizedBox.square(
-                                  dimension: 15,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(14, 4, 8, 4),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.subdirectory_arrow_right,
+                                  size: 16,
+                                  color: palette.muted,
+                                ),
+                                const SizedBox(width: 7),
+                                Expanded(
+                                  child: SelectionArea(
+                                    child: Text(
+                                      pending.displayText,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
                                   ),
-                                )
-                              : const Icon(Icons.reply_outlined, size: 17),
-                          label: const Text('调整方向'),
-                          style: TextButton.styleFrom(
-                            foregroundColor: palette.muted,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 4,
+                                ),
+                                const SizedBox(width: 12),
+                                TextButton.icon(
+                                  key: index == 0
+                                      ? const Key('adjust-direction-button')
+                                      : ValueKey(
+                                          'adjust-direction-button-$index',
+                                        ),
+                                  onPressed: sendingAny
+                                      ? null
+                                      : () => unawaited(onSend(pending)),
+                                  icon: isSending(pending)
+                                      ? const SizedBox.square(
+                                          dimension: 15,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                      : const Icon(
+                                          Icons.reply_outlined,
+                                          size: 17,
+                                        ),
+                                  label: const Text('调整方向'),
+                                  style: TextButton.styleFrom(
+                                    foregroundColor: palette.muted,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 4,
+                                    ),
+                                    visualDensity: VisualDensity.compact,
+                                  ),
+                                ),
+                                IconButton(
+                                  key: index == 0
+                                      ? const Key('discard-direction-button')
+                                      : ValueKey(
+                                          'discard-direction-button-$index',
+                                        ),
+                                  tooltip: '删除待发送方向',
+                                  onPressed: isSending(pending)
+                                      ? null
+                                      : () => onDiscard(pending),
+                                  icon: const Icon(
+                                    Icons.delete_outline,
+                                    size: 17,
+                                  ),
+                                  color: palette.muted,
+                                  visualDensity: VisualDensity.compact,
+                                  padding: const EdgeInsets.all(6),
+                                  constraints: const BoxConstraints(
+                                    minWidth: 30,
+                                    minHeight: 30,
+                                  ),
+                                ),
+                              ],
                             ),
-                            visualDensity: VisualDensity.compact,
                           ),
                         ),
-                        IconButton(
-                          key: index == 0
-                              ? const Key('discard-direction-button')
-                              : ValueKey('discard-direction-button-$index'),
-                          tooltip: '删除待发送方向',
-                          onPressed: isSending(pending)
-                              ? null
-                              : () => onDiscard(pending),
-                          icon: const Icon(Icons.delete_outline, size: 17),
-                          color: palette.muted,
-                          visualDensity: VisualDensity.compact,
-                          padding: const EdgeInsets.all(6),
-                          constraints: const BoxConstraints(
-                            minWidth: 30,
-                            minHeight: 30,
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
-                  ),
                 ],
-              ],
-            ),
+              );
+            },
           ),
         ),
       ),
@@ -7002,6 +7050,14 @@ class _ComposerPanelState extends State<_ComposerPanel> {
     return controller.status == RuntimeStatus.ready ? '任务已就绪' : '等待运行时连接';
   }
 
+  bool get _showsActivityPill {
+    if (controller.status == RuntimeStatus.running) return true;
+    final threadId = controller.activeThreadId;
+    if (threadId == null) return false;
+    return controller.status != RuntimeStatus.ready ||
+        !controller.isCompletedThreadAcknowledged(threadId);
+  }
+
   Future<void> _submit() async {
     final submission = _ComposerSubmission(
       attachments: List.unmodifiable(_attachments),
@@ -7425,8 +7481,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
         children: [
           if (controller.fileChanges.isEmpty &&
               controller.pendingTurnSteer == null &&
-              (controller.activeThreadId != null ||
-                  controller.status == RuntimeStatus.running))
+              _showsActivityPill)
             _ComposerActivityPill(
               label: _activityLabel,
               active: controller.status == RuntimeStatus.running,

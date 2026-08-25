@@ -2903,6 +2903,21 @@ void main() {
         '第三条调整',
       ]);
       expect(find.text('调整方向'), findsNWidgets(3));
+      final firstItem = find.byKey(const ValueKey('pending-turn-steer-0'));
+      final secondItem = find.byKey(const ValueKey('pending-turn-steer-1'));
+      final thirdItem = find.byKey(const ValueKey('pending-turn-steer-2'));
+      expect(
+        tester.getSize(firstItem).width,
+        lessThan(tester.getSize(secondItem).width),
+      );
+      expect(
+        tester.getSize(secondItem).width,
+        lessThan(tester.getSize(thirdItem).width),
+      );
+      expect(
+        tester.getTopRight(firstItem).dx,
+        closeTo(tester.getTopRight(thirdItem).dx, 0.1),
+      );
       await tester.tap(find.byKey(const Key('discard-direction-button-1')));
       await tester.pump();
       expect(controller.pendingTurnSteers.map((item) => item.displayText), [
@@ -9977,7 +9992,7 @@ void main() {
   });
 
   testWidgets(
-    'shows a completion reminder for the current task until its row is clicked',
+    'acknowledges the current task when its timeline is already at the bottom',
     (tester) async {
       final controller = CodexController(server: CodexAppServer())
         ..workspacePath = '/workspace'
@@ -9998,19 +10013,94 @@ void main() {
         ),
       );
       await tester.pump();
-
-      expect(
-        find.byKey(const Key('sidebar-completed-task-indicator')),
-        findsOneWidget,
-      );
-      await tester.tap(
-        find.byKey(const ValueKey('sidebar-thread-tile-current-thread')),
-      );
       await tester.pump();
+
       expect(
         find.byKey(const Key('sidebar-completed-task-indicator')),
         findsNothing,
       );
+      expect(find.byKey(const Key('composer-activity-pill')), findsNothing);
+      expect(
+        controller.isCompletedThreadAcknowledged('current-thread'),
+        isTrue,
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'keeps the completion reminder above the fold and clears it at the bottom',
+    (tester) async {
+      final initialEntries = List<TimelineEntry>.generate(
+        30,
+        (index) => TimelineEntry(
+          kind: TimelineKind.agent,
+          title: 'Codex',
+          detail: '历史消息 $index\n${'内容 ' * 12}',
+          createdAt: DateTime(2026, 1, 1, 0, 0, index),
+        ),
+      );
+      final controller = CodexController(server: CodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'current-thread'
+        ..threads = [_thread(id: 'current-thread', status: 'active')]
+        ..replaceTimelineEntriesForTesting(initialEntries);
+
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+      await tester.pump();
+
+      final timelineFinder = find.descendant(
+        of: find.byKey(
+          const ValueKey('conversation-timeline-/workspace:current-thread'),
+        ),
+        matching: find.byType(ListView),
+      );
+      final timeline = tester.widget<ListView>(timelineFinder);
+      timeline.controller!.jumpTo(
+        timeline.controller!.position.maxScrollExtent,
+      );
+      await tester.pump();
+      await tester.drag(timelineFinder, const Offset(0, 360));
+      await tester.pump();
+      expect(timeline.controller!.position.extentAfter, greaterThan(48));
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'turn': {'status': 'completed'},
+          },
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(
+        controller.isCompletedThreadAcknowledged('current-thread'),
+        isFalse,
+      );
+      expect(
+        find.byKey(const Key('sidebar-completed-task-indicator')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('composer-activity-pill')), findsOneWidget);
+
+      await tester.drag(timelineFinder, const Offset(0, -10000));
+      await tester.pumpAndSettle();
+
+      expect(timeline.controller!.position.extentAfter, lessThanOrEqualTo(48));
+      expect(
+        controller.isCompletedThreadAcknowledged('current-thread'),
+        isTrue,
+      );
+      expect(
+        find.byKey(const Key('sidebar-completed-task-indicator')),
+        findsNothing,
+      );
+      expect(find.byKey(const Key('composer-activity-pill')), findsNothing);
       await tester.pumpWidget(const SizedBox());
     },
   );

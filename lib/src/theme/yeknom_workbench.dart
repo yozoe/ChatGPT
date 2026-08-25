@@ -250,6 +250,8 @@ abstract final class YeknomWorkbenchTheme {
     return base.copyWith(
       extensions: <ThemeExtension<dynamic>>[colors],
       colorScheme: scheme,
+      splashFactory: NoSplash.splashFactory,
+      splashColor: Colors.transparent,
       scaffoldBackgroundColor: colors.bench,
       canvasColor: colors.module,
       dividerColor: colors.border,

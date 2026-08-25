@@ -61,6 +61,18 @@ void main() {
       }
     }
   });
+
+  test('workbench themes disable click ripple effects', () {
+    for (final preset in YeknomColorPreset.values) {
+      for (final theme in [
+        YeknomWorkbenchTheme.light(preset: preset),
+        YeknomWorkbenchTheme.dark(preset: preset),
+      ]) {
+        expect(theme.splashFactory, same(NoSplash.splashFactory));
+        expect(theme.splashColor, Colors.transparent);
+      }
+    }
+  });
 }
 
 double _contrastRatio(Color first, Color second) {

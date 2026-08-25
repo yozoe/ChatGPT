@@ -4031,9 +4031,8 @@ class CodexController extends ChangeNotifier {
       case _TurnCompletionOutcome.succeeded:
         status = RuntimeStatus.ready;
         _updateThreadStatus(activeThreadId, 'idle');
-        // A newly finished task remains identifiable in the sidebar even
-        // while its conversation is open. The next explicit task-row visit
-        // acknowledges this completion reminder.
+        // A newly finished task remains identifiable until the user sees the
+        // end of its timeline or explicitly opens its task row.
         _setCompletionReminder(completedThreadId, visible: true);
         _add(TimelineKind.system, '任务完成', '你可以继续在同一线程追问。');
       case _TurnCompletionOutcome.unknown:
