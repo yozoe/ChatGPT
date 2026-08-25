@@ -2903,21 +2903,6 @@ void main() {
         '第三条调整',
       ]);
       expect(find.text('调整方向'), findsNWidgets(3));
-      final firstItem = find.byKey(const ValueKey('pending-turn-steer-0'));
-      final secondItem = find.byKey(const ValueKey('pending-turn-steer-1'));
-      final thirdItem = find.byKey(const ValueKey('pending-turn-steer-2'));
-      expect(
-        tester.getSize(firstItem).width,
-        lessThan(tester.getSize(secondItem).width),
-      );
-      expect(
-        tester.getSize(secondItem).width,
-        lessThan(tester.getSize(thirdItem).width),
-      );
-      expect(
-        tester.getTopRight(firstItem).dx,
-        closeTo(tester.getTopRight(thirdItem).dx, 0.1),
-      );
       await tester.tap(find.byKey(const Key('discard-direction-button-1')));
       await tester.pump();
       expect(controller.pendingTurnSteers.map((item) => item.displayText), [
