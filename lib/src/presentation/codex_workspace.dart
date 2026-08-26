@@ -150,7 +150,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   late ScrollController _timelineScrollController;
   late _ThreadViewportKey _displayedThreadKey;
   bool _timelineScrollScheduled = false;
-  bool _threadHistoryLoading = false;
+  _ThreadViewportKey? _threadHistoryLoadingKey;
   bool _suppressTimelineScrollAfterThreadResume = false;
   _WorkspaceDestination _destination = _WorkspaceDestination.conversation;
   int _timelineScrollGeneration = 0;
@@ -164,6 +164,9 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   String? _selectedSubagentParentThreadId;
   String _selectedSubagentTitle = '子智能体';
   late CodexController _controller;
+
+  bool get _threadHistoryLoading =>
+      _threadHistoryLoadingKey == _displayedThreadKey;
 
   /// 注册控制器监听器，使时间线在内容更新后自动滚动。
   /// Registers the controller listener that scrolls the timeline after updates.
@@ -193,6 +196,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     _selectedSubagentParentThreadId = null;
     _timelineScrollGeneration++;
     _timelineScrollScheduled = false;
+    _threadHistoryLoadingKey = null;
     _displayedThreadKey = _viewportKey(_controller.activeThreadId);
     _timelineScrollController = _timelineControllerFor(_displayedThreadKey);
     _captureActiveTimelinePage();
@@ -243,11 +247,17 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
         if (position.hasPixels) position.jumpTo(position.pixels);
       }
       _activateTimelineViewport(_controller.activeThreadId);
-      if (!_controller.hasCachedActiveThreadView) {
-        _threadHistoryLoading = true;
+      if (_threadHistoryLoadingKey == _displayedThreadKey ||
+          !_controller.hasCachedActiveThreadView) {
+        _threadHistoryLoadingKey = _displayedThreadKey;
         _captureActiveTimelinePage();
       } else {
-        _threadHistoryLoading = false;
+        // A previous first-time viewport may still be settling after its
+        // controller has returned to ready. Do not transfer that loading state
+        // to a different retained page or reset its saved reading position.
+        // 前一个首次打开的视口可能仍在控制器恢复 ready 后校准；不要把其
+        // 加载状态传给另一个保活页面，也不要重置后者已保存的阅读位置。
+        _threadHistoryLoadingKey = null;
         // The controller can outlive this workspace State (for example after
         // the shell is rebuilt). Recreate the rendering inputs only when the
         // retained UI page is absent, so IndexedStack never falls back to an
@@ -263,6 +273,10 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       return;
     }
     _activateTimelineViewport(_controller.activeThreadId);
+    if (_threadHistoryLoadingKey != null &&
+        _threadHistoryLoadingKey != _displayedThreadKey) {
+      _threadHistoryLoadingKey = null;
+    }
     _pruneTimelineViewports();
     _captureActiveTimelinePage();
     if (widget.controller != null && mounted) setState(() {});
@@ -270,7 +284,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       _displayedThreadKey,
       _timelineScrollController,
     );
-    if (_threadHistoryLoading) {
+    if (_threadHistoryLoadingKey == _displayedThreadKey) {
       _finishFirstThreadViewport();
       return;
     }
@@ -494,20 +508,67 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   /// 首次任务历史仍被加载画面覆盖时完成定位，随后直接显示完整页面。
   void _finishFirstThreadViewport() {
     if (!mounted) return;
-    final threadId = _controller.activeThreadId;
+    final viewportKey = _displayedThreadKey;
+    final controller = _timelineScrollController;
+    final generation = _timelineScrollGeneration;
+    _settleFirstThreadViewport(
+      viewportKey: viewportKey,
+      controller: controller,
+      generation: generation,
+      attempt: 0,
+    );
+  }
+
+  /// Repeats the bottom jump until the lazily built list reports a stable
+  /// extent. A single jump can use ListView's early height estimate and leave
+  /// a long, variable-height history thousands of pixels above its real end.
+  /// 重复定位到底部，直到惰性列表的范围稳定；单次跳转可能只采用首屏高度估算，
+  /// 让较长且高度不一的历史仍停在真实末尾之前。
+  void _settleFirstThreadViewport({
+    required _ThreadViewportKey viewportKey,
+    required ScrollController controller,
+    required int generation,
+    required int attempt,
+    double? previousMaximum,
+  }) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || threadId != _controller.activeThreadId) return;
-      if (_timelineScrollController.hasClients) {
-        final position = _timelineScrollController.position;
-        position.jumpTo(position.maxScrollExtent);
-        _timelineFollowsLatest[_displayedThreadKey] = true;
+      if (!mounted ||
+          generation != _timelineScrollGeneration ||
+          viewportKey != _displayedThreadKey ||
+          viewportKey != _viewportKey(_controller.activeThreadId) ||
+          _threadHistoryLoadingKey != viewportKey) {
+        return;
       }
-      if (mounted) {
+      var settled = false;
+      double? maximum;
+      if (controller.hasClients) {
+        final position = controller.position;
+        maximum = position.maxScrollExtent;
+        final wasAtBottom = position.extentAfter <= 1;
+        final maximumStable =
+            previousMaximum != null && (maximum - previousMaximum).abs() <= 1;
+        position.jumpTo(position.maxScrollExtent);
+        _timelineFollowsLatest[viewportKey] = true;
+        settled = wasAtBottom && maximumStable;
+      }
+      if (settled || attempt >= 20) {
         setState(() {
-          _threadHistoryLoading = false;
+          _threadHistoryLoadingKey = null;
           _suppressTimelineScrollAfterThreadResume = false;
         });
+        _scheduleTimelineScroll();
+        return;
       }
+      // Force a new layout before checking the corrected lazy-list extent.
+      // The loading surface remains visible throughout these internal jumps.
+      setState(() {});
+      _settleFirstThreadViewport(
+        viewportKey: viewportKey,
+        controller: controller,
+        generation: generation,
+        attempt: attempt + 1,
+        previousMaximum: maximum,
+      );
     });
   }
 

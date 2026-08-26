@@ -1514,6 +1514,139 @@ void main() {
     },
   );
 
+  testWidgets('opens a first-time history viewport at the latest message', (
+    tester,
+  ) async {
+    final server = _FakeCodexAppServer();
+    final thread = _thread(id: 'long-history');
+    server
+      ..listResponse = [thread.toJson()]
+      ..resumeResult = {
+        'thread': {
+          'turns': List<JsonMap>.generate(48, (index) {
+            final answer = index == 47
+                ? '最后一条历史回复'
+                : '历史回复 $index\n${'较长的 Markdown 内容 ' * (index % 5 + 1)}';
+            return {
+              'id': 'turn-$index',
+              'items': [
+                {
+                  'id': 'user-$index',
+                  'type': 'userMessage',
+                  'content': [
+                    {'type': 'text', 'text': '历史问题 $index'},
+                  ],
+                },
+                {'id': 'agent-$index', 'type': 'agentMessage', 'text': answer},
+              ],
+            };
+          }),
+        },
+      };
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..threads = [thread];
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.tap(find.text('preview-long-history'));
+    await tester.pumpAndSettle();
+
+    final timelineFinder = find.descendant(
+      of: find.byKey(
+        const ValueKey('conversation-timeline-/workspace:long-history'),
+      ),
+      matching: find.byType(ListView),
+    );
+    final timeline = tester.widget<ListView>(timelineFinder);
+    expect(timeline.controller!.position.extentAfter, lessThan(1));
+    expect(
+      controller.entries.map((entry) => entry.detail),
+      contains('最后一条历史回复'),
+    );
+    expect(find.byKey(const Key('thread-history-loading')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'keeps a cached reading position when switching during history settling',
+    (tester) async {
+      JsonMap historyFor(String prefix) => {
+        'thread': {
+          'turns': List<JsonMap>.generate(48, (index) {
+            return {
+              'id': '$prefix-turn-$index',
+              'items': [
+                {
+                  'id': '$prefix-user-$index',
+                  'type': 'userMessage',
+                  'content': [
+                    {'type': 'text', 'text': '$prefix 问题 $index'},
+                  ],
+                },
+                {
+                  'id': '$prefix-agent-$index',
+                  'type': 'agentMessage',
+                  'text':
+                      '$prefix 回复 $index\n${'高度不同的 Markdown 内容 ' * (index % 5 + 1)}',
+                },
+              ],
+            };
+          }),
+        },
+      };
+
+      final server = _FakeCodexAppServer();
+      final first = _thread(id: 'cached-reading');
+      final second = _thread(id: 'settling-history');
+      server
+        ..listResponse = [first.toJson(), second.toJson()]
+        ..resumeResult = historyFor('第一会话');
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready
+        ..threads = [first, second];
+
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+      await tester.tap(find.text('preview-cached-reading'));
+      await tester.pumpAndSettle();
+
+      final firstTimelineFinder = find.descendant(
+        of: find.byKey(
+          const ValueKey('conversation-timeline-/workspace:cached-reading'),
+        ),
+        matching: find.byType(ListView),
+      );
+      final firstTimeline = tester.widget<ListView>(firstTimelineFinder);
+      final firstScrollController = firstTimeline.controller!;
+      final readingOffset =
+          firstScrollController.position.maxScrollExtent - 160;
+      firstScrollController.jumpTo(readingOffset);
+      await tester.pump();
+      expect(firstScrollController.offset, closeTo(readingOffset, 0.1));
+
+      server.resumeResult = historyFor('第二会话');
+      await tester.tap(find.text('preview-settling-history'));
+      await tester.pump();
+
+      expect(controller.activeThreadId, 'settling-history');
+      expect(controller.isResumingThread, isFalse);
+      expect(find.byKey(const Key('thread-history-loading')), findsOneWidget);
+
+      await tester.tap(find.text('preview-cached-reading'));
+      await tester.pumpAndSettle();
+
+      expect(controller.activeThreadId, 'cached-reading');
+      expect(firstScrollController.offset, closeTo(readingOffset, 0.1));
+      expect(find.byKey(const Key('thread-history-loading')), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets(
     'keeps completed Markdown subtrees stable during stream updates',
     (tester) async {
