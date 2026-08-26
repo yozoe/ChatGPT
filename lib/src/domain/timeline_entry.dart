@@ -15,7 +15,8 @@ enum TimelineKind {
 /// 可持久化的单条对话时间线记录，不包含仅在运行时存在的活动状态。
 /// One persistable conversation timeline record, excluding transient live activity.
 class TimelineEntry {
-  const TimelineEntry({
+  TimelineEntry({
+    String? id,
     required this.kind,
     required this.title,
     required this.detail,
@@ -24,7 +25,18 @@ class TimelineEntry {
     this.sourceItemId,
     this.activityKind,
     this.activityStatus,
-  });
+    this.linkedThreadId,
+    this.activityPrompt,
+  }) : id = id == null || id.trim().isEmpty ? _newId() : id.trim();
+
+  static int _idSequence = 0;
+
+  static String _newId() =>
+      'timeline-${DateTime.now().microsecondsSinceEpoch}-${_idSequence++}';
+
+  /// 在流式副本和历史恢复之间保持不变的本地标识。
+  /// Stable local identity retained across streaming copies and history reloads.
+  final String id;
 
   final TimelineKind kind;
   final String title;
@@ -41,6 +53,14 @@ class TimelineEntry {
   /// Machine-readable lifecycle state retained for status styling.
   final String? activityStatus;
 
+  /// 协作活动对应的子线程；非协作条目保持为空。
+  /// Child thread associated with a collaboration activity; null otherwise.
+  final String? linkedThreadId;
+
+  /// App Server 为子智能体提供的原始任务说明。
+  /// Original task prompt supplied by App Server for a subagent.
+  final String? activityPrompt;
+
   /// 返回替换可选详情后的时间线条目副本。
   /// Returns a timeline entry copy with an optional replacement detail.
   TimelineEntry copyWith({
@@ -50,8 +70,11 @@ class TimelineEntry {
     String? sourceItemId,
     String? activityKind,
     String? activityStatus,
+    String? linkedThreadId,
+    String? activityPrompt,
   }) {
     return TimelineEntry(
+      id: id,
       kind: kind,
       title: title ?? this.title,
       detail: detail ?? this.detail,
@@ -60,12 +83,15 @@ class TimelineEntry {
       sourceItemId: sourceItemId ?? this.sourceItemId,
       activityKind: activityKind ?? this.activityKind,
       activityStatus: activityStatus ?? this.activityStatus,
+      linkedThreadId: linkedThreadId ?? this.linkedThreadId,
+      activityPrompt: activityPrompt ?? this.activityPrompt,
     );
   }
 
   /// 将时间线条目转换为本地历史缓存使用的 JSON。
   /// Converts the timeline entry to JSON for the local history cache.
   Map<String, dynamic> toJson() => {
+    'id': id,
     'kind': kind.name,
     'title': title,
     'detail': detail,
@@ -74,6 +100,8 @@ class TimelineEntry {
     'sourceItemId': ?sourceItemId,
     'activityKind': ?activityKind,
     'activityStatus': ?activityStatus,
+    'linkedThreadId': ?linkedThreadId,
+    'activityPrompt': ?activityPrompt,
   };
 
   /// 从本地历史缓存 JSON 恢复时间线条目。
@@ -83,6 +111,7 @@ class TimelineEntry {
       (candidate) => candidate.name == value['kind']?.toString(),
     );
     return TimelineEntry(
+      id: value['id']?.toString(),
       kind: kind.isEmpty ? TimelineKind.system : kind.first,
       title: value['title']?.toString() ?? '',
       detail: value['detail']?.toString() ?? '',
@@ -97,6 +126,8 @@ class TimelineEntry {
       sourceItemId: value['sourceItemId']?.toString(),
       activityKind: value['activityKind']?.toString(),
       activityStatus: value['activityStatus']?.toString(),
+      linkedThreadId: value['linkedThreadId']?.toString(),
+      activityPrompt: value['activityPrompt']?.toString(),
     );
   }
 }

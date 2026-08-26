@@ -62,6 +62,33 @@ enum _WorkspaceDestination {
 /// Mutually exclusive data-source views within the plugin workspace.
 enum _PluginLibraryTab { plugins, skills }
 
+@immutable
+class _WorkspaceTaskCountRequest {
+  const _WorkspaceTaskCountRequest({
+    required this.controller,
+    required this.path,
+  });
+
+  final CodexController controller;
+  final String path;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _WorkspaceTaskCountRequest &&
+      identical(other.controller, controller) &&
+      other.path == path;
+
+  @override
+  int get hashCode => Object.hash(identityHashCode(controller), path);
+}
+
+/// 按项目读取悬停卡片所需的异步任务数量，并随卡片作用域自动释放。
+/// Reads the async task count for a project hover card and disposes it with that card's scope.
+final _workspaceTaskCountProvider = FutureProvider.autoDispose
+    .family<int, _WorkspaceTaskCountRequest>(
+      (ref, request) => request.controller.readWorkspaceTaskCount(request.path),
+    );
+
 /// Identifies a retained timeline viewport within its owning workspace.
 /// 在所属项目范围内标识保留的时间线视口。
 class _ThreadViewportKey {
@@ -133,7 +160,10 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   static const _maximumInspectorWidth = 460.0;
   double _sidebarWidth = 250;
   double _inspectorWidth = 352;
-  late final CodexController _controller;
+  String? _selectedSubagentThreadId;
+  String? _selectedSubagentParentThreadId;
+  String _selectedSubagentTitle = '子智能体';
+  late CodexController _controller;
 
   /// 注册控制器监听器，使时间线在内容更新后自动滚动。
   /// Registers the controller listener that scrolls the timeline after updates.
@@ -145,6 +175,35 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     _timelineScrollController = _timelineControllerFor(_displayedThreadKey);
     _captureActiveTimelinePage();
     _controller.addListener(_handleControllerUpdate);
+  }
+
+  /// 将嵌入或测试场景替换的控制器同步到监听、动作和时间线缓存。
+  /// Synchronizes a replaced embedded/test controller with listeners, actions, and timeline caches.
+  @override
+  void didUpdateWidget(covariant CodexWorkspace oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final nextController =
+        widget.controller ?? ref.read(codexControllerProvider)!;
+    if (identical(nextController, _controller)) return;
+    final previousController = _controller;
+    previousController.removeListener(_handleControllerUpdate);
+    _controller = nextController;
+    _controller.addListener(_handleControllerUpdate);
+    _selectedSubagentThreadId = null;
+    _selectedSubagentParentThreadId = null;
+    _timelineScrollGeneration++;
+    _timelineScrollScheduled = false;
+    _displayedThreadKey = _viewportKey(_controller.activeThreadId);
+    _timelineScrollController = _timelineControllerFor(_displayedThreadKey);
+    _captureActiveTimelinePage();
+    _pruneTimelineViewports();
+    if (oldWidget.controller != null) {
+      // Composer descendants migrate temporary attachment ownership during
+      // this same update; dispose the previous owned controller afterwards.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        previousController.dispose();
+      });
+    }
   }
 
   /// 移除监听器并释放编辑、滚动与控制器资源。
@@ -168,6 +227,11 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   /// 响应控制器更新；显式注入时由工作区重建，Provider 场景仍由 ref.watch 重建。
   /// Responds to controller updates; the workspace rebuilds explicit injections while ref.watch rebuilds provider state.
   void _handleControllerUpdate() {
+    if (_selectedSubagentParentThreadId != null &&
+        _selectedSubagentParentThreadId != _controller.activeThreadId) {
+      _selectedSubagentThreadId = null;
+      _selectedSubagentParentThreadId = null;
+    }
     if (_controller.isResumingThread) {
       _timelineScrollGeneration++;
       _timelineScrollScheduled = false;
@@ -217,6 +281,32 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     if (_timelineFollowsLatest[_displayedThreadKey] ?? true) {
       _scheduleTimelineScroll();
     }
+  }
+
+  void _openSubagentInspector(TimelineEntry entry) {
+    final threadId = entry.linkedThreadId;
+    if (threadId == null || threadId.isEmpty) return;
+    setState(() {
+      _selectedSubagentThreadId = threadId;
+      _selectedSubagentParentThreadId = _controller.activeThreadId;
+      _selectedSubagentTitle = entry.title;
+    });
+    unawaited(
+      _controller.loadSubagentThread(
+        threadId: threadId,
+        title: entry.title,
+        prompt: entry.activityPrompt ?? '',
+        status: entry.activityStatus ?? 'working',
+      ),
+    );
+  }
+
+  void _closeSubagentInspector() {
+    if (_selectedSubagentThreadId == null) return;
+    setState(() {
+      _selectedSubagentThreadId = null;
+      _selectedSubagentParentThreadId = null;
+    });
   }
 
   /// Creates a retained controller and remembers when the user deliberately
@@ -421,21 +511,21 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     });
   }
 
-  /// 打开创建项目弹窗，并在选择源文件夹后注册新的可切换工作区。
-  /// Opens the create-project dialog and registers a new switchable workspace after its source folder is chosen.
+  /// 打开创建项目弹窗，并把源文件夹保存为非活动项目。
+  /// Opens the create-project dialog and saves its source folder as an inactive project.
   Future<void> _createWorkspace() async {
     await showDialog<void>(
       context: context,
       barrierColor: Colors.black.withValues(alpha: 0.62),
       builder: (dialogContext) => _CreateWorkspaceDialog(
         onCreate: (path, name) async {
-          final created = await _controller.createWorkspace(path);
-          if (!created) return false;
-          final primary = _controller.workspacePath;
-          if (primary != null) {
-            await _controller.renameWorkspace(primary, name);
+          final created = await _controller.createWorkspace(path, name: name);
+          if (!created && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(_controller.lastError ?? '无法创建项目，请稍后再试。')),
+            );
           }
-          return true;
+          return created;
         },
       ),
     );
@@ -505,10 +595,12 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('每个工作区会独立保存主目录、附加目录和本地历史。新建或切换后会自动连接运行时。'),
+                    const Text('每个工作区会独立保存主目录、附加目录和本地历史。新建项目只加入列表，切换后才会连接运行时。'),
                     if (!controller.canChangePrimaryWorkspace) ...[
                       const SizedBox(height: 8),
-                      const _MutedText('当前任务执行完成后可以新建或切换工作区；附加目录仍可直接调整。'),
+                      _MutedText(
+                        '${controller.changePrimaryWorkspaceDisabledReason ?? '当前暂时不能切换工作区。'}仍可新建项目或调整附加目录。',
+                      ),
                     ],
                     const SizedBox(height: 20),
                     Row(
@@ -652,13 +744,18 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                 icon: const Icon(Icons.create_new_folder_outlined),
                 label: const Text('添加目录'),
               ),
-              FilledButton.icon(
-                key: const Key('create-workspace-button'),
-                onPressed: controller.canChangePrimaryWorkspace
-                    ? _createWorkspace
-                    : null,
-                icon: const Icon(Icons.add),
-                label: const Text('新建工作区'),
+              Tooltip(
+                message: controller.canCreateWorkspace
+                    ? '新建工作区'
+                    : '正在保存项目，请稍候。',
+                child: FilledButton.icon(
+                  key: const Key('create-workspace-button'),
+                  onPressed: controller.canCreateWorkspace
+                      ? _createWorkspace
+                      : null,
+                  icon: const Icon(Icons.add),
+                  label: const Text('新建工作区'),
+                ),
               ),
             ],
           );
@@ -2061,43 +2158,63 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                               child: Row(
                                 children: [
                                   Expanded(
-                                    child: _ConversationPane(
-                                      controller: controller,
-                                      composer: _composer,
-                                      recordSkillRequest: _recordSkillRequest,
-                                      timelinePages: _timelinePages,
-                                      timelineScrollControllers:
-                                          _timelineScrollControllers,
-                                      activeTimelinePageKey:
-                                          _displayedThreadKey,
-                                      threadHistoryLoading:
-                                          _threadHistoryLoading,
-                                      fileChangeSummaryExpanded: (pageKey) =>
-                                          _fileChangeSummaryExpanded[pageKey] ??
-                                          false,
-                                      onFileChangeSummaryExpandedChanged:
-                                          (pageKey, expanded) {
-                                            setState(() {
-                                              _fileChangeSummaryExpanded[pageKey] =
-                                                  expanded;
-                                            });
-                                          },
-                                      activityExpanded: (pageKey, activityId) =>
-                                          _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
-                                          false,
-                                      onTimelineMetricsChanged:
-                                          _handleTimelineMetricsChanged,
-                                      onActivityExpandedChanged:
-                                          (pageKey, activityId, expanded) {
-                                            setState(() {
-                                              _activityListExpanded['${pageKey.storageKey}/$activityId'] =
-                                                  expanded;
-                                            });
-                                          },
-                                      onSend: _send,
-                                      onQueueSteer: _queueDirection,
-                                      onReview: _showCodeReview,
-                                      onUndo: _undoFileChanges,
+                                    child: Stack(
+                                      fit: StackFit.expand,
+                                      children: [
+                                        _ConversationPane(
+                                          controller: controller,
+                                          composer: _composer,
+                                          recordSkillRequest:
+                                              _recordSkillRequest,
+                                          timelinePages: _timelinePages,
+                                          timelineScrollControllers:
+                                              _timelineScrollControllers,
+                                          activeTimelinePageKey:
+                                              _displayedThreadKey,
+                                          threadHistoryLoading:
+                                              _threadHistoryLoading,
+                                          fileChangeSummaryExpanded: (pageKey) =>
+                                              _fileChangeSummaryExpanded[pageKey] ??
+                                              false,
+                                          onFileChangeSummaryExpandedChanged:
+                                              (pageKey, expanded) {
+                                                setState(() {
+                                                  _fileChangeSummaryExpanded[pageKey] =
+                                                      expanded;
+                                                });
+                                              },
+                                          activityExpanded: (pageKey, activityId) =>
+                                              _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
+                                              false,
+                                          onTimelineMetricsChanged:
+                                              _handleTimelineMetricsChanged,
+                                          onActivityExpandedChanged:
+                                              (pageKey, activityId, expanded) {
+                                                setState(() {
+                                                  _activityListExpanded['${pageKey.storageKey}/$activityId'] =
+                                                      expanded;
+                                                });
+                                              },
+                                          onSend: _send,
+                                          onQueueSteer: _queueDirection,
+                                          onReview: _showCodeReview,
+                                          onUndo: _undoFileChanges,
+                                          onOpenSubagent:
+                                              _openSubagentInspector,
+                                        ),
+                                        if (compact &&
+                                            _selectedSubagentThreadId != null)
+                                          _SubagentThreadPanel(
+                                            controller: controller,
+                                            threadId:
+                                                _selectedSubagentThreadId!,
+                                            fallbackTitle:
+                                                _selectedSubagentTitle,
+                                            onOpenSubagent:
+                                                _openSubagentInspector,
+                                            onClose: _closeSubagentInspector,
+                                          ),
+                                      ],
                                     ),
                                   ),
                                   if (!compact) ...[
@@ -2113,11 +2230,25 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                                                 .toDouble();
                                       }),
                                     ),
-                                    _Inspector(
-                                      width: inspectorWidth,
-                                      controller: controller,
-                                      onShowGitProject: _showGitProject,
-                                    ),
+                                    if (_selectedSubagentThreadId
+                                        case final id?)
+                                      SizedBox(
+                                        width: inspectorWidth,
+                                        child: _SubagentThreadPanel(
+                                          controller: controller,
+                                          threadId: id,
+                                          fallbackTitle: _selectedSubagentTitle,
+                                          onOpenSubagent:
+                                              _openSubagentInspector,
+                                          onClose: _closeSubagentInspector,
+                                        ),
+                                      )
+                                    else
+                                      _Inspector(
+                                        width: inspectorWidth,
+                                        controller: controller,
+                                        onShowGitProject: _showGitProject,
+                                      ),
                                   ],
                                 ],
                               ),
@@ -3985,7 +4116,6 @@ class _SidebarState extends State<_Sidebar> {
   bool _batchMode = false;
   final Set<String> _selectedThreadIds = {};
 
-  final Map<String, int> _workspaceTaskCounts = {};
   final Map<String, bool> _workspaceExpanded = {};
   OverlayEntry? _workspaceDetailsEntry;
   Timer? _workspaceDetailsShowTimer;
@@ -4117,27 +4247,49 @@ class _SidebarState extends State<_Sidebar> {
         left: left,
         top: top,
         width: cardWidth,
-        child: MouseRegion(
-          onEnter: (_) => _workspaceDetailsHideTimer?.cancel(),
-          onExit: (_) => _scheduleWorkspaceDetailsHide(),
-          child: _WorkspaceDetailsCard(
-            workspace: workspace,
-            taskCount: isActive
-                ? controller.threads.length
-                : _workspaceTaskCounts[workspace.primaryPath],
-            pinned: controller.isWorkspacePinned(workspace.primaryPath),
-            onTogglePin: () {
-              unawaited(
-                controller.toggleWorkspacePinned(workspace.primaryPath).then((
-                  _,
-                ) {
-                  if (_workspaceDetailsEntry == entry) entry.markNeedsBuild();
-                }),
+        child: ProviderScope(
+          child: Consumer(
+            builder: (context, ref, _) {
+              final taskCount = isActive
+                  ? controller.threads.length
+                  : ref
+                        .watch(
+                          _workspaceTaskCountProvider(
+                            _WorkspaceTaskCountRequest(
+                              controller: controller,
+                              path: workspace.primaryPath,
+                            ),
+                          ),
+                        )
+                        .when(
+                          data: (value) => value,
+                          loading: () => null,
+                          error: (_, _) => -1,
+                        );
+              return MouseRegion(
+                onEnter: (_) => _workspaceDetailsHideTimer?.cancel(),
+                onExit: (_) => _scheduleWorkspaceDetailsHide(),
+                child: _WorkspaceDetailsCard(
+                  workspace: workspace,
+                  taskCount: taskCount,
+                  pinned: controller.isWorkspacePinned(workspace.primaryPath),
+                  onTogglePin: () {
+                    unawaited(
+                      controller
+                          .toggleWorkspacePinned(workspace.primaryPath)
+                          .then((_) {
+                            if (_workspaceDetailsEntry == entry) {
+                              entry.markNeedsBuild();
+                            }
+                          }),
+                    );
+                  },
+                  onEditProject: (_) {
+                    _hideWorkspaceDetails();
+                    widget.onEditWorkspace(workspace.primaryPath);
+                  },
+                ),
               );
-            },
-            onEditProject: (_) {
-              _hideWorkspaceDetails();
-              widget.onEditWorkspace(workspace.primaryPath);
             },
           ),
         ),
@@ -4145,25 +4297,6 @@ class _SidebarState extends State<_Sidebar> {
     );
     _workspaceDetailsEntry = entry;
     overlay.insert(entry);
-    // Always refresh an inactive project's count when its details are opened.
-    // The cached preview can change after the user visits that project, and a
-    // stale count is more confusing than one lightweight local-cache read.
-    if (!isActive) {
-      unawaited(_loadWorkspaceTaskCount(workspace.primaryPath, entry));
-    }
-  }
-
-  Future<void> _loadWorkspaceTaskCount(String path, OverlayEntry entry) async {
-    try {
-      final count = await widget.controller.readWorkspaceTaskCount(path);
-      if (!mounted || _workspaceDetailsEntry != entry) return;
-      _workspaceTaskCounts[path] = count;
-      entry.markNeedsBuild();
-    } catch (_) {
-      if (!mounted || _workspaceDetailsEntry != entry) return;
-      _workspaceTaskCounts[path] = -1;
-      entry.markNeedsBuild();
-    }
   }
 
   void _scheduleWorkspaceDetailsHide() {
@@ -4438,9 +4571,11 @@ class _SidebarState extends State<_Sidebar> {
                 ),
                 IconButton(
                   key: const Key('sidebar-create-workspace-button'),
-                  tooltip: '新建工作区',
+                  tooltip: controller.canCreateWorkspace
+                      ? '新建工作区'
+                      : '正在保存项目，请稍候。',
                   visualDensity: VisualDensity.compact,
-                  onPressed: controller.canChangePrimaryWorkspace
+                  onPressed: controller.canCreateWorkspace
                       ? widget.onCreateWorkspace
                       : null,
                   icon: const Icon(Icons.add, size: 17),
@@ -4532,7 +4667,7 @@ class _SidebarState extends State<_Sidebar> {
                   child: workspaces.isEmpty
                       ? InkWell(
                           key: const Key('sidebar-workspace-empty'),
-                          onTap: controller.canChangePrimaryWorkspace
+                          onTap: controller.canCreateWorkspace
                               ? widget.onCreateWorkspace
                               : null,
                           child: const Padding(
@@ -4729,6 +4864,7 @@ class _ConversationPane extends StatelessWidget {
     required this.onQueueSteer,
     required this.onReview,
     required this.onUndo,
+    required this.onOpenSubagent,
   });
 
   final CodexController controller;
@@ -4754,6 +4890,7 @@ class _ConversationPane extends StatelessWidget {
   final Future<bool> Function(_ComposerSubmission submission) onQueueSteer;
   final Future<void> Function() onReview;
   final Future<void> Function() onUndo;
+  final ValueChanged<TimelineEntry> onOpenSubagent;
 
   /// 构建时间线、审批提示和任务输入区域。
   /// Builds the timeline, approval prompt, and task composer area.
@@ -4836,6 +4973,7 @@ class _ConversationPane extends StatelessWidget {
                               ),
                           onReview: onReview,
                           onUndo: onUndo,
+                          onOpenSubagent: onOpenSubagent,
                           canUndo:
                               page.key == activeTimelinePageKey &&
                               controller.canUndoFileChanges,
@@ -5029,6 +5167,214 @@ class _FailedTurnRetryNotice extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Read-only Codex-style inspector for one App Server child thread.
+/// App Server 子线程的只读 Codex 风格检查器。
+class _SubagentThreadPanel extends StatelessWidget {
+  const _SubagentThreadPanel({
+    required this.controller,
+    required this.threadId,
+    required this.fallbackTitle,
+    required this.onOpenSubagent,
+    required this.onClose,
+  });
+
+  final CodexController controller;
+  final String threadId;
+  final String fallbackTitle;
+  final ValueChanged<TimelineEntry> onOpenSubagent;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final view = controller.subagentThreadView(threadId);
+    final title = view?.title.isNotEmpty == true ? view!.title : fallbackTitle;
+    final entries = view?.entries ?? const <TimelineEntry>[];
+    final elapsed = entries.where(
+      (entry) => entry.kind == TimelineKind.elapsed,
+    );
+    final status = _subagentStatusLabel(view?.status ?? 'working');
+    return ColoredBox(
+      key: const Key('subagent-thread-panel'),
+      color: palette.module,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            height: 47,
+            child: Row(
+              children: [
+                IconButton(
+                  key: const Key('subagent-thread-close'),
+                  tooltip: '返回主任务',
+                  onPressed: onClose,
+                  icon: const Icon(Icons.arrow_back, size: 18),
+                ),
+                Icon(Icons.auto_awesome, size: 16, color: palette.ack),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      color: palette.trace,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: '关闭子智能体',
+                  onPressed: onClose,
+                  icon: const Icon(Icons.close, size: 17),
+                ),
+              ],
+            ),
+          ),
+          Divider(height: 1, color: palette.border),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 18, 24, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    if (view?.status == 'working') ...[
+                      SizedBox.square(
+                        dimension: 12,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 1.5,
+                          color: palette.muted,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
+                    Text(
+                      elapsed.isEmpty ? status : elapsed.last.title,
+                      key: const Key('subagent-thread-status'),
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: palette.muted,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 3),
+                    Icon(Icons.chevron_right, size: 14, color: palette.muted),
+                  ],
+                ),
+                if (view?.prompt.trim().isNotEmpty == true) ...[
+                  const SizedBox(height: 14),
+                  Text(
+                    view!.prompt,
+                    key: const Key('subagent-thread-prompt'),
+                    maxLines: 4,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: palette.trace,
+                      height: 1.45,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          Divider(height: 1, indent: 24, endIndent: 24, color: palette.border),
+          Expanded(
+            child: view?.error != null
+                ? _SubagentThreadError(
+                    message: view!.error!,
+                    onRetry: () => unawaited(
+                      controller.loadSubagentThread(
+                        threadId: threadId,
+                        title: title,
+                        prompt: view.prompt,
+                        status: view.status,
+                        force: true,
+                      ),
+                    ),
+                  )
+                : entries
+                      .where((entry) => entry.kind != TimelineKind.elapsed)
+                      .isEmpty
+                ? Center(
+                    child: Text(
+                      view?.loading == true ? '正在读取子线程…' : '子智能体尚未产生可显示内容',
+                      style: TextStyle(color: palette.muted),
+                    ),
+                  )
+                : Stack(
+                    children: [
+                      ListView.separated(
+                        key: const Key('subagent-thread-timeline'),
+                        padding: const EdgeInsets.fromLTRB(24, 18, 24, 24),
+                        itemCount: entries
+                            .where(
+                              (entry) => entry.kind != TimelineKind.elapsed,
+                            )
+                            .length,
+                        separatorBuilder: (_, _) => const SizedBox(height: 18),
+                        itemBuilder: (context, index) {
+                          final visibleEntries = entries
+                              .where(
+                                (entry) => entry.kind != TimelineKind.elapsed,
+                              )
+                              .toList(growable: false);
+                          return _TimelineEntry(
+                            visibleEntries[index],
+                            workspacePath: controller.workspacePath,
+                            onOpenSubagent: onOpenSubagent,
+                          );
+                        },
+                      ),
+                      if (view?.loading == true)
+                        const Positioned(
+                          left: 0,
+                          right: 0,
+                          top: 0,
+                          child: LinearProgressIndicator(minHeight: 1),
+                        ),
+                    ],
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _subagentStatusLabel(String status) => switch (status) {
+  'completed' => '已完成',
+  'failed' => '失败',
+  'stopped' => '已停止',
+  _ => '正在处理',
+};
+
+class _SubagentThreadError extends StatelessWidget {
+  const _SubagentThreadError({required this.message, required this.onRetry});
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.error_outline, size: 22, color: palette.fault),
+            const SizedBox(height: 10),
+            Text(message, textAlign: TextAlign.center),
+            const SizedBox(height: 8),
+            TextButton(onPressed: onRetry, child: const Text('重试')),
+          ],
+        ),
       ),
     );
   }
@@ -5265,6 +5611,7 @@ class _ConversationTimeline extends StatelessWidget {
     required this.onUndo,
     required this.canUndo,
     required this.undoRunning,
+    required this.onOpenSubagent,
     super.key,
   });
 
@@ -5283,6 +5630,7 @@ class _ConversationTimeline extends StatelessWidget {
   final Future<void> Function() onUndo;
   final bool canUndo;
   final bool undoRunning;
+  final ValueChanged<TimelineEntry> onOpenSubagent;
 
   @override
   Widget build(BuildContext context) {
@@ -5303,6 +5651,28 @@ class _ConversationTimeline extends StatelessWidget {
         liveElapsedIndex = firstTurnOutputIndex;
       }
     }
+    Key timelineItemKey(_ConversationTimelineItem item) {
+      if (item.completedTurnEntries != null) {
+        return ValueKey('completed-turn-disclosure-${item.stableId}');
+      }
+      if (item.activities != null) {
+        return ValueKey(
+          'timeline-activity-${pageKey.storageKey}-${item.stableId}',
+        );
+      }
+      return ValueKey('timeline-entry-${pageKey.storageKey}-${item.stableId}');
+    }
+
+    int listIndexForTimelineIndex(int timelineIndex) =>
+        timelineIndex +
+        (activeTurnStartedAt != null && timelineIndex >= liveElapsedIndex
+            ? 1
+            : 0);
+    final timelineItemIndexes = <Key, int>{
+      for (var index = 0; index < timelineItems.length; index++)
+        timelineItemKey(timelineItems[index]): listIndexForTimelineIndex(index),
+    };
+
     return NotificationListener<ScrollMetricsNotification>(
       onNotification: (_) {
         if (active) onMetricsChanged();
@@ -5317,6 +5687,16 @@ class _ConversationTimeline extends StatelessWidget {
             (activeTurnStartedAt == null ? 0 : 1) +
             (hasLiveStatus ? 1 : 0) +
             (data.showFileChangeSummary ? 1 : 0),
+        findItemIndexCallback: (key) {
+          final timelineIndex = timelineItemIndexes[key];
+          if (timelineIndex != null) return timelineIndex;
+          if (key == ValueKey('file-change-summary-${pageKey.storageKey}')) {
+            return timelineItems.length +
+                (activeTurnStartedAt == null ? 0 : 1) +
+                (hasLiveStatus ? 1 : 0);
+          }
+          return null;
+        },
         separatorBuilder: (_, index) {
           if (activeTurnStartedAt != null && index == liveElapsedIndex) {
             return const Padding(
@@ -5341,7 +5721,24 @@ class _ConversationTimeline extends StatelessWidget {
               if (liveActivity == null) return const _LiveThinkingRow();
               return liveActivity.kind == 'commandExecution'
                   ? _LiveCommandRow(command: liveActivity.detail)
-                  : _LiveActivityRow(activity: liveActivity);
+                  : _LiveActivityRow(
+                      activity: liveActivity,
+                      onOpenSubagent: liveActivity.linkedThreadId == null
+                          ? null
+                          : () => onOpenSubagent(
+                              TimelineEntry(
+                                kind: TimelineKind.activity,
+                                title: liveActivity.label,
+                                detail: liveActivity.detail,
+                                createdAt: DateTime.now(),
+                                sourceItemId: liveActivity.itemId,
+                                activityKind: 'collaboration',
+                                activityStatus: liveActivity.status,
+                                linkedThreadId: liveActivity.linkedThreadId,
+                                activityPrompt: liveActivity.prompt,
+                              ),
+                            ),
+                    );
             }
             if (!data.showFileChangeSummary || tailIndex != 0) {
               throw StateError('Unexpected conversation timeline item index.');
@@ -5361,18 +5758,17 @@ class _ConversationTimeline extends StatelessWidget {
           final item = timelineItems[timelineIndex];
           if (item.completedTurnEntries case final entries?) {
             return _CompletedTurnDisclosure(
-              key: ValueKey('completed-turn-disclosure-${item.entryIndex}'),
+              key: timelineItemKey(item),
               duration: item.entry!,
               entries: entries,
               workspacePath: pageKey.workspace,
+              onOpenSubagent: onOpenSubagent,
             );
           }
           if (item.activities case final activities?) {
-            final activityId = item.entryIndex.toString();
+            final activityId = item.stableId;
             return _TimelineActivityList(
-              key: ValueKey(
-                'timeline-activity-${pageKey.storageKey}-$activityId',
-              ),
+              key: timelineItemKey(item),
               entries: activities,
               expanded: activityExpanded(activityId),
               onExpandedChanged: (expanded) =>
@@ -5380,7 +5776,12 @@ class _ConversationTimeline extends StatelessWidget {
             );
           }
           final entry = item.entry!;
-          return _TimelineEntry(entry, workspacePath: pageKey.workspace);
+          return _TimelineEntry(
+            entry,
+            key: timelineItemKey(item),
+            workspacePath: pageKey.workspace,
+            onOpenSubagent: onOpenSubagent,
+          );
         },
       ),
     );
@@ -12016,6 +12417,8 @@ class _ConversationTimelineItem {
   final List<TimelineEntry>? activities;
   final List<TimelineEntry>? completedTurnEntries;
   final int entryIndex;
+
+  String get stableId => entry?.id ?? activities!.first.id;
 }
 
 /// Couples a timeline entry to its stable source index while it is grouped.
@@ -12033,12 +12436,14 @@ class _CompletedTurnDisclosure extends StatefulWidget {
     required this.duration,
     required this.entries,
     required this.workspacePath,
+    required this.onOpenSubagent,
     super.key,
   });
 
   final TimelineEntry duration;
   final List<TimelineEntry> entries;
   final String? workspacePath;
+  final ValueChanged<TimelineEntry> onOpenSubagent;
 
   @override
   State<_CompletedTurnDisclosure> createState() =>
@@ -12047,7 +12452,7 @@ class _CompletedTurnDisclosure extends StatefulWidget {
 
 class _CompletedTurnDisclosureState extends State<_CompletedTurnDisclosure> {
   var _expanded = true;
-  final _expandedActivityGroups = <int>{};
+  final _expandedActivityGroups = <String>{};
 
   @override
   Widget build(BuildContext context) {
@@ -12119,7 +12524,7 @@ class _CompletedTurnDisclosureState extends State<_CompletedTurnDisclosure> {
 
   Widget _completedTurnDetail(_ConversationTimelineItem item) {
     if (item.activities case final activities?) {
-      final activityId = item.entryIndex;
+      final activityId = item.stableId;
       return _TimelineActivityList(
         key: ValueKey('completed-turn-activity-$activityId'),
         entries: activities,
@@ -12137,7 +12542,12 @@ class _CompletedTurnDisclosureState extends State<_CompletedTurnDisclosure> {
         },
       );
     }
-    return _TimelineEntry(item.entry!, workspacePath: widget.workspacePath);
+    return _TimelineEntry(
+      item.entry!,
+      key: ValueKey('completed-turn-entry-${item.stableId}'),
+      workspacePath: widget.workspacePath,
+      onOpenSubagent: widget.onOpenSubagent,
+    );
   }
 }
 
@@ -12291,11 +12701,56 @@ IconData _activityIcon(TimelineEntry entry) {
   return Icons.build_outlined;
 }
 
-class _TimelineEntry extends StatelessWidget {
-  const _TimelineEntry(this.entry, {required this.workspacePath});
+/// 缓存未变化消息的渲染子树，避免流式增量反复解析所有既有 Markdown。
+/// Caches unchanged message subtrees so streaming deltas do not repeatedly parse all prior Markdown.
+class _TimelineEntry extends StatefulWidget {
+  const _TimelineEntry(
+    this.entry, {
+    required this.workspacePath,
+    this.onOpenSubagent,
+    super.key,
+  });
 
   final TimelineEntry entry;
   final String? workspacePath;
+  final ValueChanged<TimelineEntry>? onOpenSubagent;
+
+  @override
+  State<_TimelineEntry> createState() => _TimelineEntryState();
+}
+
+class _TimelineEntryState extends State<_TimelineEntry> {
+  Widget? _cachedBody;
+
+  @override
+  void didUpdateWidget(covariant _TimelineEntry oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.entry, widget.entry) ||
+        oldWidget.workspacePath != widget.workspacePath) {
+      _cachedBody = null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => _cachedBody ??= _TimelineEntryBody(
+    widget.entry,
+    workspacePath: widget.workspacePath,
+    onOpenSubagent: widget.onOpenSubagent == null
+        ? null
+        : () => widget.onOpenSubagent?.call(widget.entry),
+  );
+}
+
+class _TimelineEntryBody extends StatelessWidget {
+  const _TimelineEntryBody(
+    this.entry, {
+    required this.workspacePath,
+    this.onOpenSubagent,
+  });
+
+  final TimelineEntry entry;
+  final String? workspacePath;
+  final VoidCallback? onOpenSubagent;
 
   /// 按时间线条目类型构建消息或系统事件视图。
   /// Builds a message or system-event view based on the timeline entry kind.
@@ -12321,7 +12776,10 @@ class _TimelineEntry extends StatelessWidget {
       return _UserMessageBubble(entry: entry);
     }
     if (entry.kind == TimelineKind.activity) {
-      return _ConversationStatusActivityRow(entry: entry);
+      return _ConversationStatusActivityRow(
+        entry: entry,
+        onOpenSubagent: onOpenSubagent,
+      );
     }
     if (entry.kind == TimelineKind.agent) {
       return entry.detail.isEmpty
@@ -12363,9 +12821,13 @@ class _TimelineEntry extends StatelessWidget {
 /// Keeps completed skill and subagent lifecycle events visible at their real
 /// position in the conversation instead of collapsing them as generic tools.
 class _ConversationStatusActivityRow extends StatelessWidget {
-  const _ConversationStatusActivityRow({required this.entry});
+  const _ConversationStatusActivityRow({
+    required this.entry,
+    this.onOpenSubagent,
+  });
 
   final TimelineEntry entry;
+  final VoidCallback? onOpenSubagent;
 
   @override
   Widget build(BuildContext context) {
@@ -12411,21 +12873,33 @@ class _ConversationStatusActivityRow extends StatelessWidget {
       return Semantics(
         key: ValueKey('conversation-activity-${entry.sourceItemId ?? ''}'),
         label: semantics,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(2, 2, 6, 2),
-          child: Row(
-            children: [
-              Flexible(child: _CollaborationActivityBadge(label: entry.title)),
-              if (entry.detail.isNotEmpty) ...[
-                const SizedBox(width: 7),
-                Text(
-                  entry.detail,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.bodyMedium?.copyWith(color: statusColor),
+        button: onOpenSubagent != null && entry.linkedThreadId != null,
+        child: InkWell(
+          key: const Key('subagent-activity-open'),
+          onTap: entry.linkedThreadId == null ? null : onOpenSubagent,
+          borderRadius: BorderRadius.circular(14),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(2, 2, 6, 2),
+            child: Row(
+              children: [
+                Flexible(
+                  child: _CollaborationActivityBadge(label: entry.title),
                 ),
+                if (entry.detail.isNotEmpty) ...[
+                  const SizedBox(width: 7),
+                  Text(
+                    entry.detail,
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodyMedium?.copyWith(color: statusColor),
+                  ),
+                ],
+                if (entry.linkedThreadId != null) ...[
+                  const SizedBox(width: 4),
+                  Icon(Icons.chevron_right, size: 16, color: palette.muted),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       );
@@ -12579,9 +13053,10 @@ String _messageTimeLabel(DateTime createdAt) {
 /// Displays a server-declared current activity. Unlike the generic thinking
 /// row, this wording is only used when App Server has identified the item.
 class _LiveActivityRow extends StatelessWidget {
-  const _LiveActivityRow({required this.activity});
+  const _LiveActivityRow({required this.activity, this.onOpenSubagent});
 
   final LiveTurnActivity activity;
+  final VoidCallback? onOpenSubagent;
 
   @override
   Widget build(BuildContext context) {
@@ -12596,26 +13071,36 @@ class _LiveActivityRow extends StatelessWidget {
         key: const Key('live-activity-row'),
         liveRegion: true,
         label: semantics,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(2, 2, 6, 2),
-          child: Row(
-            children: [
-              Flexible(
-                child: _CollaborationActivityBadge(label: activity.label),
-              ),
-              if (detail.isNotEmpty) ...[
-                const SizedBox(width: 7),
-                _LiveActivityShimmer(
-                  shimmerKey: const Key('live-activity-shimmer'),
-                  child: Text(
-                    detail,
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodyMedium?.copyWith(color: palette.muted),
-                  ),
+        button: onOpenSubagent != null,
+        child: InkWell(
+          key: const Key('live-subagent-activity-open'),
+          onTap: onOpenSubagent,
+          borderRadius: BorderRadius.circular(14),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(2, 2, 6, 2),
+            child: Row(
+              children: [
+                Flexible(
+                  child: _CollaborationActivityBadge(label: activity.label),
                 ),
+                if (detail.isNotEmpty) ...[
+                  const SizedBox(width: 7),
+                  _LiveActivityShimmer(
+                    shimmerKey: const Key('live-activity-shimmer'),
+                    child: Text(
+                      detail,
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodyMedium?.copyWith(color: palette.muted),
+                    ),
+                  ),
+                ],
+                if (onOpenSubagent != null) ...[
+                  const SizedBox(width: 4),
+                  Icon(Icons.chevron_right, size: 16, color: palette.muted),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       );

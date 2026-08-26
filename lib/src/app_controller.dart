@@ -17,6 +17,7 @@ import 'domain/git_project_status.dart';
 import 'domain/pending_approval.dart';
 import 'domain/runtime_log_entry.dart';
 import 'domain/scheduled_task.dart';
+import 'domain/subagent_thread_view.dart';
 import 'domain/task_plan.dart';
 import 'domain/timeline_entry.dart';
 import 'domain/workspace_configuration.dart';
@@ -53,12 +54,18 @@ class LiveTurnActivity {
     required this.kind,
     required this.label,
     this.detail = '',
+    this.linkedThreadId,
+    this.prompt = '',
+    this.status,
   });
 
   final String itemId;
   final String kind;
   final String label;
   final String detail;
+  final String? linkedThreadId;
+  final String prompt;
+  final String? status;
 }
 
 /// 会与另一 Codex 客户端争抢 writer 的任务操作。
@@ -359,6 +366,11 @@ class CodexController extends ChangeNotifier {
   final List<ScheduledTask> _scheduledTasks = [];
   final Map<String, Timer> _scheduledTaskTimers = {};
   final Map<String, int> _agentEntryIndexByItem = {};
+  final LinkedHashMap<String, SubagentThreadView> _subagentThreadViews =
+      LinkedHashMap();
+  final Map<String, int> _subagentViewRequests = {};
+  final Map<String, Timer> _subagentRefreshTimers = {};
+  int _subagentViewRequestSequence = 0;
   final Set<String> _completedCommandItemIds = {};
   Timer? _deltaNotificationTimer;
   Timer? _historySaveTimer;
@@ -369,6 +381,7 @@ class CodexController extends ChangeNotifier {
   bool _historySaveFailed = false;
   bool _disposed = false;
   bool _startingRuntime = false;
+  bool _creatingWorkspace = false;
   // Thread history restoration should not be treated as live conversation
   // output by the presentation layer.  The workspace uses this to position
   // the restored timeline without playing a smooth scroll animation.
@@ -387,11 +400,17 @@ class CodexController extends ChangeNotifier {
   int _threadRefreshRequest = 0;
   int _archivedThreadRefreshRequest = 0;
   int _mcpServerRefreshRequest = 0;
+  int _pluginRefreshRequest = 0;
+  int _marketplaceRefreshRequest = 0;
+  int _gitProjectRefreshRequest = 0;
+  int _gitDiffRefreshRequest = 0;
+  int _codexConfigurationRefreshRequest = 0;
   final Set<String> _unarchivingThreadIds = {};
   final Set<String> _archivingThreadIds = {};
   final Set<String> _deletingThreadIds = {};
   static const _maximumRuntimeLogEntries = 200;
   static const _maximumThreadViewCacheEntries = 8;
+  static const _maximumSubagentThreadViewCacheEntries = 8;
   static const _runtimeReconnectDelays = [
     Duration(seconds: 1),
     Duration(seconds: 2),
@@ -435,6 +454,58 @@ class CodexController extends ChangeNotifier {
   final Map<String, _FailedTurnRetry> _failedTurnRetries = {};
   String? _retryingFailedTurnThreadId;
   String? activeThreadId;
+
+  /// 返回已加载的子智能体详情；未打开过的线程不会隐式触发读取。
+  /// Returns a loaded subagent detail view without implicitly starting I/O.
+  SubagentThreadView? subagentThreadView(String threadId) {
+    final view = _subagentThreadViews.remove(threadId);
+    if (view != null) _subagentThreadViews[threadId] = view;
+    return view;
+  }
+
+  /// Retains recently inspected child threads while bounding their complete histories.
+  /// 保留最近检查的子线程，同时限制完整历史占用的内存。
+  void _storeSubagentThreadView(SubagentThreadView view) {
+    _subagentThreadViews
+      ..remove(view.threadId)
+      ..[view.threadId] = view;
+    while (_subagentThreadViews.length >
+        _maximumSubagentThreadViewCacheEntries) {
+      final evictedThreadId = _subagentThreadViews.keys.first;
+      _subagentThreadViews.remove(evictedThreadId);
+      _subagentViewRequests.remove(evictedThreadId);
+      _subagentRefreshTimers.remove(evictedThreadId)?.cancel();
+    }
+  }
+
+  /// Invalidates child-thread reads and removes views owned by the prior workspace.
+  /// 使子线程读取失效，并移除属于上一工作区的检查器视图。
+  void _clearSubagentThreadViews() {
+    for (final timer in _subagentRefreshTimers.values) {
+      timer.cancel();
+    }
+    _subagentRefreshTimers.clear();
+    _subagentViewRequests.clear();
+    _subagentThreadViews.clear();
+  }
+
+  /// 结束属于旧运行时连接的子线程读取，并保留已加载内容供检查器重试。
+  /// Ends child-thread reads owned by an obsolete runtime connection while retaining loaded content for retry.
+  void _invalidateSubagentViewsForRuntimeChange() {
+    for (final timer in _subagentRefreshTimers.values) {
+      timer.cancel();
+    }
+    _subagentRefreshTimers.clear();
+    _subagentViewRequests.clear();
+    final views = _subagentThreadViews.values.toList(growable: false);
+    for (final view in views) {
+      _subagentThreadViews[view.threadId] = view.copyWith(
+        status: view.status == 'working' ? 'stopped' : view.status,
+        loading: false,
+        error: '运行时连接已变化，请重试读取子线程。',
+      );
+    }
+  }
 
   /// Whether the completion reminder for a thread has been viewed.
   bool isCompletedThreadAcknowledged(String threadId) =>
@@ -988,19 +1059,30 @@ class CodexController extends ChangeNotifier {
   Future<void> refreshGitProject() async {
     final workspace = workspacePath;
     if (workspace == null) return;
+    final request = ++_gitProjectRefreshRequest;
     gitProjectLoading = true;
     gitProjectError = null;
     if (!_disposed) notifyListeners();
     try {
       final next = await _gitProjectService.inspect(workspace);
-      if (_disposed || workspacePath != workspace) return;
+      if (_disposed ||
+          request != _gitProjectRefreshRequest ||
+          workspacePath != workspace) {
+        return;
+      }
       gitProjectStatus = next;
       gitProjectError = next.error;
     } catch (error) {
-      if (_disposed || workspacePath != workspace) return;
+      if (_disposed ||
+          request != _gitProjectRefreshRequest ||
+          workspacePath != workspace) {
+        return;
+      }
       gitProjectError = _messageOf(error);
     } finally {
-      if (!_disposed && workspacePath == workspace) {
+      if (!_disposed &&
+          request == _gitProjectRefreshRequest &&
+          workspacePath == workspace) {
         gitProjectLoading = false;
         notifyListeners();
       }
@@ -1012,6 +1094,7 @@ class CodexController extends ChangeNotifier {
   Future<void> showGitDiff(GitProjectChange change) async {
     final workspace = workspacePath;
     if (workspace == null) return;
+    final request = ++_gitDiffRefreshRequest;
     gitDiffLoading = true;
     gitDiffChange = change;
     gitDiff = null;
@@ -1022,19 +1105,28 @@ class CodexController extends ChangeNotifier {
         workspace: workspace,
         change: change,
       );
-      if (_disposed || workspacePath != workspace || gitDiffChange != change) {
+      if (_disposed ||
+          request != _gitDiffRefreshRequest ||
+          workspacePath != workspace ||
+          gitDiffChange != change) {
         return;
       }
       gitDiff = next.content;
       gitDiffTruncated = next.truncated;
     } catch (error) {
-      if (_disposed || workspacePath != workspace || gitDiffChange != change) {
+      if (_disposed ||
+          request != _gitDiffRefreshRequest ||
+          workspacePath != workspace ||
+          gitDiffChange != change) {
         return;
       }
       gitDiff = '无法读取 Git Diff：${_messageOf(error)}';
       gitDiffTruncated = false;
     } finally {
-      if (!_disposed && workspacePath == workspace && gitDiffChange == change) {
+      if (!_disposed &&
+          request == _gitDiffRefreshRequest &&
+          workspacePath == workspace &&
+          gitDiffChange == change) {
         gitDiffLoading = false;
         notifyListeners();
       }
@@ -1218,13 +1310,32 @@ class CodexController extends ChangeNotifier {
       (status == RuntimeStatus.stopped ||
           (status == RuntimeStatus.failed && !_server.isRunning));
 
-  /// 指示当前任务状态是否允许新建或切换工作区并重建运行时连接。
-  /// Indicates whether the current task state permits creating or switching workspaces and rebuilding the runtime connection.
+  /// 指示当前任务状态是否允许切换工作区并重建运行时连接。
+  /// Indicates whether the current task state permits switching workspaces and rebuilding the runtime connection.
   bool get canChangePrimaryWorkspace =>
       !_startingRuntime &&
       status != RuntimeStatus.starting &&
       !hasRunningTasks &&
       !pluginSaving;
+
+  /// 创建项目只写入本地项目列表，不依赖当前运行时或任务状态。
+  /// Project creation only updates the local project list and is independent of the active runtime or task.
+  bool get canCreateWorkspace => !_creatingWorkspace;
+
+  /// 指示是否正在校验并保存一个新项目，供界面避免重复提交。
+  /// Indicates whether a new project is being validated and saved so the UI can prevent duplicate submissions.
+  bool get creatingWorkspace => _creatingWorkspace;
+
+  /// 说明当前为什么暂时不能切换项目。
+  /// Explains why switching projects is temporarily unavailable.
+  String? get changePrimaryWorkspaceDisabledReason {
+    if (pluginSaving) return '请等待扩展配置更新完成。';
+    if (hasRunningTasks) return '请等待当前或后台任务完成。';
+    if (_startingRuntime || status == RuntimeStatus.starting) {
+      return '运行时正在自动连接，请稍后再试。';
+    }
+    return null;
+  }
 
   /// 指示本地 App Server 是否可以停止。
   /// Indicates whether the local App Server can be stopped.
@@ -1358,11 +1469,20 @@ class CodexController extends ChangeNotifier {
   /// Asks App Server to resolve configuration for the current workspace and retains only non-sensitive display fields.
   Future<void> refreshCodexConfiguration({bool notify = true}) async {
     if (!_server.isRunning) return;
+    final request = ++_codexConfigurationRefreshRequest;
+    final workspace = workspacePath;
+    final runtimeEpoch = _runtimeConnectionEpoch;
     codexConfigurationLoading = true;
     codexConfigurationError = null;
     if (notify && !_disposed) notifyListeners();
     try {
-      final result = await _server.readConfig(workingDirectory: workspacePath);
+      final result = await _server.readConfig(workingDirectory: workspace);
+      if (_disposed ||
+          request != _codexConfigurationRefreshRequest ||
+          runtimeEpoch != _runtimeConnectionEpoch ||
+          workspacePath != workspace) {
+        return;
+      }
       final config = JsonMap.from(result['config'] as Map);
       final origins = result['origins'];
       _configuredModelId = _nonEmptyConfigString(
@@ -1378,6 +1498,12 @@ class CodexController extends ChangeNotifier {
       );
       codexConfigurationRead = true;
     } catch (error) {
+      if (_disposed ||
+          request != _codexConfigurationRefreshRequest ||
+          runtimeEpoch != _runtimeConnectionEpoch ||
+          workspacePath != workspace) {
+        return;
+      }
       _configuredModelId = null;
       _configuredProviderId = null;
       _configuredModelSource = null;
@@ -1385,14 +1511,20 @@ class CodexController extends ChangeNotifier {
       codexConfigurationRead = false;
       codexConfigurationError = _messageOf(error);
     } finally {
-      codexConfigurationLoading = false;
-      if (notify && !_disposed) notifyListeners();
+      if (!_disposed &&
+          request == _codexConfigurationRefreshRequest &&
+          runtimeEpoch == _runtimeConnectionEpoch &&
+          workspacePath == workspace) {
+        codexConfigurationLoading = false;
+        if (notify) notifyListeners();
+      }
     }
   }
 
   /// 清除只属于已停止 App Server 的配置与模型快照，同时保留用户偏好。
   /// Clears configuration and model snapshots owned by a stopped App Server while retaining user preferences.
   void _clearRuntimeResolvedConfiguration() {
+    _codexConfigurationRefreshRequest++;
     _configuredModelId = null;
     _configuredProviderId = null;
     _configuredModelSource = null;
@@ -1469,7 +1601,10 @@ class CodexController extends ChangeNotifier {
     _updateCurrentWorkspaceConfiguration();
     _clearRuntimeResolvedConfiguration();
     _resetMcpServersForWorkspaceChange();
+    _gitProjectRefreshRequest++;
+    _gitDiffRefreshRequest++;
     _threadViewCache.clear();
+    _clearSubagentThreadViews();
     _runningThreadIds.clear();
     _runningTurnIdsByThread.clear();
     _pendingNetworkRetryEntriesByThread.clear();
@@ -1549,10 +1684,10 @@ class CodexController extends ChangeNotifier {
     }
     if (!canChangePrimaryWorkspace) {
       lastError = pluginSaving
-          ? '请等待扩展配置更新完成后再新建或切换工作区。'
-          : status == RuntimeStatus.running
-          ? '请等待当前任务完成后再新建或切换工作区。'
-          : '运行时正在自动连接，请稍后再新建或切换工作区。';
+          ? '请等待扩展配置更新完成后再切换工作区。'
+          : hasRunningTasks
+          ? '请等待当前或后台任务完成后再切换工作区。'
+          : '运行时正在自动连接，请稍后再切换工作区。';
       _add(TimelineKind.error, '无法切换工作区', lastError!);
       notifyListeners();
       return false;
@@ -1583,10 +1718,87 @@ class CodexController extends ChangeNotifier {
     await resumeThread(thread);
   }
 
-  /// 用所选主目录创建并打开工作区；已保存目录会直接切换，不会生成重复记录。
-  /// Creates and opens a workspace from a primary directory, switching to an existing saved entry without duplication.
-  Future<bool> createWorkspace(String path) =>
-      selectWorkspaceAndReconnect(path);
+  /// 保存一个可切换项目，但不改变活动工作区、任务或运行时连接。
+  /// Saves a switchable project without changing the active workspace, tasks, or runtime connection.
+  Future<bool> createWorkspace(String path, {String name = ''}) async {
+    final normalized = path.trim();
+    if (normalized.isEmpty || _creatingWorkspace) return false;
+    _creatingWorkspace = true;
+    if (!_disposed) notifyListeners();
+    try {
+      final directory = Directory(normalized);
+      if (!await directory.exists()) {
+        lastError = '该项目目录不存在：$normalized';
+        return false;
+      }
+      final canonicalPath = await directory.resolveSymbolicLinks();
+      if (await _isSystemTemporaryDirectory(canonicalPath)) {
+        lastError = '系统临时目录不能作为项目，请选择实际项目文件夹。';
+        return false;
+      }
+
+      final trimmedName = name.trim();
+      final existingIndex = _workspaceConfigurations.indexWhere(
+        (configuration) => configuration.primaryPath == canonicalPath,
+      );
+      WorkspaceConfiguration? previousConfiguration;
+      String? newProjectId;
+      if (existingIndex < 0) {
+        newProjectId = _newWorkspaceProjectId();
+        _workspaceConfigurations.add(
+          WorkspaceConfiguration(
+            id: newProjectId,
+            primaryPath: canonicalPath,
+            name: trimmedName.isEmpty ? null : trimmedName,
+          ),
+        );
+      } else if (trimmedName.isNotEmpty) {
+        final existing = _workspaceConfigurations[existingIndex];
+        previousConfiguration = existing;
+        _workspaceConfigurations[existingIndex] = WorkspaceConfiguration(
+          id: existing.id,
+          primaryPath: existing.primaryPath,
+          additionalPaths: existing.additionalPaths,
+          name: trimmedName,
+        );
+      }
+      try {
+        if (newProjectId != null) {
+          await _conversationHistoryStore.save(
+            workspace: newProjectId,
+            snapshot: const ConversationHistorySnapshot(
+              threads: [],
+              archivedThreads: [],
+              entries: [],
+              fileChanges: [],
+              historyInitialized: true,
+            ),
+          );
+        }
+        await _saveWorkspaceConfigurations();
+      } catch (error) {
+        if (newProjectId != null) {
+          _workspaceConfigurations.removeWhere(
+            (configuration) => configuration.primaryPath == canonicalPath,
+          );
+        } else if (previousConfiguration != null) {
+          _workspaceConfigurations[existingIndex] = previousConfiguration;
+        }
+        lastError = '无法保存项目：${_messageOf(error)}';
+        if (!_disposed) notifyListeners();
+        return false;
+      }
+      lastError = null;
+      if (!_disposed) notifyListeners();
+      return true;
+    } on FileSystemException catch (error) {
+      lastError = '无法读取项目目录：${_messageOf(error)}';
+      return false;
+    } finally {
+      _creatingWorkspace = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
 
   /// 从工作区列表移除一个非当前记录；只删除本地偏好，不删除目录或历史缓存。
   /// Removes a non-active workspace record from local preferences without deleting directories or cached history.
@@ -1654,11 +1866,14 @@ class CodexController extends ChangeNotifier {
     );
     _pinnedWorkspacePaths.remove(primary);
     _threadViewCache.clear();
+    _clearSubagentThreadViews();
     _runningThreadIds.clear();
     _clearThreadWriterConflict();
     _clearArchivedThreadRestore();
     workspacePath = null;
     _resetMcpServersForWorkspaceChange();
+    _gitProjectRefreshRequest++;
+    _gitDiffRefreshRequest++;
     _additionalWorkspacePaths.clear();
     activeThreadId = null;
     _activeThreadAttached = false;
@@ -1906,6 +2121,7 @@ class CodexController extends ChangeNotifier {
     }
 
     final connectionEpoch = ++_runtimeConnectionEpoch;
+    _invalidateSubagentViewsForRuntimeChange();
     _runtimeReconnectTimer?.cancel();
     _runtimeReconnectTimer = null;
     _startingRuntime = true;
@@ -2467,6 +2683,7 @@ class CodexController extends ChangeNotifier {
   Future<void> stopRuntime() async {
     if (status == RuntimeStatus.stopped && !_server.isRunning) return;
     _runtimeConnectionEpoch++;
+    _invalidateSubagentViewsForRuntimeChange();
     _runtimeReconnectTimer?.cancel();
     _runtimeReconnectTimer = null;
     try {
@@ -2732,18 +2949,24 @@ class CodexController extends ChangeNotifier {
   /// Refreshes installed and available plugins from the local Codex CLI.
   Future<void> refreshPlugins() async {
     if (pluginSaving) return;
+    final request = ++_pluginRefreshRequest;
     pluginActionError = null;
     pluginActionWarning = null;
     pluginsLoading = true;
     pluginsError = null;
     if (!_disposed) notifyListeners();
     try {
-      plugins = await _pluginStore.listPlugins();
+      final next = await _pluginStore.listPlugins();
+      if (_disposed || request != _pluginRefreshRequest) return;
+      plugins = next;
     } catch (error) {
+      if (_disposed || request != _pluginRefreshRequest) return;
       pluginsError = _messageOf(error);
     } finally {
-      pluginsLoading = false;
-      if (!_disposed) notifyListeners();
+      if (!_disposed && request == _pluginRefreshRequest) {
+        pluginsLoading = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -2799,16 +3022,22 @@ class CodexController extends ChangeNotifier {
   /// Refreshes marketplace sources from the local Codex CLI.
   Future<void> refreshMarketplaces() async {
     if (pluginSaving) return;
+    final request = ++_marketplaceRefreshRequest;
     marketplacesLoading = true;
     marketplacesError = null;
     if (!_disposed) notifyListeners();
     try {
-      marketplaces = await _pluginStore.listMarketplaces();
+      final next = await _pluginStore.listMarketplaces();
+      if (_disposed || request != _marketplaceRefreshRequest) return;
+      marketplaces = next;
     } catch (error) {
+      if (_disposed || request != _marketplaceRefreshRequest) return;
       marketplacesError = _messageOf(error);
     } finally {
-      marketplacesLoading = false;
-      if (!_disposed) notifyListeners();
+      if (!_disposed && request == _marketplaceRefreshRequest) {
+        marketplacesLoading = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -3672,6 +3901,8 @@ class CodexController extends ChangeNotifier {
       }
     }
 
+    _observeSubagentEvent(event);
+
     switch (event.method) {
       case 'error':
         _recordNetworkRetryActivity(event.params);
@@ -3779,6 +4010,8 @@ class CodexController extends ChangeNotifier {
       case 'runtime/exited':
         // 只有进程退出才会使连接失败；单个 turn 失败仍可继续复用当前连接。
         // Only process exit fails the connection; an individual failed turn remains recoverable in-place.
+        _runtimeConnectionEpoch++;
+        _invalidateSubagentViewsForRuntimeChange();
         for (final turn in _runningTurnIdsByThread.entries.toList()) {
           _markNetworkRetryActivitiesHistorical(
             threadId: turn.key,
@@ -3810,6 +4043,39 @@ class CodexController extends ChangeNotifier {
         break;
     }
     notifyListeners();
+  }
+
+  /// Keeps an already-open subagent inspector synchronized with its thread
+  /// while the parent conversation remains focused.
+  void _observeSubagentEvent(ServerEvent event) {
+    final threadId = _threadIdFromEvent(event.params);
+    if (threadId == null) return;
+    final view = _subagentThreadViews[threadId];
+    if (view == null) return;
+    switch (event.method) {
+      case 'turn/started':
+      case 'item/started':
+        _storeSubagentThreadView(
+          view.copyWith(status: 'working', clearError: true),
+        );
+      case 'item/completed':
+        _scheduleSubagentRefresh(threadId);
+      case 'turn/completed':
+        final outcome = _turnCompletionOutcome(
+          _completionStatusFromParams(event.params),
+        );
+        _storeSubagentThreadView(
+          view.copyWith(
+            status: switch (outcome) {
+              _TurnCompletionOutcome.succeeded => 'completed',
+              _TurnCompletionOutcome.failed => 'failed',
+              _TurnCompletionOutcome.stopped => 'stopped',
+              _TurnCompletionOutcome.unknown => view.status,
+            },
+          ),
+        );
+        _scheduleSubagentRefresh(threadId);
+    }
   }
 
   /// Records each App Server-managed network retry as a Codex-style timeline
@@ -4384,6 +4650,9 @@ class CodexController extends ChangeNotifier {
         kind: type,
         label: _collaborationName(item),
         detail: status.$2,
+        linkedThreadId: _collaborationThreadId(item),
+        prompt: _label(item['prompt']),
+        status: status.$1,
       );
     }
     final (label, detail) = switch (type) {
@@ -4797,7 +5066,24 @@ class CodexController extends ChangeNotifier {
       detail: status.$2,
       activityKind: 'collaboration',
       activityStatus: status.$1,
+      linkedThreadId: _collaborationThreadId(item),
+      activityPrompt: _label(item['prompt']),
     );
+    final childThreadId = _collaborationThreadId(item);
+    final childView = childThreadId == null
+        ? null
+        : _subagentThreadViews[childThreadId];
+    if (childThreadId != null && childView != null) {
+      final prompt = _label(item['prompt']);
+      _storeSubagentThreadView(
+        childView.copyWith(
+          title: title,
+          prompt: prompt.isEmpty ? childView.prompt : prompt,
+          status: status.$1,
+        ),
+      );
+      _scheduleSubagentRefresh(childThreadId);
+    }
     return true;
   }
 
@@ -4807,6 +5093,8 @@ class CodexController extends ChangeNotifier {
     required String detail,
     required String activityKind,
     required String activityStatus,
+    String? linkedThreadId,
+    String? activityPrompt,
   }) {
     final index = _conversationActivityIndex(sourceItemId);
     if (index >= 0) {
@@ -4815,6 +5103,8 @@ class CodexController extends ChangeNotifier {
         detail: detail,
         activityKind: activityKind,
         activityStatus: activityStatus,
+        linkedThreadId: linkedThreadId,
+        activityPrompt: activityPrompt,
       );
       _scheduleConversationHistorySave();
       return;
@@ -4826,6 +5116,8 @@ class CodexController extends ChangeNotifier {
       sourceItemId: sourceItemId.isEmpty ? null : sourceItemId,
       activityKind: activityKind,
       activityStatus: activityStatus,
+      linkedThreadId: linkedThreadId,
+      activityPrompt: activityPrompt,
     );
   }
 
@@ -4849,6 +5141,14 @@ class CodexController extends ChangeNotifier {
       if (value.isNotEmpty) return value;
     }
     return '';
+  }
+
+  String? _collaborationThreadId(JsonMap item) {
+    for (final key in ['newThreadId', 'receiverThreadId']) {
+      final value = _label(item[key]);
+      if (value.isNotEmpty) return value;
+    }
+    return null;
   }
 
   String _collaborationName(JsonMap item) {
@@ -5089,6 +5389,248 @@ class CodexController extends ChangeNotifier {
       resumeResult: {
         'thread': {'turns': firstPage['data']},
         'turnsBackwardsCursor': firstPage['nextCursor'],
+      },
+    );
+  }
+
+  /// 分页读取子智能体线程并生成只读检查器内容，不获取该线程的 writer。
+  /// Loads a subagent thread into the read-only inspector without acquiring its writer.
+  Future<void> loadSubagentThread({
+    required String threadId,
+    required String title,
+    String prompt = '',
+    String status = 'working',
+    bool force = false,
+  }) async {
+    if (_disposed || threadId.trim().isEmpty) return;
+    final existing = subagentThreadView(threadId);
+    if (!_server.isRunning) {
+      _storeSubagentThreadView(
+        SubagentThreadView(
+          threadId: threadId,
+          title: title.isEmpty ? existing?.title ?? '子智能体' : title,
+          prompt: prompt.isEmpty ? existing?.prompt ?? '' : prompt,
+          status: status.isEmpty ? existing?.status ?? 'working' : status,
+          entries: existing?.entries ?? const [],
+          error: 'Codex 运行时未连接。恢复连接后重试即可读取子线程。',
+        ),
+      );
+      notifyListeners();
+      return;
+    }
+    if (!force &&
+        existing != null &&
+        !existing.loading &&
+        existing.error == null) {
+      return;
+    }
+    final request = ++_subagentViewRequestSequence;
+    final workspace = workspacePath;
+    final runtimeEpoch = _runtimeConnectionEpoch;
+    _subagentViewRequests[threadId] = request;
+    _storeSubagentThreadView(
+      SubagentThreadView(
+        threadId: threadId,
+        title: title.isEmpty ? existing?.title ?? '子智能体' : title,
+        prompt: prompt.isEmpty ? existing?.prompt ?? '' : prompt,
+        status: status.isEmpty ? existing?.status ?? 'working' : status,
+        entries: existing?.entries ?? const [],
+        loading: true,
+      ),
+    );
+    notifyListeners();
+    try {
+      final history = await _loadThreadHistoryFromPages(threadId: threadId);
+      if (!_isCurrentSubagentViewRequest(
+        threadId: threadId,
+        request: request,
+        workspace: workspace,
+        runtimeEpoch: runtimeEpoch,
+      )) {
+        return;
+      }
+      _storeSubagentThreadView(
+        SubagentThreadView(
+          threadId: threadId,
+          title: title.isEmpty ? existing?.title ?? '子智能体' : title,
+          prompt: prompt.isEmpty ? existing?.prompt ?? '' : prompt,
+          status: _subagentHistoryStatus(history, fallback: status),
+          entries: _subagentHistoryEntries(history),
+        ),
+      );
+    } catch (error) {
+      if (!_isCurrentSubagentViewRequest(
+        threadId: threadId,
+        request: request,
+        workspace: workspace,
+        runtimeEpoch: runtimeEpoch,
+      )) {
+        return;
+      }
+      final current = _subagentThreadViews[threadId];
+      if (current == null) return;
+      _storeSubagentThreadView(
+        current.copyWith(loading: false, error: _messageOf(error)),
+      );
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  bool _isCurrentSubagentViewRequest({
+    required String threadId,
+    required int request,
+    required String? workspace,
+    required int runtimeEpoch,
+  }) =>
+      !_disposed &&
+      _subagentViewRequests[threadId] == request &&
+      workspacePath == workspace &&
+      _runtimeConnectionEpoch == runtimeEpoch;
+
+  /// 将子智能体历史压缩为检查器需要的用户可见记录。
+  /// Reduces subagent history to the user-visible records needed by the inspector.
+  List<TimelineEntry> _subagentHistoryEntries(JsonMap history) {
+    final result = <TimelineEntry>[];
+    final turns = history['turns'];
+    if (turns is! Iterable) return result;
+    for (final rawTurn in turns.whereType<Map>()) {
+      final turn = JsonMap.from(rawTurn);
+      final createdAt = _turnStartedAt(turn) ?? DateTime.now();
+      final items = turn['items'];
+      if (items is Iterable) {
+        for (final rawItem in items.whereType<Map>()) {
+          final item = JsonMap.from(rawItem);
+          final type = _label(item['type']);
+          TimelineEntry? entry;
+          switch (type) {
+            case 'agentMessage':
+              final text = item['text']?.toString() ?? _findText(item);
+              if (text.isNotEmpty) {
+                entry = TimelineEntry(
+                  kind: TimelineKind.agent,
+                  title: '子智能体',
+                  detail: text,
+                  createdAt: createdAt,
+                  sourceItemId: _label(item['id']),
+                );
+              }
+            case 'reasoning':
+              final text = _findText(item['summary']);
+              if (text.isNotEmpty) {
+                entry = TimelineEntry(
+                  kind: TimelineKind.system,
+                  title: '分析',
+                  detail: text,
+                  createdAt: createdAt,
+                  sourceItemId: _label(item['id']),
+                );
+              }
+            case 'commandExecution':
+              final command = _label(item['command']);
+              if (command.isNotEmpty) {
+                entry = TimelineEntry(
+                  kind: TimelineKind.command,
+                  title: '运行命令',
+                  detail: command,
+                  createdAt: createdAt,
+                  sourceItemId: _label(item['id']),
+                );
+              }
+            case 'fileChange':
+              final changes = item['changes'];
+              final count = changes is Iterable ? changes.length : 0;
+              entry = TimelineEntry(
+                kind: TimelineKind.tool,
+                title: '修改文件',
+                detail: count == 0 ? '' : '$count 个文件',
+                createdAt: createdAt,
+                sourceItemId: _label(item['id']),
+              );
+            case 'collabToolCall':
+              final collaborationStatus = _collaborationStatus(
+                item,
+                live: false,
+              );
+              entry = TimelineEntry(
+                kind: TimelineKind.activity,
+                title: _collaborationName(item),
+                detail: collaborationStatus.$2,
+                createdAt: createdAt,
+                sourceItemId: _collaborationActivityId(item),
+                activityKind: 'collaboration',
+                activityStatus: collaborationStatus.$1,
+                linkedThreadId: _collaborationThreadId(item),
+                activityPrompt: _label(item['prompt']),
+              );
+          }
+          if (entry != null) result.add(entry);
+        }
+      }
+      final duration = _historicTurnDuration(turn);
+      if (duration != null) {
+        result.add(
+          TimelineEntry(
+            kind: TimelineKind.elapsed,
+            title: '已处理 ${_formatTurnDuration(duration)}',
+            detail: '',
+            createdAt: createdAt,
+          ),
+        );
+      }
+    }
+    return result;
+  }
+
+  Duration? _historicTurnDuration(JsonMap turn) {
+    final durationMs = turn['durationMs'];
+    if (durationMs is num && durationMs >= 0) {
+      return Duration(milliseconds: durationMs.round());
+    }
+    final startedAt = _turnStartedAt(turn);
+    final completedAt = _turnCompletedAt(turn);
+    return startedAt == null || completedAt == null
+        ? null
+        : completedAt.difference(startedAt);
+  }
+
+  String _subagentHistoryStatus(JsonMap history, {required String fallback}) {
+    final turns = history['turns'];
+    if (turns is! Iterable || turns.isEmpty) return fallback;
+    final last = turns.whereType<Map>().lastOrNull;
+    final statusValue = last?['status'];
+    final raw = _normalizedActivityValue(
+      statusValue is Map ? statusValue['type'] : statusValue,
+    );
+    return switch (raw) {
+      'completed' ||
+      'complete' ||
+      'done' ||
+      'success' ||
+      'succeeded' => 'completed',
+      'failed' || 'error' || 'systemerror' => 'failed',
+      'interrupted' || 'cancelled' || 'canceled' || 'stopped' => 'stopped',
+      'inprogress' || 'running' || 'active' => 'working',
+      _ => fallback,
+    };
+  }
+
+  void _scheduleSubagentRefresh(String threadId) {
+    final view = _subagentThreadViews[threadId];
+    if (view == null) return;
+    _subagentRefreshTimers.remove(threadId)?.cancel();
+    _subagentRefreshTimers[threadId] = Timer(
+      const Duration(milliseconds: 160),
+      () {
+        _subagentRefreshTimers.remove(threadId);
+        unawaited(
+          loadSubagentThread(
+            threadId: threadId,
+            title: view.title,
+            prompt: view.prompt,
+            status: view.status,
+            force: true,
+          ),
+        );
       },
     );
   }
@@ -5695,16 +6237,7 @@ class CodexController extends ChangeNotifier {
   Future<void> _saveAdditionalWorkspacePaths() {
     _updateCurrentWorkspaceConfiguration();
     final snapshot = List<String>.unmodifiable(_additionalWorkspacePaths);
-    final workspaceSnapshot = List<WorkspaceConfiguration>.unmodifiable(
-      _workspaceConfigurations.map(
-        (configuration) => WorkspaceConfiguration(
-          id: configuration.id,
-          primaryPath: configuration.primaryPath,
-          additionalPaths: configuration.additionalPaths,
-          name: configuration.name,
-        ),
-      ),
-    );
+    final workspaceSnapshot = _workspaceConfigurationSnapshot();
     final previousSave = _workspaceRootsSave;
     final nextSave = () async {
       try {
@@ -5718,6 +6251,37 @@ class CodexController extends ChangeNotifier {
     _workspaceRootsSave = nextSave;
     return nextSave;
   }
+
+  /// 串行保存项目列表，不触碰当前项目的旧版附加目录镜像。
+  /// Serializes the project list without rewriting the active project's legacy additional-root mirror.
+  Future<void> _saveWorkspaceConfigurations() {
+    final workspaceSnapshot = _workspaceConfigurationSnapshot();
+    final previousSave = _workspaceRootsSave;
+    final nextSave = () async {
+      try {
+        await previousSave;
+      } catch (_) {
+        // A previous write failure must not prevent a newer snapshot from saving.
+      }
+      await _runtimeConfigurationStore.saveWorkspaces(workspaceSnapshot);
+    }();
+    _workspaceRootsSave = nextSave;
+    return nextSave;
+  }
+
+  /// 复制当前项目配置，避免排队保存期间被后续内存修改影响。
+  /// Copies project configurations so queued saves cannot observe later in-memory mutations.
+  List<WorkspaceConfiguration> _workspaceConfigurationSnapshot() =>
+      List<WorkspaceConfiguration>.unmodifiable(
+        _workspaceConfigurations.map(
+          (configuration) => WorkspaceConfiguration(
+            id: configuration.id,
+            primaryPath: configuration.primaryPath,
+            additionalPaths: configuration.additionalPaths,
+            name: configuration.name,
+          ),
+        ),
+      );
 
   @visibleForTesting
   /// 刷新模型能力，供测试验证推理强度选择。
@@ -6053,6 +6617,12 @@ class CodexController extends ChangeNotifier {
     }
     if (pluginSaving) return false;
     pluginSaving = true;
+    // Any list request started before this mutation must not overwrite the
+    // authoritative post-action refresh below.
+    _pluginRefreshRequest++;
+    _marketplaceRefreshRequest++;
+    pluginsLoading = false;
+    marketplacesLoading = false;
     pluginsError = null;
     pluginActionError = null;
     pluginActionWarning = null;
@@ -6368,6 +6938,8 @@ class CodexController extends ChangeNotifier {
     String? sourceItemId,
     String? activityKind,
     String? activityStatus,
+    String? linkedThreadId,
+    String? activityPrompt,
   }) {
     return TimelineEntry(
       kind: kind,
@@ -6378,6 +6950,8 @@ class CodexController extends ChangeNotifier {
       sourceItemId: sourceItemId,
       activityKind: activityKind,
       activityStatus: activityStatus,
+      linkedThreadId: linkedThreadId,
+      activityPrompt: activityPrompt,
     );
   }
 
@@ -6391,6 +6965,8 @@ class CodexController extends ChangeNotifier {
     String? sourceItemId,
     String? activityKind,
     String? activityStatus,
+    String? linkedThreadId,
+    String? activityPrompt,
   }) {
     final entry = _entry(
       kind,
@@ -6400,6 +6976,8 @@ class CodexController extends ChangeNotifier {
       sourceItemId: sourceItemId,
       activityKind: activityKind,
       activityStatus: activityStatus,
+      linkedThreadId: linkedThreadId,
+      activityPrompt: activityPrompt,
     );
     _entries.add(entry);
     _scheduleConversationHistorySave();
@@ -6440,6 +7018,10 @@ class CodexController extends ChangeNotifier {
       timer.cancel();
     }
     _scheduledTaskTimers.clear();
+    for (final timer in _subagentRefreshTimers.values) {
+      timer.cancel();
+    }
+    _subagentRefreshTimers.clear();
     _runtimeConnectionEpoch++;
     unawaited(_saveConversationHistory());
     _disposed = true;

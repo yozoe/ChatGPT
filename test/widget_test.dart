@@ -33,6 +33,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 
 class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
@@ -103,6 +104,7 @@ class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
           id: workspace.id,
           primaryPath: workspace.primaryPath,
           additionalPaths: workspace.additionalPaths,
+          name: workspace.name,
         ),
       )
       .toList(growable: false);
@@ -119,6 +121,7 @@ class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
             id: workspace.id,
             primaryPath: workspace.primaryPath,
             additionalPaths: workspace.additionalPaths,
+            name: workspace.name,
           ),
         )
         .toList(growable: false);
@@ -197,6 +200,17 @@ class _DelayedAdditionalWorkspaceStore extends _FakeRuntimeConfigurationStore {
     final completer = Completer<void>();
     saveCompleters.add(completer);
     return completer.future;
+  }
+}
+
+class _RejectingAdditionalWorkspaceStore
+    extends _FakeRuntimeConfigurationStore {
+  int additionalWorkspaceSaveCalls = 0;
+
+  @override
+  Future<void> saveAdditionalWorkspaces(List<String> workspaces) async {
+    additionalWorkspaceSaveCalls++;
+    throw StateError('legacy additional workspace write rejected');
   }
 }
 
@@ -405,6 +419,25 @@ class _BlockingMcpListCodexPluginStore extends _MemoryCodexPluginStore {
   }
 }
 
+class _BlockingExtensionListCodexPluginStore extends _MemoryCodexPluginStore {
+  final pluginRequests = <Completer<List<CodexPlugin>>>[];
+  final marketplaceRequests = <Completer<List<CodexMarketplace>>>[];
+
+  @override
+  Future<List<CodexPlugin>> listPlugins() {
+    final completer = Completer<List<CodexPlugin>>();
+    pluginRequests.add(completer);
+    return completer.future;
+  }
+
+  @override
+  Future<List<CodexMarketplace>> listMarketplaces() {
+    final completer = Completer<List<CodexMarketplace>>();
+    marketplaceRequests.add(completer);
+    return completer.future;
+  }
+}
+
 class _FailingCodexPluginStore extends _MemoryCodexPluginStore {
   /// 模拟 CLI 安装失败并返回可展示的具体原因。
   /// Simulates a CLI installation failure with a displayable reason.
@@ -546,6 +579,7 @@ class _FakeCodexAppServer extends CodexAppServer {
     'thread': {'turns': <JsonMap>[]},
   };
   JsonMap turnPage = {'data': <JsonMap>[]};
+  Completer<JsonMap>? turnPageCompleter;
   final turnPageCursors = <String?>[];
   JsonMap itemPage = {'data': <JsonMap>[]};
   final itemPageTurnIds = <String>[];
@@ -752,6 +786,7 @@ class _FakeCodexAppServer extends CodexAppServer {
     String sortDirection = 'desc',
   }) async {
     turnPageCursors.add(cursor);
+    if (turnPageCompleter case final completer?) return completer.future;
     return turnPage;
   }
 
@@ -1479,6 +1514,104 @@ void main() {
     },
   );
 
+  testWidgets(
+    'keeps completed Markdown subtrees stable during stream updates',
+    (tester) async {
+      final controller = CodexController(server: _FakeCodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running;
+      final completed = TimelineEntry(
+        kind: TimelineKind.agent,
+        title: 'Codex',
+        detail: '**已完成的回复**',
+        createdAt: DateTime(2026, 1, 1),
+      );
+      final streaming = TimelineEntry(
+        kind: TimelineKind.agent,
+        title: 'Codex',
+        detail: '正在输出',
+        createdAt: DateTime(2026, 1, 1, 0, 1),
+      );
+      controller.replaceTimelineEntriesForTesting([completed, streaming]);
+
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+      final completedEntry = find.byKey(
+        ValueKey('timeline-entry-/workspace:draft-${completed.id}'),
+      );
+      final markdownFinder = find.descendant(
+        of: completedEntry,
+        matching: find.byType(MarkdownBody),
+      );
+      final before = tester.widget<MarkdownBody>(markdownFinder);
+
+      controller.replaceTimelineEntriesForTesting([
+        TimelineEntry(
+          kind: TimelineKind.system,
+          title: '迟到的前置记录',
+          detail: '',
+          createdAt: DateTime(2025, 12, 31, 23, 59),
+        ),
+        completed,
+        streaming.copyWith(detail: '正在输出更多文字'),
+      ]);
+      await tester.pump();
+
+      final after = tester.widget<MarkdownBody>(markdownFinder);
+      expect(identical(after, before), isTrue);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'keeps completed turn disclosure state when an earlier entry is inserted',
+    (tester) async {
+      final controller = CodexController(server: CodexAppServer());
+      final command = TimelineEntry(
+        kind: TimelineKind.command,
+        title: '执行命令',
+        detail: 'flutter analyze\nNo issues found',
+        createdAt: DateTime(2026, 1, 1, 0, 0, 1),
+      );
+      final duration = TimelineEntry(
+        kind: TimelineKind.elapsed,
+        title: '耗时 1 秒',
+        detail: '',
+        createdAt: DateTime(2026, 1, 1, 0, 0, 2),
+      );
+      controller.replaceTimelineEntriesForTesting([command, duration]);
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      await tester.tap(
+        find.byKey(const Key('completed-turn-disclosure-toggle')),
+      );
+      await tester.pump();
+      expect(find.text('已运行了命令'), findsNothing);
+
+      controller.replaceTimelineEntriesForTesting([
+        TimelineEntry(
+          kind: TimelineKind.system,
+          title: '迟到的确认',
+          detail: '',
+          createdAt: DateTime(2026),
+        ),
+        command,
+        duration,
+      ]);
+      await tester.pump();
+
+      expect(find.text('已运行了命令'), findsNothing);
+      expect(
+        find.byKey(ValueKey('completed-turn-disclosure-${duration.id}')),
+        findsOneWidget,
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets('switches the project display mode from the theme menu', (
     tester,
   ) async {
@@ -1658,6 +1791,7 @@ void main() {
     await tester.pump(codexHoverPopupDelay - const Duration(milliseconds: 1));
     expect(find.text('1 个任务'), findsNothing);
     await tester.pump(const Duration(milliseconds: 1));
+    await tester.pump();
     expect(find.text('1 个任务'), findsOneWidget);
     expect(find.text('编辑项目'), findsOneWidget);
     expect(tester.widget<Text>(find.text('1 个任务')).style?.fontSize, 12);
@@ -1774,6 +1908,14 @@ void main() {
       findsOneWidget,
     );
     expect(
+      tester
+          .widget<IconButton>(
+            find.byKey(const Key('sidebar-create-workspace-button')),
+          )
+          .onPressed,
+      isNotNull,
+    );
+    expect(
       find.byKey(const Key('sidebar-manage-workspaces-button')),
       findsOneWidget,
     );
@@ -1860,6 +2002,81 @@ void main() {
     expect(find.byKey(const Key('create-workspace-dialog')), findsNothing);
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets(
+    'keeps project creation available during a task and saves it inactive',
+    (tester) async {
+      late Directory root;
+      late Directory createdDirectory;
+      late String activePath;
+      late String createdPath;
+      late _ManagedRuntimeFakeServer server;
+      late CodexController controller;
+      await tester.runAsync(() async {
+        root = await Directory.systemTemp.createTemp(
+          'codex-desk-running-create-project-',
+        );
+        final activeDirectory = await Directory('${root.path}/active').create();
+        createdDirectory = await Directory('${root.path}/created').create();
+        activePath = await activeDirectory.resolveSymbolicLinks();
+        createdPath = await createdDirectory.resolveSymbolicLinks();
+        server = _ManagedRuntimeFakeServer();
+        controller = CodexController(
+          server: server,
+          runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+          conversationHistoryStore: _MemoryConversationHistoryStore(),
+        );
+        await controller.waitForInitialConfiguration();
+        await controller.selectWorkspaceAndReconnect(activeDirectory.path);
+        controller
+          ..status = RuntimeStatus.running
+          ..activeThreadId = 'running-thread';
+      });
+      addTearDown(() => root.delete(recursive: true));
+
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+      final createButton = find.byKey(
+        const Key('sidebar-create-workspace-button'),
+      );
+      expect(tester.widget<IconButton>(createButton).onPressed, isNotNull);
+      await tester.runAsync(() async {
+        expect(
+          await controller.createWorkspace(
+            createdDirectory.path,
+            name: '任务中创建的项目',
+          ),
+          isTrue,
+        );
+      });
+      await tester.pump();
+
+      expect(
+        controller.workspaceConfigurations.any(
+          (workspace) => workspace.primaryPath == createdPath,
+        ),
+        isTrue,
+        reason: controller.lastError,
+      );
+      expect(controller.workspacePath, activePath);
+      expect(controller.activeThreadId, 'running-thread');
+      expect(controller.status, RuntimeStatus.running);
+      expect(server.startCalls, 1);
+      expect(server.stopCalls, 0);
+      expect(find.text('任务中创建的项目'), findsOneWidget);
+
+      await tester.tap(
+        find.byKey(const Key('sidebar-manage-workspaces-button')),
+      );
+      await tester.pump();
+      final switchButton = tester.widget<TextButton>(
+        find.byKey(ValueKey('switch-workspace-$createdPath')),
+      );
+      expect(switchButton.onPressed, isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   testWidgets('shows Codex configuration without provider input fields', (
     tester,
@@ -3634,11 +3851,16 @@ void main() {
     expect(temporaryImage.existsSync(), isTrue);
     expect(find.byKey(Key('composer-attachment-$imagePath')), findsOneWidget);
 
+    final firstEntryCount = firstController.entries.length;
+    await tester.tap(find.byKey(const Key('sidebar-new-chat-button')));
+    await tester.pump();
+    expect(firstController.entries, hasLength(firstEntryCount));
+    expect(secondController.entries.last.title, '已新建任务');
+
     await tester.pumpWidget(const SizedBox());
     await tester.pump();
     expect(deleteCalls, 1);
     expect(temporaryImage.existsSync(), isFalse);
-    secondController.dispose();
   });
 
   testWidgets('falls back to normal text paste when no file is copied', (
@@ -5470,6 +5692,374 @@ void main() {
     },
   );
 
+  testWidgets(
+    'opens a real subagent thread in the inspector across window breakpoints',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1320, 780));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      const clipboardChannel = MethodChannel('codex_desk/clipboard');
+      const draftAttachmentPath = '/tmp/CodexDeskClipboard/subagent-draft.txt';
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      var deleteCalls = 0;
+      messenger.setMockMethodCallHandler(clipboardChannel, (call) async {
+        switch (call.method) {
+          case 'readFileItems':
+            return [
+              {
+                'path': draftAttachmentPath,
+                'isDirectory': false,
+                'isTemporary': true,
+              },
+            ];
+          case 'deleteTemporaryItem':
+            expect(call.arguments, draftAttachmentPath);
+            deleteCalls++;
+            return true;
+        }
+        return null;
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(clipboardChannel, null),
+      );
+      final server = _FakeCodexAppServer()
+        ..turnPage = {
+          'data': [
+            {
+              'id': 'child-turn-1',
+              'status': {'type': 'completed'},
+              'startedAt': 1,
+              'completedAt': 4,
+              'itemsView': 'full',
+              'items': [
+                {
+                  'id': 'child-answer-1',
+                  'type': 'agentMessage',
+                  'text': '已检查移动端样式，并整理了可执行结论。',
+                },
+              ],
+            },
+          ],
+        };
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..activeTurnId = 'turn-1';
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'threadId': 'thread-1',
+            'turnId': 'turn-1',
+            'item': {
+              'id': 'spawn-1',
+              'type': 'collabToolCall',
+              'tool': 'spawnAgent',
+              'status': 'completed',
+              'newThreadId': 'review-thread',
+              'prompt': '定位移动端样式',
+              'agentStatus': {
+                'name': 'Locate mobile styles',
+                'status': 'running',
+              },
+            },
+          },
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+      await tester.enterText(
+        find.byKey(const Key('composer-field')),
+        '尚未发送的主任务草稿',
+      );
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await tester.pump(const Duration(milliseconds: 200));
+
+      await tester.tap(find.byKey(const Key('subagent-activity-open')));
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.byKey(const Key('subagent-thread-panel')), findsOneWidget);
+      expect(find.text('Locate mobile styles'), findsWidgets);
+      expect(find.text('定位移动端样式'), findsOneWidget);
+      expect(find.text('已处理 3 秒'), findsOneWidget);
+      expect(find.text('已检查移动端样式，并整理了可执行结论。'), findsOneWidget);
+      expect(server.resumeCalls, 0);
+
+      await tester.binding.setSurfaceSize(const Size(820, 720));
+      await tester.pump();
+      expect(find.byKey(const Key('subagent-thread-panel')), findsOneWidget);
+      expect(find.byKey(const Key('inspector-resize-handle')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('subagent-thread-close')));
+      await tester.pump();
+      expect(find.byKey(const Key('subagent-thread-panel')), findsNothing);
+      expect(find.text('Locate mobile styles'), findsOneWidget);
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('composer-field')))
+            .controller
+            ?.text,
+        '尚未发送的主任务草稿',
+      );
+      expect(
+        find.byKey(Key('composer-attachment-$draftAttachmentPath')),
+        findsOneWidget,
+      );
+      expect(deleteCalls, 0);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
+      expect(deleteCalls, 1);
+    },
+  );
+
+  testWidgets(
+    'shows a retryable subagent error while the runtime is disconnected',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(820, 720));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final controller = CodexController(server: CodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.stopped;
+      controller.replaceTimelineEntriesForTesting([
+        TimelineEntry(
+          kind: TimelineKind.activity,
+          title: 'Offline review',
+          detail: '已完成',
+          createdAt: DateTime(2026),
+          sourceItemId: 'offline-review-thread',
+          activityKind: 'collaboration',
+          activityStatus: 'completed',
+          linkedThreadId: 'offline-review-thread',
+        ),
+      ]);
+
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+      await tester.tap(find.byKey(const Key('subagent-activity-open')));
+      await tester.pump();
+
+      expect(find.byKey(const Key('subagent-thread-panel')), findsOneWidget);
+      expect(find.textContaining('Codex 运行时未连接'), findsOneWidget);
+      expect(find.text('重试'), findsOneWidget);
+      expect(find.text('子智能体尚未产生可显示内容'), findsNothing);
+
+      await tester.tap(find.text('重试'));
+      await tester.pump();
+      expect(find.textContaining('Codex 运行时未连接'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('opens a nested subagent from the read-only inspector', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1320, 780));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final server = _FakeCodexAppServer()
+      ..turnPage = {
+        'data': [
+          {
+            'id': 'child-turn-1',
+            'status': {'type': 'inProgress'},
+            'itemsView': 'full',
+            'items': [
+              {
+                'id': 'nested-spawn-1',
+                'type': 'collabToolCall',
+                'tool': 'spawnAgent',
+                'newThreadId': 'nested-review-thread',
+                'prompt': '检查嵌套结果',
+                'agentStatus': {'name': 'Nested review', 'status': 'running'},
+              },
+            ],
+          },
+        ],
+      };
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+    controller.replaceTimelineEntriesForTesting([
+      TimelineEntry(
+        kind: TimelineKind.activity,
+        title: 'Parent review',
+        detail: '已开始工作',
+        createdAt: DateTime(2026),
+        sourceItemId: 'parent-review-thread',
+        activityKind: 'collaboration',
+        activityStatus: 'working',
+        linkedThreadId: 'parent-review-thread',
+      ),
+    ]);
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.tap(find.byKey(const Key('subagent-activity-open')));
+    await tester.pump();
+    await tester.pump();
+
+    final panel = find.byKey(const Key('subagent-thread-panel'));
+    final nestedOpen = find.descendant(
+      of: panel,
+      matching: find.byKey(const Key('subagent-activity-open')),
+    );
+    expect(nestedOpen, findsOneWidget);
+
+    server.turnPage = {
+      'data': [
+        {
+          'id': 'nested-turn-1',
+          'status': {'type': 'completed'},
+          'itemsView': 'full',
+          'items': [
+            {
+              'id': 'nested-answer-1',
+              'type': 'agentMessage',
+              'text': '嵌套子智能体已返回结果。',
+            },
+          ],
+        },
+      ],
+    };
+    await tester.tap(nestedOpen);
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      controller.subagentThreadView('nested-review-thread')?.title,
+      'Nested review',
+    );
+    expect(find.text('嵌套子智能体已返回结果。'), findsOneWidget);
+    expect(server.resumeCalls, 0);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  test(
+    'bounds subagent history views and invalidates old workspace reads',
+    () async {
+      final nextWorkspace = await Directory.systemTemp.createTemp(
+        'codex-desk-subagent-workspace-',
+      );
+      addTearDown(() => nextWorkspace.delete(recursive: true));
+      final server = _FakeCodexAppServer();
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+        conversationHistoryStore: _MemoryConversationHistoryStore(),
+      );
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = '/workspace-one'
+        ..status = RuntimeStatus.stopped;
+
+      for (var index = 0; index < 9; index++) {
+        await controller.loadSubagentThread(
+          threadId: 'child-$index',
+          title: 'Child $index',
+        );
+      }
+
+      expect(controller.subagentThreadView('child-0'), isNull);
+      expect(controller.subagentThreadView('child-1'), isNotNull);
+      expect(controller.subagentThreadView('child-8'), isNotNull);
+
+      final delayedPage = Completer<JsonMap>();
+      server.turnPageCompleter = delayedPage;
+      final delayedLoad = controller.loadSubagentThread(
+        threadId: 'old-workspace-child',
+        title: 'Old workspace child',
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      await controller.selectWorkspace(nextWorkspace.path);
+      delayedPage.complete({
+        'data': [
+          {
+            'id': 'late-turn',
+            'itemsView': 'full',
+            'items': [
+              {'id': 'late-answer', 'type': 'agentMessage', 'text': '不应写入新工作区'},
+            ],
+          },
+        ],
+      });
+      await delayedLoad;
+
+      expect(controller.subagentThreadView('old-workspace-child'), isNull);
+      expect(controller.subagentThreadView('child-8'), isNull);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'ends subagent loading and marks working views stale after runtime exit',
+    () async {
+      final server = _FakeCodexAppServer();
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await controller.loadSubagentThread(
+        threadId: 'loaded-child',
+        title: 'Loaded child',
+      );
+      expect(controller.subagentThreadView('loaded-child')?.status, 'working');
+
+      final delayedPage = Completer<JsonMap>();
+      server.turnPageCompleter = delayedPage;
+      final delayedLoad = controller.loadSubagentThread(
+        threadId: 'loading-child',
+        title: 'Loading child',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.subagentThreadView('loading-child')?.loading, isTrue);
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(method: 'runtime/exited', params: {'code': 1}),
+      );
+
+      final loadedView = controller.subagentThreadView('loaded-child')!;
+      final loadingView = controller.subagentThreadView('loading-child')!;
+      expect(loadedView.status, 'stopped');
+      expect(loadedView.error, contains('运行时连接已变化'));
+      expect(loadingView.loading, isFalse);
+      expect(loadingView.status, 'stopped');
+      expect(loadingView.error, contains('运行时连接已变化'));
+
+      delayedPage.complete({
+        'data': [
+          {
+            'id': 'late-turn',
+            'status': {'type': 'completed'},
+            'itemsView': 'full',
+            'items': [
+              {'id': 'late-answer', 'type': 'agentMessage', 'text': '迟到结果'},
+            ],
+          },
+        ],
+      });
+      await delayedLoad;
+
+      final retainedView = controller.subagentThreadView('loading-child')!;
+      expect(retainedView.loading, isFalse);
+      expect(retainedView.status, 'stopped');
+      expect(retainedView.error, contains('运行时连接已变化'));
+      expect(retainedView.entries, isEmpty);
+      controller.dispose();
+    },
+  );
+
   testWidgets('renders filesystem actions and reasoning summaries like Codex', (
     tester,
   ) async {
@@ -6459,6 +7049,89 @@ void main() {
   );
 
   test(
+    'creates an inactive project without interrupting a running task',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-desk-create-inactive-project-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final active = await Directory('${root.path}/active').create();
+      final created = await Directory('${root.path}/created').create();
+      final activePath = await active.resolveSymbolicLinks();
+      final createdPath = await created.resolveSymbolicLinks();
+      final server = _ManagedRuntimeFakeServer();
+      final store = _FakeRuntimeConfigurationStore();
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: store,
+      );
+      await controller.waitForInitialConfiguration();
+      expect(await controller.selectWorkspaceAndReconnect(active.path), isTrue);
+      controller
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'running-thread';
+
+      expect(
+        await controller.createWorkspace(created.path, name: '后台新项目'),
+        isTrue,
+      );
+
+      expect(controller.workspacePath, activePath);
+      expect(controller.activeThreadId, 'running-thread');
+      expect(controller.status, RuntimeStatus.running);
+      expect(server.runtimeDirectory, activePath);
+      expect(server.startCalls, 1);
+      expect(server.stopCalls, 0);
+      expect(controller.workspaceConfigurations, hasLength(2));
+      final savedProject = controller.workspaceConfigurations.singleWhere(
+        (workspace) => workspace.primaryPath == createdPath,
+      );
+      expect(savedProject.id, isNotNull);
+      expect(savedProject.name, '后台新项目');
+      expect(
+        store.savedWorkspaces!
+            .singleWhere((workspace) => workspace.primaryPath == createdPath)
+            .name,
+        '后台新项目',
+      );
+      expect(controller.canCreateWorkspace, isTrue);
+      expect(controller.canChangePrimaryWorkspace, isFalse);
+      expect(
+        await controller.selectWorkspaceAndReconnect(created.path),
+        isFalse,
+      );
+      expect(controller.workspacePath, activePath);
+      expect(server.stopCalls, 0);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'creates an inactive project without rewriting legacy additional roots',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'codex-desk-create-project-single-save-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final store = _RejectingAdditionalWorkspaceStore();
+      final controller = CodexController(
+        server: _FakeCodexAppServer(),
+        runtimeConfigurationStore: store,
+      );
+      await controller.waitForInitialConfiguration();
+
+      expect(await controller.createWorkspace(directory.path), isTrue);
+
+      final canonicalPath = await directory.resolveSymbolicLinks();
+      expect(controller.workspaceConfigurations, hasLength(1));
+      expect(store.savedWorkspaces?.single.primaryPath, canonicalPath);
+      expect(store.additionalWorkspaceSaveCalls, 0);
+      expect(controller.lastError, isNull);
+      controller.dispose();
+    },
+  );
+
+  test(
     'starts a newly created project with no inherited directory tasks',
     () async {
       final directory = await Directory.systemTemp.createTemp(
@@ -6476,7 +7149,12 @@ void main() {
       );
       await controller.waitForInitialConfiguration();
 
-      await controller.createWorkspace(directory.path);
+      expect(await controller.createWorkspace(directory.path), isTrue);
+      expect(controller.workspacePath, isNull);
+      expect(
+        await controller.selectWorkspaceAndReconnect(directory.path),
+        isTrue,
+      );
       await controller.refreshThreads();
 
       expect(controller.threads, isEmpty);
@@ -6590,7 +7268,7 @@ void main() {
       controller.status = RuntimeStatus.running;
       expect(await controller.selectWorkspaceAndReconnect(first.path), isFalse);
       expect(controller.workspacePath, await second.resolveSymbolicLinks());
-      expect(controller.lastError, contains('等待当前任务完成'));
+      expect(controller.lastError, contains('等待当前或后台任务完成'));
       expect(server.stopCalls, 1);
       controller.dispose();
     },
@@ -6853,6 +7531,7 @@ void main() {
       find.byKey(const Key('workspace-directories-dialog')),
       findsOneWidget,
     );
+    expect(find.textContaining('当前或后台任务完成'), findsOneWidget);
     expect(find.textContaining('主目录'), findsWidgets);
     expect(find.text(additionalPath), findsOneWidget);
     expect(find.text('附加目录'), findsWidgets);
@@ -6863,7 +7542,7 @@ void main() {
             find.byKey(const Key('create-workspace-button')),
           )
           .onPressed,
-      isNull,
+      isNotNull,
     );
     expect(
       tester
@@ -7533,6 +8212,59 @@ void main() {
     controller.dispose();
   });
 
+  test('ignores older plugin and marketplace refresh results', () async {
+    const olderPlugin = CodexPlugin(
+      id: 'older@local',
+      name: 'older',
+      marketplaceName: 'local',
+      installed: true,
+      enabled: true,
+    );
+    const newerPlugin = CodexPlugin(
+      id: 'newer@local',
+      name: 'newer',
+      marketplaceName: 'local',
+      installed: true,
+      enabled: true,
+    );
+    const olderMarketplace = CodexMarketplace(
+      name: 'older',
+      root: '/plugins/older',
+      sourceType: 'git',
+      source: 'example/older',
+    );
+    const newerMarketplace = CodexMarketplace(
+      name: 'newer',
+      root: '/plugins/newer',
+      sourceType: 'git',
+      source: 'example/newer',
+    );
+    final store = _BlockingExtensionListCodexPluginStore();
+    final controller = CodexController(pluginStore: store);
+
+    final olderPlugins = controller.refreshPlugins();
+    final newerPlugins = controller.refreshPlugins();
+    expect(store.pluginRequests, hasLength(2));
+    store.pluginRequests.last.complete([newerPlugin]);
+    await newerPlugins;
+    store.pluginRequests.first.complete([olderPlugin]);
+    await olderPlugins;
+
+    final olderMarketplaces = controller.refreshMarketplaces();
+    final newerMarketplaces = controller.refreshMarketplaces();
+    expect(store.marketplaceRequests, hasLength(2));
+    store.marketplaceRequests.last.complete([newerMarketplace]);
+    await newerMarketplaces;
+    store.marketplaceRequests.first.complete([olderMarketplace]);
+    await olderMarketplaces;
+
+    expect(controller.plugins, [newerPlugin]);
+    expect(controller.marketplaces, [newerMarketplace]);
+    expect(controller.pluginsLoading, isFalse);
+    expect(controller.marketplacesLoading, isFalse);
+    controller.dispose();
+  });
+
   test(
     'reports plugin progress, completion, and restart requirement',
     () async {
@@ -7555,6 +8287,7 @@ void main() {
       expect(controller.pluginRuntimeRestartRequired, isFalse);
       expect(controller.canChooseWorkspace, isFalse);
       expect(controller.canChangePrimaryWorkspace, isFalse);
+      expect(controller.changePrimaryWorkspaceDisabledReason, '请等待扩展配置更新完成。');
 
       pluginStore.installCompleter.complete();
       await install;
@@ -7565,6 +8298,7 @@ void main() {
       expect(controller.pluginRuntimeRestartRequired, isTrue);
       expect(controller.canChooseWorkspace, isTrue);
       expect(controller.canChangePrimaryWorkspace, isTrue);
+      expect(controller.changePrimaryWorkspaceDisabledReason, isNull);
       controller.dispose();
     },
   );
@@ -8580,16 +9314,33 @@ void main() {
       sourceItemId: 'review-thread',
       activityKind: 'collaboration',
       activityStatus: 'completed',
+      linkedThreadId: 'review-thread',
+      activityPrompt: 'Review the changed files.',
     );
 
     final restored = TimelineEntry.fromJson(entry.toJson());
 
+    expect(restored.id, entry.id);
     expect(restored.kind, TimelineKind.activity);
     expect(restored.title, 'Independent review');
     expect(restored.detail, '已完成');
     expect(restored.sourceItemId, 'review-thread');
     expect(restored.activityKind, 'collaboration');
     expect(restored.activityStatus, 'completed');
+    expect(restored.linkedThreadId, 'review-thread');
+    expect(restored.activityPrompt, 'Review the changed files.');
+  });
+
+  test('assigns a stable ID when restoring legacy timeline entries', () {
+    final restored = TimelineEntry.fromJson({
+      'kind': 'agent',
+      'title': 'Codex',
+      'detail': '旧缓存回答',
+      'createdAt': DateTime(2026).toIso8601String(),
+    });
+
+    expect(restored.id, isNotEmpty);
+    expect(restored.copyWith(detail: '更新后的回答').id, restored.id);
   });
 
   test('rejects unsupported portable history schemas', () {
