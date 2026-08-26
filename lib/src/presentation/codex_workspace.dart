@@ -33,6 +33,7 @@ import '../domain/workspace_configuration.dart';
 import '../services/agent_markdown_link.dart';
 import '../services/clipboard_file_reader.dart';
 import '../theme/yeknom_workbench.dart';
+import 'code_review_panel.dart';
 import 'workspace_markdown_preview.dart';
 
 /// 仅根据常见扩展名决定附件是否应按图片预览；不读取文件内容。
@@ -158,8 +159,15 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   static const _maximumSidebarWidth = 420.0;
   static const _minimumInspectorWidth = 280.0;
   static const _maximumInspectorWidth = 460.0;
+  static const _minimumReviewWidth = 740.0;
+  static const _maximumReviewWidth = 960.0;
+  static const _minimumConversationWithReview = 520.0;
   double _sidebarWidth = 250;
   double _inspectorWidth = 352;
+  double _reviewWidth = _minimumReviewWidth;
+  bool _reviewOpen = false;
+  CodeReviewSource _reviewSource = CodeReviewSource.latestTurn;
+  final GlobalKey _reviewPanelKey = GlobalKey();
   String? _selectedSubagentThreadId;
   String? _selectedSubagentParentThreadId;
   String _selectedSubagentTitle = '子智能体';
@@ -1846,49 +1854,30 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     );
   }
 
-  /// 显示当前任务收集到的文件变更和统一 Diff。
-  /// Shows file changes and unified diff collected for the current task.
-  Future<void> _showFileChanges() async {
-    await showDialog<void>(
-      context: context,
-      builder: (context) => _ControllerBuilder(
-        overrideController: widget.controller,
-        builder: (context, controller) => AlertDialog(
-          title: const Text('文件变更'),
-          content: SizedBox(
-            width: 760,
-            height: 520,
-            child: _FileChangesList(
-              changes: controller.fileChanges,
-              turnDiff: controller.turnDiff,
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('关闭'),
-            ),
-          ],
-        ),
-      ),
-    );
+  /// Opens the workbench review surface with the requested data source.
+  /// 以指定数据源打开工作台内嵌审查界面。
+  Future<void> _showCodeReview([
+    CodeReviewSource source = CodeReviewSource.latestTurn,
+  ]) async {
+    if (!mounted) return;
+    setState(() {
+      _destination = _WorkspaceDestination.conversation;
+      _reviewSource = source;
+      _reviewOpen = true;
+    });
+    if (source == CodeReviewSource.latestTurn) {
+      await _controller.ensureFileChangeDiffs();
+    } else {
+      await _controller.refreshGitReview();
+    }
   }
 
-  /// 打开当前任务的代码审查视图；审查只读，不会提交或推送仓库。
-  /// Opens the current task's read-only code-review surface without committing or pushing.
-  Future<void> _showCodeReview() async {
-    await _controller.ensureFileChangeDiffs();
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (context) => _ControllerBuilder(
-        overrideController: widget.controller,
-        builder: (context, controller) => _CodeReviewDialog(
-          changes: controller.fileChanges,
-          turnDiff: controller.turnDiff,
-        ),
-      ),
-    );
+  void _closeCodeReview() {
+    if (mounted) setState(() => _reviewOpen = false);
+  }
+
+  void _changeCodeReviewSource(CodeReviewSource source) {
+    if (mounted) setState(() => _reviewSource = source);
   }
 
   /// 撤销当前摘要对应的文件改动，并用非阻塞反馈说明结果。
@@ -2160,6 +2149,19 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
             final inspectorWidth = _inspectorWidth
                 .clamp(_minimumInspectorWidth, inspectorMaximum)
                 .toDouble();
+            final workbenchWidth = constraints.maxWidth - sidebarWidth;
+            final reviewInline =
+                _reviewOpen &&
+                workbenchWidth >=
+                    _minimumConversationWithReview + _minimumReviewWidth;
+            final reviewMaximum = reviewInline
+                ? (workbenchWidth - _minimumConversationWithReview)
+                      .clamp(_minimumReviewWidth, _maximumReviewWidth)
+                      .toDouble()
+                : _minimumReviewWidth;
+            final reviewWidth = _reviewWidth
+                .clamp(_minimumReviewWidth, reviewMaximum)
+                .toDouble();
             return Row(
               children: [
                 SizedBox(
@@ -2252,7 +2254,8 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                               showIdentity: false,
                               showControls: true,
                               showTaskContext: true,
-                              onShowFileChanges: _showFileChanges,
+                              onShowFileChanges: () =>
+                                  _showCodeReview(CodeReviewSource.latestTurn),
                             ),
                             const Divider(height: 1),
                             Expanded(
@@ -2298,13 +2301,26 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                                               },
                                           onSend: _send,
                                           onQueueSteer: _queueDirection,
-                                          onReview: _showCodeReview,
+                                          onReview: () => _showCodeReview(
+                                            CodeReviewSource.latestTurn,
+                                          ),
                                           onUndo: _undoFileChanges,
                                           onOpenSubagent:
                                               _openSubagentInspector,
                                         ),
-                                        if (compact &&
-                                            _selectedSubagentThreadId != null)
+                                        if (_reviewOpen && !reviewInline)
+                                          CodeReviewPanel(
+                                            key: _reviewPanelKey,
+                                            controller: controller,
+                                            source: _reviewSource,
+                                            compact: true,
+                                            onSourceChanged:
+                                                _changeCodeReviewSource,
+                                            onClose: _closeCodeReview,
+                                          ),
+                                        if (_selectedSubagentThreadId != null &&
+                                            (compact ||
+                                                (_reviewOpen && !reviewInline)))
                                           _SubagentThreadPanel(
                                             controller: controller,
                                             threadId:
@@ -2318,7 +2334,47 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                                       ],
                                     ),
                                   ),
-                                  if (!compact) ...[
+                                  if (reviewInline) ...[
+                                    _PaneResizeHandle(
+                                      key: const Key('review-resize-handle'),
+                                      onDragDelta: (delta) => setState(() {
+                                        _reviewWidth = (_reviewWidth - delta)
+                                            .clamp(
+                                              _minimumReviewWidth,
+                                              reviewMaximum,
+                                            )
+                                            .toDouble();
+                                      }),
+                                    ),
+                                    SizedBox(
+                                      width: reviewWidth,
+                                      child: Stack(
+                                        fit: StackFit.expand,
+                                        children: [
+                                          CodeReviewPanel(
+                                            key: _reviewPanelKey,
+                                            controller: controller,
+                                            source: _reviewSource,
+                                            compact: false,
+                                            onSourceChanged:
+                                                _changeCodeReviewSource,
+                                            onClose: _closeCodeReview,
+                                          ),
+                                          if (_selectedSubagentThreadId
+                                              case final id?)
+                                            _SubagentThreadPanel(
+                                              controller: controller,
+                                              threadId: id,
+                                              fallbackTitle:
+                                                  _selectedSubagentTitle,
+                                              onOpenSubagent:
+                                                  _openSubagentInspector,
+                                              onClose: _closeSubagentInspector,
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                  ] else if (!compact && !_reviewOpen) ...[
                                     _PaneResizeHandle(
                                       key: const Key('inspector-resize-handle'),
                                       onDragDelta: (delta) => setState(() {
@@ -2348,7 +2404,9 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                                       _Inspector(
                                         width: inspectorWidth,
                                         controller: controller,
-                                        onShowGitProject: _showGitProject,
+                                        onShowGitProject: () => _showCodeReview(
+                                          CodeReviewSource.gitWorkspace,
+                                        ),
                                       ),
                                   ],
                                 ],
@@ -6790,297 +6848,6 @@ class _FileChangeHoverPreview extends StatelessWidget {
   }
 }
 
-class _CodeReviewDialog extends StatefulWidget {
-  const _CodeReviewDialog({required this.changes, required this.turnDiff});
-
-  final List<CodexFileChange> changes;
-  final String? turnDiff;
-
-  @override
-  State<_CodeReviewDialog> createState() => _CodeReviewDialogState();
-}
-
-class _CodeReviewDialogState extends State<_CodeReviewDialog> {
-  int _selectedIndex = 0;
-
-  List<CodexFileChange> get _targets {
-    if (widget.changes.isNotEmpty) {
-      final fallback = widget.turnDiff;
-      final hasMissingDiff = widget.changes.any(
-        (change) => change.diff.trim().isEmpty,
-      );
-      if (hasMissingDiff && fallback != null && fallback.isNotEmpty) {
-        return [
-          ...widget.changes,
-          CodexFileChange(path: '本次任务完整 Diff', kind: '任务', diff: fallback),
-        ];
-      }
-      return widget.changes;
-    }
-    final diff = widget.turnDiff;
-    if (diff == null || diff.isEmpty) return const [];
-    return [CodexFileChange(path: '本次任务完整 Diff', kind: '任务', diff: diff)];
-  }
-
-  _DiffStats get _stats {
-    final fallback = widget.turnDiff;
-    final hasMissingDiff = widget.changes.any(
-      (change) => change.diff.trim().isEmpty,
-    );
-    if (hasMissingDiff && fallback != null && fallback.isNotEmpty) {
-      return _diffStats(fallback);
-    }
-    return _targets.fold(
-      const _DiffStats(0, 0),
-      (total, change) => total + _diffStats(change.diff),
-    );
-  }
-
-  bool get _statsUnknown =>
-      _fileChangeStatsUnknown(widget.changes, widget.turnDiff);
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = YeknomPalette.of(context);
-    final targets = _targets;
-    final selected = targets.isEmpty
-        ? null
-        : targets[_selectedIndex.clamp(0, targets.length - 1)];
-    final stats = _stats;
-    final size = MediaQuery.sizeOf(context);
-    return Dialog(
-      key: const Key('code-review-dialog'),
-      insetPadding: const EdgeInsets.all(12),
-      backgroundColor: palette.bench,
-      child: SizedBox(
-        width: (size.width - 24).clamp(680.0, 1240.0).toDouble(),
-        height: (size.height - 24).clamp(480.0, 820.0).toDouble(),
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 10, 10),
-              child: Row(
-                children: [
-                  Icon(Icons.edit_note_outlined, color: palette.muted),
-                  const SizedBox(width: 10),
-                  Text('审查', style: Theme.of(context).textTheme.titleMedium),
-                  const Spacer(),
-                  IconButton(
-                    tooltip: '关闭审查',
-                    onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
-            ),
-            Divider(height: 1, color: palette.border),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(18, 14, 18, 12),
-              child: Row(
-                children: [
-                  _ReviewFilter(label: '所有仓库', icon: Icons.expand_more),
-                  const SizedBox(width: 18),
-                  _ReviewFilter(label: '上一轮', icon: Icons.expand_more),
-                  const SizedBox(width: 18),
-                  Text(
-                    _diffCountLabel(
-                      '+',
-                      stats.additions,
-                      unknown: _statsUnknown,
-                    ),
-                    style: TextStyle(color: palette.ack),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    _diffCountLabel(
-                      '-',
-                      stats.deletions,
-                      unknown: _statsUnknown,
-                    ),
-                    style: TextStyle(color: palette.fault),
-                  ),
-                  const Spacer(),
-                  Text(
-                    widget.changes.isEmpty
-                        ? '完整 Diff'
-                        : '${widget.changes.length} 个文件',
-                    style: TextStyle(color: palette.muted),
-                  ),
-                ],
-              ),
-            ),
-            Divider(height: 1, color: palette.border),
-            Expanded(
-              child: targets.isEmpty
-                  ? const Center(child: Text('当前任务没有可审查的文件变更。'))
-                  : Row(
-                      children: [
-                        SizedBox(
-                          width: 320,
-                          child: ListView.separated(
-                            padding: const EdgeInsets.symmetric(vertical: 8),
-                            itemCount: targets.length,
-                            separatorBuilder: (_, _) =>
-                                Divider(height: 1, color: palette.border),
-                            itemBuilder: (context, index) {
-                              final target = targets[index];
-                              final targetStats = _diffStats(target.diff);
-                              return ListTile(
-                                selected: index == _selectedIndex,
-                                selectedTileColor: palette.selected,
-                                dense: true,
-                                leading: Icon(
-                                  Icons.description_outlined,
-                                  size: 18,
-                                  color: index == _selectedIndex
-                                      ? palette.ack
-                                      : palette.muted,
-                                ),
-                                title: Text(
-                                  target.path,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                subtitle: Text(
-                                  target.diff.trim().isEmpty
-                                      ? 'Diff unavailable'
-                                      : '${targetStats.additions} additions · ${targetStats.deletions} deletions',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                onTap: () =>
-                                    setState(() => _selectedIndex = index),
-                              );
-                            },
-                          ),
-                        ),
-                        VerticalDivider(width: 1, color: palette.border),
-                        Expanded(
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: selected == null
-                                ? const SizedBox.shrink()
-                                : _ReviewDiffViewer(change: selected),
-                          ),
-                        ),
-                      ],
-                    ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ReviewFilter extends StatelessWidget {
-  const _ReviewFilter({required this.label, required this.icon});
-
-  final String label;
-  final IconData icon;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = YeknomPalette.of(context);
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(label, style: TextStyle(color: palette.trace)),
-        const SizedBox(width: 4),
-        Icon(icon, size: 18, color: palette.muted),
-      ],
-    );
-  }
-}
-
-class _ReviewDiffViewer extends StatelessWidget {
-  const _ReviewDiffViewer({required this.change});
-
-  final CodexFileChange change;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = YeknomPalette.of(context);
-    final stats = _diffStats(change.diff);
-    final unknown = change.diff.trim().isEmpty;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Icon(Icons.description_outlined, size: 18, color: palette.muted),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                change.path,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.titleSmall,
-              ),
-            ),
-            Text(
-              _diffCountLabel('+', stats.additions, unknown: unknown),
-              style: TextStyle(color: palette.ack),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              _diffCountLabel('-', stats.deletions, unknown: unknown),
-              style: TextStyle(color: palette.fault),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        Expanded(
-          child: Container(
-            width: double.infinity,
-            decoration: BoxDecoration(
-              color: palette.field,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: palette.border),
-            ),
-            child: change.diff.isEmpty
-                ? const Center(child: Text('没有可显示的 Diff。'))
-                : SingleChildScrollView(
-                    padding: const EdgeInsets.all(14),
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: SelectableText.rich(
-                        TextSpan(children: _diffSpans(palette, change.diff)),
-                        style: const TextStyle(
-                          fontFamily: 'monospace',
-                          fontSize: 12,
-                          height: 1.55,
-                        ),
-                      ),
-                    ),
-                  ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  List<TextSpan> _diffSpans(YeknomPalette palette, String value) {
-    return value
-        .split('\n')
-        .map((line) {
-          final color = switch (line) {
-            _ when line.startsWith('+++') || line.startsWith('---') =>
-              palette.muted,
-            _ when line.startsWith('+') => palette.ack,
-            _ when line.startsWith('-') => palette.fault,
-            _ when line.startsWith('@@') => palette.active,
-            _ => palette.trace,
-          };
-          return TextSpan(
-            text: '$line\n',
-            style: TextStyle(color: color),
-          );
-        })
-        .toList(growable: false);
-  }
-}
-
 class _TaskPlanPanel extends StatefulWidget {
   const _TaskPlanPanel({required this.plan});
 
@@ -9852,112 +9619,6 @@ class _InspectorDiffExpansionTile extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-
-  /// 按 unified Diff 行类型与当前主题语义色为文本片段分配颜色。
-  /// Assigns colors to text spans using unified-diff line types and theme semantics.
-  List<TextSpan> _diffSpans(YeknomPalette palette, String value) {
-    return value
-        .split('\n')
-        .map((line) {
-          final color = switch (line) {
-            _ when line.startsWith('+++') || line.startsWith('---') =>
-              palette.muted,
-            _ when line.startsWith('+') => palette.ack,
-            _ when line.startsWith('-') => palette.fault,
-            _ when line.startsWith('@@') => palette.active,
-            _ => palette.trace,
-          };
-          return TextSpan(
-            text: '$line\n',
-            style: TextStyle(color: color),
-          );
-        })
-        .toList(growable: false);
-  }
-}
-
-class _FileChangesList extends StatelessWidget {
-  const _FileChangesList({required this.changes, required this.turnDiff});
-
-  final List<CodexFileChange> changes;
-  final String? turnDiff;
-
-  /// 构建任务统一 Diff 与单文件变更的可展开列表。
-  /// Builds an expandable list for the task's unified diff and individual file changes.
-  @override
-  Widget build(BuildContext context) {
-    if (changes.isEmpty && (turnDiff == null || turnDiff!.isEmpty)) {
-      return const _MutedText('任务执行后，AI 修改的文件和逐行 Diff 会显示在这里。');
-    }
-    return ListView(
-      children: [
-        if (turnDiff case final diff?)
-          _DiffExpansionTile(
-            title: '本次任务完整 Diff',
-            subtitle: '来自 Codex App Server',
-            diff: diff,
-          ),
-        ...changes.map(
-          (change) => _DiffExpansionTile(
-            title: change.path,
-            subtitle: change.kind,
-            diff: change.diff,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _DiffExpansionTile extends StatelessWidget {
-  const _DiffExpansionTile({
-    required this.title,
-    required this.subtitle,
-    required this.diff,
-  });
-
-  final String title;
-  final String subtitle;
-  final String diff;
-
-  /// 构建可展开的单个 Diff 展示项。
-  /// Builds one expandable diff presentation item.
-  @override
-  Widget build(BuildContext context) {
-    final palette = YeknomPalette.of(context);
-    return ExpansionTile(
-      tilePadding: const EdgeInsets.symmetric(horizontal: 4),
-      childrenPadding: const EdgeInsets.only(bottom: 10),
-      leading: const Icon(Icons.description_outlined, size: 18),
-      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
-      children: [
-        Container(
-          width: double.infinity,
-          margin: const EdgeInsets.symmetric(horizontal: 4),
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: palette.field,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: palette.border),
-          ),
-          child: diff.isEmpty
-              ? const _MutedText('App Server 未提供可显示的 Diff。')
-              : SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: SelectableText.rich(
-                    TextSpan(children: _diffSpans(palette, diff)),
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 12,
-                      height: 1.45,
-                    ),
-                  ),
-                ),
-        ),
-      ],
     );
   }
 

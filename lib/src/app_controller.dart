@@ -332,6 +332,7 @@ class CodexControllerNotifier extends Notifier<CodexController> {
 /// 应用的协调层：维护运行时、工作区、任务历史与实时 App Server 事件。
 /// Application coordinator for runtime, workspaces, task history, and live App Server events.
 class CodexController extends ChangeNotifier {
+  static const _maximumConcurrentGitReviewDiffs = 6;
   static const _welcomeTitle = '欢迎使用 Codex Desk';
   static const _welcomeDetail =
       '选择本地项目后启动 Codex App Server。模型、Provider 与凭据由 Codex 配置管理。';
@@ -426,6 +427,7 @@ class CodexController extends ChangeNotifier {
   int _marketplaceRefreshRequest = 0;
   int _gitProjectRefreshRequest = 0;
   int _gitDiffRefreshRequest = 0;
+  int _gitReviewRefreshRequest = 0;
   int _codexConfigurationRefreshRequest = 0;
   final Set<String> _unarchivingThreadIds = {};
   final Set<String> _archivingThreadIds = {};
@@ -770,6 +772,9 @@ class CodexController extends ChangeNotifier {
   String? gitDiff;
   bool gitDiffLoading = false;
   bool gitDiffTruncated = false;
+  Map<String, GitDiffPreview> gitReviewDiffs = const {};
+  Map<String, String> gitReviewDiffErrors = const {};
+  bool gitReviewLoading = false;
   bool gitOperationRunning = false;
   String? gitOperationError;
   bool fileChangeUndoRunning = false;
@@ -1150,6 +1155,96 @@ class CodexController extends ChangeNotifier {
           workspacePath == workspace &&
           gitDiffChange == change) {
         gitDiffLoading = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  /// Refreshes the Git project and loads every changed file diff for the
+  /// continuous review canvas. Results are applied atomically so an older
+  /// project or refresh cannot mix partial files into the active review.
+  ///
+  /// 刷新 Git 项目并为连续审查画布读取全部变更文件 Diff；结果原子写入，
+  /// 避免旧项目或较早刷新把部分文件混入当前审查。
+  Future<void> refreshGitReview() async {
+    final workspace = workspacePath;
+    if (workspace == null) return;
+    final request = ++_gitReviewRefreshRequest;
+    gitReviewLoading = true;
+    gitReviewDiffErrors = const {};
+    if (!_disposed) notifyListeners();
+    try {
+      final status = await _gitProjectService.inspect(workspace);
+      if (_disposed ||
+          request != _gitReviewRefreshRequest ||
+          workspacePath != workspace) {
+        return;
+      }
+      gitProjectStatus = status;
+      gitProjectError = status.error;
+      final results =
+          <({String path, GitDiffPreview? preview, String? error})>[];
+      for (
+        var offset = 0;
+        offset < status.changes.length;
+        offset += _maximumConcurrentGitReviewDiffs
+      ) {
+        final end = math.min(
+          offset + _maximumConcurrentGitReviewDiffs,
+          status.changes.length,
+        );
+        final batch = await Future.wait(
+          status.changes.sublist(offset, end).map((change) async {
+            try {
+              final preview = await _gitProjectService.readDiffPreview(
+                workspace: workspace,
+                change: change,
+              );
+              return (
+                path: change.path,
+                preview: preview,
+                error: null as String?,
+              );
+            } catch (error) {
+              return (
+                path: change.path,
+                preview: null as GitDiffPreview?,
+                error: _messageOf(error),
+              );
+            }
+          }),
+        );
+        results.addAll(batch);
+        if (_disposed ||
+            request != _gitReviewRefreshRequest ||
+            workspacePath != workspace) {
+          return;
+        }
+      }
+      if (_disposed ||
+          request != _gitReviewRefreshRequest ||
+          workspacePath != workspace) {
+        return;
+      }
+      gitReviewDiffs = {
+        for (final result in results) result.path: ?result.preview,
+      };
+      gitReviewDiffErrors = {
+        for (final result in results) result.path: ?result.error,
+      };
+    } catch (error) {
+      if (_disposed ||
+          request != _gitReviewRefreshRequest ||
+          workspacePath != workspace) {
+        return;
+      }
+      gitProjectError = _messageOf(error);
+      gitReviewDiffs = const {};
+    } finally {
+      if (!_disposed &&
+          request == _gitReviewRefreshRequest &&
+          workspacePath == workspace) {
+        gitReviewLoading = false;
         notifyListeners();
       }
     }
@@ -1641,6 +1736,7 @@ class CodexController extends ChangeNotifier {
     _resetMcpServersForWorkspaceChange();
     _gitProjectRefreshRequest++;
     _gitDiffRefreshRequest++;
+    _gitReviewRefreshRequest++;
     _threadViewCache.clear();
     _clearSubagentThreadViews();
     _runningThreadIds.clear();
@@ -1662,6 +1758,9 @@ class CodexController extends ChangeNotifier {
     gitDiff = null;
     gitDiffLoading = false;
     gitDiffTruncated = false;
+    gitReviewDiffs = const {};
+    gitReviewDiffErrors = const {};
+    gitReviewLoading = false;
     _clearStreamingState();
     _clearFileChanges();
     _resetConversationTimeline();
@@ -1912,11 +2011,17 @@ class CodexController extends ChangeNotifier {
     _resetMcpServersForWorkspaceChange();
     _gitProjectRefreshRequest++;
     _gitDiffRefreshRequest++;
+    _gitReviewRefreshRequest++;
     _additionalWorkspacePaths.clear();
     activeThreadId = null;
     _activeThreadAttached = false;
     threads = const [];
     archivedThreads = const [];
+    gitProjectStatus = null;
+    gitProjectError = null;
+    gitReviewDiffs = const {};
+    gitReviewDiffErrors = const {};
+    gitReviewLoading = false;
     _resetConversationTimeline();
     _clearFileChanges();
     _clearStreamingState();

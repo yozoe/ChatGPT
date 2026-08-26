@@ -20,6 +20,7 @@ import 'package:chatgpt/src/domain/scheduled_task.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/domain/workspace_configuration.dart';
 import 'package:chatgpt/src/presentation/codex_workspace.dart';
+import 'package:chatgpt/src/presentation/code_review_panel.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/services/agent_markdown_link.dart';
 import 'package:chatgpt/src/services/codex_plugin_store.dart';
@@ -501,9 +502,15 @@ class _FakeGitProjectService extends GitProjectService {
   String? reversedDiff;
   List<String>? reversedExpectedPaths;
   GitProjectChange? requestedChange;
+  final List<GitProjectChange> requestedChanges = [];
   int inspectCalls = 0;
   int reverseCalls = 0;
+  int stageCalls = 0;
   Object? stageError;
+  Completer<void>? stageCompleter;
+  Completer<void>? diffCompleter;
+  int activeDiffReads = 0;
+  int maximumActiveDiffReads = 0;
   Object? reverseError;
   Completer<void>? reverseCompleter;
 
@@ -523,6 +530,7 @@ class _FakeGitProjectService extends GitProjectService {
     required GitProjectChange change,
   }) async {
     requestedChange = change;
+    requestedChanges.add(change);
     return diff;
   }
 
@@ -532,10 +540,18 @@ class _FakeGitProjectService extends GitProjectService {
     required GitProjectChange change,
   }) async {
     requestedChange = change;
-    return GitDiffPreview(
-      content: diff,
-      truncated: diff.endsWith(GitProjectService.truncatedDiffMarker),
-    );
+    requestedChanges.add(change);
+    activeDiffReads++;
+    maximumActiveDiffReads = math.max(maximumActiveDiffReads, activeDiffReads);
+    try {
+      await diffCompleter?.future;
+      return GitDiffPreview(
+        content: diff,
+        truncated: diff.endsWith(GitProjectService.truncatedDiffMarker),
+      );
+    } finally {
+      activeDiffReads--;
+    }
   }
 
   @override
@@ -543,7 +559,9 @@ class _FakeGitProjectService extends GitProjectService {
     required String workspace,
     required GitProjectChange change,
   }) async {
+    stageCalls++;
     if (stageError case final error?) throw error;
+    await stageCompleter?.future;
   }
 
   @override
@@ -9987,10 +10005,300 @@ void main() {
     await tester.tap(find.byKey(const Key('review-file-changes-button')));
     await tester.pump();
 
-    expect(find.byKey(const Key('code-review-dialog')), findsOneWidget);
+    expect(find.byKey(const Key('code-review-panel')), findsOneWidget);
+    expect(find.byKey(const Key('code-review-dialog')), findsNothing);
     expect(find.text('审查'), findsOneWidget);
     expect(find.text('lib/main.dart'), findsWidgets);
-    expect(find.byType(SelectableText), findsWidgets);
+    expect(find.text('+new'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'keeps review beside the conversation and preserves state across breakpoints',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1800, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final controller = CodexController(server: CodexAppServer())
+        ..status = RuntimeStatus.ready;
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'item': {
+              'type': 'fileChange',
+              'changes': [
+                {
+                  'path': 'lib/main.dart',
+                  'kind': 'modified',
+                  'diff': '@@ -4 +4 @@\n-old\n+new',
+                },
+                {
+                  'path': 'lib/widgets/review.dart',
+                  'kind': 'added',
+                  'diff': '@@ -0,0 +1 @@\n+panel',
+                },
+              ],
+            },
+          },
+        ),
+      );
+      await tester.pump();
+      await tester.ensureVisible(
+        find.byKey(const Key('review-file-changes-button')),
+      );
+      await tester.tap(find.byKey(const Key('review-file-changes-button')));
+      await tester.pump();
+
+      expect(find.byKey(const Key('review-resize-handle')), findsOneWidget);
+      expect(find.byKey(const Key('code-review-file-tree')), findsOneWidget);
+      expect(find.byKey(const Key('composer-field')), findsOneWidget);
+      final initialReviewWidth = tester
+          .getSize(find.byKey(const Key('code-review-panel')))
+          .width;
+      await tester.drag(
+        find.byKey(const Key('review-resize-handle')),
+        const Offset(-80, 0),
+      );
+      await tester.pump();
+      expect(
+        tester.getSize(find.byKey(const Key('code-review-panel'))).width,
+        greaterThan(initialReviewWidth),
+      );
+      await tester.enterText(
+        find.byKey(const Key('code-review-file-filter')),
+        'review.dart',
+      );
+      await tester.pump();
+      final tree = find.byKey(const Key('code-review-file-tree'));
+      expect(
+        find.descendant(of: tree, matching: find.text('review.dart')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: tree, matching: find.text('main.dart')),
+        findsNothing,
+      );
+      expect(find.text('lib/main.dart'), findsWidgets);
+
+      await tester.binding.setSurfaceSize(const Size(1100, 760));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('code-review-panel')), findsOneWidget);
+      expect(find.byKey(const Key('code-review-back')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('code-review-navigation-toggle')));
+      await tester.pump();
+      expect(
+        find.byKey(const Key('review-navigation-overlay')),
+        findsOneWidget,
+      );
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('code-review-file-filter')))
+            .controller!
+            .text,
+        'review.dart',
+      );
+
+      await tester.binding.setSurfaceSize(const Size(1800, 900));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('review-resize-handle')), findsOneWidget);
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('code-review-file-filter')))
+            .controller!
+            .text,
+        'review.dart',
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('keeps the composer draft while compact review covers it', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(900, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.enterText(find.byKey(const Key('composer-field')), '保留未发送草稿');
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {
+                'path': 'lib/main.dart',
+                'kind': 'modified',
+                'diff': '@@ -1 +1 @@\n-old\n+new',
+              },
+            ],
+          },
+        },
+      ),
+    );
+    await tester.pump();
+    await tester.ensureVisible(
+      find.byKey(const Key('review-file-changes-button')),
+    );
+    await tester.tap(find.byKey(const Key('review-file-changes-button')));
+    await tester.pump();
+
+    expect(find.byKey(const Key('code-review-back')), findsOneWidget);
+    expect(find.byKey(const Key('composer-field')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('code-review-close')));
+    await tester.pump();
+
+    expect(find.byKey(const Key('code-review-panel')), findsNothing);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('composer-field')))
+          .controller!
+          .text,
+      '保留未发送草稿',
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('closes an inline review with Escape immediately after opening', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1800, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {
+                'path': 'lib/main.dart',
+                'kind': 'modified',
+                'diff': '@@ -1 +1 @@\n-old\n+new',
+              },
+            ],
+          },
+        },
+      ),
+    );
+    await tester.pump();
+    await tester.ensureVisible(
+      find.byKey(const Key('review-file-changes-button')),
+    );
+    await tester.tap(find.byKey(const Key('review-file-changes-button')));
+    await tester.pump();
+
+    expect(find.byKey(const Key('review-resize-handle')), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+
+    expect(find.byKey(const Key('code-review-panel')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('renders leading and inter-hunk unchanged regions', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {
+                'path': 'lib/main.dart',
+                'kind': 'modified',
+                'diff':
+                    '@@ -4 +4 @@\n-old\n+new\n@@ -10 +10 @@\n-before\n+after',
+              },
+            ],
+          },
+        },
+      ),
+    );
+    await tester.pump();
+    await tester.ensureVisible(
+      find.byKey(const Key('review-file-changes-button')),
+    );
+    await tester.tap(find.byKey(const Key('review-file-changes-button')));
+    await tester.pump();
+
+    expect(find.text('未修改 3 行'), findsOneWidget);
+    expect(find.text('未修改 5 行'), findsOneWidget);
+    expect(find.text('@@ -4 +4 @@'), findsOneWidget);
+    expect(find.text('@@ -10 +10 @@'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('resets line state between concatenated Git patch sections', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {
+                'path': 'lib/main.dart',
+                'kind': 'modified',
+                'diff':
+                    'diff --git a/lib/main.dart b/lib/main.dart\n'
+                    '--- a/lib/main.dart\n'
+                    '+++ b/lib/main.dart\n'
+                    '@@ -8 +8 @@\n'
+                    '-cached-old\n'
+                    '+cached-new\n'
+                    'diff --git a/lib/main.dart b/lib/main.dart\n'
+                    '--- a/lib/main.dart\n'
+                    '+++ b/lib/main.dart\n'
+                    '@@ -8 +8 @@\n'
+                    '-working-old\n'
+                    '+working-new',
+              },
+            ],
+          },
+        },
+      ),
+    );
+    await tester.pump();
+    await tester.ensureVisible(
+      find.byKey(const Key('review-file-changes-button')),
+    );
+    await tester.tap(find.byKey(const Key('review-file-changes-button')));
+    await tester.pump();
+
+    expect(find.text('未修改 7 行'), findsNWidgets(2));
+    expect(
+      find.text('diff --git a/lib/main.dart b/lib/main.dart'),
+      findsNWidgets(2),
+    );
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -10315,6 +10623,7 @@ void main() {
     await tester.tap(find.byKey(const Key('review-file-changes-button')));
     await tester.pump();
 
+    expect(find.byKey(const Key('code-review-file-count')), findsOneWidget);
     expect(find.text('1 个文件'), findsOneWidget);
     expect(find.text('本次任务完整 Diff'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
@@ -10384,6 +10693,284 @@ void main() {
     expect(taskFilesLabel.style?.fontSize, 13);
     expect(decoration.borderRadius, BorderRadius.circular(28));
     await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('opens Git workspace changes in the embedded review surface', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    const change = GitProjectChange(code: ' M', path: 'lib/editor.dart');
+    final git = _FakeGitProjectService()
+      ..status = const GitProjectStatus(
+        isRepository: true,
+        branch: 'main',
+        changes: [change],
+      )
+      ..diff =
+          'diff --git a/lib/editor.dart b/lib/editor.dart\n'
+          '--- a/lib/editor.dart\n'
+          '+++ b/lib/editor.dart\n'
+          '@@ -2 +2 @@\n-old\n+workspace';
+    final controller =
+        CodexController(server: CodexAppServer(), gitProjectService: git)
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('codex-environment-card')),
+        matching: find.text('变更'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('code-review-panel')), findsOneWidget);
+    expect(find.text('Git 工作区'), findsOneWidget);
+    expect(find.text('lib/editor.dart'), findsOneWidget);
+    expect(find.text('+workspace'), findsOneWidget);
+    expect(
+      controller.gitReviewDiffs['lib/editor.dart']?.content,
+      contains('+workspace'),
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('keeps Git review actions accessible in a narrow toolbar', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(600, 520));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    const change = GitProjectChange(code: ' M', path: 'lib/editor.dart');
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..gitProjectStatus = const GitProjectStatus(
+        isRepository: true,
+        branch: 'main',
+        changes: [change],
+      )
+      ..gitReviewDiffs = const {
+        'lib/editor.dart': GitDiffPreview(
+          content: '@@ -1 +1 @@\n-old\n+new',
+          truncated: false,
+        ),
+      };
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 300,
+              child: CodeReviewPanel(
+                controller: controller,
+                source: CodeReviewSource.gitWorkspace,
+                compact: true,
+                onSourceChanged: (_) {},
+                onClose: () {},
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const Key('code-review-commit')), findsNothing);
+    await tester.tap(find.byKey(const Key('code-review-more-menu')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('提交或推送'), findsOneWidget);
+    expect(find.text('创建拉取请求'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('reveals the selected file when compact navigation reopens', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(700, 520));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
+    controller.handleServerEventForTesting(
+      ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              for (var index = 0; index < 40; index++)
+                {
+                  'path': 'lib/file_${index.toString().padLeft(2, '0')}.dart',
+                  'kind': 'modified',
+                  'diff': '@@ -1 +1 @@\n-old\n+new',
+                },
+            ],
+          },
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: CodeReviewPanel(
+            controller: controller,
+            source: CodeReviewSource.latestTurn,
+            compact: true,
+            onSourceChanged: (_) {},
+            onClose: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('code-review-navigation-toggle')));
+    await tester.pump();
+    final tree = find.byKey(const Key('code-review-file-tree'));
+    await tester.drag(tree, const Offset(0, -5000));
+    await tester.pump();
+    const lastPath = 'lib/file_39.dart';
+    final lastRow = find.byKey(const ValueKey('code-review-file-$lastPath'));
+    expect(lastRow, findsOneWidget);
+    await tester.tap(lastRow);
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('code-review-selected-path-$lastPath')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const Key('code-review-navigation-toggle')));
+    await tester.pump();
+    await tester.drag(tree, const Offset(0, 5000));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('code-review-navigation-toggle')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('code-review-navigation-toggle')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('code-review-selected-path-$lastPath')),
+      findsOneWidget,
+    );
+
+    final overlayRect = tester.getRect(
+      find.byKey(const Key('review-navigation-overlay')),
+    );
+    final selectedRect = tester.getRect(lastRow);
+    expect(selectedRect.top, greaterThanOrEqualTo(overlayRect.top));
+    expect(selectedRect.bottom, lessThanOrEqualTo(overlayRect.bottom));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'locks Git review writes and shows progress only on the source row',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      const change = GitProjectChange(code: ' M', path: 'lib/editor.dart');
+      final git = _FakeGitProjectService()
+        ..status = const GitProjectStatus(
+          isRepository: true,
+          branch: 'main',
+          changes: [change],
+        )
+        ..diff = '@@ -1 +1 @@\n-old\n+new'
+        ..stageCompleter = Completer<void>();
+      final controller =
+          CodexController(server: CodexAppServer(), gitProjectService: git)
+            ..workspacePath = '/workspace'
+            ..status = RuntimeStatus.ready;
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(const Key('codex-environment-card')),
+          matching: find.text('变更'),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('code-review-navigation-toggle')));
+      await tester.pump();
+      final row = find.byKey(
+        const ValueKey('code-review-file-lib/editor.dart'),
+      );
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.moveTo(tester.getCenter(row));
+      await tester.pump();
+      await tester.tap(find.byTooltip('暂存文件'));
+      await tester.pump();
+
+      expect(git.stageCalls, 1);
+      expect(controller.gitOperationRunning, isTrue);
+      expect(
+        find.byKey(const Key('code-review-file-operation')),
+        findsOneWidget,
+      );
+      expect(
+        tester
+            .widget<IconButton>(find.byKey(const Key('code-review-commit')))
+            .onPressed,
+        isNull,
+      );
+
+      git.stageCompleter!.complete();
+      await tester.pumpAndSettle();
+      expect(controller.gitOperationRunning, isFalse);
+      expect(find.byKey(const Key('code-review-file-operation')), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+      await mouse.removePointer();
+    },
+  );
+
+  testWidgets('reports a failed Git review operation without closing review', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    const change = GitProjectChange(code: ' M', path: 'lib/editor.dart');
+    final git = _FakeGitProjectService()
+      ..status = const GitProjectStatus(
+        isRepository: true,
+        branch: 'main',
+        changes: [change],
+      )
+      ..diff = '@@ -1 +1 @@\n-old\n+new'
+      ..stageError = StateError('暂存被拒绝');
+    final controller =
+        CodexController(server: CodexAppServer(), gitProjectService: git)
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('codex-environment-card')),
+        matching: find.text('变更'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('code-review-navigation-toggle')));
+    await tester.pump();
+    final row = find.byKey(const ValueKey('code-review-file-lib/editor.dart'));
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.moveTo(tester.getCenter(row));
+    await tester.pump();
+    await tester.tap(find.byTooltip('暂存文件'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('暂存被拒绝'), findsOneWidget);
+    expect(find.byKey(const Key('code-review-panel')), findsOneWidget);
+    expect(controller.gitOperationRunning, isFalse);
+    await tester.pumpWidget(const SizedBox());
+    await mouse.removePointer();
   });
 
   testWidgets('resizes the side panes through their drag handles', (
@@ -12341,6 +12928,66 @@ void main() {
       controller.dispose();
     },
   );
+
+  test('loads every changed file diff for the continuous Git review', () async {
+    const first = GitProjectChange(code: ' M', path: 'lib/first.dart');
+    const second = GitProjectChange(code: '??', path: 'lib/second.dart');
+    final git = _FakeGitProjectService()
+      ..status = const GitProjectStatus(
+        isRepository: true,
+        branch: 'main',
+        changes: [first, second],
+      )
+      ..diff = '@@ -1 +1 @@\n-old\n+new';
+    final controller = CodexController(
+      server: CodexAppServer(),
+      gitProjectService: git,
+    )..workspacePath = '/workspace';
+
+    await controller.refreshGitReview();
+
+    expect(controller.gitReviewLoading, isFalse);
+    expect(controller.gitReviewDiffs.keys, {
+      'lib/first.dart',
+      'lib/second.dart',
+    });
+    expect(git.requestedChanges, containsAll([first, second]));
+    expect(controller.gitReviewDiffErrors, isEmpty);
+    controller.dispose();
+  });
+
+  test('limits concurrent Diff reads for a large Git review', () async {
+    final gate = Completer<void>();
+    final changes = [
+      for (var index = 0; index < 14; index++)
+        GitProjectChange(code: ' M', path: 'lib/file_$index.dart'),
+    ];
+    final git = _FakeGitProjectService()
+      ..status = GitProjectStatus(
+        isRepository: true,
+        branch: 'main',
+        changes: changes,
+      )
+      ..diff = '@@ -1 +1 @@\n-old\n+new'
+      ..diffCompleter = gate;
+    final controller = CodexController(
+      server: CodexAppServer(),
+      gitProjectService: git,
+    )..workspacePath = '/workspace';
+
+    final refresh = controller.refreshGitReview();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(git.activeDiffReads, 6);
+    expect(git.requestedChanges, hasLength(6));
+    gate.complete();
+    await refresh;
+
+    expect(git.maximumActiveDiffReads, 6);
+    expect(git.requestedChanges, hasLength(changes.length));
+    expect(controller.gitReviewDiffs, hasLength(changes.length));
+    controller.dispose();
+  });
 
   testWidgets('opens the Git project workflow view', (tester) async {
     const change = GitProjectChange(code: '??', path: 'new_file.txt');
