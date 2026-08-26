@@ -2539,6 +2539,137 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets(
+    'lets timeline content pass behind the floating composer and fade',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(800, 620));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final controller = CodexController(server: CodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-1'
+        ..activeTurnId = 'turn-1'
+        ..threads = [_thread(id: 'thread-1')]
+        ..replaceTimelineEntriesForTesting(
+          List<TimelineEntry>.generate(
+            18,
+            (index) => TimelineEntry(
+              kind: TimelineKind.agent,
+              title: 'Codex',
+              detail: '滚动内容 $index\n${'用于检查输入框后方滚动的文字 ' * 3}',
+              createdAt: DateTime(2026, 1, 1, 0, 0, index),
+            ),
+          ),
+        );
+
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      final viewport = find.byKey(const Key('conversation-viewport-stack'));
+      final composer = find.byKey(const Key('composer-panel'));
+      final fade = find.byKey(const Key('composer-bottom-fade'));
+      final timelineFinder = find.descendant(
+        of: find.byKey(
+          const ValueKey('conversation-timeline-/workspace:thread-1'),
+        ),
+        matching: find.byType(ListView),
+      );
+      final timeline = tester.widget<ListView>(timelineFinder);
+      final viewportBottom = tester.getBottomLeft(viewport).dy;
+      var composerTop = tester.getTopLeft(composer).dy;
+      final initialBottomPadding = (timeline.padding as EdgeInsets).bottom;
+
+      expect(tester.getBottomLeft(timelineFinder).dy, viewportBottom);
+      expect(composerTop, lessThan(viewportBottom));
+      expect(fade, findsOneWidget);
+      final fadeMask = tester.widget<ShaderMask>(fade);
+      expect(fadeMask.blendMode, BlendMode.dstIn);
+      expect(
+        find.descendant(of: fade, matching: timelineFinder),
+        findsOneWidget,
+      );
+
+      timeline.controller!.jumpTo(
+        timeline.controller!.position.maxScrollExtent,
+      );
+      await tester.pump();
+      for (final label in ['第一条调整方向', '第二条调整方向', '第三条调整方向']) {
+        controller.queueTurnSteer(
+          PendingTurnSteer(displayText: label, prompt: label),
+        );
+      }
+      await tester.pump();
+      await tester.pump();
+      composerTop = tester.getTopLeft(composer).dy;
+      expect(
+        (tester.widget<ListView>(timelineFinder).padding as EdgeInsets).bottom,
+        greaterThan(initialBottomPadding),
+      );
+      expect(timeline.controller!.position.extentAfter, lessThan(1));
+      final maxOffset = timeline.controller!.position.maxScrollExtent;
+      timeline.controller!.jumpTo(math.max(0, maxOffset - 120));
+      await tester.pump();
+
+      final lastMessage = find.textContaining('滚动内容 17');
+      expect(lastMessage, findsOneWidget);
+      expect(tester.getBottomLeft(lastMessage).dy, greaterThan(composerTop));
+
+      for (final pending in controller.pendingTurnSteers.toList()) {
+        controller.discardPendingTurnSteer(pending);
+      }
+      await tester.pump();
+      await tester.pump();
+      composerTop = tester.getTopLeft(composer).dy;
+      final settledBottomPadding =
+          (tester.widget<ListView>(timelineFinder).padding as EdgeInsets)
+              .bottom;
+      expect(
+        (viewportBottom - composerTop) - settledBottomPadding,
+        closeTo(-28, 0.5),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'threadId': 'thread-1',
+            'turnId': 'turn-1',
+            'item': {
+              'id': 'file-change-1',
+              'type': 'fileChange',
+              'changes': [
+                {
+                  'path': 'lib/main.dart',
+                  'kind': 'modified',
+                  'diff': '@@ -1 +1 @@\n-old\n+new',
+                },
+              ],
+            },
+          },
+        ),
+      );
+      await tester.pump();
+      timeline.controller!.jumpTo(
+        timeline.controller!.position.maxScrollExtent,
+      );
+      await tester.pump();
+      expect(
+        tester.getBottomLeft(find.byKey(const Key('live-thinking-row'))).dy,
+        lessThan(
+          tester
+                  .getTopLeft(
+                    find.byKey(const Key('composer-file-change-pill')),
+                  )
+                  .dy -
+              8,
+        ),
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets('uses a circular stop button while a task is running', (
     tester,
   ) async {
@@ -4437,6 +4568,42 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('keeps the thinking loader attached to a short task plan', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(800, 520));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running;
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/plan/updated',
+        params: {
+          'turnId': 'turn-short',
+          'plan': [
+            {'step': '修复定位', 'status': 'inProgress'},
+          ],
+        },
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.pump();
+
+    final loader = find.byKey(const Key('live-thinking-loader'));
+    final plan = find.byKey(const Key('task-plan-progress'));
+    expect(loader, findsOneWidget);
+    expect(plan, findsOneWidget);
+    final gap = tester.getTopLeft(plan).dy - tester.getBottomLeft(loader).dy;
+    expect(gap, inInclusiveRange(11, 13));
+    expect(tester.getTopLeft(loader).dy, greaterThanOrEqualTo(0));
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('scrolls a long task plan to the newly focused step', (
     tester,
   ) async {
@@ -5665,6 +5832,73 @@ void main() {
     },
   );
 
+  testWidgets('animates the centered thinking dots as a wave', (tester) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1'
+      ..replaceTimelineEntriesForTesting(
+        List<TimelineEntry>.generate(
+          18,
+          (index) => TimelineEntry(
+            kind: TimelineKind.agent,
+            title: 'Codex',
+            detail: '用于滚动定位的历史回复 $index\n${'内容 ' * 10}',
+            createdAt: DateTime(2026, 1, 1, 0, 0, index),
+          ),
+        ),
+      );
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const Key('live-thinking-loader')), findsOneWidget);
+    expect(find.byKey(const Key('composer-activity-pill')), findsNothing);
+    expect(find.text('正在处理任务'), findsNothing);
+    expect(find.text('正在思考'), findsNothing);
+    final dots = List<Finder>.generate(
+      3,
+      (index) => find.byKey(ValueKey('live-thinking-dot-$index')),
+    );
+    for (final dot in dots) {
+      expect(dot, findsOneWidget);
+    }
+
+    List<double> verticalOffsets() => dots
+        .map((dot) => tester.widget<Transform>(dot).transform.storage[13])
+        .toList(growable: false);
+
+    final firstOffsets = verticalOffsets();
+    expect(firstOffsets.toSet(), hasLength(greaterThan(1)));
+    await tester.pump(const Duration(milliseconds: 180));
+    final nextOffsets = verticalOffsets();
+    expect(nextOffsets, isNot(firstOffsets));
+    expect(nextOffsets.toSet(), hasLength(greaterThan(1)));
+
+    final loaderCenter = tester.getCenter(
+      find.byKey(const Key('live-thinking-loader')),
+    );
+    final timelineFinder = find.descendant(
+      of: find.byKey(
+        const ValueKey('conversation-timeline-no-workspace:thread-1'),
+      ),
+      matching: find.byType(ListView),
+    );
+    final timeline = tester.widget<ListView>(timelineFinder);
+    expect(timeline.controller!.position.maxScrollExtent, greaterThan(100));
+    timeline.controller!.jumpTo(
+      timeline.controller!.position.maxScrollExtent - 100,
+    );
+    await tester.pump();
+    expect(
+      tester.getCenter(find.byKey(const Key('live-thinking-loader'))),
+      loaderCenter,
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('renders the server-declared live activity before thinking', (
     tester,
   ) async {
@@ -6430,7 +6664,7 @@ void main() {
   testWidgets('renders project files as compact conversation file rows', (
     tester,
   ) async {
-    await tester.binding.setSurfaceSize(const Size(680, 520));
+    await tester.binding.setSurfaceSize(const Size(1000, 520));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     late Directory workspace;
     late Directory outside;
@@ -6470,7 +6704,7 @@ void main() {
         params: {
           'itemId': 'artifact-message',
           'delta':
-              '新的 debug APK 已生成：\n\n[download](${artifact.uri})'
+              '- **文件：**  \n  [download](${artifact.uri})'
               '\n\n[项目外文件](${outsideFile.uri})',
         },
       ),
@@ -6504,6 +6738,14 @@ void main() {
     );
     expect(tester.getSize(fileRow).width, lessThanOrEqualTo(360));
     expect(find.text('项目外文件'), findsOneWidget);
+    final leadText = find.byWidgetPredicate(
+      (widget) =>
+          widget is RichText && widget.text.toPlainText().contains('文件：'),
+    );
+    final leadRect = tester.getRect(leadText);
+    final fileRect = tester.getRect(fileRow);
+    expect(fileRect.left, closeTo(leadRect.left, 0.5));
+    expect(fileRect.top, greaterThanOrEqualTo(leadRect.bottom));
 
     await tester.pumpWidget(const SizedBox());
   });

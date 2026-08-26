@@ -4982,123 +4982,315 @@ class _ConversationPane extends StatelessWidget {
             onDecline: () => controller.respondToApproval(accepted: false),
           ),
         Expanded(
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final plan = controller.status == RuntimeStatus.running
-                  ? controller.activeTaskPlan
-                  : null;
-              final planHeight = (constraints.maxHeight - 16).clamp(
-                100.0,
-                340.0,
-              );
-              final pages = timelinePages.entries.toList(growable: false);
-              final activePageIndex = pages.indexWhere(
-                (page) => page.key == activeTimelinePageKey,
-              );
-              return Stack(
-                children: [
-                  IndexedStack(
-                    index: activePageIndex < 0 ? 0 : activePageIndex,
-                    children: [
-                      for (final page in pages)
-                        _ConversationTimeline(
-                          key: ValueKey(
-                            'conversation-timeline-${page.key.storageKey}',
-                          ),
-                          pageKey: page.key,
-                          data: page.value,
-                          scrollController:
-                              timelineScrollControllers[page.key]!,
-                          bottomPadding:
-                              page.key == activeTimelinePageKey && plan != null
-                              ? planHeight + 28
-                              : 12,
-                          active: page.key == activeTimelinePageKey,
-                          fileChangeSummaryExpanded: fileChangeSummaryExpanded(
-                            page.key,
-                          ),
-                          onFileChangeSummaryExpandedChanged: (expanded) =>
-                              onFileChangeSummaryExpandedChanged(
-                                page.key,
-                                expanded,
-                              ),
-                          activityExpanded: (activityId) =>
-                              activityExpanded(page.key, activityId),
-                          onMetricsChanged: () =>
-                              onTimelineMetricsChanged(page.key),
-                          onActivityExpandedChanged: (activityId, expanded) =>
-                              onActivityExpandedChanged(
-                                page.key,
-                                activityId,
-                                expanded,
-                              ),
-                          onReview: onReview,
-                          onUndo: onUndo,
-                          onOpenSubagent: onOpenSubagent,
-                          canUndo:
-                              page.key == activeTimelinePageKey &&
-                              controller.canUndoFileChanges,
-                          undoRunning:
-                              page.key == activeTimelinePageKey &&
-                              controller.fileChangeUndoRunning,
-                        ),
-                    ],
+          child: _ConversationViewport(
+            controller: controller,
+            timelinePages: timelinePages,
+            timelineScrollControllers: timelineScrollControllers,
+            activeTimelinePageKey: activeTimelinePageKey,
+            threadHistoryLoading: threadHistoryLoading,
+            fileChangeSummaryExpanded: fileChangeSummaryExpanded,
+            onFileChangeSummaryExpandedChanged:
+                onFileChangeSummaryExpandedChanged,
+            activityExpanded: activityExpanded,
+            onTimelineMetricsChanged: onTimelineMetricsChanged,
+            onActivityExpandedChanged: onActivityExpandedChanged,
+            onReview: onReview,
+            onUndo: onUndo,
+            onOpenSubagent: onOpenSubagent,
+            bottomOverlay: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (controller.hasThreadWriterConflict)
+                  _ThreadOpenElsewhereNotice(
+                    retrying: controller.isRetryingThreadWriterConflict,
+                    onRetry: controller.retryThreadWriterConflict,
                   ),
-                  if (plan != null)
-                    Positioned(
-                      left: 16,
-                      right: 16,
-                      bottom: 12,
-                      child: Align(
-                        alignment: Alignment.bottomCenter,
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(
-                            maxWidth: 620,
-                            maxHeight: planHeight,
-                          ),
-                          child: _TaskPlanPanel(plan: plan),
-                        ),
-                      ),
-                    ),
-                  if (threadHistoryLoading)
-                    Positioned.fill(
-                      child: ColoredBox(
-                        key: const Key('thread-history-loading'),
-                        color: palette.module,
-                        child: const Center(child: _CodexLoadingMark()),
-                      ),
-                    ),
-                ],
-              );
-            },
+                if (controller.hasFailedTurnRetry)
+                  _FailedTurnRetryNotice(
+                    error: controller.failedTurnRetryError ?? 'Codex 未能完成当前任务。',
+                    retrying: controller.isRetryingFailedTurn,
+                    enabled: controller.canRetryFailedTurn,
+                    onRetry: controller.retryFailedTurn,
+                  ),
+                if (controller.hasArchivedThreadRestore)
+                  _ArchivedThreadNotice(
+                    restoring: controller.isRestoringArchivedThread,
+                    onRestore: controller.restoreArchivedThread,
+                  ),
+                _ComposerPanel(
+                  key: const Key('composer-panel'),
+                  controller: controller,
+                  composer: composer,
+                  recordSkillRequest: recordSkillRequest,
+                  onSend: onSend,
+                  onQueueSteer: onQueueSteer,
+                ),
+              ],
+            ),
           ),
-        ),
-        if (controller.hasThreadWriterConflict)
-          _ThreadOpenElsewhereNotice(
-            retrying: controller.isRetryingThreadWriterConflict,
-            onRetry: controller.retryThreadWriterConflict,
-          ),
-        if (controller.hasFailedTurnRetry)
-          _FailedTurnRetryNotice(
-            error: controller.failedTurnRetryError ?? 'Codex 未能完成当前任务。',
-            retrying: controller.isRetryingFailedTurn,
-            enabled: controller.canRetryFailedTurn,
-            onRetry: controller.retryFailedTurn,
-          ),
-        if (controller.hasArchivedThreadRestore)
-          _ArchivedThreadNotice(
-            restoring: controller.isRestoringArchivedThread,
-            onRestore: controller.restoreArchivedThread,
-          ),
-        _ComposerPanel(
-          key: const Key('composer-panel'),
-          controller: controller,
-          composer: composer,
-          recordSkillRequest: recordSkillRequest,
-          onSend: onSend,
-          onQueueSteer: onQueueSteer,
         ),
       ],
+    );
+  }
+}
+
+/// Lets the timeline occupy the full conversation viewport while the composer
+/// floats above it. The measured bottom inset keeps the final message fully
+/// reachable even though intermediate content can pass behind the composer.
+/// 让时间线铺满会话视口并把输入区悬浮在其上；动态测量的底部留白保证最后一条
+/// 消息仍可完整滚出输入区，同时中间内容可以从输入区后方经过。
+class _ConversationViewport extends StatefulWidget {
+  const _ConversationViewport({
+    required this.controller,
+    required this.timelinePages,
+    required this.timelineScrollControllers,
+    required this.activeTimelinePageKey,
+    required this.threadHistoryLoading,
+    required this.fileChangeSummaryExpanded,
+    required this.onFileChangeSummaryExpandedChanged,
+    required this.activityExpanded,
+    required this.onTimelineMetricsChanged,
+    required this.onActivityExpandedChanged,
+    required this.onReview,
+    required this.onUndo,
+    required this.onOpenSubagent,
+    required this.bottomOverlay,
+  });
+
+  final CodexController controller;
+  final Map<_ThreadViewportKey, _TimelinePageData> timelinePages;
+  final Map<_ThreadViewportKey, ScrollController> timelineScrollControllers;
+  final _ThreadViewportKey activeTimelinePageKey;
+  final bool threadHistoryLoading;
+  final bool Function(_ThreadViewportKey pageKey) fileChangeSummaryExpanded;
+  final void Function(_ThreadViewportKey pageKey, bool expanded)
+  onFileChangeSummaryExpandedChanged;
+  final bool Function(_ThreadViewportKey pageKey, String activityId)
+  activityExpanded;
+  final ValueChanged<_ThreadViewportKey> onTimelineMetricsChanged;
+  final void Function(
+    _ThreadViewportKey pageKey,
+    String activityId,
+    bool expanded,
+  )
+  onActivityExpandedChanged;
+  final Future<void> Function() onReview;
+  final Future<void> Function() onUndo;
+  final ValueChanged<TimelineEntry> onOpenSubagent;
+  final Widget bottomOverlay;
+
+  @override
+  State<_ConversationViewport> createState() => _ConversationViewportState();
+}
+
+class _ConversationViewportState extends State<_ConversationViewport> {
+  static const _initialBottomOverlayHeight = 172.0;
+  static const _fadeHeight = 64.0;
+  static const _fadeComposerOverlap = 12.0;
+  static const _timelineBottomClearance = 28.0;
+
+  final GlobalKey _bottomOverlayKey = GlobalKey();
+  var _bottomOverlayHeight = _initialBottomOverlayHeight;
+  var _overlayMeasureScheduled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleBottomOverlayMeasurement();
+  }
+
+  void _scheduleBottomOverlayMeasurement() {
+    if (_overlayMeasureScheduled) return;
+    _overlayMeasureScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _overlayMeasureScheduled = false;
+      if (!mounted) return;
+      final renderObject = _bottomOverlayKey.currentContext?.findRenderObject();
+      if (renderObject is! RenderBox || !renderObject.hasSize) return;
+      final measuredHeight = renderObject.size.height;
+      if ((measuredHeight - _bottomOverlayHeight).abs() <= 0.5) return;
+      final activeScrollController =
+          widget.timelineScrollControllers[widget.activeTimelinePageKey];
+      final keepLatestVisible =
+          activeScrollController?.hasClients == true &&
+          activeScrollController!.position.extentAfter <= 48;
+      setState(() => _bottomOverlayHeight = measuredHeight);
+      if (keepLatestVisible) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted ||
+              activeScrollController !=
+                  widget.timelineScrollControllers[widget
+                      .activeTimelinePageKey] ||
+              !activeScrollController.hasClients) {
+            return;
+          }
+          activeScrollController.position.jumpTo(
+            activeScrollController.position.maxScrollExtent,
+          );
+        });
+      }
+    });
+  }
+
+  bool _handleBottomOverlaySizeChanged(SizeChangedLayoutNotification _) {
+    _scheduleBottomOverlayMeasurement();
+    return false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final plan = widget.controller.status == RuntimeStatus.running
+        ? widget.controller.activeTaskPlan
+        : null;
+    final pages = widget.timelinePages.entries.toList(growable: false);
+    final activePage = widget.timelinePages[widget.activeTimelinePageKey];
+    final showFloatingThinking =
+        widget.controller.status == RuntimeStatus.running &&
+        activePage?.isThinking == true &&
+        activePage?.activeActivity == null;
+    final activePageIndex = pages.indexWhere(
+      (page) => page.key == widget.activeTimelinePageKey,
+    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final availableAboveComposer = math.max(
+          100.0,
+          constraints.maxHeight - _bottomOverlayHeight - 16,
+        );
+        final planHeight = availableAboveComposer.clamp(100.0, 340.0);
+        final timelineBottomPadding =
+            _bottomOverlayHeight +
+            (plan == null ? _timelineBottomClearance : planHeight + 28);
+        return Stack(
+          key: const Key('conversation-viewport-stack'),
+          children: [
+            Positioned.fill(
+              child: ShaderMask(
+                key: const Key('composer-bottom-fade'),
+                blendMode: BlendMode.dstIn,
+                shaderCallback: (bounds) {
+                  final height = math.max(1.0, bounds.height);
+                  final fadeEnd =
+                      (1 -
+                              ((_bottomOverlayHeight - _fadeComposerOverlap) /
+                                  height))
+                          .clamp(0.0, 1.0);
+                  final fadeStart = (fadeEnd - (_fadeHeight / height)).clamp(
+                    0.0,
+                    fadeEnd,
+                  );
+                  return LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: const [
+                      Colors.white,
+                      Colors.white,
+                      Colors.transparent,
+                      Colors.transparent,
+                    ],
+                    stops: [0, fadeStart, fadeEnd, 1],
+                  ).createShader(bounds);
+                },
+                child: IndexedStack(
+                  index: activePageIndex < 0 ? 0 : activePageIndex,
+                  children: [
+                    for (final page in pages)
+                      _ConversationTimeline(
+                        key: ValueKey(
+                          'conversation-timeline-${page.key.storageKey}',
+                        ),
+                        pageKey: page.key,
+                        data: page.value,
+                        scrollController:
+                            widget.timelineScrollControllers[page.key]!,
+                        bottomPadding: timelineBottomPadding,
+                        active: page.key == widget.activeTimelinePageKey,
+                        fileChangeSummaryExpanded: widget
+                            .fileChangeSummaryExpanded(page.key),
+                        onFileChangeSummaryExpandedChanged: (expanded) =>
+                            widget.onFileChangeSummaryExpandedChanged(
+                              page.key,
+                              expanded,
+                            ),
+                        activityExpanded: (activityId) =>
+                            widget.activityExpanded(page.key, activityId),
+                        onMetricsChanged: () =>
+                            widget.onTimelineMetricsChanged(page.key),
+                        onActivityExpandedChanged: (activityId, expanded) =>
+                            widget.onActivityExpandedChanged(
+                              page.key,
+                              activityId,
+                              expanded,
+                            ),
+                        onReview: widget.onReview,
+                        onUndo: widget.onUndo,
+                        onOpenSubagent: widget.onOpenSubagent,
+                        canUndo:
+                            page.key == widget.activeTimelinePageKey &&
+                            widget.controller.canUndoFileChanges,
+                        undoRunning:
+                            page.key == widget.activeTimelinePageKey &&
+                            widget.controller.fileChangeUndoRunning,
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            if (plan != null)
+              Positioned(
+                left: 16,
+                right: 16,
+                bottom: _bottomOverlayHeight + 12,
+                child: Align(
+                  alignment: Alignment.bottomCenter,
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxWidth: 620,
+                      maxHeight: planHeight,
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (showFloatingThinking) ...[
+                          const IgnorePointer(child: _LiveThinkingRow()),
+                          const SizedBox(height: 12),
+                        ],
+                        Flexible(child: _TaskPlanPanel(plan: plan)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            if (showFloatingThinking && plan == null)
+              Positioned(
+                left: 24,
+                right: 24,
+                bottom: _bottomOverlayHeight + 20,
+                child: const IgnorePointer(child: _LiveThinkingRow()),
+              ),
+            if (widget.threadHistoryLoading)
+              Positioned.fill(
+                bottom: _bottomOverlayHeight,
+                child: ColoredBox(
+                  key: const Key('thread-history-loading'),
+                  color: palette.module,
+                  child: const Center(child: _CodexLoadingMark()),
+                ),
+              ),
+            Align(
+              alignment: Alignment.bottomCenter,
+              child: NotificationListener<SizeChangedLayoutNotification>(
+                onNotification: _handleBottomOverlaySizeChanged,
+                child: SizeChangedLayoutNotifier(
+                  key: _bottomOverlayKey,
+                  child: widget.bottomOverlay,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -5697,9 +5889,8 @@ class _ConversationTimeline extends StatelessWidget {
   Widget build(BuildContext context) {
     final timelineItems = _conversationTimelineItems(data.entries);
     final liveActivity = active ? data.activeActivity : null;
-    final isThinking = active && data.isThinking && liveActivity == null;
     final activeTurnStartedAt = active ? data.activeTurnStartedAt : null;
-    final hasLiveStatus = liveActivity != null || isThinking;
+    final hasLiveStatus = liveActivity != null;
     var liveElapsedIndex = timelineItems.length;
     if (activeTurnStartedAt != null) {
       final firstTurnOutputIndex = timelineItems.indexWhere((item) {
@@ -5778,8 +5969,7 @@ class _ConversationTimeline extends StatelessWidget {
               : index;
           if (timelineIndex >= timelineItems.length) {
             var tailIndex = timelineIndex - timelineItems.length;
-            if (hasLiveStatus && tailIndex-- == 0) {
-              if (liveActivity == null) return const _LiveThinkingRow();
+            if (liveActivity != null && tailIndex-- == 0) {
               return liveActivity.kind == 'commandExecution'
                   ? _LiveCommandRow(command: liveActivity.detail)
                   : _LiveActivityRow(
@@ -7237,10 +7427,9 @@ class _ComposerModelControls extends StatelessWidget {
 }
 
 class _ComposerActivityPill extends StatelessWidget {
-  const _ComposerActivityPill({required this.label, required this.active});
+  const _ComposerActivityPill({required this.label});
 
   final String label;
-  final bool active;
 
   @override
   Widget build(BuildContext context) {
@@ -7262,10 +7451,7 @@ class _ComposerActivityPill extends StatelessWidget {
             height: 11,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              border: Border.all(
-                color: active ? palette.active : palette.muted,
-                width: 2,
-              ),
+              border: Border.all(color: palette.muted, width: 2),
             ),
           ),
           const SizedBox(width: 8),
@@ -7390,8 +7576,6 @@ class _ComposerPanelState extends State<_ComposerPanel> {
 
   CodexController get controller => widget.controller;
   TextEditingController get composer => widget.composer;
-
-  int get _fileChangeCount => controller.fileChanges.length;
 
   List<CodexSkill> get _selectedSkills => controller.skills
       .where(
@@ -7531,16 +7715,11 @@ class _ComposerPanelState extends State<_ComposerPanel> {
     }
   }
 
-  String get _activityLabel {
-    if (controller.status == RuntimeStatus.running) {
-      final count = _fileChangeCount;
-      return count == 0 ? '正在处理任务' : '正在处理 · $count 个文件已变更';
-    }
-    return controller.status == RuntimeStatus.ready ? '任务已就绪' : '等待运行时连接';
-  }
+  String get _activityLabel =>
+      controller.status == RuntimeStatus.ready ? '任务已就绪' : '等待运行时连接';
 
   bool get _showsActivityPill {
-    if (controller.status == RuntimeStatus.running) return true;
+    if (controller.status == RuntimeStatus.running) return false;
     final threadId = controller.activeThreadId;
     if (threadId == null) return false;
     return controller.status != RuntimeStatus.ready ||
@@ -7971,10 +8150,7 @@ class _ComposerPanelState extends State<_ComposerPanel> {
           if (controller.fileChanges.isEmpty &&
               controller.pendingTurnSteer == null &&
               _showsActivityPill)
-            _ComposerActivityPill(
-              label: _activityLabel,
-              active: controller.status == RuntimeStatus.running,
-            ),
+            _ComposerActivityPill(label: _activityLabel),
           if (controller.pendingTurnSteers.isNotEmpty)
             _PendingTurnSteerQueue(
               pendingItems: controller.pendingTurnSteers,
@@ -13467,7 +13643,7 @@ class _LiveThinkingRow extends StatefulWidget {
 
 class _LiveThinkingRowState extends State<_LiveThinkingRow>
     with SingleTickerProviderStateMixin {
-  static const _animationDuration = Duration(milliseconds: 760);
+  static const _animationDuration = Duration(milliseconds: 900);
 
   late final AnimationController _animationController = AnimationController(
     vsync: this,
@@ -13495,52 +13671,31 @@ class _LiveThinkingRowState extends State<_LiveThinkingRow>
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
-    final textStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
-      color: palette.muted,
-      fontWeight: FontWeight.w600,
-    );
-    final highlightColor = Color.lerp(
-      palette.trace,
-      Theme.of(context).colorScheme.onSurface,
-      0.38,
-    )!;
     return Semantics(
       key: const Key('live-thinking-row'),
       liveRegion: true,
       label: '正在思考',
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Center(
         child: ExcludeSemantics(
-          child: AnimatedBuilder(
-            animation: _animationController,
-            builder: (context, child) {
-              final progress = _reduceMotion ? 0.5 : _animationController.value;
-              // A narrow, muted highlight moves across the label, followed by
-              // three dots that breathe in sequence. This mirrors Codex's
-              // activity treatment without competing with message content.
-              final highlightStart = -1.35 + (progress * 2.7);
-              return Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  ShaderMask(
-                    key: const Key('live-thinking-shimmer'),
-                    blendMode: BlendMode.srcIn,
-                    shaderCallback: (bounds) => LinearGradient(
-                      begin: Alignment(highlightStart, 0),
-                      end: Alignment(highlightStart + 0.8, 0),
-                      colors: [
-                        palette.muted.withValues(alpha: 0.78),
-                        highlightColor,
-                        palette.muted.withValues(alpha: 0.78),
-                      ],
-                    ).createShader(bounds),
-                    child: Text('正在思考', style: textStyle),
+          child: DecoratedBox(
+            key: const Key('live-thinking-loader'),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: palette.module.withValues(alpha: 0.72),
+              border: Border.all(color: palette.controlBorder),
+            ),
+            child: SizedBox.square(
+              dimension: 32,
+              child: AnimatedBuilder(
+                animation: _animationController,
+                builder: (context, child) => Center(
+                  child: _ThinkingDots(
+                    progress: _reduceMotion ? null : _animationController.value,
+                    color: palette.muted,
                   ),
-                  const SizedBox(width: 5),
-                  _ThinkingDots(progress: progress, color: palette.muted),
-                ],
-              );
-            },
+                ),
+              ),
+            ),
           ),
         ),
       ),
@@ -13551,7 +13706,7 @@ class _LiveThinkingRowState extends State<_LiveThinkingRow>
 class _ThinkingDots extends StatelessWidget {
   const _ThinkingDots({required this.progress, required this.color});
 
-  final double progress;
+  final double? progress;
   final Color color;
 
   @override
@@ -13559,15 +13714,24 @@ class _ThinkingDots extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: List.generate(3, (index) {
-        final phase = (progress - (index * 0.13) + 1) % 1;
-        final opacity = 0.34 + (0.66 * (1 - (phase - 0.5).abs() * 2));
+        final phase = progress == null
+            ? 0.0
+            : ((progress! * math.pi * 2) - (index * math.pi / 2.4));
+        final lift = progress == null ? 0.0 : -math.sin(phase) * 2.4;
+        final opacity = progress == null
+            ? 0.72
+            : 0.48 + ((math.sin(phase) + 1) * 0.24);
         return Padding(
-          padding: EdgeInsets.only(right: index == 2 ? 0 : 3),
-          child: Opacity(
-            opacity: opacity,
-            child: DecoratedBox(
-              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-              child: const SizedBox(width: 3, height: 3),
+          padding: EdgeInsets.only(right: index == 2 ? 0 : 2.5),
+          child: Transform.translate(
+            key: ValueKey('live-thinking-dot-$index'),
+            offset: Offset(0, lift),
+            child: Opacity(
+              opacity: opacity,
+              child: DecoratedBox(
+                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+                child: const SizedBox(width: 3.5, height: 3.5),
+              ),
             ),
           ),
         );
@@ -13631,6 +13795,7 @@ class _AgentMarkdown extends StatelessWidget {
         selectable: false,
         builders: {
           'a': _AgentMarkdownLinkBuilder(workspacePath: workspacePath),
+          'br': _AgentMarkdownHardBreakBuilder(),
         },
         styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
           p: body,
@@ -13703,6 +13868,19 @@ class _AgentMarkdownLinkBuilder extends MarkdownElementBuilder {
       ),
     );
   }
+}
+
+/// Forces content after a Markdown hard break onto a new wrap run. The
+/// renderer otherwise keeps custom inline widgets, such as project file links,
+/// beside a two-line text box and visually centers them against the blank line.
+class _AgentMarkdownHardBreakBuilder extends MarkdownElementBuilder {
+  @override
+  Widget visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) => const SizedBox(width: double.infinity);
 }
 
 String _agentMarkdownLinkLabel(md.Element element, String fallback) {
