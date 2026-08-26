@@ -389,6 +389,7 @@ class CodexController extends ChangeNotifier {
   final List<ScheduledTask> _scheduledTasks = [];
   final Map<String, Timer> _scheduledTaskTimers = {};
   final Map<String, int> _agentEntryIndexByItem = {};
+  String? _activeStreamingAgentItemId;
   final LinkedHashMap<String, SubagentThreadView> _subagentThreadViews =
       LinkedHashMap();
   final Map<String, int> _subagentViewRequests = {};
@@ -1430,6 +1431,19 @@ class CodexController extends ChangeNotifier {
   /// one. A null value deliberately leaves the UI to use its generic
   /// "thinking" fallback instead of inventing a more specific explanation.
   LiveTurnActivity? get activeLiveActivity => _activeLiveActivity;
+
+  /// 当前仍接收增量的 Agent 时间线条目 ID；item 完成后立即清除。
+  /// Timeline-entry ID for the agent message still receiving deltas. It is
+  /// cleared as soon as App Server completes that item.
+  String? get activeStreamingAgentEntryId {
+    if (status != RuntimeStatus.running) return null;
+    final itemId = _activeStreamingAgentItemId;
+    if (itemId == null) return null;
+    final index = _agentEntryIndexByItem[itemId];
+    if (index == null || index < 0 || index >= _entries.length) return null;
+    final entry = _entries[index];
+    return entry.kind == TimelineKind.agent ? entry.id : null;
+  }
 
   /// 当前运行中 turn 的起始时刻；仅用于实时显示已处理时长，不会持久化。
   /// Start time for the active turn, used only for the live elapsed display
@@ -3362,6 +3376,7 @@ class CodexController extends ChangeNotifier {
     final previousActiveCommand = _activeCommand;
     final previousActiveCommandItemId = _activeCommandItemId;
     final previousActiveLiveActivity = _activeLiveActivity;
+    final previousActiveStreamingAgentItemId = _activeStreamingAgentItemId;
     final previousTaskPlan = activeTaskPlan;
     final previousAgentEntryIndices = Map<String, int>.of(
       _agentEntryIndexByItem,
@@ -3474,6 +3489,7 @@ class CodexController extends ChangeNotifier {
         _activeCommand = previousActiveCommand;
         _activeCommandItemId = previousActiveCommandItemId;
         _activeLiveActivity = previousActiveLiveActivity;
+        _activeStreamingAgentItemId = previousActiveStreamingAgentItemId;
         activeTaskPlan = previousTaskPlan;
         _agentEntryIndexByItem
           ..clear()
@@ -4421,6 +4437,7 @@ class CodexController extends ChangeNotifier {
     if (text.isEmpty) return;
 
     final itemId = params['itemId']?.toString() ?? 'active-agent-message';
+    _activeStreamingAgentItemId = itemId;
     _recordAgentMessageActivity(itemId);
     final index = _agentEntryIndexByItem[itemId];
     if (index == null) {
@@ -4792,6 +4809,10 @@ class CodexController extends ChangeNotifier {
     if (rawItem is! Map) return;
     final item = JsonMap.from(rawItem);
     final itemId = _label(item['id']);
+    if (item['type']?.toString() == 'agentMessage' &&
+        (itemId.isEmpty || itemId == _activeStreamingAgentItemId)) {
+      _activeStreamingAgentItemId = null;
+    }
     if (itemId.isNotEmpty) _reasoningSummaryParts.remove(itemId);
     if (itemId.isEmpty || itemId == _activeLiveActivity?.itemId) {
       _activeLiveActivity = null;
@@ -6890,6 +6911,7 @@ class CodexController extends ChangeNotifier {
   /// Cancels streaming timers and clears the Agent-entry index.
   void _clearStreamingState({bool clearPendingTurnSteer = true}) {
     _agentEntryIndexByItem.clear();
+    _activeStreamingAgentItemId = null;
     _completedCommandItemIds.clear();
     activeTurnId = null;
     if (clearPendingTurnSteer) {

@@ -281,12 +281,17 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       return;
     }
     _activateTimelineViewport(_controller.activeThreadId);
+    final previousStreamingAgentEntryId =
+        _timelinePages[_displayedThreadKey]?.streamingAgentEntryId;
     if (_threadHistoryLoadingKey != null &&
         _threadHistoryLoadingKey != _displayedThreadKey) {
       _threadHistoryLoadingKey = null;
     }
     _pruneTimelineViewports();
     _captureActiveTimelinePage();
+    final completedStreamingReply =
+        previousStreamingAgentEntryId != null &&
+        _timelinePages[_displayedThreadKey]?.streamingAgentEntryId == null;
     if (widget.controller != null && mounted) setState(() {});
     _scheduleCompletedThreadAcknowledgementAtBottom(
       _displayedThreadKey,
@@ -300,7 +305,8 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       _suppressTimelineScrollAfterThreadResume = false;
       return;
     }
-    if (_timelineFollowsLatest[_displayedThreadKey] ?? true) {
+    if (!completedStreamingReply &&
+        (_timelineFollowsLatest[_displayedThreadKey] ?? true)) {
       _scheduleTimelineScroll();
     }
   }
@@ -428,6 +434,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
           _controller.status != RuntimeStatus.running &&
           _controller.fileChanges.isNotEmpty,
       activeActivity: _controller.activeLiveActivity,
+      streamingAgentEntryId: _controller.activeStreamingAgentEntryId,
       activeTurnStartedAt: _controller.status == RuntimeStatus.running
           ? _controller.activeTurnStartedAt
           : null,
@@ -5958,6 +5965,7 @@ class _TimelinePageData {
     required this.turnDiff,
     required this.showFileChangeSummary,
     required this.activeActivity,
+    required this.streamingAgentEntryId,
     required this.activeTurnStartedAt,
     required this.isThinking,
   });
@@ -5967,6 +5975,7 @@ class _TimelinePageData {
   final String? turnDiff;
   final bool showFileChangeSummary;
   final LiveTurnActivity? activeActivity;
+  final String? streamingAgentEntryId;
   final DateTime? activeTurnStartedAt;
   final bool isThinking;
 }
@@ -6014,8 +6023,17 @@ class _ConversationTimeline extends StatelessWidget {
   Widget build(BuildContext context) {
     final timelineItems = _conversationTimelineItems(data.entries);
     final liveActivity = active ? data.activeActivity : null;
+    final streamingAgentEntryId = active ? data.streamingAgentEntryId : null;
+    // The growing reply is already its own live indicator. Rendering a second
+    // "writing" row below it makes the entire reply move when item/completed
+    // removes that row, especially while the timeline follows the bottom. Keep
+    // the row until the first delta creates a visible streaming entry.
+    final visibleLiveActivity =
+        liveActivity?.kind == 'agentMessage' && streamingAgentEntryId != null
+        ? null
+        : liveActivity;
     final activeTurnStartedAt = active ? data.activeTurnStartedAt : null;
-    final hasLiveStatus = liveActivity != null;
+    final hasLiveStatus = visibleLiveActivity != null;
     var liveElapsedIndex = timelineItems.length;
     if (activeTurnStartedAt != null) {
       final firstTurnOutputIndex = timelineItems.indexWhere((item) {
@@ -6094,24 +6112,25 @@ class _ConversationTimeline extends StatelessWidget {
               : index;
           if (timelineIndex >= timelineItems.length) {
             var tailIndex = timelineIndex - timelineItems.length;
-            if (liveActivity != null && tailIndex-- == 0) {
-              return liveActivity.kind == 'commandExecution'
-                  ? _LiveCommandRow(command: liveActivity.detail)
+            if (visibleLiveActivity != null && tailIndex-- == 0) {
+              return visibleLiveActivity.kind == 'commandExecution'
+                  ? _LiveCommandRow(command: visibleLiveActivity.detail)
                   : _LiveActivityRow(
-                      activity: liveActivity,
-                      onOpenSubagent: liveActivity.linkedThreadId == null
+                      activity: visibleLiveActivity,
+                      onOpenSubagent: visibleLiveActivity.linkedThreadId == null
                           ? null
                           : () => onOpenSubagent(
                               TimelineEntry(
                                 kind: TimelineKind.activity,
-                                title: liveActivity.label,
-                                detail: liveActivity.detail,
+                                title: visibleLiveActivity.label,
+                                detail: visibleLiveActivity.detail,
                                 createdAt: DateTime.now(),
-                                sourceItemId: liveActivity.itemId,
+                                sourceItemId: visibleLiveActivity.itemId,
                                 activityKind: 'collaboration',
-                                activityStatus: liveActivity.status,
-                                linkedThreadId: liveActivity.linkedThreadId,
-                                activityPrompt: liveActivity.prompt,
+                                activityStatus: visibleLiveActivity.status,
+                                linkedThreadId:
+                                    visibleLiveActivity.linkedThreadId,
+                                activityPrompt: visibleLiveActivity.prompt,
                               ),
                             ),
                     );
@@ -6156,6 +6175,7 @@ class _ConversationTimeline extends StatelessWidget {
             entry,
             key: timelineItemKey(item),
             workspacePath: pageKey.workspace,
+            streaming: entry.id == streamingAgentEntryId,
             onOpenSubagent: onOpenSubagent,
           );
         },
@@ -12678,12 +12698,14 @@ class _TimelineEntry extends StatefulWidget {
   const _TimelineEntry(
     this.entry, {
     required this.workspacePath,
+    this.streaming = false,
     this.onOpenSubagent,
     super.key,
   });
 
   final TimelineEntry entry;
   final String? workspacePath;
+  final bool streaming;
   final ValueChanged<TimelineEntry>? onOpenSubagent;
 
   @override
@@ -12692,12 +12714,17 @@ class _TimelineEntry extends StatefulWidget {
 
 class _TimelineEntryState extends State<_TimelineEntry> {
   Widget? _cachedBody;
+  bool _preserveViewportOnMarkdownResolve = false;
 
   @override
   void didUpdateWidget(covariant _TimelineEntry oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.streaming && !widget.streaming) {
+      _preserveViewportOnMarkdownResolve = true;
+    }
     if (!identical(oldWidget.entry, widget.entry) ||
-        oldWidget.workspacePath != widget.workspacePath) {
+        oldWidget.workspacePath != widget.workspacePath ||
+        oldWidget.streaming != widget.streaming) {
       _cachedBody = null;
     }
   }
@@ -12706,6 +12733,8 @@ class _TimelineEntryState extends State<_TimelineEntry> {
   Widget build(BuildContext context) => _cachedBody ??= _TimelineEntryBody(
     widget.entry,
     workspacePath: widget.workspacePath,
+    streaming: widget.streaming,
+    preserveViewportOnMarkdownResolve: _preserveViewportOnMarkdownResolve,
     onOpenSubagent: widget.onOpenSubagent == null
         ? null
         : () => widget.onOpenSubagent?.call(widget.entry),
@@ -12716,11 +12745,15 @@ class _TimelineEntryBody extends StatelessWidget {
   const _TimelineEntryBody(
     this.entry, {
     required this.workspacePath,
+    this.streaming = false,
+    this.preserveViewportOnMarkdownResolve = false,
     this.onOpenSubagent,
   });
 
   final TimelineEntry entry;
   final String? workspacePath;
+  final bool streaming;
+  final bool preserveViewportOnMarkdownResolve;
   final VoidCallback? onOpenSubagent;
 
   /// 按时间线条目类型构建消息或系统事件视图。
@@ -12758,7 +12791,14 @@ class _TimelineEntryBody extends StatelessWidget {
           : Semantics(
               container: true,
               label: 'Codex 回复',
-              child: _AgentMarkdown(entry.detail, workspacePath: workspacePath),
+              child: streaming
+                  ? _StreamingAgentText(entry.detail)
+                  : _AgentMarkdown(
+                      entry.detail,
+                      workspacePath: workspacePath,
+                      preserveViewportOnResolve:
+                          preserveViewportOnMarkdownResolve,
+                    ),
             );
     }
 
@@ -13511,26 +13551,311 @@ class _TimelineImage extends StatelessWidget {
   }
 }
 
-/// 将 Codex 回复按 GitHub Flavored Markdown 渲染，并保持与工作台主题一致。
-/// Renders Codex replies as GitHub Flavored Markdown while matching the workbench theme.
-class _AgentMarkdown extends StatelessWidget {
-  const _AgentMarkdown(this.data, {required this.workspacePath});
+/// Keeps an unfinished reply, or a completed reply still preflighting local
+/// links, on one append-only text layout. Parsing partial Markdown on every
+/// token can repeatedly reinterpret an open list, link, or code fence and
+/// change earlier block heights; a forced strut also prevents late fallback
+/// glyphs from changing the current line's ascent or descent.
+/// 未完成回复或仍在预检本地链接的完成回复使用单一、只追加的文本布局；避免
+/// 不完整 Markdown 反复改变既有块结构，并以固定 strut 防止字体回退改变行高。
+class _StreamingAgentText extends StatelessWidget {
+  const _StreamingAgentText(this.data);
 
   final String data;
-  final String? workspacePath;
 
   @override
   Widget build(BuildContext context) {
+    final style = Theme.of(context).textTheme.bodyMedium?.copyWith(height: 1.5);
+    return SelectionArea(
+      key: const Key('agent-streaming-selection'),
+      child: Text(
+        _stableStreamingAgentText(data),
+        key: const Key('agent-streaming-text'),
+        style: style,
+        strutStyle: style == null
+            ? null
+            : StrutStyle.fromTextStyle(style, forceStrutHeight: true),
+      ),
+    );
+  }
+}
+
+/// Hides inline Markdown destinations as soon as `[label](` is complete.
+/// Agent file links commonly contain long absolute paths which are invisible
+/// in final Markdown but otherwise wrap across several lines while streaming,
+/// then collapse to one file row at completion. Keeping only the visible label
+/// makes the streaming and final layouts use comparable text widths.
+String _stableStreamingAgentText(String data) {
+  final output = StringBuffer();
+  var cursor = 0;
+  var codeDelimiterLength = 0;
+  var codeDelimiter = 0;
+  var codeIsFence = false;
+  while (cursor < data.length) {
+    final codeUnit = data.codeUnitAt(cursor);
+    final possibleCodeDelimiter = codeUnit == 0x60 || codeUnit == 0x7e;
+    if (possibleCodeDelimiter &&
+        (codeDelimiterLength > 0
+            ? codeUnit == codeDelimiter
+            : codeUnit == 0x60 || _isMarkdownFenceStart(data, cursor))) {
+      var delimiterEnd = cursor;
+      while (delimiterEnd < data.length &&
+          data.codeUnitAt(delimiterEnd) == codeUnit) {
+        delimiterEnd++;
+      }
+      final delimiterLength = delimiterEnd - cursor;
+      if (codeDelimiterLength == 0) {
+        final fence =
+            delimiterLength >= 3 && _isMarkdownFenceStart(data, cursor);
+        if (codeUnit == 0x7e && !fence) {
+          output.writeCharCode(codeUnit);
+          cursor++;
+          continue;
+        }
+        codeDelimiterLength = delimiterLength;
+        codeDelimiter = codeUnit;
+        codeIsFence = fence;
+      } else if (codeIsFence
+          ? delimiterLength >= codeDelimiterLength &&
+                _isMarkdownFenceStart(data, cursor) &&
+                _isMarkdownFenceEnd(data, delimiterEnd)
+          : delimiterLength == codeDelimiterLength) {
+        codeDelimiterLength = 0;
+        codeDelimiter = 0;
+        codeIsFence = false;
+      }
+      output.write(data.substring(cursor, delimiterEnd));
+      cursor = delimiterEnd;
+      continue;
+    }
+    if (codeDelimiterLength > 0) {
+      output.writeCharCode(data.codeUnitAt(cursor++));
+      continue;
+    }
+    if (data.codeUnitAt(cursor) == 0x5c && cursor + 1 < data.length) {
+      output
+        ..writeCharCode(data.codeUnitAt(cursor++))
+        ..writeCharCode(data.codeUnitAt(cursor++));
+      continue;
+    }
+    final image = data.startsWith('![', cursor);
+    if (data.codeUnitAt(cursor) != 0x5b && !image) {
+      output.writeCharCode(data.codeUnitAt(cursor++));
+      continue;
+    }
+
+    final labelStart = cursor + (image ? 2 : 1);
+    var labelEnd = -1;
+    var escaped = false;
+    for (var index = labelStart; index + 1 < data.length; index++) {
+      final codeUnit = data.codeUnitAt(index);
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (codeUnit == 0x5c) {
+        escaped = true;
+        continue;
+      }
+      if (codeUnit == 0x5d && data.codeUnitAt(index + 1) == 0x28) {
+        labelEnd = index;
+        break;
+      }
+    }
+    if (labelEnd < 0) {
+      output.writeCharCode(data.codeUnitAt(cursor++));
+      continue;
+    }
+
+    final label = data.substring(labelStart, labelEnd);
+    final destinationStart = labelEnd + 2;
+    cursor = destinationStart;
+    var depth = 1;
+    escaped = false;
+    while (cursor < data.length && depth > 0) {
+      final codeUnit = data.codeUnitAt(cursor++);
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (codeUnit == 0x5c) {
+        escaped = true;
+      } else if (codeUnit == 0x28) {
+        depth++;
+      } else if (codeUnit == 0x29) {
+        depth--;
+      }
+    }
+    if (depth > 0) {
+      // The destination is still receiving tokens. Showing the temporary
+      // Markdown label now and replacing it with a file basename later is the
+      // exact width collapse that made file references jitter.
+      break;
+    }
+    final destination = data.substring(destinationStart, cursor - 1);
+    output.write(image ? label : _stableStreamingLinkLabel(label, destination));
+  }
+  return output.toString();
+}
+
+bool _isMarkdownFenceStart(String data, int offset) {
+  final lineStart = offset == 0 ? 0 : data.lastIndexOf('\n', offset - 1) + 1;
+  final indentation = offset - lineStart;
+  if (indentation > 3) return false;
+  for (var index = lineStart; index < offset; index++) {
+    if (data.codeUnitAt(index) != 0x20) return false;
+  }
+  return true;
+}
+
+bool _isMarkdownFenceEnd(String data, int offset) {
+  for (var index = offset; index < data.length; index++) {
+    final codeUnit = data.codeUnitAt(index);
+    if (codeUnit == 0x0a || codeUnit == 0x0d) return true;
+    if (codeUnit != 0x20 && codeUnit != 0x09) return false;
+  }
+  return true;
+}
+
+String _stableStreamingLinkLabel(String label, String destination) {
+  if (!_isPotentialLocalMarkdownHref(destination)) return label;
+  try {
+    final uri = Uri.tryParse(destination);
+    var path = uri?.scheme == 'file'
+        ? uri!.toFilePath()
+        : Uri.decodeComponent(uri?.path ?? destination);
+    path = path.replaceFirst(RegExp(r':\d+(?::\d+)?$'), '');
+    final fileName = path.split(RegExp(r'[/\\]')).last;
+    return fileName.isEmpty ? label : fileName;
+  } on FormatException {
+    return label;
+  } on UnsupportedError {
+    return label;
+  }
+}
+
+/// 将已完成的 Codex 回复按 GitHub Flavored Markdown 渲染，并保持与工作台主题一致。
+/// Renders completed Codex replies as GitHub Flavored Markdown while matching the workbench theme.
+class _AgentMarkdown extends StatefulWidget {
+  const _AgentMarkdown(
+    this.data, {
+    required this.workspacePath,
+    this.preserveViewportOnResolve = false,
+  });
+
+  final String data;
+  final String? workspacePath;
+  final bool preserveViewportOnResolve;
+
+  @override
+  State<_AgentMarkdown> createState() => _AgentMarkdownState();
+}
+
+class _AgentMarkdownState extends State<_AgentMarkdown> {
+  Map<String, WorkspaceFileReference?>? _resolvedLocalLinks;
+  int _resolutionGeneration = 0;
+
+  @visibleForTesting
+  Future<void> resolveLocalLinksForTesting() => _resolveLocalLinks();
+
+  @visibleForTesting
+  int? get resolvedLocalLinkCountForTesting => _resolvedLocalLinks?.length;
+
+  @override
+  void initState() {
+    super.initState();
+    _prepareLocalLinks();
+  }
+
+  @override
+  void didUpdateWidget(covariant _AgentMarkdown oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.data != widget.data ||
+        oldWidget.workspacePath != widget.workspacePath) {
+      _prepareLocalLinks();
+    }
+  }
+
+  void _prepareLocalLinks() {
+    unawaited(_resolveLocalLinks());
+  }
+
+  Future<void> _resolveLocalLinks() async {
+    final workspacePath = widget.workspacePath;
+    final hrefs = _localMarkdownLinkHrefs(widget.data);
+    final generation = ++_resolutionGeneration;
+    if (workspacePath == null || hrefs.isEmpty) {
+      _resolvedLocalLinks = const {};
+      return;
+    }
+    _resolvedLocalLinks = null;
+    final entries = await Future.wait(
+      hrefs.map((href) async {
+        WorkspaceFileReference? reference;
+        try {
+          reference = await resolveWorkspaceFileReference(
+            href: href,
+            workspacePath: workspacePath,
+          );
+        } catch (_) {
+          // Rendering must not remain in its stable-text preflight state when
+          // one malformed path or unavailable volume fails. The destination
+          // remains an ordinary Markdown link and is revalidated if tapped.
+          reference = null;
+        }
+        return MapEntry(href, reference);
+      }),
+    );
+    if (!mounted ||
+        generation != _resolutionGeneration ||
+        workspacePath != widget.workspacePath) {
+      return;
+    }
+    final position = Scrollable.maybeOf(context, axis: Axis.vertical)?.position;
+    final followedLatest =
+        position != null && position.hasPixels && position.extentAfter <= 48;
+    final previousPixels = position?.pixels;
+    final previousMaximum = position?.maxScrollExtent;
+    setState(() => _resolvedLocalLinks = Map.fromEntries(entries));
+    if (!widget.preserveViewportOnResolve &&
+        followedLatest &&
+        previousPixels != null &&
+        previousMaximum != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted ||
+            !position.hasPixels ||
+            (position.pixels - previousPixels).abs() > 0.5 ||
+            (position.maxScrollExtent - previousMaximum).abs() <= 0.5) {
+          return;
+        }
+        position.jumpTo(position.maxScrollExtent);
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Keep the exact streaming metrics until every local destination in this
+    // reply is known. Rendering pending Markdown first and replacing each
+    // text link with a file row later creates a second visible reflow at item
+    // completion; the final Markdown tree must appear only once.
+    if (_resolvedLocalLinks == null) {
+      return _StreamingAgentText(widget.data);
+    }
     final palette = YeknomPalette.of(context);
     final theme = Theme.of(context);
     final body = theme.textTheme.bodyMedium?.copyWith(height: 1.5);
     return SelectionArea(
       key: const Key('agent-markdown-selection'),
       child: MarkdownBody(
-        data: data,
+        key: const ValueKey('agent-markdown-links-resolved'),
+        data: widget.data,
         selectable: false,
         builders: {
-          'a': _AgentMarkdownLinkBuilder(workspacePath: workspacePath),
+          'a': _AgentMarkdownLinkBuilder(
+            workspacePath: widget.workspacePath,
+            resolvedLocalLinks: _resolvedLocalLinks,
+          ),
           'br': _AgentMarkdownHardBreakBuilder(),
         },
         styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
@@ -13573,12 +13898,45 @@ class _AgentMarkdown extends StatelessWidget {
   }
 }
 
+Set<String> _localMarkdownLinkHrefs(String data) {
+  final hrefs = <String>{};
+  final nodes = md.Document(
+    extensionSet: md.ExtensionSet.gitHubFlavored,
+  ).parse(data);
+
+  void visit(Iterable<md.Node> values) {
+    for (final node in values) {
+      if (node is! md.Element) continue;
+      if (node.tag == 'a') {
+        final href = node.attributes['href'];
+        if (href != null && _isPotentialLocalMarkdownHref(href)) {
+          hrefs.add(href);
+        }
+      }
+      visit(node.children ?? const <md.Node>[]);
+    }
+  }
+
+  visit(nodes);
+  return hrefs;
+}
+
+bool _isPotentialLocalMarkdownHref(String href) {
+  if (RegExp(r'^[A-Za-z]:[\\/]').hasMatch(href)) return true;
+  final uri = Uri.tryParse(href);
+  return uri == null || uri.scheme.isEmpty || uri.scheme == 'file';
+}
+
 /// Builds normal web links as text and upgrades existing project-local files
 /// to Codex-style file rows after the workspace boundary has been verified.
 class _AgentMarkdownLinkBuilder extends MarkdownElementBuilder {
-  _AgentMarkdownLinkBuilder({required this.workspacePath});
+  _AgentMarkdownLinkBuilder({
+    required this.workspacePath,
+    required this.resolvedLocalLinks,
+  });
 
   final String? workspacePath;
+  final Map<String, WorkspaceFileReference?>? resolvedLocalLinks;
 
   @override
   Widget visitElementAfterWithContext(
@@ -13595,6 +13953,12 @@ class _AgentMarkdownLinkBuilder extends MarkdownElementBuilder {
       label: _agentMarkdownLinkLabel(element, href),
       nodes: element.children ?? const <md.Node>[],
       workspacePath: workspacePath,
+      resolutionDeferred:
+          _isPotentialLocalMarkdownHref(href) && resolvedLocalLinks == null,
+      resolvedReference: resolvedLocalLinks?[href],
+      resolutionComplete:
+          !_isPotentialLocalMarkdownHref(href) ||
+          (resolvedLocalLinks?.containsKey(href) ?? false),
       style: linkStyle,
       codeStyle: linkStyle?.copyWith(
         color: palette.trace,
@@ -13652,6 +14016,9 @@ class _AgentMarkdownLink extends StatefulWidget {
     required this.label,
     required this.nodes,
     required this.workspacePath,
+    required this.resolutionDeferred,
+    required this.resolvedReference,
+    required this.resolutionComplete,
     required this.style,
     required this.codeStyle,
   });
@@ -13660,6 +14027,9 @@ class _AgentMarkdownLink extends StatefulWidget {
   final String label;
   final List<md.Node> nodes;
   final String? workspacePath;
+  final bool resolutionDeferred;
+  final WorkspaceFileReference? resolvedReference;
+  final bool resolutionComplete;
   final TextStyle? style;
   final TextStyle? codeStyle;
 
@@ -13676,6 +14046,8 @@ class _AgentMarkdownLinkState extends State<_AgentMarkdownLink> {
   @override
   void initState() {
     super.initState();
+    _reference = widget.resolvedReference;
+    if (widget.resolutionComplete || widget.resolutionDeferred) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(_resolve());
     });
@@ -13684,10 +14056,14 @@ class _AgentMarkdownLinkState extends State<_AgentMarkdownLink> {
   @override
   void didUpdateWidget(covariant _AgentMarkdownLink oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.resolutionComplete) {
+      _reference = widget.resolvedReference;
+      return;
+    }
     if (oldWidget.href != widget.href ||
         oldWidget.workspacePath != widget.workspacePath) {
       _reference = null;
-      unawaited(_resolve());
+      if (!widget.resolutionDeferred) unawaited(_resolve());
     }
   }
 
@@ -13709,12 +14085,14 @@ class _AgentMarkdownLinkState extends State<_AgentMarkdownLink> {
     final followedLatest =
         position != null && position.hasPixels && position.extentAfter <= 48;
     final previousPixels = position?.pixels;
+    final previousMaximum = position?.maxScrollExtent;
     setState(() => _reference = reference);
-    if (followedLatest && previousPixels != null) {
+    if (followedLatest && previousPixels != null && previousMaximum != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted ||
             !position.hasPixels ||
-            (position.pixels - previousPixels).abs() > 0.5) {
+            (position.pixels - previousPixels).abs() > 0.5 ||
+            (position.maxScrollExtent - previousMaximum).abs() <= 0.5) {
           return;
         }
         position.jumpTo(position.maxScrollExtent);
