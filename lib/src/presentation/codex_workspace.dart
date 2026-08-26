@@ -1691,11 +1691,47 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     await _archiveThreads([thread]);
   }
 
-  /// 二次确认后批量归档历史线程，并返回实际成功归档的任务 ID。
-  /// Archives multiple history threads after confirmation and returns the task IDs that actually archived.
-  Future<Set<String>> _archiveThreads(List<CodexThread> threads) async {
-    if (threads.isEmpty) return const <String>{};
+  /// 显示确认后因状态变化而未归档任务的明确原因。
+  /// Explains tasks left unarchived after a confirmed submission.
+  void _showArchiveResultFeedback(ThreadArchiveResult result) {
+    if (result.archivedIds.isEmpty &&
+        result.runningThreadIds.isNotEmpty &&
+        result.updatingThreadIds.isEmpty &&
+        result.unavailableThreadIds.isEmpty) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(content: Text('运行中的任务不能归档，请先停止任务。')));
+      return;
+    }
+    final reasons = <String>[];
+    if (result.runningThreadIds.isNotEmpty) {
+      reasons.add('跳过 ${result.runningThreadIds.length} 个运行中的任务');
+    }
+    if (result.updatingThreadIds.isNotEmpty) {
+      reasons.add('${result.updatingThreadIds.length} 个任务正在处理中');
+    }
+    if (result.unavailableThreadIds.isNotEmpty) {
+      reasons.add('${result.unavailableThreadIds.length} 个任务因运行时不可用未归档');
+    }
+    if (reasons.isEmpty) return;
+    final prefix = result.archivedIds.isEmpty
+        ? ''
+        : '已归档 ${result.archivedIds.length} 个任务；';
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text('$prefix${reasons.join('；')}。')));
+  }
+
+  /// 二次确认后批量归档历史线程，并返回成功与未提交任务的分类结果。
+  /// Archives threads after confirmation and returns success and skip details.
+  Future<ThreadArchiveResult?> _archiveThreads(
+    List<CodexThread> threads,
+  ) async {
+    if (threads.isEmpty) return ThreadArchiveResult();
     final count = threads.length;
+    final runningCount = threads
+        .where(_controller.isThreadExecutionActive)
+        .length;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -1703,6 +1739,8 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
         content: Text(
           count == 1
               ? '“${threads.single.title}”将从当前列表隐藏，但可以在后续归档视图中恢复。'
+              : runningCount > 0
+              ? '将归档空闲任务；其中 $runningCount 个任务正在运行，会保留在当前列表中。'
               : '所选任务将从当前列表隐藏，但可以在后续归档视图中恢复。',
         ),
         actions: [
@@ -1717,8 +1755,10 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
         ],
       ),
     );
-    if (confirmed != true) return const <String>{};
-    return _controller.archiveThreads(threads);
+    if (confirmed != true) return null;
+    final result = await _controller.archiveThreads(threads);
+    if (mounted) _showArchiveResultFeedback(result);
+    return result;
   }
 
   /// 二次确认后永久删除任务及 App Server 定义的派生任务，删除无法恢复。
@@ -4154,7 +4194,7 @@ class _Sidebar extends StatefulWidget {
   final Future<void> Function() onConfigureRuntime;
   final Future<void> Function(CodexThread thread) onRenameThread;
   final Future<void> Function(CodexThread thread) onArchiveThread;
-  final Future<Set<String>> Function(List<CodexThread> threads)
+  final Future<ThreadArchiveResult?> Function(List<CodexThread> threads)
   onArchiveThreads;
   final Future<void> Function(CodexThread thread) onDeleteThread;
   final Future<void> Function() onShowArchivedThreads;
@@ -4175,6 +4215,7 @@ class _Sidebar extends StatefulWidget {
 
 class _SidebarState extends State<_Sidebar> {
   bool _batchMode = false;
+  String? _batchWorkspacePath;
   final Set<String> _selectedThreadIds = {};
 
   final Map<String, bool> _workspaceExpanded = {};
@@ -4183,6 +4224,14 @@ class _SidebarState extends State<_Sidebar> {
   Timer? _workspaceDetailsHideTimer;
 
   bool _isWorkspaceExpanded(String path) => _workspaceExpanded[path] ?? true;
+
+  void _setBatchMode(bool enabled) {
+    setState(() {
+      _batchMode = enabled;
+      _batchWorkspacePath = enabled ? widget.controller.workspacePath : null;
+      _selectedThreadIds.clear();
+    });
+  }
 
   void _toggleWorkspaceExpanded(String path) {
     setState(() {
@@ -4253,12 +4302,13 @@ class _SidebarState extends State<_Sidebar> {
     final selected = controller.threads
         .where((thread) => _selectedThreadIds.contains(thread.id))
         .toList(growable: false);
-    final archivedIds = await widget.onArchiveThreads(selected);
-    if (!mounted) return;
+    final result = await widget.onArchiveThreads(selected);
+    if (!mounted || result == null) return;
     setState(() {
-      _selectedThreadIds.removeAll(archivedIds);
-      if (_selectedThreadIds.isEmpty && archivedIds.isNotEmpty) {
+      _selectedThreadIds.removeAll(result.archivedIds);
+      if (_selectedThreadIds.isEmpty && result.archivedIds.isNotEmpty) {
         _batchMode = false;
+        _batchWorkspacePath = null;
       }
     });
   }
@@ -4468,9 +4518,17 @@ class _SidebarState extends State<_Sidebar> {
           context,
         ).showSnackBar(const SnackBar(content: Text('永久工作树功能暂未接入。')));
       case _WorkspaceAction.archive:
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('请在任务菜单中归档聊天。')));
+        if (workspace.primaryPath != widget.controller.workspacePath) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('请先切换到该项目再批量归档任务。')));
+        } else if (widget.controller.threads.isEmpty) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('当前项目没有可归档的任务。')));
+        } else {
+          _setBatchMode(true);
+        }
       case _WorkspaceAction.remove:
         await widget.controller.forgetWorkspace(workspace.primaryPath);
     }
@@ -4489,9 +4547,9 @@ class _SidebarState extends State<_Sidebar> {
     final selected =
         isActiveWorkspace && controller.activeThreadId == thread.id;
     final currentRunningThread =
-        isActiveWorkspace &&
-        (controller.isThreadRunning(thread.id) ||
-            _isRunningThreadStatus(thread.status));
+        isActiveWorkspace && controller.isThreadExecutionActive(thread);
+    final updatingThread =
+        isActiveWorkspace && controller.isUpdatingThread(thread.id);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4),
       child: _HistoryThreadTile(
@@ -4504,6 +4562,7 @@ class _SidebarState extends State<_Sidebar> {
             ? null
             : indicator,
         running: currentRunningThread,
+        processing: updatingThread,
         enabled: isActiveWorkspace
             ? controller.canSwitchThreads &&
                   !controller.isUpdatingThread(thread.id)
@@ -4540,7 +4599,9 @@ class _SidebarState extends State<_Sidebar> {
             ? () => widget.onRenameThread(thread)
             : null,
         onArchive: isActiveWorkspace
-            ? () => widget.onArchiveThread(thread)
+            ? currentRunningThread
+                  ? null
+                  : () => widget.onArchiveThread(thread)
             : null,
         onDelete: isActiveWorkspace
             ? () => widget.onDeleteThread(thread)
@@ -4559,6 +4620,11 @@ class _SidebarState extends State<_Sidebar> {
     final palette = YeknomPalette.of(context);
     final controller = widget.controller;
     final activePath = controller.workspacePath;
+    if (_batchMode && _batchWorkspacePath != activePath) {
+      _batchMode = false;
+      _batchWorkspacePath = null;
+      _selectedThreadIds.clear();
+    }
     final visibleThreads = [
       ...controller.threads.where(
         (thread) => controller.isThreadPinned(thread.id),
@@ -4692,16 +4758,14 @@ class _SidebarState extends State<_Sidebar> {
                 children: [
                   Text('已选 ${_selectedThreadIds.length} 个任务'),
                   TextButton(
-                    onPressed: () => setState(() {
-                      _batchMode = false;
-                      _selectedThreadIds.clear();
-                    }),
+                    onPressed: () => _setBatchMode(false),
                     child: const Text('取消'),
                   ),
                   FilledButton.tonal(
                     onPressed:
                         _selectedThreadIds.isEmpty ||
-                            controller.status != RuntimeStatus.ready
+                            (controller.status != RuntimeStatus.ready &&
+                                controller.status != RuntimeStatus.running)
                         ? null
                         : () => _archiveSelectedThreads(controller),
                     child: const Text('归档已选'),
@@ -4780,11 +4844,14 @@ class _SidebarState extends State<_Sidebar> {
                                     workspace.primaryPath,
                                   ),
                                   enabled: controller.canChangePrimaryWorkspace,
-                                  onTap: () => unawaited(
-                                    controller.selectWorkspaceAndReconnect(
-                                      workspace.primaryPath,
-                                    ),
-                                  ),
+                                  onTap: () {
+                                    if (_batchMode) _setBatchMode(false);
+                                    unawaited(
+                                      controller.selectWorkspaceAndReconnect(
+                                        workspace.primaryPath,
+                                      ),
+                                    );
+                                  },
                                   onMore: (anchorContext) =>
                                       _showWorkspaceActions(
                                         anchorContext,
@@ -7436,7 +7503,6 @@ class _ComposerActivityPill extends StatelessWidget {
     final palette = YeknomPalette.of(context);
     return Container(
       key: const Key('composer-activity-pill'),
-      margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
       decoration: BoxDecoration(
         color: palette.raised,
@@ -8147,10 +8213,6 @@ class _ComposerPanelState extends State<_ComposerPanel> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (controller.fileChanges.isEmpty &&
-              controller.pendingTurnSteer == null &&
-              _showsActivityPill)
-            _ComposerActivityPill(label: _activityLabel),
           if (controller.pendingTurnSteers.isNotEmpty)
             _PendingTurnSteerQueue(
               pendingItems: controller.pendingTurnSteers,
@@ -8574,6 +8636,17 @@ class _ComposerPanelState extends State<_ComposerPanel> {
                       changes: controller.fileChanges,
                       turnDiff: controller.turnDiff,
                     ),
+                  ),
+                ),
+              if (controller.fileChanges.isEmpty &&
+                  controller.pendingTurnSteer == null &&
+                  _showsActivityPill)
+                Positioned(
+                  top: -44,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: _ComposerActivityPill(label: _activityLabel),
                   ),
                 ),
             ],
@@ -13222,15 +13295,15 @@ class _UserMessageBubbleState extends State<_UserMessageBubble> {
     final palette = YeknomPalette.of(context);
     return Align(
       alignment: Alignment.centerRight,
-      child: MouseRegion(
-        key: const Key('timeline-user-message-hover-region'),
-        onEnter: (_) => setState(() => _hovering = true),
-        onExit: (_) => setState(() => _hovering = false),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            ConstrainedBox(
+      child: Stack(
+        clipBehavior: Clip.none,
+        alignment: Alignment.topRight,
+        children: [
+          MouseRegion(
+            key: const Key('timeline-user-message-hover-region'),
+            onEnter: (_) => setState(() => _hovering = true),
+            onExit: (_) => setState(() => _hovering = false),
+            child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 720),
               child: Container(
                 key: const Key('timeline-user-message'),
@@ -13263,9 +13336,12 @@ class _UserMessageBubbleState extends State<_UserMessageBubble> {
                 ),
               ),
             ),
-            if (_hovering) ...[
-              const SizedBox(height: 4),
-              Text(
+          ),
+          if (_hovering)
+            Positioned(
+              right: 0,
+              bottom: -18.5,
+              child: Text(
                 _messageTimeLabel(widget.entry.createdAt),
                 key: const Key('timeline-user-message-time'),
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -13274,9 +13350,8 @@ class _UserMessageBubbleState extends State<_UserMessageBubble> {
                   height: 1.2,
                 ),
               ),
-            ],
-          ],
-        ),
+            ),
+        ],
       ),
     );
   }
@@ -14386,6 +14461,7 @@ class _HistoryThreadTile extends StatefulWidget {
     required this.pinned,
     required this.statusIndicator,
     required this.running,
+    required this.processing,
     required this.enabled,
     required this.actionsEnabled,
     required this.selectionMode,
@@ -14402,6 +14478,7 @@ class _HistoryThreadTile extends StatefulWidget {
   final bool pinned;
   final _ThreadStatusIndicator? statusIndicator;
   final bool running;
+  final bool processing;
   final bool enabled;
   final bool actionsEnabled;
   final bool selectionMode;
@@ -14444,7 +14521,11 @@ class _HistoryThreadTileState extends State<_HistoryThreadTile> {
           child: Text(widget.pinned ? '取消置顶' : '置顶'),
         ),
         const PopupMenuItem(value: _ThreadAction.rename, child: Text('重命名')),
-        const PopupMenuItem(value: _ThreadAction.archive, child: Text('归档')),
+        PopupMenuItem(
+          value: _ThreadAction.archive,
+          enabled: widget.onArchive != null,
+          child: Text(widget.running ? '归档（请先停止任务）' : '归档'),
+        ),
         const PopupMenuItem(value: _ThreadAction.delete, child: Text('永久删除')),
       ],
     );
@@ -14490,7 +14571,8 @@ class _HistoryThreadTileState extends State<_HistoryThreadTile> {
         _hovering &&
         widget.actionsEnabled &&
         !widget.selectionMode &&
-        !widget.running;
+        !widget.running &&
+        !widget.processing;
     return Material(
       key: ValueKey('sidebar-thread-tile-${widget.thread.id}'),
       color: widget.selected ? palette.selected : Colors.transparent,
@@ -14558,9 +14640,22 @@ class _HistoryThreadTileState extends State<_HistoryThreadTile> {
                         ],
                       ),
                     ),
-                    if (widget.running)
+                    if (widget.processing)
                       Tooltip(
-                        message: '任务进行中',
+                        message: '任务处理中',
+                        child: SizedBox(
+                          key: const Key('sidebar-updating-task-indicator'),
+                          width: 10,
+                          height: 10,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 1.25,
+                            color: palette.active,
+                          ),
+                        ),
+                      )
+                    else if (widget.running)
+                      Tooltip(
+                        message: '任务进行中；停止后才能归档',
                         child: SizedBox(
                           key: const Key('sidebar-running-task-indicator'),
                           width: 10,
@@ -14606,16 +14701,6 @@ class _HistoryThreadTileState extends State<_HistoryThreadTile> {
       ),
     );
   }
-}
-
-bool _isRunningThreadStatus(String? status) {
-  final normalized = status?.trim().toLowerCase().replaceAll(
-    RegExp(r'[^a-z]'),
-    '',
-  );
-  return normalized == 'active' ||
-      normalized == 'inprogress' ||
-      normalized == 'running';
 }
 
 enum _ThreadStatusIndicator { completed, error }

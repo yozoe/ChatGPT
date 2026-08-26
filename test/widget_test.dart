@@ -11177,6 +11177,12 @@ void main() {
       await tester.drag(timelineFinder, const Offset(0, 360));
       await tester.pump();
       expect(timeline.controller!.position.extentAfter, greaterThan(48));
+      double timelineBottomPadding() {
+        final padding = tester.widget<ListView>(timelineFinder).padding;
+        return (padding! as EdgeInsets).bottom;
+      }
+
+      final runningBottomPadding = timelineBottomPadding();
 
       controller.handleServerEventForTesting(
         const ServerEvent(
@@ -11198,6 +11204,7 @@ void main() {
         findsOneWidget,
       );
       expect(find.byKey(const Key('composer-activity-pill')), findsOneWidget);
+      expect(timelineBottomPadding(), runningBottomPadding);
 
       await tester.drag(timelineFinder, const Offset(0, -10000));
       await tester.pumpAndSettle();
@@ -11212,6 +11219,7 @@ void main() {
         findsNothing,
       );
       expect(find.byKey(const Key('composer-activity-pill')), findsNothing);
+      expect(timelineBottomPadding(), runningBottomPadding);
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -11858,15 +11866,27 @@ void main() {
           detail: 'review代码',
           createdAt: DateTime(2026, 8, 25, 8, 53),
         ),
+        TimelineEntry(
+          kind: TimelineKind.agent,
+          title: 'Codex',
+          detail: '后续回复保持原位。',
+          createdAt: DateTime(2026, 8, 25, 8, 54),
+        ),
       ]);
       await tester.pumpWidget(
         MaterialApp(home: CodexWorkspace(controller: controller)),
       );
 
       expect(find.byKey(const Key('timeline-user-message-time')), findsNothing);
+      final hoverRegion = find.byKey(
+        const Key('timeline-user-message-hover-region'),
+      );
+      final initialHoverRegion = tester.getRect(hoverRegion);
+      final followingReply = find.text('后续回复保持原位。');
+      final initialFollowingReplyY = tester.getTopLeft(followingReply).dy;
       final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
       await mouse.moveTo(
-        tester.getCenter(find.byKey(const Key('timeline-user-message'))),
+        Offset(initialHoverRegion.center.dx, initialHoverRegion.bottom - 0.5),
       );
       await tester.pump();
       expect(
@@ -11874,6 +11894,13 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('8:53'), findsOneWidget);
+      expect(tester.getRect(hoverRegion), initialHoverRegion);
+      expect(tester.getTopLeft(followingReply).dy, initialFollowingReplyY);
+      await tester.pump();
+      expect(
+        find.byKey(const Key('timeline-user-message-time')),
+        findsOneWidget,
+      );
 
       await mouse.moveTo(Offset.zero);
       await tester.pump();
@@ -13640,6 +13667,308 @@ void main() {
   );
 
   test(
+    'archives idle tasks while another task is running and skips the running task',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..listResponse = [
+          {'id': 'running', 'preview': 'running', 'status': 'active'},
+          {'id': 'idle', 'preview': 'idle', 'status': 'idle'},
+        ];
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'running';
+      await controller.refreshThreads();
+
+      final result = await controller.archiveThreads(controller.threads);
+
+      expect(result.archivedIds, {'idle'});
+      expect(result.runningThreadIds, {'running'});
+      expect(server.archivedThreadIds, ['idle']);
+      expect(controller.threads.map((thread) => thread.id), ['running']);
+      controller.dispose();
+    },
+  );
+
+  test('does not send an archive request for a running target task', () async {
+    final server = _FakeCodexAppServer()
+      ..listResponse = [
+        {'id': 'running', 'preview': 'running', 'status': 'inProgress'},
+      ];
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await controller.refreshThreads();
+
+    final result = await controller.archiveThreads(controller.threads);
+
+    expect(result.archivedIds, isEmpty);
+    expect(result.runningThreadIds, {'running'});
+    expect(server.archiveCalls, 0);
+    expect(controller.threads.single.id, 'running');
+    controller.dispose();
+  });
+
+  test(
+    'reports idle tasks that cannot archive while runtime is unavailable',
+    () async {
+      final controller = CodexController(server: CodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.stopped
+        ..threads = [_thread(id: 'offline', status: 'idle')];
+
+      final result = await controller.archiveThreads(controller.threads);
+
+      expect(result.archivedIds, isEmpty);
+      expect(result.unavailableThreadIds, {'offline'});
+      controller.dispose();
+    },
+  );
+
+  testWidgets('shows archive progress until the server confirms the request', (
+    tester,
+  ) async {
+    final server = _FakeCodexAppServer()
+      ..listResponse = [
+        {'id': 'archive-me', 'preview': 'archive-me', 'status': 'idle'},
+      ]
+      ..archiveCompleter = Completer<void>();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await controller.refreshThreads();
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final taskTile = find.byKey(
+      const ValueKey('sidebar-thread-tile-archive-me'),
+    );
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.moveTo(tester.getCenter(taskTile));
+    await tester.pump();
+    await tester.tap(
+      find.byKey(const ValueKey('sidebar-thread-archive-archive-me')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '归档'));
+    await tester.pump();
+
+    expect(server.archiveCalls, 1);
+    expect(
+      find.byKey(const Key('sidebar-updating-task-indicator')),
+      findsOneWidget,
+    );
+    expect(taskTile, findsOneWidget);
+
+    server.archiveCompleter!.complete();
+    await tester.pumpAndSettle();
+
+    expect(taskTile, findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  test(
+    'blocks sending on the active thread while its archive request is pending',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..listResponse = [
+          {'id': 'archive-me', 'preview': 'archive-me', 'status': 'idle'},
+        ]
+        ..archiveCompleter = Completer<void>();
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await controller.refreshThreads();
+      final thread = controller.threads.single;
+      await controller.resumeThread(thread);
+      expect(controller.canSend, isTrue);
+
+      final archive = controller.archiveThread(thread);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.canSend, isFalse);
+      expect(await controller.sendPrompt('must not start'), isFalse);
+      expect(server.startedTurnPrompts, isEmpty);
+
+      server.archiveCompleter!.complete();
+      expect((await archive).archivedIds, {thread.id});
+      controller.dispose();
+    },
+  );
+
+  testWidgets(
+    'reports a task that starts running while archive confirmation is open',
+    (tester) async {
+      final server = _FakeCodexAppServer()
+        ..listResponse = [
+          {'id': 'archive-me', 'preview': 'archive-me', 'status': 'idle'},
+        ];
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await controller.refreshThreads();
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      final taskTile = find.byKey(
+        const ValueKey('sidebar-thread-tile-archive-me'),
+      );
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.moveTo(tester.getCenter(taskTile));
+      await tester.pump();
+      await tester.tap(
+        find.byKey(const ValueKey('sidebar-thread-archive-archive-me')),
+      );
+      await tester.pumpAndSettle();
+
+      controller
+        ..threads = [controller.threads.single.copyWith(status: 'active')]
+        ..notifyListeners();
+      await tester.pump();
+      await tester.tap(find.widgetWithText(FilledButton, '归档'));
+      await tester.pump();
+
+      expect(server.archiveCalls, 0);
+      expect(find.text('运行中的任务不能归档，请先停止任务。'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  test(
+    'rechecks each task status while a batch archive is in progress',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..listResponse = [
+          {'id': 'first', 'preview': 'first', 'status': 'idle'},
+          {'id': 'second', 'preview': 'second', 'status': 'idle'},
+        ]
+        ..archiveCompleter = Completer<void>();
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await controller.refreshThreads();
+      final selected = List<CodexThread>.of(controller.threads);
+
+      final archive = controller.archiveThreads(selected);
+      await Future<void>.delayed(Duration.zero);
+      expect(server.archiveCalls, 1);
+
+      controller.threads = [
+        controller.threads.first,
+        controller.threads.last.copyWith(status: 'active'),
+      ];
+      server.archiveCompleter!.complete();
+      final result = await archive;
+
+      expect(server.archiveCalls, 1);
+      expect(server.archivedThreadIds, ['first']);
+      expect(result.archivedIds, {'first'});
+      expect(result.runningThreadIds, {'second'});
+      expect(controller.threads.single.id, 'second');
+      controller.dispose();
+    },
+  );
+
+  testWidgets(
+    'enters batch archive from the project menu and preserves selection on cancel',
+    (tester) async {
+      final server = _FakeCodexAppServer()
+        ..listResponse = [
+          {'id': 'running', 'preview': 'running', 'status': 'active'},
+          {'id': 'idle', 'preview': 'idle', 'status': 'idle'},
+        ];
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await controller.refreshThreads();
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      final workspaceTile = find.byKey(
+        const ValueKey('sidebar-workspace-/workspace'),
+      );
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.moveTo(tester.getCenter(workspaceTile));
+      await tester.pump();
+      await tester.tap(
+        find.byKey(const ValueKey('sidebar-workspace-more-/workspace')),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('归档聊天'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('已选 0 个任务'), findsOneWidget);
+
+      final runningTile = find.byKey(
+        const ValueKey('sidebar-thread-tile-running'),
+      );
+      final idleTile = find.byKey(const ValueKey('sidebar-thread-tile-idle'));
+      await tester.ensureVisible(runningTile);
+      await tester.tap(
+        find.descendant(of: runningTile, matching: find.byType(Checkbox)),
+      );
+      await tester.ensureVisible(idleTile);
+      await tester.tap(
+        find.descendant(of: idleTile, matching: find.byType(Checkbox)),
+      );
+      await tester.pump();
+      expect(find.text('已选 2 个任务'), findsOneWidget);
+
+      await tester.tap(find.widgetWithText(FilledButton, '归档已选'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('归档 2 个任务？'), findsOneWidget);
+      expect(find.text('将归档空闲任务；其中 1 个任务正在运行，会保留在当前列表中。'), findsOneWidget);
+      await tester.tap(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.widgetWithText(TextButton, '取消'),
+        ),
+      );
+      await tester.pump();
+      expect(server.archiveCalls, 0);
+      expect(find.text('已选 2 个任务'), findsOneWidget);
+      expect(find.byType(SnackBar), findsNothing);
+
+      await tester.tap(find.widgetWithText(FilledButton, '归档已选'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.widgetWithText(FilledButton, '归档'));
+      await tester.pump();
+
+      expect(server.archivedThreadIds, ['idle']);
+      expect(controller.threads.map((thread) => thread.id), ['running']);
+      expect(find.text('已归档 1 个任务；跳过 1 个运行中的任务。'), findsOneWidget);
+      expect(find.text('已选 1 个任务'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('explains why a running task cannot be archived', (tester) async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'running'
+      ..threads = [_thread(id: 'running', status: 'active')];
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(find.byTooltip('任务进行中；停止后才能归档'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('sidebar-thread-archive-running')),
+      findsNothing,
+    );
+    expect(server.archiveCalls, 0);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  test(
     'keeps an archived task hidden when an older active refresh completes',
     () async {
       final server = _FakeCodexAppServer()..queueListRequests = true;
@@ -13757,7 +14086,7 @@ void main() {
 
       final firstPass = await controller.archiveThreads(controller.threads);
 
-      expect(firstPass, {'first'});
+      expect(firstPass.archivedIds, {'first'});
       expect(server.archivedThreadIds, ['first']);
       expect(controller.threads.map((thread) => thread.id), [
         'second',
@@ -13795,9 +14124,10 @@ void main() {
       final second = await controller.archiveThreads([thread]);
 
       expect(server.archiveCalls, 1);
-      expect(second, isEmpty);
+      expect(second.archivedIds, isEmpty);
+      expect(second.updatingThreadIds, {thread.id});
       server.archiveCompleter!.complete();
-      expect(await first, {thread.id});
+      expect((await first).archivedIds, {thread.id});
       controller.dispose();
     },
   );
@@ -13861,9 +14191,9 @@ void main() {
         ..status = RuntimeStatus.ready;
       await controller.refreshThreads();
 
-      final archivedIds = await controller.archiveThreads(controller.threads);
+      final result = await controller.archiveThreads(controller.threads);
 
-      expect(archivedIds, {'first'});
+      expect(result.archivedIds, {'first'});
       expect(controller.threads.single.id, 'second');
       expect(
         controller.entries

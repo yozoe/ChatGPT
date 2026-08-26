@@ -43,6 +43,28 @@ enum ApprovalMode { manual, autoApprove }
 
 enum _TurnCompletionOutcome { succeeded, stopped, failed, unknown }
 
+/// Result of one archive submission, including tasks that were deliberately
+/// left untouched because their state changed before the request was sent.
+///
+/// 单次归档提交结果，同时保留因状态变化而未发送请求的任务及原因。
+@immutable
+class ThreadArchiveResult {
+  ThreadArchiveResult({
+    Iterable<String> archivedIds = const [],
+    Iterable<String> runningThreadIds = const [],
+    Iterable<String> updatingThreadIds = const [],
+    Iterable<String> unavailableThreadIds = const [],
+  }) : archivedIds = Set.unmodifiable(archivedIds),
+       runningThreadIds = Set.unmodifiable(runningThreadIds),
+       updatingThreadIds = Set.unmodifiable(updatingThreadIds),
+       unavailableThreadIds = Set.unmodifiable(unavailableThreadIds);
+
+  final Set<String> archivedIds;
+  final Set<String> runningThreadIds;
+  final Set<String> updatingThreadIds;
+  final Set<String> unavailableThreadIds;
+}
+
 /// App Server 明确报告、但尚未完成的当前 turn 活动。
 /// A transient activity that App Server has explicitly reported for the
 /// focused turn. It is intentionally not persisted: completed work belongs in
@@ -1238,6 +1260,7 @@ class CodexController extends ChangeNotifier {
       workspacePath != null &&
       (activeThreadId == null || _activeThreadAttached) &&
       (activeThreadId == null || !isThreadRunning(activeThreadId!)) &&
+      (activeThreadId == null || !isUpdatingThread(activeThreadId!)) &&
       _hasUsableModelSelection &&
       _hasUsableReasoningEffort &&
       (!requiresOpenaiAuth || authStatus != AuthStatus.signedOut);
@@ -1266,6 +1289,21 @@ class CodexController extends ChangeNotifier {
   bool isThreadRunning(String threadId) =>
       _runningThreadIds.contains(threadId) ||
       (status == RuntimeStatus.running && activeThreadId == threadId);
+
+  /// Whether the thread itself is still executing, regardless of other
+  /// foreground or background tasks in the same workspace.
+  ///
+  /// 指示目标线程本身是否仍在执行，不受同工作区其他前台或后台任务影响。
+  bool isThreadExecutionActive(CodexThread thread) {
+    var latestStatus = thread.status;
+    for (final current in threads) {
+      if (current.id == thread.id) {
+        latestStatus = current.status;
+        break;
+      }
+    }
+    return isThreadRunning(thread.id) || _isRunningThreadStatus(latestStatus);
+  }
 
   bool get _hasBackgroundRunningTasks =>
       _runningThreadIds.any((threadId) => threadId != activeThreadId);
@@ -3415,43 +3453,88 @@ class CodexController extends ChangeNotifier {
 
   /// 归档指定线程并刷新活跃线程状态。
   /// Archives a thread and refreshes active thread state.
-  Future<void> archiveThread(CodexThread thread) async {
-    await archiveThreads([thread]);
-  }
+  Future<ThreadArchiveResult> archiveThread(CodexThread thread) =>
+      archiveThreads([thread]);
 
-  /// 批量归档指定线程，并在成功后更新当前项目的本地列表。
-  /// Archives selected threads in sequence and updates the current workspace list after each success.
-  Future<Set<String>> archiveThreads(Iterable<CodexThread> selected) async {
+  /// 批量归档指定线程，逐项更新本地列表并返回未提交项的分类原因。
+  /// Archives selected threads in sequence and classifies items not submitted.
+  Future<ThreadArchiveResult> archiveThreads(
+    Iterable<CodexThread> selected,
+  ) async {
     final workspace = workspacePath;
-    final items =
-        <String, CodexThread>{for (final thread in selected) thread.id: thread}
-            .values
-            .where((thread) => !_archivingThreadIds.contains(thread.id))
-            .toList(growable: false);
-    if (workspace == null ||
-        !_server.isRunning ||
-        hasRunningTasks ||
-        items.isEmpty) {
-      return const <String>{};
+    final candidates = <String, CodexThread>{
+      for (final thread in selected) thread.id: thread,
+    }.values.toList(growable: false);
+    final runningThreadIds = candidates
+        .where(isThreadExecutionActive)
+        .map((thread) => thread.id)
+        .toSet();
+    final updatingThreadIds = candidates
+        .where(
+          (thread) =>
+              !runningThreadIds.contains(thread.id) &&
+              isUpdatingThread(thread.id),
+        )
+        .map((thread) => thread.id)
+        .toSet();
+    final unavailableThreadIds = <String>{};
+    final runtimeAvailable = workspace != null && _server.isRunning;
+    if (!runtimeAvailable) {
+      unavailableThreadIds.addAll(
+        candidates
+            .map((thread) => thread.id)
+            .where(
+              (id) =>
+                  !runningThreadIds.contains(id) &&
+                  !updatingThreadIds.contains(id),
+            ),
+      );
     }
+    final items = runtimeAvailable
+        ? candidates
+              .where(
+                (thread) =>
+                    !runningThreadIds.contains(thread.id) &&
+                    !updatingThreadIds.contains(thread.id),
+              )
+              .toList(growable: false)
+        : const <CodexThread>[];
+    final archivedIds = <String>{};
+    ThreadArchiveResult result() => ThreadArchiveResult(
+      archivedIds: archivedIds,
+      runningThreadIds: runningThreadIds,
+      updatingThreadIds: updatingThreadIds,
+      unavailableThreadIds: unavailableThreadIds,
+    );
+    if (items.isEmpty) return result();
     _clearThreadWriterConflict();
     _archivingThreadIds.addAll(items.map((thread) => thread.id));
     if (!_disposed) notifyListeners();
-    final archivedIds = <String>{};
     Object? failure;
     List<CodexThread>? retryThreads;
     try {
       for (var index = 0; index < items.length; index++) {
         final thread = items[index];
+        // Earlier items await App Server sequentially. Re-read the target's
+        // live state immediately before each request so a background or
+        // externally-started turn cannot be archived from a stale selection.
+        if (isThreadExecutionActive(thread)) {
+          runningThreadIds.add(thread.id);
+          continue;
+        }
+        if (!_server.isRunning) {
+          unavailableThreadIds.add(thread.id);
+          continue;
+        }
         try {
           await _server.archiveThread(threadId: thread.id);
         } catch (error) {
-          if (_disposed || workspacePath != workspace) return archivedIds;
+          if (_disposed || workspacePath != workspace) return result();
           failure = error;
           retryThreads = items.sublist(index);
           break;
         }
-        if (_disposed || workspacePath != workspace) return archivedIds;
+        if (_disposed || workspacePath != workspace) return result();
         // A refresh started before the archive may still contain this task.
         // Invalidate it before applying the authoritative local removal.
         _invalidateActiveThreadRefresh();
@@ -3506,7 +3589,7 @@ class CodexController extends ChangeNotifier {
       _archivingThreadIds.removeAll(items.map((thread) => thread.id));
       if (!_disposed) notifyListeners();
     }
-    return archivedIds;
+    return result();
   }
 
   /// 永久删除指定任务及 App Server 定义的派生任务，并清理本应用的对应缓存引用。
@@ -4489,6 +4572,16 @@ class CodexController extends ChangeNotifier {
       'canceled' => true,
       _ => false,
     };
+  }
+
+  bool _isRunningThreadStatus(String? status) {
+    final normalized = status?.trim().toLowerCase().replaceAll(
+      RegExp(r'[^a-z]'),
+      '',
+    );
+    return normalized == 'active' ||
+        normalized == 'inprogress' ||
+        normalized == 'running';
   }
 
   void _clearPendingApprovalsForThread(String? threadId) {
