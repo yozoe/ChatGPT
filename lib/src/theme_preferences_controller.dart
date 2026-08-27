@@ -1,8 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/material.dart';
-import 'theme/yeknom_workbench.dart';
+import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 
-import 'services/theme_preferences_store.dart';
+import 'package:chatgpt/src/services/theme_preferences_store.dart';
 
 /// 提供应用级主题偏好，并串行保存用户的主题选择。
 /// Provides app-wide theme preferences and serializes persistence of user selections.

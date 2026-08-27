@@ -1,4 +1,4 @@
-import '../services/codex_app_server.dart';
+import 'package:chatgpt/src/services/codex_app_server.dart';
 
 /// App Server 可能向客户端请求确认的高风险操作类别。
 /// High-impact operation categories App Server may ask the client to approve.

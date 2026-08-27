@@ -4,33 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:chatgpt/src/theme/yeknom_workbench.dart';
+import 'theme_fakes.dart';
 
-final class _MemoryThemeStore implements CodexThemePreferencesStore {
-  final List<CodexThemePreferences> saved = [];
-
-  @override
-  Future<CodexThemePreferences> load() async => CodexThemePreferences.defaults;
-
-  @override
-  Future<void> save(CodexThemePreferences preferences) async {
-    saved.add(preferences);
-  }
-}
-
-final class _FailingThenMemoryThemeStore implements CodexThemePreferencesStore {
-  final List<CodexThemePreferences> saved = [];
-  var saveAttempts = 0;
-
-  @override
-  Future<CodexThemePreferences> load() async => CodexThemePreferences.defaults;
-
-  @override
-  Future<void> save(CodexThemePreferences preferences) async {
-    saveAttempts++;
-    if (saveAttempts == 1) throw StateError('first save failed');
-    saved.add(preferences);
-  }
-}
+typedef _MemoryThemeStore = MemoryThemeStore;
+typedef _FailingThenMemoryThemeStore = FailingThenMemoryThemeStore;
 
 void main() {
   test('theme provider owns and persists app-wide preferences', () async {

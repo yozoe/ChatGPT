@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
+import 'widget_test_fakes.dart';
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:chatgpt/src/app.dart';
@@ -17,18 +18,16 @@ import 'package:chatgpt/src/domain/codex_mcp_server.dart';
 import 'package:chatgpt/src/domain/pending_elicitation.dart';
 import 'package:chatgpt/src/domain/git_project_status.dart';
 import 'package:chatgpt/src/domain/task_plan.dart';
-import 'package:chatgpt/src/domain/scheduled_task.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/domain/workspace_configuration.dart';
-import 'package:chatgpt/src/presentation/codex_workspace.dart';
-import 'package:chatgpt/src/presentation/code_review_panel.dart';
+import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
+import 'package:chatgpt/src/presentation/code_review/code_review_panel.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/services/agent_markdown_link.dart';
 import 'package:chatgpt/src/services/codex_plugin_store.dart';
 import 'package:chatgpt/src/services/conversation_history_store.dart';
 import 'package:chatgpt/src/services/git_project_service.dart';
 import 'package:chatgpt/src/services/local_session_thread_store.dart';
-import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'package:chatgpt/src/services/theme_preferences_store.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -38,953 +37,34 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 
-class _FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
-  String? workspace;
-  String? savedWorkspace;
-  List<String> additionalWorkspaces = [];
-  List<String>? savedAdditionalWorkspaces;
-  List<WorkspaceConfiguration> workspaces = [];
-  List<WorkspaceConfiguration>? savedWorkspaces;
-  String? reasoningEffort;
-  String? savedReasoningEffort;
-  String? model;
-  String? savedModel;
-  String? approvalMode;
-  String? savedApprovalMode;
-  bool clearedWorkspace = false;
-  Set<String> pinnedWorkspaces = {};
-  Set<String>? savedPinnedWorkspaces;
-  List<ScheduledTask> scheduledTasks = [];
-  List<ScheduledTask>? savedScheduledTasks;
-
-  /// 模拟未保存自定义 CLI 路径。
-  /// Simulates no saved custom CLI path.
-  @override
-  Future<String?> readExecutable() async => null;
-
-  /// 返回测试预设的项目路径。
-  /// Returns the test-configured workspace path.
-  @override
-  Future<String?> readWorkspace() async => workspace;
-
-  /// 在内存中保存项目路径，便于断言持久化结果。
-  /// Saves the workspace path in memory for persistence assertions.
-  @override
-  Future<void> saveWorkspace(String value) async {
-    savedWorkspace = value;
-    workspace = value;
-  }
-
-  /// 清空内存项目路径并标记清理操作。
-  /// Clears the in-memory workspace path and records the clear operation.
-  @override
-  Future<void> clearWorkspace() async {
-    clearedWorkspace = true;
-    workspace = null;
-  }
-
-  /// 返回测试预设的附加工作区目录。
-  /// Returns test-configured additional workspace directories.
-  @override
-  Future<List<String>> readAdditionalWorkspaces() async =>
-      List.of(additionalWorkspaces);
-
-  /// 在内存中保存附加工作区目录，便于断言持久化结果。
-  /// Saves additional workspace directories in memory for persistence assertions.
-  @override
-  Future<void> saveAdditionalWorkspaces(List<String> workspaces) async {
-    savedAdditionalWorkspaces = List.of(workspaces);
-    additionalWorkspaces = List.of(workspaces);
-  }
-
-  /// 返回测试预设的可切换工作区列表。
-  /// Returns the test-configured switchable workspace list.
-  @override
-  Future<List<WorkspaceConfiguration>> readWorkspaces() async => workspaces
-      .map(
-        (workspace) => WorkspaceConfiguration(
-          id: workspace.id,
-          primaryPath: workspace.primaryPath,
-          additionalPaths: workspace.additionalPaths,
-          name: workspace.name,
-        ),
-      )
-      .toList(growable: false);
-
-  /// 在内存中保存完整工作区列表，便于验证迁移和切换。
-  /// Saves the complete workspace list in memory for migration and switching assertions.
-  @override
-  Future<void> saveWorkspaces(
-    List<WorkspaceConfiguration> configurations,
-  ) async {
-    final snapshot = configurations
-        .map(
-          (workspace) => WorkspaceConfiguration(
-            id: workspace.id,
-            primaryPath: workspace.primaryPath,
-            additionalPaths: workspace.additionalPaths,
-            name: workspace.name,
-          ),
-        )
-        .toList(growable: false);
-    savedWorkspaces = snapshot;
-    workspaces = snapshot;
-  }
-
-  @override
-  Future<Set<String>> readPinnedWorkspaces() async => Set.of(pinnedWorkspaces);
-
-  @override
-  Future<void> savePinnedWorkspaces(Iterable<String> paths) async {
-    savedPinnedWorkspaces = paths.toSet();
-    pinnedWorkspaces = paths.toSet();
-  }
-
-  @override
-  Future<List<ScheduledTask>> readScheduledTasks() async =>
-      List.of(scheduledTasks);
-
-  @override
-  Future<void> saveScheduledTasks(Iterable<ScheduledTask> tasks) async {
-    savedScheduledTasks = tasks.toList(growable: false);
-    scheduledTasks = List.of(savedScheduledTasks!);
-  }
-
-  /// 返回测试预设的推理强度。
-  /// Returns the test-configured reasoning effort.
-  @override
-  Future<String?> readReasoningEffort() async => reasoningEffort;
-
-  /// 在内存中保存推理强度，便于断言更新结果。
-  /// Saves reasoning effort in memory for update assertions.
-  @override
-  Future<void> saveReasoningEffort(String? value) async {
-    savedReasoningEffort = value;
-    reasoningEffort = value;
-  }
-
-  /// 返回测试预设的新任务模型；`null` 表示跟随 Codex 配置。
-  /// Returns the test-configured model for new tasks; `null` means follow Codex configuration.
-  @override
-  Future<String?> readModel() async => model;
-
-  /// 在内存中保存新任务模型，便于断言模型切换持久化。
-  /// Saves the new-task model in memory so model-selection persistence can be asserted.
-  @override
-  Future<void> saveModel(String? value) async {
-    savedModel = value;
-    model = value;
-  }
-
-  /// 返回测试预设的审批模式；`null` 表示请求批准。
-  /// Returns the test-configured approval mode; `null` means request approval.
-  @override
-  Future<String?> readApprovalMode() async => approvalMode;
-
-  /// 在内存中保存审批模式，便于验证重启后的恢复行为。
-  /// Saves approval mode in memory to verify restoration after restart.
-  @override
-  Future<void> saveApprovalMode(String? value) async {
-    savedApprovalMode = value;
-    approvalMode = value;
-  }
-}
-
-class _DelayedAdditionalWorkspaceStore extends _FakeRuntimeConfigurationStore {
-  final savedSnapshots = <List<String>>[];
-  final saveCompleters = <Completer<void>>[];
-
-  /// 记录目录快照并延迟写入完成，用于验证保存顺序。
-  /// Records directory snapshots and delays completion to verify save ordering.
-  @override
-  Future<void> saveAdditionalWorkspaces(List<String> workspaces) {
-    savedSnapshots.add(List.of(workspaces));
-    final completer = Completer<void>();
-    saveCompleters.add(completer);
-    return completer.future;
-  }
-}
-
-class _RejectingAdditionalWorkspaceStore
-    extends _FakeRuntimeConfigurationStore {
-  int additionalWorkspaceSaveCalls = 0;
-
-  @override
-  Future<void> saveAdditionalWorkspaces(List<String> workspaces) async {
-    additionalWorkspaceSaveCalls++;
-    throw StateError('legacy additional workspace write rejected');
-  }
-}
-
-class _MemoryConversationHistoryStore extends ConversationHistoryStore {
-  final snapshots = <String, ConversationHistorySnapshot>{};
-
-  /// 从内存快照表读取指定项目的历史。
-  /// Reads a workspace history from the in-memory snapshot map.
-  @override
-  Future<ConversationHistorySnapshot?> read(String workspace) async {
-    return snapshots[workspace];
-  }
-
-  /// 将指定项目的历史快照保存到内存。
-  /// Saves a workspace history snapshot in memory.
-  @override
-  Future<void> save({
-    required String workspace,
-    required ConversationHistorySnapshot snapshot,
-  }) async {
-    snapshots[workspace] = snapshot;
-  }
-}
-
-class _BlockingConversationHistoryStore
-    extends _MemoryConversationHistoryStore {
-  final firstSaveStarted = Completer<void>();
-  final allowFirstSave = Completer<void>();
-  int saveCalls = 0;
-
-  /// 可选地阻塞第一次保存，以验证控制器的写入串行化。
-  /// Optionally blocks the first save to verify controller write serialization.
-  @override
-  Future<void> save({
-    required String workspace,
-    required ConversationHistorySnapshot snapshot,
-  }) async {
-    saveCalls++;
-    if (saveCalls == 1) {
-      firstSaveStarted.complete();
-      await allowFirstSave.future;
-    }
-    await super.save(workspace: workspace, snapshot: snapshot);
-  }
-}
-
-class _BlockingReadConversationHistoryStore
-    extends _MemoryConversationHistoryStore {
-  String? blockedWorkspace;
-  Completer<void>? readStarted;
-  Completer<void>? allowRead;
-
-  void blockNextRead(String workspace) {
-    blockedWorkspace = workspace;
-    readStarted = Completer<void>();
-    allowRead = Completer<void>();
-  }
-
-  @override
-  Future<ConversationHistorySnapshot?> read(String workspace) async {
-    final allow = allowRead;
-    if (workspace == blockedWorkspace && allow != null) {
-      blockedWorkspace = null;
-      readStarted?.complete();
-      await allow.future;
-    }
-    return super.read(workspace);
-  }
-}
-
-class _MemoryLocalSessionThreadStore extends LocalSessionThreadStore {
-  final threadsByWorkspace = <String, List<CodexThread>>{};
-
-  /// 从测试内存映射返回指定工作区的本地 session 线程。
-  /// Returns local session threads for a workspace from a test memory map.
-  @override
-  Future<List<CodexThread>> listThreads(String workspace) async {
-    return threadsByWorkspace[workspace] ?? const [];
-  }
-}
-
-class _MemoryCodexPluginStore extends CodexPluginStore {
-  final plugins = <CodexPlugin>[];
-  final mcpServers = <CodexMcpServer>[];
-  final addedMarketplaces = <String>[];
-  final marketplaces = <CodexMarketplace>[];
-  final installedPluginIds = <String>[];
-  final removedPluginIds = <String>[];
-  final upgradedMarketplaceNames = <String?>[];
-  final removedMarketplaceNames = <String>[];
-  final enabledChanges = <String, bool>{};
-  String? listedMcpWorkingDirectory;
-  String? updatedMcpWorkingDirectory;
-
-  /// 从测试内存列表返回已安装与可安装插件。
-  /// Returns installed and available plugins from the test memory list.
-  @override
-  Future<List<CodexPlugin>> listPlugins() async => List.of(plugins);
-
-  @override
-  Future<List<CodexMcpServer>> listMcpServers({
-    String? workingDirectory,
-  }) async {
-    listedMcpWorkingDirectory = workingDirectory;
-    return List.of(mcpServers);
-  }
-
-  @override
-  Future<void> addMcpServer({required String name, required String url}) async {
-    mcpServers.add(
-      CodexMcpServer(name: name, enabled: true, transportLabel: url),
-    );
-  }
-
-  @override
-  Future<void> setMcpServerEnabled(
-    CodexMcpServer server,
-    bool enabled, {
-    String? workingDirectory,
-  }) async {
-    updatedMcpWorkingDirectory = workingDirectory;
-    final index = mcpServers.indexWhere((value) => value.name == server.name);
-    if (index >= 0) mcpServers[index] = server.copyWith(enabled: enabled);
-  }
-
-  @override
-  Future<void> setSkillEnabled(CodexSkill skill, bool enabled) async {}
-
-  /// 记录添加的本地 marketplace，供控制器行为断言。
-  /// Records a local marketplace addition for controller behavior assertions.
-  @override
-  Future<void> addLocalMarketplace(String directory) async {
-    addedMarketplaces.add(directory);
-  }
-
-  /// 记录本地或远程 marketplace 来源，供控制器行为断言。
-  /// Records a local or remote marketplace source for controller behavior assertions.
-  @override
-  Future<void> addMarketplace(String source) async {
-    addedMarketplaces.add(source);
-  }
-
-  /// 从测试内存列表返回 marketplace 来源。
-  /// Returns marketplace sources from the test memory list.
-  @override
-  Future<List<CodexMarketplace>> listMarketplaces() async =>
-      List.of(marketplaces);
-
-  /// 记录 marketplace 更新请求。
-  /// Records a marketplace upgrade request.
-  @override
-  Future<void> upgradeMarketplace(String? name) async {
-    upgradedMarketplaceNames.add(name);
-  }
-
-  /// 记录被移除的 marketplace 名称。
-  /// Records the name of a removed marketplace.
-  @override
-  Future<void> removeMarketplace(CodexMarketplace marketplace) async {
-    removedMarketplaceNames.add(marketplace.name);
-  }
-
-  /// 记录待安装插件，并将其状态改为已安装。
-  /// Records a plugin installation and changes its state to installed.
-  @override
-  Future<void> installPlugin(CodexPlugin plugin) async {
-    installedPluginIds.add(plugin.id);
-    final index = plugins.indexWhere((value) => value.id == plugin.id);
-    if (index >= 0) {
-      plugins[index] = CodexPlugin(
-        id: plugin.id,
-        name: plugin.name,
-        marketplaceName: plugin.marketplaceName,
-        installed: true,
-        enabled: true,
-        version: plugin.version,
-        installPolicy: plugin.installPolicy,
-        authPolicy: plugin.authPolicy,
-        description: plugin.description,
-      );
-    }
-  }
-
-  /// 记录待卸载插件，并从测试内存列表中移除它。
-  /// Records a plugin removal and removes it from the test memory list.
-  @override
-  Future<void> removePlugin(CodexPlugin plugin) async {
-    removedPluginIds.add(plugin.id);
-    plugins.removeWhere((value) => value.id == plugin.id);
-  }
-
-  /// 记录插件启用状态，并同步测试内存列表。
-  /// Records a plugin enabled state and synchronizes the test memory list.
-  @override
-  Future<void> setPluginEnabled(CodexPlugin plugin, bool enabled) async {
-    enabledChanges[plugin.id] = enabled;
-    final index = plugins.indexWhere((value) => value.id == plugin.id);
-    if (index >= 0) plugins[index] = plugins[index].copyWith(enabled: enabled);
-  }
-}
-
-class _BlockingCodexPluginStore extends _MemoryCodexPluginStore {
-  final installCompleter = Completer<void>();
-  final enabledCompleter = Completer<void>();
-
-  /// 保持安装操作未完成，供界面断言进行中状态。
-  /// Keeps installation pending so the interface can assert its progress state.
-  @override
-  Future<void> installPlugin(CodexPlugin plugin) async {
-    await installCompleter.future;
-    await super.installPlugin(plugin);
-  }
-
-  @override
-  Future<void> setPluginEnabled(CodexPlugin plugin, bool enabled) async {
-    await enabledCompleter.future;
-    await super.setPluginEnabled(plugin, enabled);
-  }
-}
-
-class _BlockingMcpListCodexPluginStore extends _MemoryCodexPluginStore {
-  final requests =
-      <({String? workspace, Completer<List<CodexMcpServer>> completer})>[];
-
-  @override
-  Future<List<CodexMcpServer>> listMcpServers({String? workingDirectory}) {
-    final completer = Completer<List<CodexMcpServer>>();
-    requests.add((workspace: workingDirectory, completer: completer));
-    return completer.future;
-  }
-}
-
-class _BlockingExtensionListCodexPluginStore extends _MemoryCodexPluginStore {
-  final pluginRequests = <Completer<List<CodexPlugin>>>[];
-  final marketplaceRequests = <Completer<List<CodexMarketplace>>>[];
-
-  @override
-  Future<List<CodexPlugin>> listPlugins() {
-    final completer = Completer<List<CodexPlugin>>();
-    pluginRequests.add(completer);
-    return completer.future;
-  }
-
-  @override
-  Future<List<CodexMarketplace>> listMarketplaces() {
-    final completer = Completer<List<CodexMarketplace>>();
-    marketplaceRequests.add(completer);
-    return completer.future;
-  }
-}
-
-class _FailingCodexPluginStore extends _MemoryCodexPluginStore {
-  /// 模拟 CLI 安装失败并返回可展示的具体原因。
-  /// Simulates a CLI installation failure with a displayable reason.
-  @override
-  Future<void> installPlugin(CodexPlugin plugin) async {
-    throw StateError('marketplace 无法访问');
-  }
-}
-
-class _FailingMcpCodexPluginStore extends _MemoryCodexPluginStore {
-  @override
-  Future<void> addMcpServer({required String name, required String url}) async {
-    throw StateError('MCP 配置不可写');
-  }
-
-  @override
-  Future<void> setMcpServerEnabled(
-    CodexMcpServer server,
-    bool enabled, {
-    String? workingDirectory,
-  }) async {
-    throw StateError('MCP 配置不可写');
-  }
-}
-
-class _McpAddWithRefreshWarningCodexPluginStore
-    extends _MemoryCodexPluginStore {
-  bool _added = false;
-
-  @override
-  Future<void> addMcpServer({required String name, required String url}) async {
-    await super.addMcpServer(name: name, url: url);
-    _added = true;
-  }
-
-  @override
-  Future<List<CodexMcpServer>> listMcpServers({
-    String? workingDirectory,
-  }) async {
-    if (_added) throw StateError('MCP 列表暂时不可用');
-    return super.listMcpServers(workingDirectory: workingDirectory);
-  }
-}
-
-class _FailOnSecondInstallCodexPluginStore extends _MemoryCodexPluginStore {
-  var installCalls = 0;
-
-  /// 首次安装成功，第二次失败，用于验证待重启提示不会丢失。
-  /// Succeeds once, then fails to verify pending restart feedback persists.
-  @override
-  Future<void> installPlugin(CodexPlugin plugin) async {
-    installCalls++;
-    if (installCalls == 2) throw StateError('second install failed');
-    await super.installPlugin(plugin);
-  }
-}
-
-class _FakeGitProjectService extends GitProjectService {
-  GitProjectStatus status = const GitProjectStatus(isRepository: false);
-  String diff = '';
-  String? reversedDiff;
-  List<String>? reversedExpectedPaths;
-  GitProjectChange? requestedChange;
-  final List<GitProjectChange> requestedChanges = [];
-  int inspectCalls = 0;
-  int reverseCalls = 0;
-  int stageCalls = 0;
-  Object? stageError;
-  Completer<void>? stageCompleter;
-  Completer<void>? diffCompleter;
-  int activeDiffReads = 0;
-  int maximumActiveDiffReads = 0;
-  Object? reverseError;
-  Completer<void>? reverseCompleter;
-
-  /// 返回预设的只读 Git 项目状态，并记录调用次数。
-  /// Returns the preset read-only Git project status and records the call count.
-  @override
-  Future<GitProjectStatus> inspect(String workspace) async {
-    inspectCalls++;
-    return status;
-  }
-
-  /// 返回预设 Diff，并记录界面请求的文件变更。
-  /// Returns the preset diff and records the change requested by the interface.
-  @override
-  Future<String> readDiff({
-    required String workspace,
-    required GitProjectChange change,
-  }) async {
-    requestedChange = change;
-    requestedChanges.add(change);
-    return diff;
-  }
-
-  @override
-  Future<GitDiffPreview> readDiffPreview({
-    required String workspace,
-    required GitProjectChange change,
-  }) async {
-    requestedChange = change;
-    requestedChanges.add(change);
-    activeDiffReads++;
-    maximumActiveDiffReads = math.max(maximumActiveDiffReads, activeDiffReads);
-    try {
-      await diffCompleter?.future;
-      return GitDiffPreview(
-        content: diff,
-        truncated: diff.endsWith(GitProjectService.truncatedDiffMarker),
-      );
-    } finally {
-      activeDiffReads--;
-    }
-  }
-
-  @override
-  Future<void> stageFile({
-    required String workspace,
-    required GitProjectChange change,
-  }) async {
-    stageCalls++;
-    if (stageError case final error?) throw error;
-    await stageCompleter?.future;
-  }
-
-  @override
-  Future<void> reverseApplyDiff({
-    required String workspace,
-    required String diff,
-    required Iterable<String> expectedPaths,
-  }) async {
-    reverseCalls++;
-    reversedDiff = diff;
-    reversedExpectedPaths = List.of(expectedPaths);
-    if (reverseError case final error?) throw error;
-    await reverseCompleter?.future;
-  }
-}
-
-class _FakeCodexAppServer extends CodexAppServer {
-  _FakeCodexAppServer() : super(executable: '/not/a/codex');
-
-  final listRequests = <Completer<List<JsonMap>>>[];
-  List<JsonMap> listResponse = <JsonMap>[];
-  final Map<String, List<JsonMap>> listResponsesByDirectory = {};
-  List<JsonMap> archivedListResponse = <JsonMap>[];
-  List<JsonMap> modelListResponse = <JsonMap>[];
-  Object? modelListError;
-  JsonMap configReadResponse = {
-    'config': <String, Object?>{},
-    'origins': <String, Object?>{},
-  };
-  String? configReadDirectory;
-  bool queueListRequests = false;
-  Object? resumeError;
-  JsonMap resumeResult = {
-    'thread': {'turns': <JsonMap>[]},
-  };
-  JsonMap turnPage = {'data': <JsonMap>[]};
-  Completer<JsonMap>? turnPageCompleter;
-  final turnPageCursors = <String?>[];
-  JsonMap itemPage = {'data': <JsonMap>[]};
-  final itemPageTurnIds = <String>[];
-  Object? itemPageError;
-  List<JsonMap>? itemPages;
-  var itemPageIndex = 0;
-  String? resumedThreadId;
-  int resumeCalls = 0;
-  String? resumedModelProvider;
-  String? resumedModel;
-  JsonMap? resumedConfig;
-  String? startedThreadDirectory;
-  List<String>? startedRuntimeWorkspaceRoots;
-  String? startedModelProvider;
-  String? startedModel;
-  JsonMap? startedConfig;
-  List<JsonMap> skillListResponse = <JsonMap>[];
-  String? startedTurnPrompt;
-  String? startedTurnDirectory;
-  final List<String> startedTurnPrompts = [];
-  String? startedTurnThreadId;
-  final List<String> startedTurnThreadIds = [];
-  final List<String> startThreadResponseIds = [];
-  List<JsonMap> startedTurnAdditionalInput = <JsonMap>[];
-  JsonMap? startedTurnCollaborationMode;
-  Object? startTurnError;
-  Completer<void>? startTurnCompleter;
-  String? steeredTurnThreadId;
-  String? steeredTurnId;
-  String? steeredTurnPrompt;
-  List<JsonMap> steeredTurnAdditionalInput = <JsonMap>[];
-  String? steerResponseTurnId;
-  Object? steerTurnError;
-  Completer<String>? steerCompleter;
-  String? interruptedThreadId;
-  String? interruptedTurnId;
-  Completer<void>? interruptCompleter;
-  Object? interruptTurnError;
-  Object? unarchiveError;
-  String? threadGoal;
-  String? renamedThreadId;
-  String? renamedThreadName;
-  String? unarchivedThreadId;
-  int unarchiveCalls = 0;
-  Completer<void>? unarchiveCompleter;
-  final archivedThreadIds = <String>[];
-  int archiveCalls = 0;
-  Completer<void>? archiveCompleter;
-  Object? archiveError;
-  final archiveErrorsById = <String, Object>{};
-  final deletedThreadIds = <String>[];
-  final archiveFailureIds = <String>{};
-
-  /// 始终报告运行中，模拟已连接的 App Server。
-  /// Always reports running, simulating a connected App Server.
-  @override
-  bool get isRunning => true;
-
-  /// 返回预设线程列表，或排队请求以控制刷新竞争测试。
-  /// Returns preset threads or queues requests to control refresh-race tests.
-  @override
-  Future<List<JsonMap>> listThreads({
-    required String workingDirectory,
-    bool archived = false,
-  }) {
-    if (archived) return Future.value(archivedListResponse);
-    final directoryResponse = listResponsesByDirectory[workingDirectory];
-    if (directoryResponse != null) return Future.value(directoryResponse);
-    if (!queueListRequests) return Future.value(listResponse);
-    final completer = Completer<List<JsonMap>>();
-    listRequests.add(completer);
-    return completer.future;
-  }
-
-  /// 返回预设模型能力列表。
-  /// Returns the preset model-capability list.
-  @override
-  Future<List<JsonMap>> listModels({bool includeHidden = false}) async {
-    if (modelListError case final error?) throw error;
-    return modelListResponse;
-  }
-
-  /// 返回 App Server 已按层级合并的配置，并记录用于解析项目配置的目录。
-  /// Returns App Server's merged configuration and records the workspace used to resolve project layers.
-  @override
-  Future<JsonMap> readConfig({String? workingDirectory}) async {
-    configReadDirectory = workingDirectory;
-    return configReadResponse;
-  }
-
-  /// 记录恢复参数，并返回预设结果或抛出预设异常。
-  /// Records resume parameters and returns a preset result or error.
-  @override
-  Future<JsonMap> resumeThread({
-    required String threadId,
-    String? modelProvider,
-    String? model,
-    JsonMap? config,
-  }) async {
-    resumeCalls++;
-    resumedThreadId = threadId;
-    resumedModelProvider = modelProvider;
-    resumedModel = model;
-    resumedConfig = config;
-    final error = resumeError;
-    if (error != null) throw error;
-    return resumeResult;
-  }
-
-  /// 记录新线程参数并返回稳定的测试线程 ID。
-  /// Records new-thread parameters and returns a stable test thread ID.
-  @override
-  Future<String> startThread({
-    required String workingDirectory,
-    List<String>? runtimeWorkspaceRoots,
-    String? modelProvider,
-    String? model,
-    JsonMap? config,
-  }) async {
-    startedThreadDirectory = workingDirectory;
-    startedRuntimeWorkspaceRoots = runtimeWorkspaceRoots;
-    startedModelProvider = modelProvider;
-    startedModel = model;
-    startedConfig = config;
-    return startThreadResponseIds.isEmpty
-        ? 'new-thread'
-        : startThreadResponseIds.removeAt(0);
-  }
-
-  /// 接受模拟任务启动，不与真实运行时通信。
-  /// Accepts a simulated turn start without communicating with a runtime.
-  @override
-  Future<void> startTurn({
-    required String threadId,
-    required String prompt,
-    required String workingDirectory,
-    List<JsonMap> additionalInput = const [],
-    JsonMap? collaborationMode,
-  }) async {
-    startedTurnDirectory = workingDirectory;
-    startedTurnThreadId = threadId;
-    startedTurnThreadIds.add(threadId);
-    startedTurnPrompt = prompt;
-    startedTurnPrompts.add(prompt);
-    startedTurnAdditionalInput = List.of(additionalInput);
-    startedTurnCollaborationMode = collaborationMode;
-    if (startTurnCompleter case final completer?) await completer.future;
-    if (startTurnError case final error?) throw error;
-  }
-
-  @override
-  Future<String> steerTurn({
-    required String threadId,
-    required String expectedTurnId,
-    required String prompt,
-    List<JsonMap> additionalInput = const [],
-  }) async {
-    steeredTurnThreadId = threadId;
-    steeredTurnId = expectedTurnId;
-    steeredTurnPrompt = prompt;
-    steeredTurnAdditionalInput = List.of(additionalInput);
-    if (steerTurnError case final error?) throw error;
-    if (steerCompleter case final completer?) return completer.future;
-    return steerResponseTurnId ?? expectedTurnId;
-  }
-
-  @override
-  Future<void> interruptTurn({
-    required String threadId,
-    required String turnId,
-  }) async {
-    interruptedThreadId = threadId;
-    interruptedTurnId = turnId;
-    await interruptCompleter?.future;
-    if (interruptTurnError case final error?) throw error;
-  }
-
-  @override
-  Future<void> setThreadGoal({
-    required String threadId,
-    required String objective,
-  }) async {
-    threadGoal = objective;
-  }
-
-  @override
-  Future<void> renameThread({
-    required String threadId,
-    required String name,
-  }) async {
-    renamedThreadId = threadId;
-    renamedThreadName = name;
-  }
-
-  @override
-  Future<List<JsonMap>> listSkills({
-    required String workingDirectory,
-    bool forceReload = false,
-  }) async => List.of(skillListResponse);
-
-  /// 返回预设 turn 页面并记录使用的游标。
-  /// Returns a preset turn page and records the cursor used.
-  @override
-  Future<JsonMap> listThreadTurns({
-    required String threadId,
-    String? cursor,
-    int limit = 50,
-    String sortDirection = 'desc',
-  }) async {
-    turnPageCursors.add(cursor);
-    if (turnPageCompleter case final completer?) return completer.future;
-    return turnPage;
-  }
-
-  /// 返回预设项目页面、记录 turn，并可模拟读取失败。
-  /// Returns preset item pages, records the turn, and can simulate a read failure.
-  @override
-  Future<JsonMap> listThreadItems({
-    required String threadId,
-    required String turnId,
-    String? cursor,
-    int limit = 50,
-  }) async {
-    itemPageTurnIds.add(turnId);
-    final error = itemPageError;
-    if (error != null) throw error;
-    final pages = itemPages;
-    if (pages != null && itemPageIndex < pages.length) {
-      return pages[itemPageIndex++];
-    }
-    return itemPage;
-  }
-
-  /// 记录恢复归档请求，并可延迟完成以测试重复提交防护。
-  /// Records an unarchive request and can delay completion for duplicate-submit tests.
-  @override
-  Future<void> unarchiveThread({required String threadId}) async {
-    unarchivedThreadId = threadId;
-    unarchiveCalls++;
-    await unarchiveCompleter?.future;
-    if (unarchiveError case final error?) throw error;
-    archivedListResponse = <JsonMap>[];
-  }
-
-  /// 记录归档请求，并从活跃测试列表中移除相应任务。
-  /// Records archive requests and removes corresponding tasks from the active test list.
-  @override
-  Future<void> archiveThread({required String threadId}) async {
-    archiveCalls++;
-    await archiveCompleter?.future;
-    if (archiveError case final error?) throw error;
-    if (archiveErrorsById[threadId] case final error?) throw error;
-    if (archiveFailureIds.contains(threadId)) {
-      throw StateError('无法归档 $threadId');
-    }
-    archivedThreadIds.add(threadId);
-    listResponse = listResponse
-        .where((value) => value['id']?.toString() != threadId)
-        .toList(growable: false);
-  }
-
-  /// 记录永久删除请求，并从活跃和归档测试列表中移除相应任务。
-  /// Records permanent deletion requests and removes matching tasks from both test lists.
-  @override
-  Future<void> deleteThread({required String threadId}) async {
-    deletedThreadIds.add(threadId);
-    listResponse = listResponse
-        .where((value) => value['id']?.toString() != threadId)
-        .toList(growable: false);
-    archivedListResponse = archivedListResponse
-        .where((value) => value['id']?.toString() != threadId)
-        .toList(growable: false);
-  }
-}
-
-class _ManagedRuntimeFakeServer extends _FakeCodexAppServer {
-  bool running = false;
-  int startCalls = 0;
-  int stopCalls = 0;
-  String? runtimeDirectory;
-
-  @override
-  bool get isRunning => running;
-
-  /// 返回可用的模拟 CLI 探测结果。
-  /// Returns an available fake CLI probe result.
-  @override
-  Future<CodexRuntimeProbe> probe() async => const CodexRuntimeProbe(
-    isAvailable: true,
-    executablePath: '/fake/codex',
-    version: 'codex fake',
-    discovery: '测试运行时',
-  );
-
-  /// 记录自动连接使用的主目录。
-  /// Records the primary directory used for automatic connection.
-  @override
-  Future<void> start({required String workingDirectory}) async {
-    startCalls++;
-    runtimeDirectory = workingDirectory;
-    running = true;
-  }
-
-  /// 接受模拟初始化握手。
-  /// Accepts the fake initialization handshake.
-  @override
-  Future<void> initialize() async {}
-
-  /// 返回无需登录的模拟账户状态。
-  /// Returns a fake account state that does not require login.
-  @override
-  Future<JsonMap> readAccount() async => {
-    'account': null,
-    'requiresOpenaiAuth': false,
-  };
-
-  /// 记录自动断开操作。
-  /// Records an automatic disconnect operation.
-  @override
-  Future<void> stop() async {
-    stopCalls++;
-    running = false;
-  }
-}
-
-class _BlockingRuntimeFakeServer extends _ManagedRuntimeFakeServer {
-  final probeCompleter = Completer<CodexRuntimeProbe>();
-
-  /// 延迟 CLI 探测，供测试在连接中销毁控制器。
-  /// Delays CLI probing so tests can dispose the controller during connection.
-  @override
-  Future<CodexRuntimeProbe> probe() => probeCompleter.future;
-}
-
-class _WorkspaceSwitchingController extends CodexController {
-  _WorkspaceSwitchingController({required RuntimeConfigurationStore store})
-    : super(
-        server: CodexAppServer(),
-        runtimeConfigurationStore: store,
-        localSessionThreadStore: _MemoryLocalSessionThreadStore(),
-      );
-
-  @override
-  Future<bool> selectWorkspaceAndReconnect(String path) async {
-    workspacePath = path;
-    status = RuntimeStatus.ready;
-    return true;
-  }
-}
-
-class _DelayedStartRuntimeFakeServer extends _ManagedRuntimeFakeServer {
-  final startEntered = Completer<void>();
-  final allowStart = Completer<void>();
-
-  @override
-  Future<void> start({required String workingDirectory}) async {
-    if (!startEntered.isCompleted) startEntered.complete();
-    await allowStart.future;
-    await super.start(workingDirectory: workingDirectory);
-  }
-}
+typedef _FakeRuntimeConfigurationStore = FakeRuntimeConfigurationStore;
+typedef _DelayedAdditionalWorkspaceStore = DelayedAdditionalWorkspaceStore;
+typedef _RejectingAdditionalWorkspaceStore = RejectingAdditionalWorkspaceStore;
+typedef _MemoryConversationHistoryStore = MemoryConversationHistoryStore;
+typedef _BlockingConversationHistoryStore = BlockingConversationHistoryStore;
+typedef _BlockingReadConversationHistoryStore =
+    BlockingReadConversationHistoryStore;
+typedef _MemoryLocalSessionThreadStore = MemoryLocalSessionThreadStore;
+typedef _MemoryCodexPluginStore = MemoryCodexPluginStore;
+typedef _BlockingCodexPluginStore = BlockingCodexPluginStore;
+typedef _BlockingMcpListCodexPluginStore = BlockingMcpListCodexPluginStore;
+typedef _BlockingExtensionListCodexPluginStore =
+    BlockingExtensionListCodexPluginStore;
+typedef _FailingCodexPluginStore = FailingCodexPluginStore;
+typedef _FailingMcpCodexPluginStore = FailingMcpCodexPluginStore;
+typedef _McpAddWithRefreshWarningCodexPluginStore =
+    McpAddWithRefreshWarningCodexPluginStore;
+typedef _FailOnSecondInstallCodexPluginStore =
+    FailOnSecondInstallCodexPluginStore;
+typedef _FakeGitProjectService = FakeGitProjectService;
+typedef _FakeCodexAppServer = FakeCodexAppServer;
+typedef _ManagedRuntimeFakeServer = ManagedRuntimeFakeServer;
+typedef _BlockingRuntimeFakeServer = BlockingRuntimeFakeServer;
+typedef _WorkspaceSwitchingController = WorkspaceSwitchingController;
+typedef _DelayedStartRuntimeFakeServer = DelayedStartRuntimeFakeServer;
+typedef _MemoryThemePreferencesStore = MemoryThemePreferencesStore;
+typedef _ProtocolCaptureCodexAppServer = ProtocolCaptureCodexAppServer;
+typedef _InjectedCodexControllerNotifier = InjectedCodexControllerNotifier;
 
 /// 创建具有可预测字段的测试线程。
 /// Creates a test thread with predictable fields.
@@ -1005,71 +85,11 @@ CodexThread _thread({
 
 /// 注册 Codex Desk 的 Widget、控制器与协议回归测试。
 /// Registers Codex Desk widget, controller, and protocol regression tests.
-final class _MemoryThemePreferencesStore implements CodexThemePreferencesStore {
-  final List<CodexThemePreferences> saved = [];
-
-  @override
-  Future<CodexThemePreferences> load() async => CodexThemePreferences.defaults;
-
-  @override
-  Future<void> save(CodexThemePreferences preferences) async {
-    saved.add(preferences);
-  }
-}
-
-class _ProtocolCaptureCodexAppServer extends CodexAppServer {
-  String? requestedMethod;
-  JsonMap? requestedParams;
-  final notifications = <String>[];
-
-  /// 捕获协议请求并返回稳定响应，不启动真实子进程。
-  /// Captures a protocol request and returns a stable response without starting a child process.
-  @override
-  Future<JsonMap> request(String method, [JsonMap params = const {}]) async {
-    requestedMethod = method;
-    requestedParams = params;
-    if (method == 'turn/steer') {
-      return {
-        'result': {'turnId': 'turn-1'},
-      };
-    }
-    return {
-      'result': {
-        'thread': {'id': 'thread-with-roots'},
-      },
-    };
-  }
-
-  /// 捕获初始化完成通知，避免协议测试依赖真实子进程。
-  /// Captures initialization notifications without requiring a real child process.
-  @override
-  void notify(String method, [JsonMap params = const {}]) {
-    notifications.add(method);
-  }
-}
-
-final class _InjectedCodexControllerNotifier extends CodexControllerNotifier {
-  _InjectedCodexControllerNotifier(this.controller);
-
-  final CodexController controller;
-
-  @override
-  CodexController build() {
-    controller.addListener(_publishControllerChange);
-    ref.onDispose(() {
-      controller.removeListener(_publishControllerChange);
-      controller.dispose();
-    });
-    return controller;
-  }
-
-  void _publishControllerChange() => state = controller;
-}
 
 Future<dynamic> _resolveLastAgentMarkdownLinks(WidgetTester tester) async {
   final markdown = find
       .byWidgetPredicate(
-        (widget) => widget.runtimeType.toString() == '_AgentMarkdown',
+        (widget) => widget.runtimeType.toString() == 'AgentMarkdown',
       )
       .last;
   final state = tester.state(markdown) as dynamic;
@@ -1679,6 +699,23 @@ void main() {
           title: 'Codex',
           detail: '最新消息\n${'新内容 ' * 12}',
           createdAt: DateTime(2026, 1, 1, 0, 1),
+        ),
+      ]);
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(timeline.controller!.position.extentAfter, lessThan(32));
+
+      // A programmatic bottom correction also dispatches a scroll update.
+      // It must not be mistaken for manual reading, or later reply updates
+      // would remain below the viewport until the user scrolls again.
+      controller.replaceTimelineEntriesForTesting([
+        ...controller.entries,
+        TimelineEntry(
+          kind: TimelineKind.agent,
+          title: 'Codex',
+          detail: '连续到达的最新消息\n${'后续内容 ' * 12}',
+          createdAt: DateTime(2026, 1, 1, 0, 1, 1),
         ),
       ]);
       await tester.pump();
@@ -3124,7 +2161,7 @@ void main() {
               .bottom;
       expect(
         (viewportBottom - composerTop) - settledBottomPadding,
-        closeTo(-28, 0.5),
+        closeTo(-52, 0.5),
       );
       controller.handleServerEventForTesting(
         const ServerEvent(
@@ -7408,7 +6445,7 @@ void main() {
         MaterialApp(home: CodexWorkspace(controller: controller)),
       );
       final linkedImages = find.byWidgetPredicate(
-        (widget) => widget.runtimeType.toString() == '_AgentLinkedImage',
+        (widget) => widget.runtimeType.toString() == 'AgentLinkedImage',
       );
       for (final element in linkedImages.evaluate()) {
         final state =
@@ -7593,7 +6630,7 @@ void main() {
       expect(tester.getRect(streamingText), streamingRect);
 
       final markdown = find.byWidgetPredicate(
-        (widget) => widget.runtimeType.toString() == '_AgentMarkdown',
+        (widget) => widget.runtimeType.toString() == 'AgentMarkdown',
       );
       final markdownState = tester.state(markdown) as dynamic;
       await tester.runAsync(

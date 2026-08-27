@@ -1,4 +1,4 @@
-import 'src/app.dart';
+import 'package:chatgpt/src/app.dart';
 
 /// 启动 Codex Desk Flutter 应用。
 /// Starts the Codex Desk Flutter application.

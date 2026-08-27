@@ -2,10 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import '../domain/codex_plugin.dart';
-import '../domain/codex_marketplace.dart';
-import '../domain/codex_mcp_server.dart';
-import '../domain/codex_skill.dart';
+import 'package:chatgpt/src/domain/codex_plugin.dart';
+import 'package:chatgpt/src/domain/codex_marketplace.dart';
+import 'package:chatgpt/src/domain/codex_mcp_server.dart';
+import 'package:chatgpt/src/domain/codex_skill.dart';
 
 /// 可替换的 CLI 执行边界，使插件命令可在测试中脱离真实子进程验证。
 /// Replaceable CLI runner boundary for testing plugin commands without real subprocesses.

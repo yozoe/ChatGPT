@@ -1,7 +1,7 @@
 import 'dart:convert';
 
-import '../domain/workspace_configuration.dart';
-import '../domain/scheduled_task.dart';
+import 'package:chatgpt/src/domain/workspace_configuration.dart';
+import 'package:chatgpt/src/domain/scheduled_task.dart';
 import 'codex_keychain_storage.dart';
 
 /// 将本机 Codex Desk 偏好保存到项目目录之外。
