@@ -26,12 +26,14 @@ import '../domain/codex_skill.dart';
 import '../domain/codex_marketplace.dart';
 import '../domain/codex_thread.dart';
 import '../domain/pending_approval.dart';
+import '../domain/pending_elicitation.dart';
 import '../domain/scheduled_task.dart';
 import '../domain/task_plan.dart';
 import '../domain/timeline_entry.dart';
 import '../domain/workspace_configuration.dart';
 import '../services/agent_markdown_link.dart';
 import '../services/clipboard_file_reader.dart';
+import '../services/codex_app_server.dart';
 import '../theme/yeknom_workbench.dart';
 import 'code_review_panel.dart';
 import 'workspace_markdown_preview.dart';
@@ -145,6 +147,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   final Map<_ThreadViewportKey, ScrollController> _timelineScrollControllers =
       {};
   final Map<_ThreadViewportKey, bool> _timelineFollowsLatest = {};
+  final Map<_ThreadViewportKey, double> _timelineViewportDimensions = {};
   final Map<_ThreadViewportKey, _TimelinePageData> _timelinePages = {};
   final Map<_ThreadViewportKey, bool> _fileChangeSummaryExpanded = {};
   final Map<String, bool> _activityListExpanded = {};
@@ -343,16 +346,32 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   ScrollController _timelineControllerFor(_ThreadViewportKey key) {
     return _timelineScrollControllers.putIfAbsent(key, () {
       final controller = ScrollController();
+      double? previousOffset;
       _timelineFollowsLatest[key] = true;
       controller.addListener(() {
-        if (!controller.hasClients ||
-            controller.position.userScrollDirection == ScrollDirection.idle) {
+        if (!controller.hasClients) return;
+        final position = controller.position;
+        final offset = position.pixels;
+        final previous = previousOffset;
+        previousOffset = offset;
+        if (position.userScrollDirection == ScrollDirection.idle) return;
+
+        // A short upward gesture from the bottom can still leave
+        // [extentAfter] within the 48px completion threshold. Treat that as
+        // reading immediately, otherwise acknowledging the completion causes
+        // a controller rebuild that schedules a stale jump back to the end.
+        final movingTowardOlderMessages = previous == null
+            ? position.userScrollDirection == ScrollDirection.reverse
+            : offset < previous - 0.1;
+        if (movingTowardOlderMessages) {
+          _timelineFollowsLatest[key] = false;
           return;
         }
-        final reachedBottom = controller.position.extentAfter <= 48;
+
+        final reachedBottom = position.extentAfter <= 48;
         _timelineFollowsLatest[key] = reachedBottom;
         if (reachedBottom) {
-          _acknowledgeCompletedThreadAtBottom(key, controller);
+          _scheduleCompletedThreadAcknowledgementAtBottom(key, controller);
         }
       });
       return controller;
@@ -370,6 +389,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
         viewportKey != _displayedThreadKey ||
         viewportKey != _viewportKey(_controller.activeThreadId) ||
         _controller.status != RuntimeStatus.ready ||
+        !(_timelineFollowsLatest[viewportKey] ?? false) ||
         !scrollController.hasClients ||
         scrollController.position.extentAfter > 48) {
       return;
@@ -401,13 +421,42 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     });
   }
 
-  void _handleTimelineMetricsChanged(_ThreadViewportKey viewportKey) {
+  void _handleTimelineMetricsChanged(
+    _ThreadViewportKey viewportKey,
+    double viewportDimension,
+  ) {
     final scrollController = _timelineScrollControllers[viewportKey];
     if (scrollController == null) return;
+    final previousViewportDimension = _timelineViewportDimensions[viewportKey];
+    _timelineViewportDimensions[viewportKey] = viewportDimension;
+    final viewportResized =
+        previousViewportDimension != null &&
+        (viewportDimension - previousViewportDimension).abs() > 0.5;
+    if (viewportResized &&
+        scrollController.hasClients &&
+        scrollController.position.userScrollDirection == ScrollDirection.idle &&
+        scrollController.position.extentAfter <= 48) {
+      // A viewport resize can reveal the latest entry without any user scroll.
+      // That is a genuine return to the end, unlike a short upward gesture.
+      _timelineFollowsLatest[viewportKey] = true;
+    }
     _scheduleCompletedThreadAcknowledgementAtBottom(
       viewportKey,
       scrollController,
     );
+  }
+
+  /// User-driven movement away from the exact end must win over the relaxed
+  /// 48px completion threshold used for layout-only visibility checks.
+  void _handleTimelineUserScrollDelta(
+    _ThreadViewportKey viewportKey,
+    double _,
+  ) {
+    final controller = _timelineScrollControllers[viewportKey];
+    if (controller?.hasClients == true &&
+        controller!.position.extentAfter > 0.5) {
+      _timelineFollowsLatest[viewportKey] = false;
+    }
   }
 
   /// Switches to a task-specific viewport, preserving every visited task's
@@ -468,6 +517,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     for (final key in staleKeys) {
       final controller = _timelineScrollControllers.remove(key);
       _timelineFollowsLatest.remove(key);
+      _timelineViewportDimensions.remove(key);
       _timelinePages.remove(key);
       _fileChangeSummaryExpanded.remove(key);
       _activityListExpanded.removeWhere(
@@ -498,6 +548,7 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
         return;
       }
       final position = controller.position;
+      if (position.userScrollDirection != ScrollDirection.idle) return;
       position.jumpTo(position.maxScrollExtent);
       _timelineFollowsLatest[viewportKey] = true;
       _acknowledgeCompletedThreadAtBottom(viewportKey, controller);
@@ -510,6 +561,9 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
             viewportKey != _displayedThreadKey ||
             !(_timelineFollowsLatest[viewportKey] ?? true) ||
             !controller.hasClients) {
+          return;
+        }
+        if (controller.position.userScrollDirection != ScrollDirection.idle) {
           return;
         }
         controller.jumpTo(controller.position.maxScrollExtent);
@@ -594,8 +648,12 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       context: context,
       barrierColor: Colors.black.withValues(alpha: 0.62),
       builder: (dialogContext) => _CreateWorkspaceDialog(
-        onCreate: (path, name) async {
-          final created = await _controller.createWorkspace(path, name: name);
+        onCreate: (paths, name) async {
+          final created = await _controller.createWorkspace(
+            paths.first,
+            additionalPaths: paths.skip(1).toList(),
+            name: name,
+          );
           if (!created && mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text(_controller.lastError ?? '无法创建项目，请稍后再试。')),
@@ -2299,6 +2357,8 @@ class _CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                                               false,
                                           onTimelineMetricsChanged:
                                               _handleTimelineMetricsChanged,
+                                          onTimelineUserScrollDelta:
+                                              _handleTimelineUserScrollDelta,
                                           onActivityExpandedChanged:
                                               (pageKey, activityId, expanded) {
                                                 setState(() {
@@ -2493,7 +2553,7 @@ String _workspaceDirectoryName(String path) {
 class _CreateWorkspaceDialog extends StatefulWidget {
   const _CreateWorkspaceDialog({required this.onCreate});
 
-  final Future<bool> Function(String path, String name) onCreate;
+  final Future<bool> Function(List<String> paths, String name) onCreate;
 
   @override
   State<_CreateWorkspaceDialog> createState() => _CreateWorkspaceDialogState();
@@ -2501,7 +2561,7 @@ class _CreateWorkspaceDialog extends StatefulWidget {
 
 class _CreateWorkspaceDialogState extends State<_CreateWorkspaceDialog> {
   final _nameController = TextEditingController();
-  String? _sourceDirectory;
+  final _sourceDirectories = <String>[];
   bool _draggingDirectory = false;
   bool _creating = false;
 
@@ -2515,9 +2575,11 @@ class _CreateWorkspaceDialogState extends State<_CreateWorkspaceDialog> {
   /// Opens the native directory picker and updates the source folder in the dialog.
   Future<void> _chooseDirectory() async {
     try {
-      final path = await getDirectoryPath(confirmButtonText: '选择文件夹');
+      final path = await getDirectoryPath(
+        confirmButtonText: _sourceDirectories.isEmpty ? '选择文件夹' : '添加文件夹',
+      );
       if (!mounted || path == null || path.trim().isEmpty) return;
-      setState(() => _sourceDirectory = path);
+      _appendDirectories([path]);
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -2529,29 +2591,44 @@ class _CreateWorkspaceDialogState extends State<_CreateWorkspaceDialog> {
   /// 接收桌面拖入的目录；文件或空路径会被拒绝并提示用户。
   /// Accepts a desktop-dropped directory and rejects files or empty paths with feedback.
   void _acceptDroppedDirectories(List<DropItem> items) {
-    final directory = items.whereType<DropItemDirectory>().firstOrNull;
-    if (directory == null || directory.path.trim().isEmpty) {
+    final directories = items
+        .whereType<DropItemDirectory>()
+        .map((item) => item.path)
+        .where((path) => path.trim().isNotEmpty)
+        .toList();
+    if (directories.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('请拖入一个文件夹。')));
       return;
     }
-    if (mounted) setState(() => _sourceDirectory = directory.path);
+    _appendDirectories(directories);
+  }
+
+  void _appendDirectories(Iterable<String> paths) {
+    final additions = paths
+        .map((path) => path.trim())
+        .where((path) => path.isNotEmpty && !_sourceDirectories.contains(path))
+        .toList();
+    if (additions.isEmpty || !mounted) return;
+    setState(() => _sourceDirectories.addAll(additions));
   }
 
   /// 校验源文件夹并创建工作区，成功后关闭弹窗。
   /// Validates the source folder, creates the workspace, and closes the dialog on success.
   Future<void> _createProject() async {
-    final directory = _sourceDirectory;
-    if (directory == null) {
+    if (_sourceDirectories.isEmpty) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('请先添加一个源文件夹。')));
       return;
     }
     setState(() => _creating = true);
-    final created = await widget.onCreate(directory, _nameController.text);
+    final created = await widget.onCreate(
+      List.unmodifiable(_sourceDirectories),
+      _nameController.text,
+    );
     if (!mounted) return;
     if (created) {
       Navigator.of(context).pop();
@@ -2563,8 +2640,7 @@ class _CreateWorkspaceDialogState extends State<_CreateWorkspaceDialog> {
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
-    final sourceDirectory = _sourceDirectory;
-    final hasSourceDirectory = sourceDirectory != null;
+    final hasSourceDirectory = _sourceDirectories.isNotEmpty;
     final sourceColor = _draggingDirectory ? palette.active : palette.border;
     return Dialog(
       key: const Key('create-workspace-dialog'),
@@ -2640,7 +2716,9 @@ class _CreateWorkspaceDialogState extends State<_CreateWorkspaceDialog> {
                       child: InkWell(
                         key: const Key('create-workspace-folder-picker'),
                         borderRadius: BorderRadius.circular(20),
-                        onTap: _creating ? null : _chooseDirectory,
+                        onTap: _creating || hasSourceDirectory
+                            ? null
+                            : _chooseDirectory,
                         child: AnimatedContainer(
                           duration: const Duration(milliseconds: 140),
                           curve: Curves.easeOut,
@@ -2658,47 +2736,38 @@ class _CreateWorkspaceDialogState extends State<_CreateWorkspaceDialog> {
                             ),
                             borderRadius: BorderRadius.circular(20),
                           ),
-                          child: Center(
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 28,
-                                vertical: 24,
-                              ),
-                              child: hasSourceDirectory
-                                  ? Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(
-                                          Icons.folder_outlined,
-                                          size: 20,
-                                          color: palette.trace,
+                          child: hasSourceDirectory
+                              ? _WorkspaceSourcesCard(
+                                  primary: _sourceDirectories.first,
+                                  additional: _sourceDirectories
+                                      .skip(1)
+                                      .toList(),
+                                  onRemovePrimary: _creating
+                                      ? null
+                                      : () => setState(
+                                          () => _sourceDirectories.removeAt(0),
                                         ),
-                                        const SizedBox(height: 12),
-                                        Tooltip(
-                                          message: sourceDirectory,
-                                          child: Text(
-                                            _workspaceDirectoryName(
-                                              sourceDirectory,
-                                            ),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: TextStyle(
-                                              color: palette.trace,
-                                              fontSize: 14,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                          ),
-                                        ),
-                                        const SizedBox(height: 6),
-                                        Text(
-                                          '点击以更换文件夹',
-                                          style: TextStyle(
-                                            color: palette.muted,
-                                          ),
-                                        ),
-                                      ],
-                                    )
-                                  : Column(
+                                  onRemoveAdditional: (path) async {
+                                    if (!_creating) {
+                                      setState(
+                                        () => _sourceDirectories.remove(path),
+                                      );
+                                    }
+                                  },
+                                  onAdd: _creating
+                                      ? null
+                                      : () async {
+                                          await _chooseDirectory();
+                                          return true;
+                                        },
+                                )
+                              : Center(
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 28,
+                                      vertical: 24,
+                                    ),
+                                    child: Column(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
                                         Icon(
@@ -2724,8 +2793,8 @@ class _CreateWorkspaceDialogState extends State<_CreateWorkspaceDialog> {
                                         ),
                                       ],
                                     ),
-                            ),
-                          ),
+                                  ),
+                                ),
                         ),
                       ),
                     ),
@@ -4278,12 +4347,23 @@ class _Sidebar extends StatefulWidget {
   State<_Sidebar> createState() => _SidebarState();
 }
 
+/// A lazily built sidebar row with a stable scroll extent. The task tree uses
+/// a small set of fixed-height row types; keeping their extents explicit stops
+/// a long list from revising its scroll geometry as more rows are built.
+class _SidebarTaskListItem {
+  const _SidebarTaskListItem({required this.extent, required this.builder});
+
+  final double extent;
+  final WidgetBuilder builder;
+}
+
 class _SidebarState extends State<_Sidebar> {
   bool _batchMode = false;
   String? _batchWorkspacePath;
   final Set<String> _selectedThreadIds = {};
 
   final Map<String, bool> _workspaceExpanded = {};
+  final ScrollController _taskListScrollController = ScrollController();
   OverlayEntry? _workspaceDetailsEntry;
   Timer? _workspaceDetailsShowTimer;
   Timer? _workspaceDetailsHideTimer;
@@ -4304,11 +4384,34 @@ class _SidebarState extends State<_Sidebar> {
     });
   }
 
+  /// Opens a new task in the project whose row owns the action. A project's
+  /// hover action may be invoked while another project is active, so switch
+  /// and reconnect before clearing the conversation state.
+  /// 在项目行悬停菜单中创建任务时，先切换到该行所属项目，避免新任务仍落在
+  /// 当前前台项目下。
+  void _startNewConversationForWorkspace(String path) {
+    final controller = widget.controller;
+    if (path != controller.workspacePath) {
+      unawaited(_switchWorkspaceThenStartNewConversation(path));
+      return;
+    }
+    widget.onNewConversation();
+  }
+
+  Future<void> _switchWorkspaceThenStartNewConversation(String path) async {
+    final switched = await widget.controller.selectWorkspaceAndReconnect(path);
+    if (!mounted || !switched || widget.controller.workspacePath != path) {
+      return;
+    }
+    widget.onNewConversation();
+  }
+
   @override
   void dispose() {
     _workspaceDetailsShowTimer?.cancel();
     _workspaceDetailsHideTimer?.cancel();
     _workspaceDetailsEntry?.remove();
+    _taskListScrollController.dispose();
     super.dispose();
   }
 
@@ -4607,12 +4710,14 @@ class _SidebarState extends State<_Sidebar> {
     bool isActiveWorkspace = true,
     required String workspacePath,
     required bool pinned,
+    bool acknowledged = false,
   }) {
     final indicator = _threadStatusIndicator(thread.status);
     final selected =
         isActiveWorkspace && controller.activeThreadId == thread.id;
-    final currentRunningThread =
-        isActiveWorkspace && controller.isThreadExecutionActive(thread);
+    final currentRunningThread = isActiveWorkspace
+        ? controller.isThreadExecutionActive(thread)
+        : controller.isThreadRunningInWorkspace(thread.id, workspacePath);
     final updatingThread =
         isActiveWorkspace && controller.isUpdatingThread(thread.id);
     return Padding(
@@ -4623,7 +4728,8 @@ class _SidebarState extends State<_Sidebar> {
         pinned: pinned,
         statusIndicator:
             indicator == _ThreadStatusIndicator.completed &&
-                controller.isCompletedThreadAcknowledged(thread.id)
+                (acknowledged ||
+                    controller.isCompletedThreadAcknowledged(thread.id))
             ? null
             : indicator,
         running: currentRunningThread,
@@ -4736,6 +4842,137 @@ class _SidebarState extends State<_Sidebar> {
                 !pinnedIds.contains(thread.id)),
           )
           .toList(growable: false);
+    }
+    // Keep the project tree lazy. A Column inside SingleChildScrollView lays
+    // out every task in every expanded project on each controller update;
+    // live task state and completion indicators can otherwise make a large
+    // conversation library feel like its scroll is blocked.
+    final taskListItems = <_SidebarTaskListItem>[];
+    void addTaskListItem(double extent, Widget Function() builder) {
+      taskListItems.add(
+        _SidebarTaskListItem(extent: extent, builder: (_) => builder()),
+      );
+    }
+
+    if (hasPinnedThreads) {
+      addTaskListItem(12, () => const _SidebarSectionLabel(label: '置顶'));
+      addTaskListItem(2, () => const SizedBox(height: 2));
+      for (final thread in pinnedThreads) {
+        addTaskListItem(
+          49,
+          () => Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildThreadNode(
+                controller,
+                thread,
+                workspacePath: activePath!,
+                pinned: true,
+              ),
+              const SizedBox(height: 1),
+            ],
+          ),
+        );
+      }
+      addTaskListItem(12, () => const SizedBox(height: 12));
+    }
+    for (final workspace in workspaces) {
+      final workspacePath = workspace.primaryPath;
+      final isActiveWorkspace = workspacePath == activePath;
+      final projectThreads = workspaceProjectThreadsByPath[workspacePath]!;
+      final projectAllThreads = workspaceThreadsByPath[workspacePath]!;
+      addTaskListItem(
+        40,
+        () => _SidebarWorkspaceTile(
+          key: ValueKey('sidebar-workspace-$workspacePath'),
+          workspace: workspace,
+          active: workspacePath == controller.workspacePath,
+          pinned: controller.isWorkspacePinned(workspacePath),
+          enabled: controller.canChangePrimaryWorkspace,
+          onTap: () {
+            if (_batchMode) _setBatchMode(false);
+            unawaited(controller.selectWorkspaceAndReconnect(workspacePath));
+          },
+          onMore: (anchorContext) =>
+              _showWorkspaceActions(anchorContext, workspace),
+          onEdit: (_) => _startNewConversationForWorkspace(workspacePath),
+          canCreateTask:
+              controller.canCreateThread &&
+              (isActiveWorkspace || controller.canChangePrimaryWorkspace),
+          expanded: _isWorkspaceExpanded(workspacePath),
+          onToggleExpanded: () => _toggleWorkspaceExpanded(workspacePath),
+          onHoverStart: (anchorContext) =>
+              _scheduleWorkspaceDetailsShow(anchorContext, workspace),
+          onHoverEnd: _scheduleWorkspaceDetailsHide,
+        ),
+      );
+      if (_isWorkspaceExpanded(workspacePath)) {
+        if (isActiveWorkspace) {
+          if (controller.threadsError case final error?) {
+            addTaskListItem(
+              28,
+              () => Padding(
+                padding: const EdgeInsets.only(left: 34, top: 4),
+                child: _MutedText(error),
+              ),
+            );
+          } else if (projectThreads.isEmpty && projectAllThreads.isEmpty) {
+            addTaskListItem(
+              24,
+              () => const Padding(
+                padding: EdgeInsets.only(left: 34, top: 4),
+                child: _MutedText('暂无历史任务；发送第一条消息后会创建。'),
+              ),
+            );
+          } else {
+            for (final thread in projectThreads) {
+              addTaskListItem(
+                _batchMode ? 57 : 49,
+                () => Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _buildThreadNode(
+                      controller,
+                      thread,
+                      isActiveWorkspace: true,
+                      workspacePath: workspacePath,
+                      pinned: controller.isThreadPinned(thread.id),
+                    ),
+                    const SizedBox(height: 1),
+                  ],
+                ),
+              );
+            }
+          }
+        } else if (controller.workspaceTaskListFor(workspacePath) != null) {
+          final pinnedIds =
+              controller.workspaceTaskListFor(workspacePath)?.pinnedIds ??
+              const <String>{};
+          final acknowledgedIds =
+              controller.workspaceTaskListFor(workspacePath)?.acknowledgedIds ??
+              const <String>{};
+          for (final thread in projectThreads) {
+            addTaskListItem(
+              49,
+              () => Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _buildThreadNode(
+                    controller,
+                    thread,
+                    isActiveWorkspace: false,
+                    workspacePath: workspacePath,
+                    pinned: pinnedIds.contains(thread.id),
+                    acknowledged: acknowledgedIds.contains(thread.id),
+                  ),
+                  const SizedBox(height: 1),
+                ],
+              ),
+            );
+          }
+        }
+      }
+      addTaskListItem(5, () => const SizedBox(height: 5));
     }
     return SizedBox(
       key: const Key('sidebar-pane'),
@@ -4877,139 +5114,19 @@ class _SidebarState extends State<_Sidebar> {
                             ),
                           ),
                         )
-                      : SingleChildScrollView(
+                      : ListView.builder(
+                          key: const Key('sidebar-task-list'),
+                          controller: _taskListScrollController,
+                          primary: false,
                           padding: const EdgeInsets.only(top: 2, bottom: 4),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              if (hasPinnedThreads) ...[
-                                const _SidebarSectionLabel(label: '置顶'),
-                                const SizedBox(height: 2),
-                                for (final thread in pinnedThreads) ...[
-                                  _buildThreadNode(
-                                    controller,
-                                    thread,
-                                    workspacePath: activePath!,
-                                    pinned: true,
-                                  ),
-                                  const SizedBox(height: 1),
-                                ],
-                                const SizedBox(height: 12),
-                              ],
-                              for (final workspace in workspaces) ...[
-                                _SidebarWorkspaceTile(
-                                  key: ValueKey(
-                                    'sidebar-workspace-${workspace.primaryPath}',
-                                  ),
-                                  workspace: workspace,
-                                  active:
-                                      workspace.primaryPath ==
-                                      controller.workspacePath,
-                                  pinned: controller.isWorkspacePinned(
-                                    workspace.primaryPath,
-                                  ),
-                                  enabled: controller.canChangePrimaryWorkspace,
-                                  onTap: () {
-                                    if (_batchMode) _setBatchMode(false);
-                                    unawaited(
-                                      controller.selectWorkspaceAndReconnect(
-                                        workspace.primaryPath,
-                                      ),
-                                    );
-                                  },
-                                  onMore: (anchorContext) =>
-                                      _showWorkspaceActions(
-                                        anchorContext,
-                                        workspace,
-                                      ),
-                                  onEdit: (_) => widget.onNewConversation(),
-                                  canCreateTask: controller.canCreateThread,
-                                  expanded: _isWorkspaceExpanded(
-                                    workspace.primaryPath,
-                                  ),
-                                  onToggleExpanded: () =>
-                                      _toggleWorkspaceExpanded(
-                                        workspace.primaryPath,
-                                      ),
-                                  onHoverStart: (anchorContext) =>
-                                      _scheduleWorkspaceDetailsShow(
-                                        anchorContext,
-                                        workspace,
-                                      ),
-                                  onHoverEnd: _scheduleWorkspaceDetailsHide,
-                                ),
-                                if (_isWorkspaceExpanded(
-                                  workspace.primaryPath,
-                                )) ...[
-                                  if (workspace.primaryPath == activePath) ...[
-                                    if (controller.threadsError
-                                        case final error?)
-                                      Padding(
-                                        padding: const EdgeInsets.only(
-                                          left: 34,
-                                          top: 4,
-                                        ),
-                                        child: _MutedText(error),
-                                      )
-                                    else if (workspaceProjectThreadsByPath[workspace
-                                                .primaryPath]!
-                                            .isEmpty &&
-                                        workspaceThreadsByPath[workspace
-                                                .primaryPath]!
-                                            .isEmpty)
-                                      const Padding(
-                                        padding: EdgeInsets.only(
-                                          left: 34,
-                                          top: 4,
-                                        ),
-                                        child: _MutedText(
-                                          '暂无历史任务；发送第一条消息后会创建。',
-                                        ),
-                                      )
-                                    else
-                                      for (final thread
-                                          in workspaceProjectThreadsByPath[workspace
-                                              .primaryPath]!) ...[
-                                        _buildThreadNode(
-                                          controller,
-                                          thread,
-                                          isActiveWorkspace: true,
-                                          workspacePath: workspace.primaryPath,
-                                          pinned: controller.isThreadPinned(
-                                            thread.id,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 1),
-                                      ],
-                                  ] else if (controller.workspaceTaskListFor(
-                                        workspace.primaryPath,
-                                      ) !=
-                                      null) ...[
-                                    for (final thread
-                                        in workspaceProjectThreadsByPath[workspace
-                                            .primaryPath]!) ...[
-                                      _buildThreadNode(
-                                        controller,
-                                        thread,
-                                        isActiveWorkspace: false,
-                                        workspacePath: workspace.primaryPath,
-                                        pinned:
-                                            (controller
-                                                .workspaceTaskListFor(
-                                                  workspace.primaryPath,
-                                                )
-                                                ?.pinnedIds
-                                                .contains(thread.id) ??
-                                            false),
-                                      ),
-                                      const SizedBox(height: 1),
-                                    ],
-                                  ],
-                                ],
-                                const SizedBox(height: 5),
-                              ],
-                            ],
+                          scrollCacheExtent: const ScrollCacheExtent.pixels(
+                            480,
                           ),
+                          itemCount: taskListItems.length,
+                          itemExtentBuilder: (index, _) =>
+                              taskListItems[index].extent,
+                          itemBuilder: (context, index) =>
+                              taskListItems[index].builder(context),
                         ),
                 ),
               ),
@@ -5052,6 +5169,7 @@ class _ConversationPane extends StatelessWidget {
     required this.onFileChangeSummaryExpandedChanged,
     required this.activityExpanded,
     required this.onTimelineMetricsChanged,
+    required this.onTimelineUserScrollDelta,
     required this.onActivityExpandedChanged,
     required this.onSend,
     required this.onQueueSteer,
@@ -5072,7 +5190,10 @@ class _ConversationPane extends StatelessWidget {
   onFileChangeSummaryExpandedChanged;
   final bool Function(_ThreadViewportKey pageKey, String activityId)
   activityExpanded;
-  final ValueChanged<_ThreadViewportKey> onTimelineMetricsChanged;
+  final void Function(_ThreadViewportKey pageKey, double viewportDimension)
+  onTimelineMetricsChanged;
+  final void Function(_ThreadViewportKey pageKey, double delta)
+  onTimelineUserScrollDelta;
   final void Function(
     _ThreadViewportKey pageKey,
     String activityId,
@@ -5113,6 +5234,14 @@ class _ConversationPane extends StatelessWidget {
             onAccept: () => controller.respondToApproval(accepted: true),
             onDecline: () => controller.respondToApproval(accepted: false),
           ),
+        if (controller.pendingElicitation case final elicitation?)
+          _ElicitationPanel(
+            key: ValueKey(elicitation.requestId),
+            elicitation: elicitation,
+            taskLabel: controller.pendingElicitationTaskLabel,
+            enabled: controller.canRespondToElicitation,
+            onRespond: controller.respondToElicitation,
+          ),
         Expanded(
           child: _ConversationViewport(
             controller: controller,
@@ -5125,6 +5254,7 @@ class _ConversationPane extends StatelessWidget {
                 onFileChangeSummaryExpandedChanged,
             activityExpanded: activityExpanded,
             onTimelineMetricsChanged: onTimelineMetricsChanged,
+            onTimelineUserScrollDelta: onTimelineUserScrollDelta,
             onActivityExpandedChanged: onActivityExpandedChanged,
             onReview: onReview,
             onUndo: onUndo,
@@ -5182,6 +5312,7 @@ class _ConversationViewport extends StatefulWidget {
     required this.onFileChangeSummaryExpandedChanged,
     required this.activityExpanded,
     required this.onTimelineMetricsChanged,
+    required this.onTimelineUserScrollDelta,
     required this.onActivityExpandedChanged,
     required this.onReview,
     required this.onUndo,
@@ -5199,7 +5330,10 @@ class _ConversationViewport extends StatefulWidget {
   onFileChangeSummaryExpandedChanged;
   final bool Function(_ThreadViewportKey pageKey, String activityId)
   activityExpanded;
-  final ValueChanged<_ThreadViewportKey> onTimelineMetricsChanged;
+  final void Function(_ThreadViewportKey pageKey, double viewportDimension)
+  onTimelineMetricsChanged;
+  final void Function(_ThreadViewportKey pageKey, double delta)
+  onTimelineUserScrollDelta;
   final void Function(
     _ThreadViewportKey pageKey,
     String activityId,
@@ -5243,9 +5377,14 @@ class _ConversationViewportState extends State<_ConversationViewport> {
       if ((measuredHeight - _bottomOverlayHeight).abs() <= 0.5) return;
       final activeScrollController =
           widget.timelineScrollControllers[widget.activeTimelinePageKey];
+      final initialPixels = activeScrollController?.hasClients == true
+          ? activeScrollController!.position.pixels
+          : null;
       final keepLatestVisible =
           activeScrollController?.hasClients == true &&
-          activeScrollController!.position.extentAfter <= 48;
+          activeScrollController!.position.userScrollDirection ==
+              ScrollDirection.idle &&
+          activeScrollController.position.extentAfter <= 48;
       setState(() => _bottomOverlayHeight = measuredHeight);
       if (keepLatestVisible) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -5256,9 +5395,14 @@ class _ConversationViewportState extends State<_ConversationViewport> {
               !activeScrollController.hasClients) {
             return;
           }
-          activeScrollController.position.jumpTo(
-            activeScrollController.position.maxScrollExtent,
-          );
+          final position = activeScrollController.position;
+          if (position.userScrollDirection != ScrollDirection.idle ||
+              position.extentAfter > 48 ||
+              (initialPixels != null &&
+                  (position.pixels - initialPixels).abs() > 0.5)) {
+            return;
+          }
+          position.jumpTo(position.maxScrollExtent);
         });
       }
     });
@@ -5347,8 +5491,13 @@ class _ConversationViewportState extends State<_ConversationViewport> {
                             ),
                         activityExpanded: (activityId) =>
                             widget.activityExpanded(page.key, activityId),
-                        onMetricsChanged: () =>
-                            widget.onTimelineMetricsChanged(page.key),
+                        onMetricsChanged: (viewportDimension) =>
+                            widget.onTimelineMetricsChanged(
+                              page.key,
+                              viewportDimension,
+                            ),
+                        onUserScrollDelta: (delta) =>
+                            widget.onTimelineUserScrollDelta(page.key, delta),
                         onActivityExpandedChanged: (activityId, expanded) =>
                             widget.onActivityExpandedChanged(
                               page.key,
@@ -5993,6 +6142,7 @@ class _ConversationTimeline extends StatelessWidget {
     required this.onFileChangeSummaryExpandedChanged,
     required this.activityExpanded,
     required this.onMetricsChanged,
+    required this.onUserScrollDelta,
     required this.onActivityExpandedChanged,
     required this.onReview,
     required this.onUndo,
@@ -6010,7 +6160,8 @@ class _ConversationTimeline extends StatelessWidget {
   final bool fileChangeSummaryExpanded;
   final ValueChanged<bool> onFileChangeSummaryExpandedChanged;
   final bool Function(String activityId) activityExpanded;
-  final VoidCallback onMetricsChanged;
+  final ValueChanged<double> onMetricsChanged;
+  final ValueChanged<double> onUserScrollDelta;
   final void Function(String activityId, bool expanded)
   onActivityExpandedChanged;
   final Future<void> Function() onReview;
@@ -6068,117 +6219,145 @@ class _ConversationTimeline extends StatelessWidget {
         timelineItemKey(timelineItems[index]): listIndexForTimelineIndex(index),
     };
 
-    return NotificationListener<ScrollMetricsNotification>(
-      onNotification: (_) {
-        if (active) onMetricsChanged();
+    // SliverList estimates the scroll extent from the children that have
+    // already been laid out.  Timeline rows are intentionally variable-height
+    // (Markdown, activity groups, and file summaries), and some of them finish
+    // an asynchronous preflight after they are built.  With the default small
+    // cache this makes the scrollbar thumb change size while a slow gesture is
+    // crossing the history, and the viewport repeatedly corrects its offset.
+    // Keep the usual desktop-sized histories laid out before the first gesture
+    // so their geometry is stable during scrolling.  The cap prevents an
+    // unbounded cache for pathological transcripts; very large histories still
+    // retain normal lazy behaviour beyond that bound.
+    final itemCount =
+        timelineItems.length +
+        (activeTurnStartedAt == null ? 0 : 1) +
+        (hasLiveStatus ? 1 : 0) +
+        (data.showFileChangeSummary ? 1 : 0);
+    final timelineCacheExtent = math.min(
+      96000.0,
+      math.max(2000.0, itemCount * 800.0),
+    );
+
+    return NotificationListener<ScrollUpdateNotification>(
+      onNotification: (notification) {
+        if (active && notification.scrollDelta != null) {
+          onUserScrollDelta(notification.scrollDelta!);
+        }
         return false;
       },
-      child: ListView.separated(
-        key: PageStorageKey('conversation-timeline-${pageKey.storageKey}'),
-        controller: scrollController,
-        padding: EdgeInsets.fromLTRB(24, 12, 24, bottomPadding),
-        itemCount:
-            timelineItems.length +
-            (activeTurnStartedAt == null ? 0 : 1) +
-            (hasLiveStatus ? 1 : 0) +
-            (data.showFileChangeSummary ? 1 : 0),
-        findItemIndexCallback: (key) {
-          final timelineIndex = timelineItemIndexes[key];
-          if (timelineIndex != null) return timelineIndex;
-          if (key == ValueKey('file-change-summary-${pageKey.storageKey}')) {
-            return timelineItems.length +
-                (activeTurnStartedAt == null ? 0 : 1) +
-                (hasLiveStatus ? 1 : 0);
-          }
-          return null;
+      child: NotificationListener<ScrollMetricsNotification>(
+        onNotification: (notification) {
+          if (active) onMetricsChanged(notification.metrics.viewportDimension);
+          return false;
         },
-        separatorBuilder: (_, index) {
-          if (activeTurnStartedAt != null && index == liveElapsedIndex) {
-            return const Padding(
-              key: Key('live-elapsed-divider'),
-              padding: EdgeInsets.symmetric(vertical: 14),
-              child: Divider(height: 1),
-            );
-          }
-          return const SizedBox(height: 29);
-        },
-        itemBuilder: (context, index) {
-          if (activeTurnStartedAt != null && index == liveElapsedIndex) {
-            return _LiveElapsedRow(startedAt: activeTurnStartedAt);
-          }
-          final timelineIndex =
-              activeTurnStartedAt != null && index > liveElapsedIndex
-              ? index - 1
-              : index;
-          if (timelineIndex >= timelineItems.length) {
-            var tailIndex = timelineIndex - timelineItems.length;
-            if (visibleLiveActivity != null && tailIndex-- == 0) {
-              return visibleLiveActivity.kind == 'commandExecution'
-                  ? _LiveCommandRow(command: visibleLiveActivity.detail)
-                  : _LiveActivityRow(
-                      activity: visibleLiveActivity,
-                      onOpenSubagent: visibleLiveActivity.linkedThreadId == null
-                          ? null
-                          : () => onOpenSubagent(
-                              TimelineEntry(
-                                kind: TimelineKind.activity,
-                                title: visibleLiveActivity.label,
-                                detail: visibleLiveActivity.detail,
-                                createdAt: DateTime.now(),
-                                sourceItemId: visibleLiveActivity.itemId,
-                                activityKind: 'collaboration',
-                                activityStatus: visibleLiveActivity.status,
-                                linkedThreadId:
-                                    visibleLiveActivity.linkedThreadId,
-                                activityPrompt: visibleLiveActivity.prompt,
+        child: ListView.separated(
+          key: PageStorageKey('conversation-timeline-${pageKey.storageKey}'),
+          controller: scrollController,
+          scrollCacheExtent: ScrollCacheExtent.pixels(timelineCacheExtent),
+          padding: EdgeInsets.fromLTRB(24, 12, 24, bottomPadding),
+          itemCount: itemCount,
+          findItemIndexCallback: (key) {
+            final timelineIndex = timelineItemIndexes[key];
+            if (timelineIndex != null) return timelineIndex;
+            if (key == ValueKey('file-change-summary-${pageKey.storageKey}')) {
+              return timelineItems.length +
+                  (activeTurnStartedAt == null ? 0 : 1) +
+                  (hasLiveStatus ? 1 : 0);
+            }
+            return null;
+          },
+          separatorBuilder: (_, index) {
+            if (activeTurnStartedAt != null && index == liveElapsedIndex) {
+              return const Padding(
+                key: Key('live-elapsed-divider'),
+                padding: EdgeInsets.symmetric(vertical: 14),
+                child: Divider(height: 1),
+              );
+            }
+            return const SizedBox(height: 29);
+          },
+          itemBuilder: (context, index) {
+            if (activeTurnStartedAt != null && index == liveElapsedIndex) {
+              return _LiveElapsedRow(startedAt: activeTurnStartedAt);
+            }
+            final timelineIndex =
+                activeTurnStartedAt != null && index > liveElapsedIndex
+                ? index - 1
+                : index;
+            if (timelineIndex >= timelineItems.length) {
+              var tailIndex = timelineIndex - timelineItems.length;
+              if (visibleLiveActivity != null && tailIndex-- == 0) {
+                return visibleLiveActivity.kind == 'commandExecution'
+                    ? _LiveCommandRow(command: visibleLiveActivity.detail)
+                    : _LiveActivityRow(
+                        activity: visibleLiveActivity,
+                        onOpenSubagent:
+                            visibleLiveActivity.linkedThreadId == null
+                            ? null
+                            : () => onOpenSubagent(
+                                TimelineEntry(
+                                  kind: TimelineKind.activity,
+                                  title: visibleLiveActivity.label,
+                                  detail: visibleLiveActivity.detail,
+                                  createdAt: DateTime.now(),
+                                  sourceItemId: visibleLiveActivity.itemId,
+                                  activityKind: 'collaboration',
+                                  activityStatus: visibleLiveActivity.status,
+                                  linkedThreadId:
+                                      visibleLiveActivity.linkedThreadId,
+                                  activityPrompt: visibleLiveActivity.prompt,
+                                ),
                               ),
-                            ),
-                    );
+                      );
+              }
+              if (!data.showFileChangeSummary || tailIndex != 0) {
+                throw StateError(
+                  'Unexpected conversation timeline item index.',
+                );
+              }
+              return _FileChangeSummaryCard(
+                key: ValueKey('file-change-summary-${pageKey.storageKey}'),
+                changes: data.fileChanges,
+                turnDiff: data.turnDiff,
+                expanded: fileChangeSummaryExpanded,
+                onExpandedChanged: onFileChangeSummaryExpandedChanged,
+                onReview: onReview,
+                onUndo: onUndo,
+                canUndo: canUndo,
+                undoRunning: undoRunning,
+              );
             }
-            if (!data.showFileChangeSummary || tailIndex != 0) {
-              throw StateError('Unexpected conversation timeline item index.');
+            final item = timelineItems[timelineIndex];
+            if (item.completedTurnEntries case final entries?) {
+              return _CompletedTurnDisclosure(
+                key: timelineItemKey(item),
+                duration: item.entry!,
+                entries: entries,
+                workspacePath: pageKey.workspace,
+                onOpenSubagent: onOpenSubagent,
+              );
             }
-            return _FileChangeSummaryCard(
-              key: ValueKey('file-change-summary-${pageKey.storageKey}'),
-              changes: data.fileChanges,
-              turnDiff: data.turnDiff,
-              expanded: fileChangeSummaryExpanded,
-              onExpandedChanged: onFileChangeSummaryExpandedChanged,
-              onReview: onReview,
-              onUndo: onUndo,
-              canUndo: canUndo,
-              undoRunning: undoRunning,
-            );
-          }
-          final item = timelineItems[timelineIndex];
-          if (item.completedTurnEntries case final entries?) {
-            return _CompletedTurnDisclosure(
+            if (item.activities case final activities?) {
+              final activityId = item.stableId;
+              return _TimelineActivityList(
+                key: timelineItemKey(item),
+                entries: activities,
+                expanded: activityExpanded(activityId),
+                onExpandedChanged: (expanded) =>
+                    onActivityExpandedChanged(activityId, expanded),
+              );
+            }
+            final entry = item.entry!;
+            return _TimelineEntry(
+              entry,
               key: timelineItemKey(item),
-              duration: item.entry!,
-              entries: entries,
               workspacePath: pageKey.workspace,
+              streaming: entry.id == streamingAgentEntryId,
               onOpenSubagent: onOpenSubagent,
             );
-          }
-          if (item.activities case final activities?) {
-            final activityId = item.stableId;
-            return _TimelineActivityList(
-              key: timelineItemKey(item),
-              entries: activities,
-              expanded: activityExpanded(activityId),
-              onExpandedChanged: (expanded) =>
-                  onActivityExpandedChanged(activityId, expanded),
-            );
-          }
-          final entry = item.entry!;
-          return _TimelineEntry(
-            entry,
-            key: timelineItemKey(item),
-            workspacePath: pageKey.workspace,
-            streaming: entry.id == streamingAgentEntryId,
-            onOpenSubagent: onOpenSubagent,
-          );
-        },
+          },
+        ),
       ),
     );
   }
@@ -8418,10 +8597,15 @@ class _ComposerPanelState extends State<_ComposerPanel> {
                   top: -18,
                   left: 0,
                   right: 0,
-                  child: Center(
-                    child: _ComposerFileChangePill(
-                      changes: controller.fileChanges,
-                      turnDiff: controller.turnDiff,
+                  // This pill overlaps the timeline purely for display. It
+                  // must not become a pointer-scroll barrier while content
+                  // moves behind the floating composer.
+                  child: IgnorePointer(
+                    child: Center(
+                      child: _ComposerFileChangePill(
+                        changes: controller.fileChanges,
+                        turnDiff: controller.turnDiff,
+                      ),
                     ),
                   ),
                 ),
@@ -8432,8 +8616,10 @@ class _ComposerPanelState extends State<_ComposerPanel> {
                   top: -44,
                   left: 0,
                   right: 0,
-                  child: Center(
-                    child: _ComposerActivityPill(label: _activityLabel),
+                  child: IgnorePointer(
+                    child: Center(
+                      child: _ComposerActivityPill(label: _activityLabel),
+                    ),
                   ),
                 ),
             ],
@@ -9274,6 +9460,244 @@ class _ApprovalPanel extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// An explicit, host-rendered response to a server-initiated MCP elicitation.
+/// URLs are shown for review only: this panel never opens them automatically.
+class _ElicitationPanel extends StatefulWidget {
+  const _ElicitationPanel({
+    super.key,
+    required this.elicitation,
+    required this.taskLabel,
+    required this.enabled,
+    required this.onRespond,
+  });
+
+  final PendingElicitation elicitation;
+  final String? taskLabel;
+  final bool enabled;
+  final Future<void> Function({required String action, JsonMap? content})
+  onRespond;
+
+  @override
+  State<_ElicitationPanel> createState() => _ElicitationPanelState();
+}
+
+class _ElicitationPanelState extends State<_ElicitationPanel> {
+  final _formKey = GlobalKey<FormState>();
+  final Map<String, TextEditingController> _textControllers = {};
+  final Map<String, Object?> _selectedValues = {};
+  final Set<String> _touched = {};
+
+  @override
+  void initState() {
+    super.initState();
+    for (final field in widget.elicitation.fields) {
+      if (field.isBoolean || field.options.isNotEmpty) {
+        _selectedValues[field.name] =
+            field.defaultValue ??
+            (field.options.isNotEmpty ? field.options.first : false);
+      } else {
+        _textControllers[field.name] = TextEditingController(
+          text: field.defaultValue?.toString() ?? '',
+        );
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final controller in _textControllers.values) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  JsonMap _content() {
+    final content = <String, dynamic>{};
+    for (final field in widget.elicitation.fields) {
+      if (field.isBoolean || field.options.isNotEmpty) {
+        if (field.required ||
+            field.defaultValue != null ||
+            _touched.contains(field.name)) {
+          content[field.name] = _selectedValues[field.name];
+        }
+        continue;
+      }
+      final raw = _textControllers[field.name]!.text;
+      if (raw.isEmpty && !field.required && field.defaultValue == null) {
+        continue;
+      }
+      content[field.name] = switch (field.type) {
+        'integer' => int.parse(raw),
+        'number' => num.parse(raw),
+        _ => raw,
+      };
+    }
+    return content;
+  }
+
+  Future<void> _accept() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    await widget.onRespond(action: 'accept', content: _content());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final elicitation = widget.elicitation;
+    return Container(
+      key: const Key('mcp-elicitation-panel'),
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(24, 0, 24, 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: palette.signalSelected,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: palette.warning),
+      ),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxHeight: 200),
+        child: SingleChildScrollView(
+          key: const Key('mcp-elicitation-scroll'),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  elicitation.title,
+                  style: TextStyle(
+                    color: palette.signal,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '来源：${elicitation.serverName}',
+                  style: TextStyle(color: palette.signal),
+                ),
+                if (widget.taskLabel case final label?) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    '来自后台任务：$label',
+                    style: TextStyle(color: palette.signal),
+                  ),
+                ],
+                const SizedBox(height: 8),
+                SelectableText(elicitation.message),
+                if (elicitation.mode == ElicitationMode.url) ...[
+                  const SizedBox(height: 10),
+                  SelectableText(
+                    elicitation.url!,
+                    style: const TextStyle(fontFamily: 'monospace'),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '此链接不会自动打开；确认后由 MCP 服务器继续该流程。',
+                    style: TextStyle(color: palette.muted, fontSize: 12),
+                  ),
+                ] else ...[
+                  for (final field in elicitation.fields) ...[
+                    const SizedBox(height: 10),
+                    _buildField(field),
+                  ],
+                ],
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    OutlinedButton(
+                      key: const Key('mcp-elicitation-cancel'),
+                      onPressed: widget.enabled
+                          ? () => widget.onRespond(action: 'cancel')
+                          : null,
+                      child: const Text('取消'),
+                    ),
+                    OutlinedButton(
+                      key: const Key('mcp-elicitation-decline'),
+                      onPressed: widget.enabled
+                          ? () => widget.onRespond(action: 'decline')
+                          : null,
+                      child: const Text('拒绝'),
+                    ),
+                    FilledButton(
+                      key: const Key('mcp-elicitation-accept'),
+                      onPressed: widget.enabled ? _accept : null,
+                      child: Text(
+                        elicitation.mode == ElicitationMode.url ? '继续' : '提交',
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildField(ElicitationField field) {
+    if (field.isBoolean) {
+      final value = _selectedValues[field.name] as bool? ?? false;
+      return CheckboxListTile(
+        value: value,
+        dense: true,
+        contentPadding: EdgeInsets.zero,
+        title: Text(field.title),
+        subtitle: field.description == null ? null : Text(field.description!),
+        onChanged: widget.enabled
+            ? (next) => setState(() {
+                _touched.add(field.name);
+                _selectedValues[field.name] = next ?? false;
+              })
+            : null,
+      );
+    }
+    if (field.options.isNotEmpty) {
+      return DropdownButtonFormField<Object>(
+        initialValue: _selectedValues[field.name],
+        decoration: InputDecoration(
+          labelText: field.required ? '${field.title} *' : field.title,
+          helperText: field.description,
+          isDense: true,
+        ),
+        items: [
+          for (final option in field.options)
+            DropdownMenuItem(value: option, child: Text(option.toString())),
+        ],
+        onChanged: widget.enabled
+            ? (next) => setState(() {
+                _touched.add(field.name);
+                _selectedValues[field.name] = next;
+              })
+            : null,
+      );
+    }
+    return TextFormField(
+      key: ValueKey('mcp-elicitation-field-${field.name}'),
+      controller: _textControllers[field.name],
+      enabled: widget.enabled,
+      keyboardType: field.isNumeric ? TextInputType.number : TextInputType.text,
+      decoration: InputDecoration(
+        labelText: field.required ? '${field.title} *' : field.title,
+        helperText: field.description,
+        isDense: true,
+      ),
+      validator: (value) {
+        if (field.required && (value == null || value.isEmpty)) return '此项必填';
+        if (value != null && value.isNotEmpty && field.isNumeric) {
+          final valid = field.type == 'integer'
+              ? int.tryParse(value) != null
+              : num.tryParse(value) != null;
+          if (!valid) return field.type == 'integer' ? '请输入整数' : '请输入数字';
+        }
+        return null;
+      },
     );
   }
 }

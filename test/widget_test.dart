@@ -14,6 +14,7 @@ import 'package:chatgpt/src/domain/codex_plugin.dart';
 import 'package:chatgpt/src/domain/codex_skill.dart';
 import 'package:chatgpt/src/domain/codex_marketplace.dart';
 import 'package:chatgpt/src/domain/codex_mcp_server.dart';
+import 'package:chatgpt/src/domain/pending_elicitation.dart';
 import 'package:chatgpt/src/domain/git_project_status.dart';
 import 'package:chatgpt/src/domain/task_plan.dart';
 import 'package:chatgpt/src/domain/scheduled_task.dart';
@@ -255,6 +256,30 @@ class _BlockingConversationHistoryStore
       await allowFirstSave.future;
     }
     await super.save(workspace: workspace, snapshot: snapshot);
+  }
+}
+
+class _BlockingReadConversationHistoryStore
+    extends _MemoryConversationHistoryStore {
+  String? blockedWorkspace;
+  Completer<void>? readStarted;
+  Completer<void>? allowRead;
+
+  void blockNextRead(String workspace) {
+    blockedWorkspace = workspace;
+    readStarted = Completer<void>();
+    allowRead = Completer<void>();
+  }
+
+  @override
+  Future<ConversationHistorySnapshot?> read(String workspace) async {
+    final allow = allowRead;
+    if (workspace == blockedWorkspace && allow != null) {
+      blockedWorkspace = null;
+      readStarted?.complete();
+      await allow.future;
+    }
+    return super.read(workspace);
   }
 }
 
@@ -583,6 +608,7 @@ class _FakeCodexAppServer extends CodexAppServer {
 
   final listRequests = <Completer<List<JsonMap>>>[];
   List<JsonMap> listResponse = <JsonMap>[];
+  final Map<String, List<JsonMap>> listResponsesByDirectory = {};
   List<JsonMap> archivedListResponse = <JsonMap>[];
   List<JsonMap> modelListResponse = <JsonMap>[];
   Object? modelListError;
@@ -616,6 +642,7 @@ class _FakeCodexAppServer extends CodexAppServer {
   JsonMap? startedConfig;
   List<JsonMap> skillListResponse = <JsonMap>[];
   String? startedTurnPrompt;
+  String? startedTurnDirectory;
   final List<String> startedTurnPrompts = [];
   String? startedTurnThreadId;
   final List<String> startedTurnThreadIds = [];
@@ -663,6 +690,8 @@ class _FakeCodexAppServer extends CodexAppServer {
     bool archived = false,
   }) {
     if (archived) return Future.value(archivedListResponse);
+    final directoryResponse = listResponsesByDirectory[workingDirectory];
+    if (directoryResponse != null) return Future.value(directoryResponse);
     if (!queueListRequests) return Future.value(listResponse);
     final completer = Completer<List<JsonMap>>();
     listRequests.add(completer);
@@ -734,6 +763,7 @@ class _FakeCodexAppServer extends CodexAppServer {
     List<JsonMap> additionalInput = const [],
     JsonMap? collaborationMode,
   }) async {
+    startedTurnDirectory = workingDirectory;
     startedTurnThreadId = threadId;
     startedTurnThreadIds.add(threadId);
     startedTurnPrompt = prompt;
@@ -926,6 +956,22 @@ class _BlockingRuntimeFakeServer extends _ManagedRuntimeFakeServer {
   /// Delays CLI probing so tests can dispose the controller during connection.
   @override
   Future<CodexRuntimeProbe> probe() => probeCompleter.future;
+}
+
+class _WorkspaceSwitchingController extends CodexController {
+  _WorkspaceSwitchingController({required RuntimeConfigurationStore store})
+    : super(
+        server: CodexAppServer(),
+        runtimeConfigurationStore: store,
+        localSessionThreadStore: _MemoryLocalSessionThreadStore(),
+      );
+
+  @override
+  Future<bool> selectWorkspaceAndReconnect(String path) async {
+    workspacePath = path;
+    status = RuntimeStatus.ready;
+    return true;
+  }
 }
 
 class _DelayedStartRuntimeFakeServer extends _ManagedRuntimeFakeServer {
@@ -1241,6 +1287,56 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('starts a new task in the project whose row action was used', (
+    tester,
+  ) async {
+    late Directory root;
+    late String firstPath;
+    late String secondPath;
+    late CodexController controller;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp(
+        'codex-desk-new-task-project-',
+      );
+      final first = await Directory('${root.path}/first').create();
+      final second = await Directory('${root.path}/second').create();
+      firstPath = await first.resolveSymbolicLinks();
+      secondPath = await second.resolveSymbolicLinks();
+      final runtimeStore = _FakeRuntimeConfigurationStore()
+        ..workspace = secondPath
+        ..workspaces = [
+          WorkspaceConfiguration(id: 'first-project', primaryPath: firstPath),
+          WorkspaceConfiguration(id: 'second-project', primaryPath: secondPath),
+        ];
+      controller = _WorkspaceSwitchingController(store: runtimeStore);
+      await controller.waitForInitialConfiguration();
+      controller.status = RuntimeStatus.ready;
+    });
+    addTearDown(() => root.delete(recursive: true));
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    final firstTile = find.byKey(ValueKey('sidebar-workspace-$firstPath'));
+    await tester.ensureVisible(firstTile);
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.moveTo(tester.getCenter(firstTile));
+    await tester.pump();
+    final newTaskButton = find.byKey(
+      ValueKey('sidebar-workspace-edit-$firstPath'),
+    );
+    expect(newTaskButton, findsOneWidget);
+    expect(tester.widget<IconButton>(newTaskButton).onPressed, isNotNull);
+
+    tester.widget<IconButton>(newTaskButton).onPressed!();
+    await tester.pump();
+
+    expect(controller.workspacePath, firstPath);
+    expect(controller.activeThreadId, isNull);
+    expect(controller.entries.last.title, '已新建任务');
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('switches plugin library tabs and starts plugin or skill flows', (
     tester,
   ) async {
@@ -1462,6 +1558,84 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('lazily builds a long sidebar conversation list', (tester) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..threads = List.generate(
+        240,
+        (index) => _thread(id: 'lazy-thread-$index'),
+      );
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final taskList = find.byKey(const Key('sidebar-task-list'));
+    expect(taskList, findsOneWidget);
+    expect(find.text('preview-lazy-thread-0'), findsOneWidget);
+    expect(find.text('preview-lazy-thread-239'), findsNothing);
+    final listView = tester.widget<ListView>(taskList);
+    expect(listView.itemExtentBuilder, isNotNull);
+    final scrollController = listView.controller!;
+    scrollController.jumpTo(420);
+    await tester.pump();
+    final readingOffset = scrollController.offset;
+    controller.notifyListeners();
+    await tester.pump();
+    expect(scrollController.offset, closeTo(readingOffset, 0.1));
+
+    await tester.dragUntilVisible(
+      find.text('preview-lazy-thread-239'),
+      taskList,
+      const Offset(0, -420),
+    );
+    expect(find.text('preview-lazy-thread-239'), findsOneWidget);
+  });
+
+  testWidgets(
+    'keeps variable-height timeline geometry stable during slow scrolling',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(680, 520));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final controller = CodexController(server: _FakeCodexAppServer())
+        ..workspacePath = '/workspace'
+        ..replaceTimelineEntriesForTesting(
+          List<TimelineEntry>.generate(
+            96,
+            (index) => TimelineEntry(
+              kind: TimelineKind.agent,
+              title: 'Codex',
+              detail: '历史消息 $index\n${'内容 ' * (index % 8 + 1)}',
+              createdAt: DateTime(2026, 1, 1, 0, 0, index),
+            ),
+          ),
+        );
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+
+      final timeline = tester.widget<ListView>(
+        find.descendant(
+          of: find.byKey(
+            const ValueKey('conversation-timeline-/workspace:draft'),
+          ),
+          matching: find.byType(ListView),
+        ),
+      );
+      final position = timeline.controller!.position;
+      final initialMaximum = position.maxScrollExtent;
+      expect(initialMaximum, greaterThan(0));
+      for (var offset = 0.0; offset < initialMaximum; offset += 18) {
+        position.jumpTo(offset);
+        await tester.pump();
+        expect(position.maxScrollExtent, closeTo(initialMaximum, 0.1));
+      }
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets(
     'provider updates follow the latest item until the user scrolls up',
     (tester) async {
@@ -1542,6 +1716,62 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(timeline.controller!.offset, closeTo(readingOffset, 0.1));
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'does not snap back when leaving the bottom within the completion threshold',
+    (tester) async {
+      final controller = CodexController(server: _FakeCodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready
+        ..activeThreadId = 'completed-thread'
+        ..threads = [_thread(id: 'completed-thread')];
+      controller.replaceTimelineEntriesForTesting(
+        List<TimelineEntry>.generate(
+          24,
+          (index) => TimelineEntry(
+            kind: TimelineKind.agent,
+            title: 'Codex',
+            detail: '可滚动内容 $index\n${'内容 ' * 10}',
+            createdAt: DateTime(2026, 1, 1, 0, 0, index),
+          ),
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      final timelineFinder = find.descendant(
+        of: find.byKey(
+          const ValueKey('conversation-timeline-/workspace:completed-thread'),
+        ),
+        matching: find.byType(ListView),
+      );
+      final timeline = tester.widget<ListView>(timelineFinder);
+      timeline.controller!.jumpTo(
+        timeline.controller!.position.maxScrollExtent,
+      );
+      await tester.pump();
+
+      // The timeline remains within the 48px completion threshold, but this
+      // gesture is explicitly toward older messages and must never queue a
+      // stale jump back to the newest item.
+      final timelineRect = tester.getRect(timelineFinder);
+      final gesture = await tester.startGesture(
+        Offset(timelineRect.left + 8, timelineRect.center.dy),
+      );
+      await gesture.moveBy(const Offset(0, 40));
+      await tester.pump();
+      final readingOffset = timeline.controller!.offset;
+      expect(timeline.controller!.position.extentAfter, greaterThan(0));
+      expect(timeline.controller!.position.extentAfter, lessThanOrEqualTo(48));
+
+      await tester.pump();
+      await tester.pump();
+      expect(timeline.controller!.offset, closeTo(readingOffset, 0.1));
+      await gesture.up();
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -2031,6 +2261,7 @@ void main() {
       findsOneWidget,
     );
     await tester.ensureVisible(nestedTask);
+    await tester.pump();
     await tester.tap(nestedTask);
     await tester.pump();
     expect(
@@ -2041,6 +2272,7 @@ void main() {
     // That delayed refresh must not revive an old completion reminder.
     final delayedTask = find.text('preview-delayed-completion-task');
     await tester.ensureVisible(delayedTask);
+    await tester.pump();
     await tester.tap(delayedTask);
     await tester.pump();
     controller.threads = [
@@ -2054,6 +2286,12 @@ void main() {
       find.byKey(const Key('sidebar-completed-task-indicator')),
       findsNothing,
     );
+    await tester.fling(
+      find.byKey(const Key('sidebar-task-list')),
+      const Offset(0, 800),
+      2000,
+    );
+    await tester.pumpAndSettle();
     expect(
       tester.getTopLeft(firstTile).dy,
       lessThan(tester.getTopLeft(secondTile).dy),
@@ -2126,7 +2364,12 @@ void main() {
       entries: const [],
       fileChanges: const [],
     );
-    await tester.ensureVisible(firstTile);
+    await tester.fling(
+      find.byKey(const Key('sidebar-task-list')),
+      const Offset(0, 800),
+      2000,
+    );
+    await tester.pumpAndSettle();
     await mouse.moveTo(Offset.zero);
     await tester.pump();
     await mouse.moveTo(tester.getCenter(firstTile));
@@ -2167,8 +2410,9 @@ void main() {
     await tester.pump();
     await mouse.moveTo(tester.getCenter(firstTile));
     await tester.pump();
-    await tester.tap(newTaskButton);
-    expect(controller.activeThreadId, isNull);
+    // Cross-project creation is covered by the dedicated regression test;
+    // keep this sidebar rendering test focused on row affordances.
+    controller.createThread();
     controller
       ..activeThreadId = 'nested-task'
       ..status = RuntimeStatus.running
@@ -2194,7 +2438,6 @@ void main() {
           .strokeWidth,
       1.25,
     );
-    expect(tester.widget<IconButton>(newTaskButton).onPressed, isNotNull);
     expect(
       tester
           .widget<InkWell>(
@@ -2241,15 +2484,75 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets(
+    'keeps a viewed completion hidden after its workspace becomes inactive',
+    (tester) async {
+      late Directory root;
+      late String firstPath;
+      late String secondPath;
+      late CodexController controller;
+      await tester.runAsync(() async {
+        root = await Directory.systemTemp.createTemp(
+          'codex-desk-inactive-completion-',
+        );
+        final first = await Directory('${root.path}/first').create();
+        final second = await Directory('${root.path}/second').create();
+        firstPath = await first.resolveSymbolicLinks();
+        secondPath = await second.resolveSymbolicLinks();
+        final runtimeStore = _FakeRuntimeConfigurationStore()
+          ..workspace = secondPath
+          ..workspaces = [
+            WorkspaceConfiguration(
+              id: 'inactive-completion-first',
+              primaryPath: firstPath,
+            ),
+            WorkspaceConfiguration(
+              id: 'inactive-completion-second',
+              primaryPath: secondPath,
+            ),
+          ];
+        historyStore.snapshots['inactive-completion-first'] =
+            ConversationHistorySnapshot(
+              threads: [_thread(id: 'viewed-completed', status: 'idle')],
+              archivedThreads: const [],
+              entries: const [],
+              fileChanges: const [],
+              acknowledgedCompletedThreadIds: const {'viewed-completed'},
+            );
+        controller = CodexController(
+          server: CodexAppServer(),
+          runtimeConfigurationStore: runtimeStore,
+          conversationHistoryStore: historyStore,
+        );
+        await controller.waitForInitialConfiguration();
+        await controller.refreshInactiveWorkspaceTaskLists();
+      });
+      addTearDown(() => root.delete(recursive: true));
+
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      expect(find.text('preview-viewed-completed'), findsOneWidget);
+      expect(
+        find.byKey(const Key('sidebar-completed-task-indicator')),
+        findsNothing,
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets('creates a project from a dragged source folder', (tester) async {
     late Directory root;
     late Directory source;
+    late Directory additional;
     late CodexController controller;
     await tester.runAsync(() async {
       root = await Directory.systemTemp.createTemp(
         'codex-desk-create-project-',
       );
       source = await Directory('${root.path}/project-source').create();
+      additional = await Directory('${root.path}/project-additional').create();
       controller = CodexController(server: _ManagedRuntimeFakeServer());
       await controller.waitForInitialConfiguration();
       controller.status = RuntimeStatus.stopped;
@@ -2302,6 +2605,26 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('project-source'), findsOneWidget);
+
+    // Once the primary folder is selected, the same drop target remains
+    // available for appending additional source folders.
+    dropTarget = tester.widget<DropTarget>(
+      find.byKey(const Key('create-workspace-folder-drop-target')),
+    );
+    dropTarget.onDragDone?.call(
+      DropDoneDetails(
+        files: [DropItemDirectory(additional.path, const [])],
+        localPosition: const Offset(40, 40),
+        globalPosition: const Offset(40, 40),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('project-source'), findsOneWidget);
+    expect(find.text('project-additional'), findsOneWidget);
+    expect(
+      find.byKey(const Key('add-workspace-directory-button')),
+      findsOneWidget,
+    );
 
     await tester.tap(find.byKey(const Key('cancel-create-workspace')));
     await tester.pumpAndSettle();
@@ -2379,7 +2702,7 @@ void main() {
       final switchButton = tester.widget<TextButton>(
         find.byKey(ValueKey('switch-workspace-$createdPath')),
       );
-      expect(switchButton.onPressed, isNull);
+      expect(switchButton.onPressed, isNotNull);
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -2906,6 +3229,15 @@ void main() {
     final overlay = find.byKey(const Key('composer-file-change-overlay'));
     expect(pill, findsOneWidget);
     expect(overlay, findsOneWidget);
+    expect(
+      find.ancestor(
+        of: pill,
+        matching: find.byWidgetPredicate(
+          (widget) => widget is IgnorePointer && widget.ignoring,
+        ),
+      ),
+      findsOneWidget,
+    );
     expect(
       tester.getTopLeft(composerField).dy,
       moreOrLessEquals(composerFieldTopBefore),
@@ -4871,6 +5203,202 @@ void main() {
     expect(controller.pendingApproval, isNull);
     controller.dispose();
   });
+
+  test('returns accepted structured input for an MCP elicitation', () async {
+    final writes = <JsonMap>[];
+    final controller = CodexController(
+      server: CodexAppServer(messageSink: writes.add),
+    );
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'mcpServer/elicitation/request',
+        requestId: 'elicitation-1',
+        params: {
+          'threadId': 'thread-1',
+          'serverName': 'openai-developers',
+          'mode': 'openai/form',
+          'message': '请选择保存位置。',
+          'requestedSchema': {
+            'type': 'object',
+            'properties': {
+              'targetPath': {
+                'type': 'string',
+                'title': '保存位置',
+                'default': '.env.local',
+              },
+            },
+            'required': ['targetPath'],
+          },
+        },
+      ),
+    );
+
+    expect(controller.pendingElicitation?.serverName, 'openai-developers');
+    await controller.respondToElicitation(
+      action: 'accept',
+      content: {'targetPath': '.env.test'},
+    );
+
+    expect(writes, [
+      {
+        'id': 'elicitation-1',
+        'result': {
+          'action': 'accept',
+          'content': {'targetPath': '.env.test'},
+        },
+      },
+    ]);
+    expect(controller.pendingElicitation, isNull);
+    controller.dispose();
+  });
+
+  test('keeps MCP elicitation manual in auto approval mode', () async {
+    final writes = <JsonMap>[];
+    final controller = CodexController(
+      server: CodexAppServer(messageSink: writes.add),
+    );
+    await controller.setApprovalMode(ApprovalMode.autoApprove);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'mcpServer/elicitation/request',
+        requestId: 'elicitation-url',
+        params: {
+          'mode': 'url',
+          'message': '确认继续授权流程。',
+          'url': 'https://example.com/authorize',
+        },
+      ),
+    );
+
+    expect(writes, isEmpty);
+    expect(controller.pendingElicitation?.mode, ElicitationMode.url);
+    await controller.respondToElicitation(action: 'cancel');
+    expect(writes.single['result'], {'action': 'cancel', 'content': null});
+    controller.dispose();
+  });
+
+  test('declines malformed MCP elicitation schemas safely', () {
+    final writes = <JsonMap>[];
+    final controller = CodexController(
+      server: CodexAppServer(messageSink: writes.add),
+    );
+
+    const schemas = [
+      {
+        'type': 'array',
+        'items': {'type': 'string'},
+      },
+      {
+        'type': 'object',
+        'properties': {
+          'target': {
+            'type': 'string',
+            'enum': ['a', 'b'],
+            'default': 'c',
+          },
+        },
+      },
+      {
+        'type': 'object',
+        'properties': {
+          'target': {
+            'type': 'string',
+            'enum': ['a', 'a'],
+          },
+        },
+      },
+    ];
+    for (var index = 0; index < schemas.length; index++) {
+      controller.handleServerEventForTesting(
+        ServerEvent(
+          method: 'mcpServer/elicitation/request',
+          requestId: 'invalid-elicitation-$index',
+          params: {
+            'mode': 'form',
+            'message': '请输入信息。',
+            'requestedSchema': schemas[index],
+          },
+        ),
+      );
+    }
+
+    expect(controller.pendingElicitation, isNull);
+    expect(writes, hasLength(schemas.length));
+    for (var index = 0; index < schemas.length; index++) {
+      expect(writes[index], {
+        'id': 'invalid-elicitation-$index',
+        'result': {'action': 'decline', 'content': null},
+      });
+    }
+    controller.dispose();
+  });
+
+  testWidgets(
+    'shows MCP elicitation for a background task and submits its form',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1200, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final writes = <JsonMap>[];
+      final controller =
+          CodexController(server: CodexAppServer(messageSink: writes.add))
+            ..status = RuntimeStatus.ready
+            ..activeThreadId = 'foreground'
+            ..threads = [
+              _thread(id: 'foreground'),
+              const CodexThread(
+                id: 'background',
+                name: '后台 MCP 任务',
+                preview: 'preview-background',
+                createdAt: 1,
+                updatedAt: 2,
+              ),
+            ];
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'mcpServer/elicitation/request',
+          requestId: 'background-form',
+          params: {
+            'threadId': 'background',
+            'serverName': 'openai-developers',
+            'mode': 'form',
+            'message': '选择保存位置。',
+            'requestedSchema': {
+              'type': 'object',
+              'properties': {
+                'targetPath': {'type': 'string', 'default': '.env.local'},
+              },
+              'required': ['targetPath'],
+            },
+          },
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+      expect(find.byKey(const Key('mcp-elicitation-panel')), findsOneWidget);
+      expect(find.text('来自后台任务：后台 MCP 任务'), findsOneWidget);
+      await tester.enterText(
+        find.byKey(const ValueKey('mcp-elicitation-field-targetPath')),
+        '.env.test',
+      );
+      await tester.drag(
+        find.byKey(const Key('mcp-elicitation-scroll')),
+        const Offset(0, -160),
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('mcp-elicitation-accept')));
+      await tester.pump();
+
+      expect(writes.single['result'], {
+        'action': 'accept',
+        'content': {'targetPath': '.env.test'},
+      });
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   test(
     'automatically approves supported requests in auto approval mode',
@@ -7341,7 +7869,14 @@ void main() {
     await tester.pump();
     await tester.pumpAndSettle();
 
-    final timeline = tester.widget<ListView>(find.byType(ListView));
+    final timeline = tester.widget<ListView>(
+      find.descendant(
+        of: find.byKey(
+          ValueKey('conversation-timeline-${workspace.path}:draft'),
+        ),
+        matching: find.byType(ListView),
+      ),
+    );
     timeline.controller!.jumpTo(timeline.controller!.position.maxScrollExtent);
     await tester.pump();
     expect(timeline.controller!.position.extentAfter, lessThan(1));
@@ -7417,7 +7952,14 @@ void main() {
       await tester.pump();
       await tester.pumpAndSettle();
 
-      final timeline = tester.widget<ListView>(find.byType(ListView));
+      final timeline = tester.widget<ListView>(
+        find.descendant(
+          of: find.byKey(
+            ValueKey('conversation-timeline-${workspace.path}:draft'),
+          ),
+          matching: find.byType(ListView),
+        ),
+      );
       timeline.controller!.jumpTo(
         timeline.controller!.position.maxScrollExtent,
       );
@@ -7872,8 +8414,10 @@ void main() {
       addTearDown(() => root.delete(recursive: true));
       final active = await Directory('${root.path}/active').create();
       final created = await Directory('${root.path}/created').create();
+      final additional = await Directory('${root.path}/additional').create();
       final activePath = await active.resolveSymbolicLinks();
       final createdPath = await created.resolveSymbolicLinks();
+      final additionalPath = await additional.resolveSymbolicLinks();
       final server = _ManagedRuntimeFakeServer();
       final store = _FakeRuntimeConfigurationStore();
       final controller = CodexController(
@@ -7887,7 +8431,11 @@ void main() {
         ..activeThreadId = 'running-thread';
 
       expect(
-        await controller.createWorkspace(created.path, name: '后台新项目'),
+        await controller.createWorkspace(
+          created.path,
+          name: '后台新项目',
+          additionalPaths: [additional.path],
+        ),
         isTrue,
       );
 
@@ -7903,6 +8451,7 @@ void main() {
       );
       expect(savedProject.id, isNotNull);
       expect(savedProject.name, '后台新项目');
+      expect(savedProject.additionalPaths, [additionalPath]);
       expect(
         store.savedWorkspaces!
             .singleWhere((workspace) => workspace.primaryPath == createdPath)
@@ -7910,13 +8459,14 @@ void main() {
         '后台新项目',
       );
       expect(controller.canCreateWorkspace, isTrue);
-      expect(controller.canChangePrimaryWorkspace, isFalse);
+      expect(controller.canChangePrimaryWorkspace, isTrue);
       expect(
         await controller.selectWorkspaceAndReconnect(created.path),
-        isFalse,
+        isTrue,
       );
-      expect(controller.workspacePath, activePath);
+      expect(controller.workspacePath, createdPath);
       expect(server.stopCalls, 0);
+      expect(server.startCalls, 1);
       controller.dispose();
     },
   );
@@ -7945,6 +8495,393 @@ void main() {
       controller.dispose();
     },
   );
+
+  test(
+    'switches projects while a turn runs and routes its completion to the owner',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-desk-running-cross-project-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final first = await Directory('${root.path}/first').create();
+      final second = await Directory('${root.path}/second').create();
+      final firstPath = await first.resolveSymbolicLinks();
+      final secondPath = await second.resolveSymbolicLinks();
+      final history = _MemoryConversationHistoryStore();
+      final server = _ManagedRuntimeFakeServer()
+        ..startThreadResponseIds.add('first-thread');
+      final controller = CodexController(
+        server: server,
+        conversationHistoryStore: history,
+      );
+      await controller.waitForInitialConfiguration();
+      expect(await controller.createWorkspace(first.path), isTrue);
+      expect(await controller.createWorkspace(second.path), isTrue);
+      final firstProject = controller.workspaceConfigurations.singleWhere(
+        (workspace) => workspace.primaryPath == firstPath,
+      );
+      final secondProject = controller.workspaceConfigurations.singleWhere(
+        (workspace) => workspace.primaryPath == secondPath,
+      );
+      history.snapshots[secondProject.id!] = ConversationHistorySnapshot(
+        threads: [_thread(id: 'second-thread')],
+        archivedThreads: const [],
+        entries: const [],
+        fileChanges: const [],
+        ownedThreadIds: const {'second-thread'},
+        historyInitialized: true,
+      );
+
+      expect(await controller.selectWorkspaceAndReconnect(first.path), isTrue);
+      expect(await controller.sendPrompt('第一个项目继续执行'), isTrue);
+      expect(controller.isThreadRunning('first-thread'), isTrue);
+
+      await controller.openWorkspaceThread(
+        workspace: secondPath,
+        thread: _thread(id: 'second-thread'),
+      );
+
+      expect(controller.workspacePath, secondPath);
+      expect(server.stopCalls, 0);
+      expect(server.startCalls, 1);
+      expect(server.runtimeDirectory, firstPath);
+      expect(server.resumedThreadId, 'second-thread');
+      expect(controller.isThreadRunning('first-thread'), isTrue);
+      expect(
+        controller.isThreadRunningInWorkspace('first-thread', firstPath),
+        isTrue,
+      );
+      expect(
+        controller.isThreadRunningInWorkspace('first-thread', secondPath),
+        isFalse,
+      );
+      expect(controller.status, RuntimeStatus.ready);
+      expect(controller.canSend, isTrue);
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'first-thread',
+            'turn': {
+              'id': 'first-turn',
+              'threadId': 'first-thread',
+              'status': 'completed',
+            },
+          },
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.workspacePath, secondPath);
+      expect(controller.activeThreadId, 'second-thread');
+      expect(controller.status, RuntimeStatus.ready);
+      expect(controller.isThreadRunning('first-thread'), isFalse);
+      expect(
+        controller.isThreadRunningInWorkspace('first-thread', firstPath),
+        isFalse,
+      );
+      final firstSnapshot = history.snapshots[firstProject.id!];
+      expect(
+        firstSnapshot!.threads
+            .singleWhere((thread) => thread.id == 'first-thread')
+            .status,
+        'idle',
+      );
+      expect(
+        firstSnapshot.acknowledgedCompletedThreadIds,
+        isNot(contains('first-thread')),
+      );
+      expect(await controller.sendPrompt('继续第二个项目的任务'), isTrue);
+      expect(server.startedTurnThreadId, 'second-thread');
+      expect(server.startedTurnDirectory, secondPath);
+      expect(controller.isThreadRunning('second-thread'), isTrue);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'serializes rapid project switches while a background turn runs',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-desk-serialized-project-switch-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final first = await Directory('${root.path}/first').create();
+      final second = await Directory('${root.path}/second').create();
+      final third = await Directory('${root.path}/third').create();
+      final firstPath = await first.resolveSymbolicLinks();
+      final secondPath = await second.resolveSymbolicLinks();
+      final thirdPath = await third.resolveSymbolicLinks();
+      final history = _BlockingReadConversationHistoryStore();
+      final runtimeStore = _FakeRuntimeConfigurationStore();
+      final server = _ManagedRuntimeFakeServer()
+        ..startThreadResponseIds.add('switch-running-thread')
+        ..listResponsesByDirectory[firstPath] = [
+          {
+            'id': 'switch-running-thread',
+            'preview': 'running',
+            'status': 'active',
+          },
+        ]
+        ..listResponsesByDirectory[secondPath] = const []
+        ..listResponsesByDirectory[thirdPath] = const [];
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: runtimeStore,
+        conversationHistoryStore: history,
+      );
+      await controller.waitForInitialConfiguration();
+      expect(await controller.createWorkspace(first.path), isTrue);
+      expect(await controller.createWorkspace(second.path), isTrue);
+      expect(await controller.createWorkspace(third.path), isTrue);
+      final secondProject = controller.workspaceConfigurations.singleWhere(
+        (workspace) => workspace.primaryPath == secondPath,
+      );
+      expect(await controller.selectWorkspaceAndReconnect(first.path), isTrue);
+      expect(await controller.sendPrompt('保持后台执行'), isTrue);
+
+      history.blockNextRead(secondProject.id!);
+      final secondSwitch = controller.selectWorkspaceAndReconnect(second.path);
+      await history.readStarted!.future;
+      var thirdSwitchCompleted = false;
+      final thirdSwitch = controller
+          .selectWorkspaceAndReconnect(third.path)
+          .then((result) {
+            thirdSwitchCompleted = true;
+            return result;
+          });
+      await Future<void>.delayed(Duration.zero);
+
+      expect(thirdSwitchCompleted, isFalse);
+      history.allowRead!.complete();
+      expect(await secondSwitch, isTrue);
+      expect(await thirdSwitch, isTrue);
+
+      expect(controller.workspacePath, thirdPath);
+      expect(runtimeStore.savedWorkspace, thirdPath);
+      expect(controller.isThreadRunning('switch-running-thread'), isTrue);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'serializes multiple completions saved to one inactive project',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-desk-serialized-background-completions-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final first = await Directory('${root.path}/first').create();
+      final second = await Directory('${root.path}/second').create();
+      final firstPath = await first.resolveSymbolicLinks();
+      final secondPath = await second.resolveSymbolicLinks();
+      final history = _MemoryConversationHistoryStore();
+      final server = _ManagedRuntimeFakeServer()
+        ..startThreadResponseIds.addAll(['background-a', 'background-b'])
+        ..listResponsesByDirectory[firstPath] = [
+          {'id': 'background-a', 'preview': 'a', 'status': 'active'},
+          {'id': 'background-b', 'preview': 'b', 'status': 'active'},
+        ]
+        ..listResponsesByDirectory[secondPath] = const [];
+      final controller = CodexController(
+        server: server,
+        conversationHistoryStore: history,
+      );
+      await controller.waitForInitialConfiguration();
+      expect(await controller.createWorkspace(first.path), isTrue);
+      expect(await controller.createWorkspace(second.path), isTrue);
+      final firstProject = controller.workspaceConfigurations.singleWhere(
+        (workspace) => workspace.primaryPath == firstPath,
+      );
+      expect(await controller.selectWorkspaceAndReconnect(first.path), isTrue);
+      expect(await controller.sendPrompt('后台任务 A'), isTrue);
+      controller.createThread();
+      expect(await controller.sendPrompt('后台任务 B'), isTrue);
+      expect(await controller.selectWorkspaceAndReconnect(second.path), isTrue);
+
+      for (final threadId in ['background-a', 'background-b']) {
+        controller.handleServerEventForTesting(
+          ServerEvent(
+            method: 'turn/completed',
+            params: {
+              'threadId': threadId,
+              'turn': {'threadId': threadId, 'status': 'completed'},
+            },
+          ),
+        );
+      }
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      final snapshot = history.snapshots[firstProject.id!];
+      expect(
+        snapshot!.threads
+            .where(
+              (thread) => {'background-a', 'background-b'}.contains(thread.id),
+            )
+            .map((thread) => thread.status),
+        everyElement('idle'),
+      );
+      expect(
+        snapshot.acknowledgedCompletedThreadIds,
+        isNot(contains(anyOf('background-a', 'background-b'))),
+      );
+      controller.dispose();
+    },
+  );
+
+  test(
+    'serializes an inactive completion with switching back to its project',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-desk-completion-switch-race-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final first = await Directory('${root.path}/first').create();
+      final second = await Directory('${root.path}/second').create();
+      final firstPath = await first.resolveSymbolicLinks();
+      final secondPath = await second.resolveSymbolicLinks();
+      final history = _BlockingReadConversationHistoryStore();
+      final server = _ManagedRuntimeFakeServer()
+        ..startThreadResponseIds.add('completion-switch-thread')
+        ..listResponsesByDirectory[firstPath] = [
+          {
+            'id': 'completion-switch-thread',
+            'preview': 'running',
+            'status': 'active',
+          },
+        ]
+        ..listResponsesByDirectory[secondPath] = const [];
+      final controller = CodexController(
+        server: server,
+        conversationHistoryStore: history,
+      );
+      await controller.waitForInitialConfiguration();
+      expect(await controller.createWorkspace(first.path), isTrue);
+      expect(await controller.createWorkspace(second.path), isTrue);
+      final firstProject = controller.workspaceConfigurations.singleWhere(
+        (workspace) => workspace.primaryPath == firstPath,
+      );
+      expect(await controller.selectWorkspaceAndReconnect(first.path), isTrue);
+      expect(await controller.sendPrompt('完成时切回所属项目'), isTrue);
+      expect(await controller.selectWorkspaceAndReconnect(second.path), isTrue);
+
+      server.listResponsesByDirectory[firstPath] = [
+        {
+          'id': 'completion-switch-thread',
+          'preview': 'running',
+          'status': 'idle',
+        },
+      ];
+      history.blockNextRead(firstProject.id!);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'completion-switch-thread',
+            'turn': {
+              'threadId': 'completion-switch-thread',
+              'status': 'completed',
+            },
+          },
+        ),
+      );
+      await history.readStarted!.future;
+      var switchCompleted = false;
+      final switchBack = controller
+          .selectWorkspaceAndReconnect(first.path)
+          .then((result) {
+            switchCompleted = true;
+            return result;
+          });
+      await Future<void>.delayed(Duration.zero);
+
+      expect(switchCompleted, isFalse);
+      history.allowRead!.complete();
+      expect(await switchBack, isTrue);
+
+      expect(controller.workspacePath, firstPath);
+      expect(controller.activeThreadId, 'completion-switch-thread');
+      expect(
+        controller.threads
+            .singleWhere((thread) => thread.id == 'completion-switch-thread')
+            .status,
+        'idle',
+      );
+      expect(
+        controller.isCompletedThreadAcknowledged('completion-switch-thread'),
+        isTrue,
+      );
+      controller.dispose();
+    },
+  );
+
+  test('reconciles an id-less completion in an inactive project', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'codex-desk-inactive-idless-completion-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final first = await Directory('${root.path}/first').create();
+    final second = await Directory('${root.path}/second').create();
+    final firstPath = await first.resolveSymbolicLinks();
+    final secondPath = await second.resolveSymbolicLinks();
+    final history = _MemoryConversationHistoryStore();
+    final server = _ManagedRuntimeFakeServer()
+      ..startThreadResponseIds.add('idless-background')
+      ..listResponsesByDirectory[firstPath] = [
+        {
+          'id': 'idless-background',
+          'preview': 'background',
+          'status': 'active',
+        },
+      ]
+      ..listResponsesByDirectory[secondPath] = const [];
+    final controller = CodexController(
+      server: server,
+      conversationHistoryStore: history,
+    );
+    await controller.waitForInitialConfiguration();
+    expect(await controller.createWorkspace(first.path), isTrue);
+    expect(await controller.createWorkspace(second.path), isTrue);
+    final firstProject = controller.workspaceConfigurations.singleWhere(
+      (workspace) => workspace.primaryPath == firstPath,
+    );
+    expect(await controller.selectWorkspaceAndReconnect(first.path), isTrue);
+    expect(await controller.sendPrompt('等待无 ID 完成事件'), isTrue);
+    expect(await controller.selectWorkspaceAndReconnect(second.path), isTrue);
+    server.listResponsesByDirectory[firstPath] = [
+      {'id': 'idless-background', 'preview': 'background', 'status': 'idle'},
+    ];
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'turn': {'status': 'completed'},
+        },
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(controller.isThreadRunning('idless-background'), isFalse);
+    final snapshot = history.snapshots[firstProject.id!];
+    expect(
+      snapshot!.threads
+          .singleWhere((thread) => thread.id == 'idless-background')
+          .status,
+      'idle',
+    );
+    expect(
+      snapshot.acknowledgedCompletedThreadIds,
+      isNot(contains('idless-background')),
+    );
+    controller.dispose();
+  });
 
   test(
     'starts a newly created project with no inherited directory tasks',
@@ -8081,10 +9018,10 @@ void main() {
       expect(controller.additionalWorkspacePaths, isEmpty);
 
       controller.status = RuntimeStatus.running;
-      expect(await controller.selectWorkspaceAndReconnect(first.path), isFalse);
-      expect(controller.workspacePath, await second.resolveSymbolicLinks());
-      expect(controller.lastError, contains('等待当前或后台任务完成'));
+      expect(await controller.selectWorkspaceAndReconnect(first.path), isTrue);
+      expect(controller.workspacePath, await first.resolveSymbolicLinks());
       expect(server.stopCalls, 1);
+      expect(server.startCalls, 2);
       controller.dispose();
     },
   );
@@ -8346,7 +9283,7 @@ void main() {
       find.byKey(const Key('workspace-directories-dialog')),
       findsOneWidget,
     );
-    expect(find.textContaining('当前或后台任务完成'), findsOneWidget);
+    expect(find.textContaining('当前或后台任务完成'), findsNothing);
     expect(find.textContaining('主目录'), findsWidgets);
     expect(find.text(additionalPath), findsOneWidget);
     expect(find.text('附加目录'), findsWidgets);
@@ -8365,7 +9302,7 @@ void main() {
             find.byKey(ValueKey('switch-workspace-$secondPath')),
           )
           .onPressed,
-      isNull,
+      isNotNull,
     );
 
     controller.handleServerEventForTesting(
@@ -8511,6 +9448,64 @@ void main() {
         'legacy-thread',
       ]);
       restartedController.dispose();
+    },
+  );
+
+  test(
+    'keeps a queued history save under the workspace that created its snapshot',
+    () async {
+      final firstDirectory = await Directory.systemTemp.createTemp(
+        'codex-history-queued-first-',
+      );
+      final secondDirectory = await Directory.systemTemp.createTemp(
+        'codex-history-queued-second-',
+      );
+      addTearDown(() => firstDirectory.delete(recursive: true));
+      addTearDown(() => secondDirectory.delete(recursive: true));
+      final firstWorkspace = await firstDirectory.resolveSymbolicLinks();
+      final secondWorkspace = await secondDirectory.resolveSymbolicLinks();
+      final runtimeStore = _FakeRuntimeConfigurationStore()
+        ..workspace = firstWorkspace
+        ..workspaces = [
+          WorkspaceConfiguration(
+            id: 'project-first',
+            primaryPath: firstWorkspace,
+          ),
+          WorkspaceConfiguration(
+            id: 'project-second',
+            primaryPath: secondWorkspace,
+          ),
+        ];
+      final delayedHistory = _BlockingConversationHistoryStore();
+      final controller = CodexController(
+        server: CodexAppServer(),
+        runtimeConfigurationStore: runtimeStore,
+        conversationHistoryStore: delayedHistory,
+      );
+      await controller.waitForInitialConfiguration();
+
+      controller.threads = [_thread(id: 'first-thread')];
+      final firstSave = controller.saveConversationHistoryForTesting();
+      await delayedHistory.firstSaveStarted.future;
+
+      // A workspace switch can update the visible path while an older save is
+      // still draining. The queued snapshot must retain the new path's key,
+      // rather than consulting the stale current project ID later.
+      controller.workspacePath = secondWorkspace;
+      controller.threads = [_thread(id: 'second-thread')];
+      final secondSave = controller.saveConversationHistoryForTesting();
+      delayedHistory.allowFirstSave.complete();
+      await Future.wait([firstSave, secondSave]);
+
+      expect(
+        delayedHistory.snapshots['project-first']!.threads.single.id,
+        'first-thread',
+      );
+      expect(
+        delayedHistory.snapshots['project-second']!.threads.single.id,
+        'second-thread',
+      );
+      controller.dispose();
     },
   );
 
@@ -8707,6 +9702,68 @@ void main() {
             .acknowledgedCompletedThreadIds,
         isEmpty,
       );
+      controller.dispose();
+    },
+  );
+
+  test(
+    'clears a restored terminal task reminder when explicitly switching projects',
+    () async {
+      final first = await Directory.systemTemp.createTemp(
+        'codex-history-reminder-first-',
+      );
+      final second = await Directory.systemTemp.createTemp(
+        'codex-history-reminder-second-',
+      );
+      addTearDown(() => first.delete(recursive: true));
+      addTearDown(() => second.delete(recursive: true));
+      final firstPath = await first.resolveSymbolicLinks();
+      final secondPath = await second.resolveSymbolicLinks();
+      final runtimeStore = _FakeRuntimeConfigurationStore()
+        ..workspace = firstPath
+        ..workspaces = [
+          WorkspaceConfiguration(id: 'reminder-first', primaryPath: firstPath),
+          WorkspaceConfiguration(
+            id: 'reminder-second',
+            primaryPath: secondPath,
+          ),
+        ];
+      historyStore.snapshots['reminder-second'] = ConversationHistorySnapshot(
+        threads: [_thread(id: 'completed-in-second', status: 'idle')],
+        archivedThreads: const [],
+        entries: const [],
+        fileChanges: const [],
+        activeThreadId: 'completed-in-second',
+      );
+      final controller = CodexController(
+        server: CodexAppServer(),
+        runtimeConfigurationStore: runtimeStore,
+        conversationHistoryStore: historyStore,
+      );
+      await controller.waitForInitialConfiguration();
+
+      await controller.selectWorkspace(secondPath);
+
+      expect(
+        controller.isCompletedThreadAcknowledged('completed-in-second'),
+        isTrue,
+      );
+      controller.dispose();
+    },
+  );
+
+  test(
+    'ignores a late completion acknowledgement from another workspace',
+    () async {
+      final controller = CodexController(server: CodexAppServer())
+        ..workspacePath = '/current';
+
+      await controller.acknowledgeCompletedThread(
+        'late-thread',
+        workspace: '/previous',
+      );
+
+      expect(controller.isCompletedThreadAcknowledged('late-thread'), isFalse);
       controller.dispose();
     },
   );
@@ -12680,6 +13737,7 @@ void main() {
           },
         ),
       );
+      await Future<void>.delayed(Duration.zero);
 
       expect(server.listRequests, hasLength(1));
       server.listRequests.single.complete([
@@ -12722,6 +13780,7 @@ void main() {
           },
         ),
       );
+      await Future<void>.delayed(Duration.zero);
       server.listRequests.single.complete([
         {'id': 'background-thread', 'preview': 'background', 'status': 'idle'},
         {
@@ -12805,6 +13864,7 @@ void main() {
           },
         ),
       );
+      await Future<void>.delayed(Duration.zero);
 
       expect(server.listRequests, hasLength(1));
       server.listRequests.single.complete([
@@ -13670,7 +14730,10 @@ void main() {
         'title': 'Codex Desk',
         'version': '0.1.0',
       },
-      'capabilities': {'experimentalApi': true},
+      'capabilities': {
+        'experimentalApi': true,
+        'mcpServerOpenaiFormElicitation': true,
+      },
     });
     expect(server.notifications, ['initialized']);
   });
@@ -14309,6 +15372,28 @@ void main() {
     },
   );
 
+  test(
+    'keeps the writer-conflict retry when runtime is temporarily unavailable',
+    () async {
+      final server = _ManagedRuntimeFakeServer()
+        ..running = true
+        ..resumeError = StateError('thread already has an active writer');
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+
+      await controller.resumeThread(_thread(id: 'shared-thread'));
+      expect(controller.hasResumeConflict, isTrue);
+
+      server.running = false;
+      await controller.retryThreadWriterConflict();
+
+      expect(controller.hasResumeConflict, isTrue);
+      expect(controller.isRetryingThreadWriterConflict, isFalse);
+      controller.dispose();
+    },
+  );
+
   testWidgets('requires unarchive before reopening a task archived elsewhere', (
     tester,
   ) async {
@@ -14943,6 +16028,8 @@ void main() {
   testWidgets(
     'enters batch archive from the project menu and preserves selection on cancel',
     (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1100, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
       final server = _FakeCodexAppServer()
         ..listResponse = [
           {'id': 'running', 'preview': 'running', 'status': 'active'},
@@ -14976,11 +16063,20 @@ void main() {
         const ValueKey('sidebar-thread-tile-running'),
       );
       final idleTile = find.byKey(const ValueKey('sidebar-thread-tile-idle'));
-      await tester.ensureVisible(runningTile);
+      final sidebarTaskList = find.byKey(const Key('sidebar-task-list'));
+      await tester.dragUntilVisible(
+        runningTile,
+        sidebarTaskList,
+        const Offset(0, -160),
+      );
       await tester.tap(
         find.descendant(of: runningTile, matching: find.byType(Checkbox)),
       );
-      await tester.ensureVisible(idleTile);
+      await tester.dragUntilVisible(
+        idleTile,
+        sidebarTaskList,
+        const Offset(0, -160),
+      );
       await tester.tap(
         find.descendant(of: idleTile, matching: find.byType(Checkbox)),
       );

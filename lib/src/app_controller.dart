@@ -15,6 +15,7 @@ import 'domain/codex_mcp_server.dart';
 import 'domain/codex_file_change.dart';
 import 'domain/git_project_status.dart';
 import 'domain/pending_approval.dart';
+import 'domain/pending_elicitation.dart';
 import 'domain/runtime_log_entry.dart';
 import 'domain/scheduled_task.dart';
 import 'domain/subagent_thread_view.dart';
@@ -137,10 +138,15 @@ class _ThreadViewSnapshot {
 /// 非当前项目的只读任务清单，来自本地加密历史而非活动运行时。
 /// Read-only task list for an inactive workspace, sourced from local history.
 class WorkspaceTaskList {
-  const WorkspaceTaskList({required this.threads, required this.pinnedIds});
+  const WorkspaceTaskList({
+    required this.threads,
+    required this.pinnedIds,
+    required this.acknowledgedIds,
+  });
 
   final List<CodexThread> threads;
   final Set<String> pinnedIds;
+  final Set<String> acknowledgedIds;
 }
 
 /// A direction change submitted from the composer but not yet sent to the
@@ -402,6 +408,14 @@ class CodexController extends ChangeNotifier {
   // 串行化附加目录快照，保证完成较晚的旧写入不会覆盖新目录集合。
   // Serializes workspace-root snapshots so a slow older write cannot overwrite newer state.
   Future<void> _workspaceRootsSave = Future.value();
+  // Project switches and ID-less completion reconciliation mutate one shared
+  // foreground view. Serialize them so a slower history restore or task-list
+  // read cannot resume against a different selected project.
+  Future<void> _workspaceSwitchQueue = Future.value();
+  // Background completions use read-modify-write snapshots. Keep mutations
+  // for the same inactive project ordered so simultaneous turns cannot save
+  // two descendants of the same stale snapshot.
+  final Map<String, Future<void>> _inactiveWorkspaceCompletionQueues = {};
   bool _historySaveFailed = false;
   bool _disposed = false;
   bool _startingRuntime = false;
@@ -472,6 +486,10 @@ class CodexController extends ChangeNotifier {
   // is intentionally independent of [status], which describes the task that
   // is currently open in the workbench.
   final Set<String> _runningThreadIds = {};
+  // Owning workspace for every thread that is still executing on the shared
+  // App Server. This lets the foreground project change without losing the
+  // background task's routing or completion reminder.
+  final Map<String, String> _threadWorkspaceById = {};
   final Map<String, String> _runningTurnIdsByThread = {};
   final Map<String, List<TimelineEntry>> _pendingNetworkRetryEntriesByThread =
       {};
@@ -537,7 +555,11 @@ class CodexController extends ChangeNotifier {
       _acknowledgedCompletedThreadIds.contains(threadId);
 
   /// Persists that the user has opened a completed thread.
-  Future<void> acknowledgeCompletedThread(String threadId) async {
+  Future<void> acknowledgeCompletedThread(
+    String threadId, {
+    String? workspace,
+  }) async {
+    if (workspace != null && workspacePath != workspace) return;
     if (!_acknowledgedCompletedThreadIds.add(threadId)) return;
     _scheduleConversationHistorySave();
     notifyListeners();
@@ -613,6 +635,16 @@ class CodexController extends ChangeNotifier {
     if (workspacePath != conflict.workspace) {
       _clearThreadWriterConflict();
       notifyListeners();
+      return;
+    }
+    // Do not consume the recovery prompt while the operation cannot even be
+    // attempted.  Both `resumeThread` and `archiveThreads` intentionally
+    // return early when the runtime is unavailable (or a thread switch is in
+    // progress); clearing the conflict first would leave the task stranded
+    // with no way to retry once the runtime is ready again.
+    if (!_server.isRunning ||
+        (conflict.operation == _ThreadWriterConflictOperation.resume &&
+            !canSwitchThreads)) {
       return;
     }
     _clearThreadWriterConflict();
@@ -691,6 +723,8 @@ class CodexController extends ChangeNotifier {
 
   final LinkedHashMap<Object, PendingApproval> _pendingApprovals =
       LinkedHashMap();
+  final LinkedHashMap<Object, PendingElicitation> _pendingElicitations =
+      LinkedHashMap();
 
   /// Prefers an approval for the task currently shown in the workbench. A
   /// background task's approval remains available rather than being replaced
@@ -717,6 +751,30 @@ class CodexController extends ChangeNotifier {
   }
 
   bool approvalResponding = false;
+  bool elicitationResponding = false;
+
+  /// Prefers a request that belongs to the task currently being viewed.
+  PendingElicitation? get pendingElicitation {
+    final activeId = activeThreadId;
+    if (activeId != null) {
+      for (final elicitation in _pendingElicitations.values) {
+        if (elicitation.threadId == activeId) return elicitation;
+      }
+    }
+    return _pendingElicitations.values.firstOrNull;
+  }
+
+  String? get pendingElicitationTaskLabel {
+    final threadId = pendingElicitation?.threadId;
+    if (threadId == null || threadId == activeThreadId) return null;
+    final title = _cachedThread(threadId)?.title;
+    if (title != null && title.isNotEmpty) return title;
+    final shortId = threadId.length > 12 ? threadId.substring(0, 12) : threadId;
+    return '后台任务 $shortId';
+  }
+
+  bool get canRespondToElicitation =>
+      pendingElicitation != null && !elicitationResponding;
   ApprovalMode approvalMode = ApprovalMode.manual;
   bool _approvalModeChangedBeforeLoad = false;
   ReasoningEffort reasoningEffort = ReasoningEffort.defaultValue;
@@ -837,12 +895,21 @@ class CodexController extends ChangeNotifier {
   /// Reads a workspace's cached task list without switching the active
   /// runtime. This lets the sidebar keep every project expanded at launch.
   /// 不切换当前运行时地读取项目的本地任务列表，以便侧栏启动时展开全部项目。
-  Future<({List<CodexThread> threads, Set<String> pinnedIds})>
+  Future<
+    ({
+      List<CodexThread> threads,
+      Set<String> pinnedIds,
+      Set<String> acknowledgedIds,
+    })
+  >
   readWorkspaceTaskList(String path) async {
     if (path == workspacePath) {
       return (
         threads: List<CodexThread>.unmodifiable(threads),
         pinnedIds: Set<String>.unmodifiable(_pinnedThreadIds),
+        acknowledgedIds: Set<String>.unmodifiable(
+          _acknowledgedCompletedThreadIds,
+        ),
       );
     }
     final project = _workspaceConfigurations
@@ -862,6 +929,9 @@ class CodexController extends ChangeNotifier {
       ),
       pinnedIds: Set<String>.unmodifiable(
         snapshot?.pinnedThreadIds ?? const <String>{},
+      ),
+      acknowledgedIds: Set<String>.unmodifiable(
+        snapshot?.acknowledgedCompletedThreadIds ?? const <String>{},
       ),
     );
   }
@@ -884,6 +954,7 @@ class CodexController extends ChangeNotifier {
         next[workspace.primaryPath] = WorkspaceTaskList(
           threads: taskList.threads,
           pinnedIds: taskList.pinnedIds,
+          acknowledgedIds: taskList.acknowledgedIds,
         );
       } catch (_) {
         // Leave an unreadable cache out of the sidebar. Selecting the project
@@ -1386,6 +1457,19 @@ class CodexController extends ChangeNotifier {
       _runningThreadIds.contains(threadId) ||
       (status == RuntimeStatus.running && activeThreadId == threadId);
 
+  /// Whether a running task belongs to a specific project. Thread IDs are
+  /// normally global, but checking ownership also prevents stale or synthetic
+  /// cached rows in another project from inheriting the foreground spinner.
+  bool isThreadRunningInWorkspace(String threadId, String workspace) {
+    if (workspacePath == workspace &&
+        status == RuntimeStatus.running &&
+        activeThreadId == threadId) {
+      return true;
+    }
+    return _runningThreadIds.contains(threadId) &&
+        _threadWorkspaceById[threadId] == workspace;
+  }
+
   /// Whether the thread itself is still executing, regardless of other
   /// foreground or background tasks in the same workspace.
   ///
@@ -1460,10 +1544,7 @@ class CodexController extends ChangeNotifier {
   /// 指示当前任务状态是否允许切换工作区并重建运行时连接。
   /// Indicates whether the current task state permits switching workspaces and rebuilding the runtime connection.
   bool get canChangePrimaryWorkspace =>
-      !_startingRuntime &&
-      status != RuntimeStatus.starting &&
-      !hasRunningTasks &&
-      !pluginSaving;
+      !_startingRuntime && status != RuntimeStatus.starting && !pluginSaving;
 
   /// 创建项目只写入本地项目列表，不依赖当前运行时或任务状态。
   /// Project creation only updates the local project list and is independent of the active runtime or task.
@@ -1477,7 +1558,8 @@ class CodexController extends ChangeNotifier {
   /// Explains why switching projects is temporarily unavailable.
   String? get changePrimaryWorkspaceDisabledReason {
     if (pluginSaving) return '请等待扩展配置更新完成。';
-    if (hasRunningTasks) return '请等待当前或后台任务完成。';
+    // Running turns stay attached to the shared App Server and continue in
+    // the background while another project is focused.
     if (_startingRuntime || status == RuntimeStatus.starting) {
       return '运行时正在自动连接，请稍后再试。';
     }
@@ -1696,8 +1778,11 @@ class CodexController extends ChangeNotifier {
 
   /// 验证、切换并持久化本地项目，同时恢复该项目的本地历史。
   /// Validates, selects, and persists a local workspace, then restores its local history.
-  Future<void> selectWorkspace(String path) async {
-    if (!canChooseWorkspace) {
+  Future<void> selectWorkspace(
+    String path, {
+    bool allowWhileRunning = false,
+  }) async {
+    if (!allowWhileRunning && !canChooseWorkspace) {
       lastError = pluginSaving ? '请等待扩展配置更新完成后再切换项目。' : '请先停止当前运行时，再切换项目。';
       _add(TimelineKind.error, '无法切换项目', lastError!);
       notifyListeners();
@@ -1753,12 +1838,9 @@ class CodexController extends ChangeNotifier {
     _gitReviewRefreshRequest++;
     _threadViewCache.clear();
     _clearSubagentThreadViews();
-    _runningThreadIds.clear();
-    _runningTurnIdsByThread.clear();
-    _pendingNetworkRetryEntriesByThread.clear();
-    _runningTurnSubmissions.clear();
-    _failedTurnRetries.clear();
-    _retryingFailedTurnThreadId = null;
+    // Running turns belong to the shared App Server rather than the visible
+    // project. Keep their registries intact so they continue receiving events
+    // while this project is in the foreground.
     _acknowledgedCompletedThreadIds.clear();
     activeThreadId = null;
     _activeThreadAttached = false;
@@ -1786,6 +1868,35 @@ class CodexController extends ChangeNotifier {
       await _saveConversationHistory();
     } else {
       await _restoreConversationHistory(canonicalPath);
+      // Selecting a project is an explicit visit to the task that was last
+      // open there. Clear its completion dot just as opening the task row
+      // does. Startup restoration does not pass through this method, so
+      // reminders still survive restart. The cached status may be absent
+      // until the new runtime refreshes its thread list, therefore this must
+      // not depend on a terminal status in the local snapshot.
+      final restoredThreadId = activeThreadId;
+      final restoredThread = restoredThreadId == null
+          ? null
+          : threads
+                .where((thread) => thread.id == restoredThreadId)
+                .firstOrNull;
+      if (restoredThread != null) {
+        await acknowledgeCompletedThread(restoredThread.id);
+      }
+    }
+    // The restored project may itself have a turn running in the background.
+    // Reattach the foreground state to that turn without taking a second
+    // writer; otherwise the composer would incorrectly report the project as
+    // idle and completion events could be misrouted.
+    final restoredActiveId = activeThreadId;
+    if (restoredActiveId != null &&
+        _runningThreadIds.contains(restoredActiveId)) {
+      status = RuntimeStatus.running;
+      _activeThreadAttached = false;
+      activeTurnId = _runningTurnIdsByThread[restoredActiveId];
+    } else {
+      status = _server.isRunning ? RuntimeStatus.ready : RuntimeStatus.stopped;
+      activeTurnId = null;
     }
     unawaited(refreshGitProject());
     unawaited(refreshInactiveWorkspaceTaskLists());
@@ -1800,9 +1911,30 @@ class CodexController extends ChangeNotifier {
     }
   }
 
-  /// 创建或切换工作区并自动重建运行时连接；正在执行任务时保持原工作区不变。
-  /// Creates or switches workspaces and automatically rebuilds the runtime connection, preserving the active workspace during a task.
-  Future<bool> selectWorkspaceAndReconnect(String path) async {
+  /// 创建或切换工作区；已有任务继续复用共享 App Server 在后台执行。
+  /// Creates or switches workspaces while existing turns continue on the shared
+  /// App Server in the background.
+  Future<T> _serializeWorkspaceOperation<T>(Future<T> Function() action) {
+    final previousSwitch = _workspaceSwitchQueue;
+    final operation = () async {
+      try {
+        await previousSwitch;
+      } catch (_) {
+        // A failed older switch must not prevent a newer explicit selection.
+      }
+      return action();
+    }();
+    _workspaceSwitchQueue = operation.then<void>((_) {}, onError: (_, _) {});
+    return operation;
+  }
+
+  Future<bool> selectWorkspaceAndReconnect(String path) =>
+      _serializeWorkspaceOperation(() {
+        if (_disposed) return Future<bool>.value(false);
+        return _selectWorkspaceAndReconnectNow(path);
+      });
+
+  Future<bool> _selectWorkspaceAndReconnectNow(String path) async {
     final normalized = path.trim();
     if (normalized.isEmpty) return false;
     final directory = Directory(normalized);
@@ -1834,23 +1966,36 @@ class CodexController extends ChangeNotifier {
       return true;
     }
     if (!canChangePrimaryWorkspace) {
-      lastError = pluginSaving
-          ? '请等待扩展配置更新完成后再切换工作区。'
-          : hasRunningTasks
-          ? '请等待当前或后台任务完成后再切换工作区。'
-          : '运行时正在自动连接，请稍后再切换工作区。';
+      lastError = pluginSaving ? '请等待扩展配置更新完成后再切换工作区。' : '运行时正在自动连接，请稍后再切换工作区。';
       _add(TimelineKind.error, '无法切换工作区', lastError!);
       notifyListeners();
       return false;
     }
 
-    if (_server.isRunning || status == RuntimeStatus.ready) {
+    final runtimeWasRunning = _server.isRunning;
+    final keepRuntimeForBackgroundTurns = runtimeWasRunning && hasRunningTasks;
+    if (runtimeWasRunning && !keepRuntimeForBackgroundTurns) {
       await stopRuntime();
       if (_server.isRunning) return false;
     }
-    await selectWorkspace(canonicalPath);
+    await selectWorkspace(
+      canonicalPath,
+      allowWhileRunning: keepRuntimeForBackgroundTurns,
+    );
     if (workspacePath != canonicalPath || _disposed) return false;
-    await startRuntime();
+    if (!keepRuntimeForBackgroundTurns &&
+        (status == RuntimeStatus.stopped || status == RuntimeStatus.failed)) {
+      await startRuntime();
+    } else if (keepRuntimeForBackgroundTurns) {
+      // Refresh only the newly focused project's rows; do not restart the
+      // process that owns turns from the previous project.
+      await refreshCodexConfiguration(notify: false);
+      await _refreshReasoningEffortCapabilities();
+      await refreshThreads();
+      await refreshArchivedThreads();
+      await _resumeRestoredThreadIfNeeded();
+      await refreshSkills(notify: false);
+    }
     return true;
   }
 
@@ -1865,13 +2010,19 @@ class CodexController extends ChangeNotifier {
       final switched = await selectWorkspaceAndReconnect(workspace);
       if (!switched || workspacePath != workspace || _disposed) return;
     }
-    await acknowledgeCompletedThread(thread.id);
+    await acknowledgeCompletedThread(thread.id, workspace: workspace);
+    if (_disposed || workspacePath != workspace) return;
     await resumeThread(thread);
   }
 
   /// 保存一个可切换项目，但不改变活动工作区、任务或运行时连接。
   /// Saves a switchable project without changing the active workspace, tasks, or runtime connection.
-  Future<bool> createWorkspace(String path, {String name = ''}) async {
+  /// Additional source folders are saved with the project for subsequent tasks.
+  Future<bool> createWorkspace(
+    String path, {
+    String name = '',
+    List<String> additionalPaths = const [],
+  }) async {
     final normalized = path.trim();
     if (normalized.isEmpty || _creatingWorkspace) return false;
     _creatingWorkspace = true;
@@ -1888,6 +2039,28 @@ class CodexController extends ChangeNotifier {
         return false;
       }
 
+      final canonicalAdditionalPaths = <String>[];
+      for (final additionalPath in additionalPaths) {
+        final normalizedAdditional = additionalPath.trim();
+        if (normalizedAdditional.isEmpty) continue;
+        final additionalDirectory = Directory(normalizedAdditional);
+        if (!await additionalDirectory.exists()) {
+          lastError = '附加目录不存在：$normalizedAdditional';
+          return false;
+        }
+        final canonicalAdditional = await additionalDirectory
+            .resolveSymbolicLinks();
+        if (canonicalAdditional == canonicalPath ||
+            canonicalAdditionalPaths.contains(canonicalAdditional)) {
+          continue;
+        }
+        if (await _isSystemTemporaryDirectory(canonicalAdditional)) {
+          lastError = '系统临时目录不能作为附加目录，请选择实际项目文件夹。';
+          return false;
+        }
+        canonicalAdditionalPaths.add(canonicalAdditional);
+      }
+
       final trimmedName = name.trim();
       final existingIndex = _workspaceConfigurations.indexWhere(
         (configuration) => configuration.primaryPath == canonicalPath,
@@ -1900,17 +2073,25 @@ class CodexController extends ChangeNotifier {
           WorkspaceConfiguration(
             id: newProjectId,
             primaryPath: canonicalPath,
+            additionalPaths: canonicalAdditionalPaths,
             name: trimmedName.isEmpty ? null : trimmedName,
           ),
         );
-      } else if (trimmedName.isNotEmpty) {
+      } else if (trimmedName.isNotEmpty ||
+          canonicalAdditionalPaths.isNotEmpty) {
         final existing = _workspaceConfigurations[existingIndex];
         previousConfiguration = existing;
+        final mergedAdditionalPaths = [
+          ...existing.additionalPaths,
+          ...canonicalAdditionalPaths.where(
+            (path) => !existing.additionalPaths.contains(path),
+          ),
+        ];
         _workspaceConfigurations[existingIndex] = WorkspaceConfiguration(
           id: existing.id,
           primaryPath: existing.primaryPath,
-          additionalPaths: existing.additionalPaths,
-          name: trimmedName,
+          additionalPaths: mergedAdditionalPaths,
+          name: trimmedName.isEmpty ? existing.name : trimmedName,
         );
       }
       try {
@@ -2010,7 +2191,9 @@ class CodexController extends ChangeNotifier {
   /// Removes the current project record and clears the active workspace without deleting its directory or history.
   Future<bool> removeCurrentWorkspace() async {
     final primary = workspacePath;
-    if (primary == null || !canChangePrimaryWorkspace) return false;
+    if (primary == null || !canChangePrimaryWorkspace || hasRunningTasks) {
+      return false;
+    }
     await stopRuntime();
     _workspaceConfigurations.removeWhere(
       (configuration) => configuration.primaryPath == primary,
@@ -2019,6 +2202,7 @@ class CodexController extends ChangeNotifier {
     _threadViewCache.clear();
     _clearSubagentThreadViews();
     _runningThreadIds.clear();
+    _threadWorkspaceById.clear();
     _clearThreadWriterConflict();
     _clearArchivedThreadRestore();
     workspacePath = null;
@@ -2194,6 +2378,8 @@ class CodexController extends ChangeNotifier {
       // Do not retain a page that will miss background stream updates. Opening
       // this task again loads its authoritative App Server history instead.
       _runningThreadIds.add(previousThreadId);
+      final workspace = workspacePath;
+      if (workspace != null) _threadWorkspaceById[previousThreadId] = workspace;
       _threadViewCache.remove(previousThreadId);
     }
     activeThreadId = null;
@@ -2432,6 +2618,7 @@ class CodexController extends ChangeNotifier {
       // row so the sidebar can still identify and show the active task.
       _ensureActiveThreadVisible(threadId, text);
       _runningThreadIds.add(threadId);
+      _threadWorkspaceById[threadId] = workspace;
       await refreshThreads();
       _acknowledgedCompletedThreadIds.remove(threadId);
       _updateThreadStatus(threadId, 'active');
@@ -2456,6 +2643,9 @@ class CodexController extends ChangeNotifier {
       return true;
     } catch (error) {
       _runningThreadIds.remove(requestedThreadId);
+      if (requestedThreadId != null) {
+        _threadWorkspaceById.remove(requestedThreadId);
+      }
       final failedSubmission = requestedThreadId == null
           ? null
           : _runningTurnSubmissions.remove(requestedThreadId);
@@ -2504,6 +2694,7 @@ class CodexController extends ChangeNotifier {
     _retryingFailedTurnThreadId = threadId;
     _runningTurnSubmissions[threadId] = submission;
     _runningThreadIds.add(threadId);
+    _threadWorkspaceById[threadId] = submission.workspace;
     status = RuntimeStatus.running;
     lastError = null;
     _clearFileChanges();
@@ -2528,6 +2719,7 @@ class CodexController extends ChangeNotifier {
       return true;
     } catch (error) {
       _runningThreadIds.remove(threadId);
+      _threadWorkspaceById.remove(threadId);
       _runningTurnSubmissions.remove(threadId);
       final message = _messageOf(error);
       _failedTurnRetries[threadId] = _FailedTurnRetry(
@@ -2849,6 +3041,7 @@ class CodexController extends ChangeNotifier {
       _clearRuntimeResolvedConfiguration();
       status = RuntimeStatus.stopped;
       _runningThreadIds.clear();
+      _threadWorkspaceById.clear();
       _runningTurnIdsByThread.clear();
       _pendingNetworkRetryEntriesByThread.clear();
       _runningTurnSubmissions.clear();
@@ -2857,7 +3050,9 @@ class CodexController extends ChangeNotifier {
       activeThreadId = null;
       _activeThreadAttached = false;
       _pendingApprovals.clear();
+      _pendingElicitations.clear();
       approvalResponding = false;
+      elicitationResponding = false;
       _clearStreamingState();
       _add(TimelineKind.system, '运行时连接已关闭', '应用会在需要时自动重新连接。');
     } catch (error) {
@@ -3070,6 +3265,7 @@ class CodexController extends ChangeNotifier {
     _invalidateThreadRefreshes();
     _threadViewCache.clear();
     _runningThreadIds.clear();
+    _threadWorkspaceById.clear();
     activeThreadId = null;
     _activeThreadAttached = false;
     threads = List.of(snapshot.threads);
@@ -3390,6 +3586,8 @@ class CodexController extends ChangeNotifier {
       // Its remaining output is reconstructed from authoritative history when
       // the user opens it again, just like a task started from “新对话”.
       _runningThreadIds.add(previousThreadId);
+      final workspace = workspacePath;
+      if (workspace != null) _threadWorkspaceById[previousThreadId] = workspace;
       _threadViewCache.remove(previousThreadId);
     }
     final cachedView = _cachedThreadView(thread.id);
@@ -4022,6 +4220,41 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// Responds to a structured input or URL confirmation requested by an MCP
+  /// server. Elicitations deliberately never follow the auto-approval policy.
+  Future<void> respondToElicitation({
+    required String action,
+    JsonMap? content,
+  }) async {
+    final elicitation = pendingElicitation;
+    if (elicitation == null || elicitationResponding) return;
+    if (!const {'accept', 'decline', 'cancel'}.contains(action)) return;
+
+    elicitationResponding = true;
+    notifyListeners();
+    try {
+      _server.respond(elicitation.requestId, {
+        'action': action,
+        'content': action == 'accept' ? (content ?? <String, dynamic>{}) : null,
+      });
+      if (elicitation.threadId == null ||
+          elicitation.threadId == activeThreadId) {
+        _add(
+          TimelineKind.system,
+          action == 'accept' ? '已提交 MCP 输入' : '已取消 MCP 输入请求',
+          elicitation.serverName,
+        );
+      }
+      _pendingElicitations.remove(elicitation.requestId);
+    } catch (error) {
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, 'MCP 输入响应失败', lastError!);
+    } finally {
+      elicitationResponding = false;
+      notifyListeners();
+    }
+  }
+
   /// 更新并持久化审批策略；自动模式会立即处理之后收到的审批请求。
   /// Updates and persists the approval policy; auto mode immediately handles later approval requests.
   Future<void> setApprovalMode(ApprovalMode mode) async {
@@ -4062,6 +4295,28 @@ class CodexController extends ChangeNotifier {
   void _handleServerEvent(ServerEvent event) {
     if (_disposed) return;
     if (event.isServerRequest) {
+      if (event.method == 'mcpServer/elicitation/request') {
+        final elicitation = PendingElicitation.fromEvent(event);
+        if (elicitation == null) {
+          // A malformed or unsupported schema must not be presented as an
+          // incomplete form. Declining keeps the interrupted MCP turn from
+          // waiting indefinitely without granting anything.
+          _server.respond(event.requestId!, {
+            'action': 'decline',
+            'content': null,
+          });
+          _add(TimelineKind.error, '无法显示 MCP 输入请求', '请求格式不受支持。');
+        } else {
+          _pendingElicitations[elicitation.requestId] = elicitation;
+          elicitationResponding = false;
+          if (elicitation.threadId == null ||
+              elicitation.threadId == activeThreadId) {
+            _add(TimelineKind.approval, elicitation.title, elicitation.message);
+          }
+        }
+        notifyListeners();
+        return;
+      }
       final approval = PendingApproval.fromEvent(event);
       if (approval == null) {
         _server.respondError(event.requestId!, '此客户端暂不支持 ${event.method}。');
@@ -4185,16 +4440,15 @@ class CodexController extends ChangeNotifier {
         } else {
           _handleBackgroundTurnCompleted(event.params);
         }
-        unawaited(
-          refreshThreads(
-            reconcileUnidentifiedBackgroundCompletion:
-                backgroundCompletionNeedsReconciliation,
-            unidentifiedCompletionStatus:
-                backgroundCompletionNeedsReconciliation
-                ? _completionStatusFromParams(event.params)
-                : null,
-          ),
-        );
+        if (backgroundCompletionNeedsReconciliation) {
+          unawaited(
+            _reconcileUnidentifiedCompletionAcrossWorkspaces(
+              _completionStatusFromParams(event.params),
+            ),
+          );
+        } else {
+          unawaited(refreshThreads());
+        }
       case 'thread/archived':
         // The archive notification makes an empty active list authoritative.
         // Do not let stale local session metadata restore the archived task.
@@ -4225,19 +4479,24 @@ class CodexController extends ChangeNotifier {
         _runningTurnIdsByThread.clear();
         status = RuntimeStatus.failed;
         _runningThreadIds.clear();
+        _threadWorkspaceById.clear();
         // The next runtime process must attach the retained thread again.
         _activeThreadAttached = false;
         lastError = 'Codex runtime 已退出（code ${event.params['code']}）。';
         _updateThreadStatus(activeThreadId, 'systemError');
         _pendingApprovals.clear();
+        _pendingElicitations.clear();
         approvalResponding = false;
+        elicitationResponding = false;
         _clearStreamingState();
         _recordRuntimeLog(lastError!, level: RuntimeLogLevel.error);
         _add(TimelineKind.error, '运行时已断开', lastError!);
         _scheduleRuntimeReconnect();
       case 'serverRequest/resolved':
         _pendingApprovals.remove(event.params['requestId']);
+        _pendingElicitations.remove(event.params['requestId']);
         approvalResponding = false;
+        elicitationResponding = false;
       case 'skills/changed':
         unawaited(refreshSkills(forceReload: true));
       // Unrecognized notifications are protocol implementation details. In
@@ -4478,7 +4737,10 @@ class CodexController extends ChangeNotifier {
       completionOutcome,
       failedTurnError,
     );
-    if (completedThreadId != null) _runningThreadIds.remove(completedThreadId);
+    if (completedThreadId != null) {
+      _runningThreadIds.remove(completedThreadId);
+      _threadWorkspaceById.remove(completedThreadId);
+    }
     // A task opened from read-only history cannot accept a new turn while its
     // writer is active. The finished turn releases that restriction.
     if (completedThreadId != null) _activeThreadAttached = true;
@@ -4527,6 +4789,7 @@ class CodexController extends ChangeNotifier {
   void _handleBackgroundTurnCompleted(JsonMap params) {
     final threadId = _threadIdFromEvent(params);
     if (threadId == null || !_runningThreadIds.remove(threadId)) return;
+    final ownerWorkspace = _threadWorkspaceById.remove(threadId);
     final completionStatus = _completionStatusFromParams(params);
     final completionOutcome = _turnCompletionOutcome(completionStatus);
     final turn = params['turn'];
@@ -4538,17 +4801,133 @@ class CodexController extends ChangeNotifier {
         : 'Codex 未能完成当前任务。';
     _recordTurnCompletionRetry(threadId, completionOutcome, failedTurnError);
     _threadViewCache.remove(threadId);
-    _updateThreadStatus(
-      threadId,
-      completionOutcome == _TurnCompletionOutcome.failed
-          ? 'systemError'
-          : 'idle',
-    );
-    _setCompletionReminder(
-      threadId,
-      visible: completionOutcome == _TurnCompletionOutcome.succeeded,
-    );
+    final completedStatus = completionOutcome == _TurnCompletionOutcome.failed
+        ? 'systemError'
+        : 'idle';
+    final showReminder = completionOutcome == _TurnCompletionOutcome.succeeded;
+    if (ownerWorkspace != null && ownerWorkspace != workspacePath) {
+      unawaited(
+        _persistInactiveWorkspaceCompletion(
+          workspace: ownerWorkspace,
+          threadId: threadId,
+          status: completedStatus,
+          showReminder: showReminder,
+        ),
+      );
+    } else {
+      _updateThreadStatus(threadId, completedStatus);
+      _setCompletionReminder(threadId, visible: showReminder);
+    }
     _clearPendingApprovalsForThread(threadId);
+  }
+
+  /// Writes a background completion into the task's owning project instead of
+  /// mutating whichever project happens to be visible when the event arrives.
+  Future<void> _persistInactiveWorkspaceCompletion({
+    required String workspace,
+    required String threadId,
+    required String status,
+    required bool showReminder,
+  }) {
+    final previousSave =
+        _inactiveWorkspaceCompletionQueues[workspace] ?? Future<void>.value();
+    final nextSave = () async {
+      try {
+        await previousSave;
+      } catch (_) {
+        // The next completion still needs a fresh snapshot after an older
+        // persistence failure.
+      }
+      await _serializeWorkspaceOperation(
+        () => _persistInactiveWorkspaceCompletionNow(
+          workspace: workspace,
+          threadId: threadId,
+          status: status,
+          showReminder: showReminder,
+        ),
+      );
+    }();
+    _inactiveWorkspaceCompletionQueues[workspace] = nextSave;
+    return nextSave.whenComplete(() {
+      if (identical(_inactiveWorkspaceCompletionQueues[workspace], nextSave)) {
+        _inactiveWorkspaceCompletionQueues.remove(workspace);
+      }
+    });
+  }
+
+  Future<void> _persistInactiveWorkspaceCompletionNow({
+    required String workspace,
+    required String threadId,
+    required String status,
+    required bool showReminder,
+  }) async {
+    try {
+      final historyKey = _historyKeyFor(workspace);
+      var snapshot = await _conversationHistoryStore.read(historyKey);
+      if (snapshot == null && historyKey != workspace) {
+        snapshot = await _conversationHistoryStore.read(workspace);
+      }
+      if (_disposed || snapshot == null) return;
+      // The user may have selected the owner while encrypted history was
+      // loading. Apply the result to the live view in that case.
+      if (workspacePath == workspace) {
+        _updateThreadStatus(threadId, status);
+        _setCompletionReminder(threadId, visible: showReminder);
+        if (activeThreadId == threadId && status != 'active') {
+          this.status = RuntimeStatus.ready;
+          _activeThreadAttached = true;
+          _clearStreamingState();
+        }
+        notifyListeners();
+        return;
+      }
+      final acknowledged = Set<String>.of(
+        snapshot.acknowledgedCompletedThreadIds,
+      );
+      if (showReminder) {
+        acknowledged.remove(threadId);
+      } else {
+        acknowledged.add(threadId);
+      }
+      final nextThreads = snapshot.threads
+          .map(
+            (thread) => thread.id == threadId
+                ? thread.copyWith(status: status)
+                : thread,
+          )
+          .toList(growable: false);
+      final next = ConversationHistorySnapshot(
+        threads: nextThreads,
+        archivedThreads: snapshot.archivedThreads,
+        entries: snapshot.entries,
+        fileChanges: snapshot.fileChanges,
+        pinnedThreadIds: snapshot.pinnedThreadIds,
+        acknowledgedCompletedThreadIds: acknowledged,
+        turnDiff: snapshot.turnDiff,
+        activeThreadId: snapshot.activeThreadId,
+        ownedThreadIds: snapshot.ownedThreadIds,
+        historyInitialized: snapshot.historyInitialized,
+      );
+      await _conversationHistoryStore.save(
+        workspace: historyKey,
+        snapshot: next,
+      );
+      if (_disposed || workspacePath == workspace) return;
+      _workspaceTaskListLoadEpoch++;
+      _workspaceTaskLists[workspace] = WorkspaceTaskList(
+        threads: List.unmodifiable(nextThreads),
+        pinnedIds: Set.unmodifiable(next.pinnedThreadIds),
+        acknowledgedIds: Set.unmodifiable(acknowledged),
+      );
+      notifyListeners();
+    } catch (error) {
+      if (_disposed) return;
+      _recordRuntimeLog(
+        '无法保存后台项目任务完成状态：${_messageOf(error)}',
+        level: RuntimeLogLevel.error,
+      );
+      notifyListeners();
+    }
   }
 
   void _recordTurnCompletionRetry(
@@ -4610,10 +4989,13 @@ class CodexController extends ChangeNotifier {
         .toList(growable: false);
     for (final threadId in completedIds) {
       _runningThreadIds.remove(threadId);
+      _threadWorkspaceById.remove(threadId);
       _threadViewCache.remove(threadId);
       final serverStatus = serverThreadById[threadId]?.status;
       final completionStatus = completedIds.length == 1
-          ? eventCompletionStatus ?? serverStatus
+          ? eventCompletionStatus?.trim().isNotEmpty == true
+                ? eventCompletionStatus
+                : serverStatus
           : serverStatus;
       final completionOutcome = _turnCompletionOutcome(completionStatus);
       _recordTurnCompletionRetry(
@@ -4632,6 +5014,86 @@ class CodexController extends ChangeNotifier {
         visible: completionOutcome == _TurnCompletionOutcome.succeeded,
       );
       _clearPendingApprovalsForThread(threadId);
+    }
+  }
+
+  /// Reconciles an ID-less completion against every project that owns a
+  /// running task. Refreshing only the foreground cwd cannot observe a turn
+  /// that continued in another project after a workspace switch.
+  Future<void> _reconcileUnidentifiedCompletionAcrossWorkspaces(
+    String eventCompletionStatus,
+  ) => _serializeWorkspaceOperation(
+    () => _reconcileUnidentifiedCompletionAcrossWorkspacesNow(
+      eventCompletionStatus,
+    ),
+  );
+
+  Future<void> _reconcileUnidentifiedCompletionAcrossWorkspacesNow(
+    String eventCompletionStatus,
+  ) async {
+    if (_disposed) return;
+    final activeWorkspace = workspacePath;
+    final inactiveWorkspaces = _runningThreadIds
+        .map((threadId) => _threadWorkspaceById[threadId])
+        .whereType<String>()
+        .where((workspace) => workspace != activeWorkspace)
+        .toSet();
+    final reconciliations = <Future<void>>[
+      refreshThreads(
+        reconcileUnidentifiedBackgroundCompletion: true,
+        unidentifiedCompletionStatus: eventCompletionStatus,
+      ),
+      ...inactiveWorkspaces.map(
+        (workspace) => _reconcileUnidentifiedCompletionForInactiveWorkspace(
+          workspace: workspace,
+          eventCompletionStatus: eventCompletionStatus,
+        ),
+      ),
+    ];
+    await Future.wait(reconciliations);
+  }
+
+  Future<void> _reconcileUnidentifiedCompletionForInactiveWorkspace({
+    required String workspace,
+    required String eventCompletionStatus,
+  }) async {
+    try {
+      final serverThreads = (await _server.listThreads(
+        workingDirectory: workspace,
+      )).map(CodexThread.fromJson).toList(growable: false);
+      if (_disposed || !_server.isRunning) return;
+      final serverThreadById = {
+        for (final thread in serverThreads) thread.id: thread,
+      };
+      final completedIds = _runningThreadIds
+          .where(
+            (threadId) =>
+                _threadWorkspaceById[threadId] == workspace &&
+                _isTerminalThreadStatus(serverThreadById[threadId]?.status),
+          )
+          .toList(growable: false);
+      for (final threadId in completedIds) {
+        final serverStatus = serverThreadById[threadId]?.status;
+        _handleBackgroundTurnCompleted({
+          'threadId': threadId,
+          'turn': {
+            'threadId': threadId,
+            'status': completedIds.length == 1
+                ? eventCompletionStatus.trim().isNotEmpty
+                      ? eventCompletionStatus
+                      : serverStatus
+                : serverStatus,
+          },
+        });
+      }
+      if (!_disposed && completedIds.isNotEmpty) notifyListeners();
+    } catch (error) {
+      if (_disposed) return;
+      _recordRuntimeLog(
+        '无法对账后台项目任务完成状态：${_messageOf(error)}',
+        level: RuntimeLogLevel.error,
+      );
+      notifyListeners();
     }
   }
 
@@ -4711,7 +5173,11 @@ class CodexController extends ChangeNotifier {
     _pendingApprovals.removeWhere(
       (_, approval) => approval.threadId == threadId,
     );
+    _pendingElicitations.removeWhere(
+      (_, elicitation) => elicitation.threadId == threadId,
+    );
     approvalResponding = false;
+    elicitationResponding = false;
   }
 
   /// Updates a cached task status immediately after a turn changes outcome.
@@ -6945,6 +7411,11 @@ class CodexController extends ChangeNotifier {
   Future<void> _saveConversationHistory() async {
     final workspace = workspacePath;
     if (workspace == null || _disposed) return;
+    // Resolve the owning project while this snapshot is captured. The save is
+    // serialized and may run after a workspace switch; consulting the mutable
+    // current project ID inside the queued closure can write the old
+    // workspace's messages into the newly selected project's history.
+    final historyKey = _historyKeyFor(workspace);
     _historySaveTimer?.cancel();
     _historySaveTimer = null;
     final snapshot = _conversationHistorySnapshot();
@@ -6956,7 +7427,7 @@ class CodexController extends ChangeNotifier {
         // A failed older save must not prevent a newer snapshot from writing.
       }
       await _conversationHistoryStore.save(
-        workspace: _historyKeyFor(workspace),
+        workspace: historyKey,
         snapshot: snapshot,
       );
     }();
@@ -7146,7 +7617,12 @@ class CodexController extends ChangeNotifier {
   String _newWorkspaceProjectId() =>
       'project-${DateTime.now().microsecondsSinceEpoch}-${_workspaceConfigurations.length}';
 
-  String _historyKeyFor(String workspace) => _workspaceProjectId ?? workspace;
+  String _historyKeyFor(String workspace) {
+    final configuration = _workspaceConfigurations
+        .where((value) => value.primaryPath == workspace)
+        .firstOrNull;
+    return configuration?.id ?? workspace;
+  }
 
   /// 创建带有当前时间戳的时间线条目。
   /// Creates a timeline entry stamped with the current time.

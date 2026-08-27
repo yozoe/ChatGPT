@@ -215,7 +215,12 @@ class CodexAppServer {
       // `thread/start.runtimeWorkspaceRoots` is an experimental App Server
       // field. Opt in during the handshake so additional workspace directories
       // can be passed to newly created threads without a protocol rejection.
-      'capabilities': {'experimentalApi': true},
+      'capabilities': {
+        'experimentalApi': true,
+        // Allows connected MCP servers to use the structured OpenAI form
+        // variant of mcpServer/elicitation/request.
+        'mcpServerOpenaiFormElicitation': true,
+      },
     });
     _throwIfError(response);
     notify('initialized');
