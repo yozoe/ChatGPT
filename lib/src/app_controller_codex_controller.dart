@@ -1720,9 +1720,11 @@ class CodexController extends ChangeNotifier {
     await resumeThread(thread);
   }
 
-  /// 保存一个可切换项目，但不改变活动工作区、任务或运行时连接。
+  /// 保存一个可切换项目，但不改变活动工作区、任务或运行时连接；首个路径为主目录，
+  /// 后续路径作为附加目录随项目保存。
   /// Saves a switchable project without changing the active workspace, tasks, or runtime connection.
-  /// Additional source folders are saved with the project for subsequent tasks.
+  /// The first path is the primary directory; subsequent paths are saved as
+  /// additional directories for later tasks.
   Future<bool> createWorkspace(
     String path, {
     String name = '',

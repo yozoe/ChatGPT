@@ -22,6 +22,7 @@ import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/domain/workspace_configuration.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/presentation/code_review/code_review_panel.dart';
+import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_timeline_activity_list.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/services/agent_markdown_link.dart';
 import 'package:chatgpt/src/services/codex_plugin_store.dart';
@@ -14221,10 +14222,45 @@ void main() {
       expect(find.text('已运行了命令并进行了搜索'), findsOneWidget);
       expect(find.text('已运行 flutter analyze'), findsNothing);
       expect(find.text('网页搜索'), findsNothing);
+      final activityList = find.byType(TimelineActivityList);
+      expect(activityList, findsOneWidget);
+      final summaryText = tester.widget<Text>(find.text('已运行了命令并进行了搜索'));
+      expect(
+        summaryText.style?.color,
+        YeknomPalette.of(tester.element(find.text('已运行了命令并进行了搜索'))).muted,
+      );
+      final disclosureArrow = find.descendant(
+        of: activityList,
+        matching: find.byType(AnimatedRotation),
+      );
+      expect(disclosureArrow, findsOneWidget);
+      expect(tester.widget<AnimatedRotation>(disclosureArrow).turns, 0);
+      final disclosureArea = find.descendant(
+        of: activityList,
+        matching: find.byType(AnimatedSize),
+      );
+      expect(disclosureArea, findsOneWidget);
+      expect(
+        tester.widget<AnimatedSize>(disclosureArea).duration,
+        const Duration(milliseconds: 180),
+      );
+      expect(
+        tester.widget<AnimatedSize>(disclosureArea).alignment,
+        Alignment.topLeft,
+      );
+      expect(
+        tester
+            .widget<SizedBox>(
+              find.byKey(const Key('timeline-activity-disclosure-area')),
+            )
+            .width,
+        double.infinity,
+      );
 
       await tester.tap(find.text('已运行了命令并进行了搜索'));
       await tester.pump();
 
+      expect(tester.widget<AnimatedRotation>(disclosureArrow).turns, 0.25);
       expect(find.text('已运行 flutter analyze'), findsOneWidget);
       expect(find.text('网页搜索'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
@@ -15101,6 +15137,7 @@ void main() {
       );
       final idleTile = find.byKey(const ValueKey('sidebar-thread-tile-idle'));
       final sidebarTaskList = find.byKey(const Key('sidebar-task-list'));
+      expect(tester.getSize(runningTile).height, 56);
       await tester.dragUntilVisible(
         runningTile,
         sidebarTaskList,

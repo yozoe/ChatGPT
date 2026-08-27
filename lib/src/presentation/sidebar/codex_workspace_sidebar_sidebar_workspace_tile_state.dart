@@ -44,7 +44,7 @@ class SidebarWorkspaceTileState extends State<SidebarWorkspaceTile> {
             onTap: widget.active || !widget.enabled ? null : widget.onTap,
             borderRadius: BorderRadius.circular(12),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 2),
               child: Row(
                 children: [
                   Icon(

@@ -20,6 +20,8 @@ class TimelineActivityList extends StatelessWidget {
   final bool expanded;
   final ValueChanged<bool> onExpandedChanged;
 
+  static const _animationDuration = Duration(milliseconds: 180);
+
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
@@ -51,27 +53,50 @@ class TimelineActivityList extends StatelessWidget {
                       summary,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        color: palette.trace,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: palette.muted,
                         fontWeight: FontWeight.w600,
                         letterSpacing: -0.1,
                       ),
                     ),
                   ),
                   const SizedBox(width: 4),
-                  Icon(
-                    expanded ? Icons.expand_less : Icons.expand_more,
-                    size: 19,
-                    color: palette.muted,
+                  AnimatedRotation(
+                    turns: expanded ? 0.25 : 0,
+                    duration: _animationDuration,
+                    curve: Curves.easeOutCubic,
+                    child: Icon(
+                      Icons.chevron_right,
+                      size: 17,
+                      color: palette.faint,
+                    ),
                   ),
                 ],
               ),
             ),
           ),
-          if (expanded) ...[
-            const SizedBox(height: 5),
-            for (final entry in entries) TimelineActivityRow(entry: entry),
-          ],
+          AnimatedSize(
+            duration: _animationDuration,
+            curve: Curves.easeOutCubic,
+            // Keep the disclosure at its final width in both states so the
+            // transition reveals only vertically, matching Codex's timeline.
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              key: const Key('timeline-activity-disclosure-area'),
+              width: double.infinity,
+              child: expanded
+                  ? Padding(
+                      padding: const EdgeInsets.only(top: 5),
+                      child: Column(
+                        children: [
+                          for (final entry in entries)
+                            TimelineActivityRow(entry: entry),
+                        ],
+                      ),
+                    )
+                  : const SizedBox.shrink(),
+            ),
+          ),
         ],
       ),
     );

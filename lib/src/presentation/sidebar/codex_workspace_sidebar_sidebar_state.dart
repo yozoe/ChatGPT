@@ -515,18 +515,12 @@ class SidebarState extends State<Sidebar> {
       addTaskListItem(2, () => const SizedBox(height: 2));
       for (final thread in pinnedThreads) {
         addTaskListItem(
-          49,
-          () => Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _buildThreadNode(
-                controller,
-                thread,
-                workspacePath: activePath!,
-                pinned: true,
-              ),
-              const SizedBox(height: 1),
-            ],
+          32,
+          () => _buildThreadNode(
+            controller,
+            thread,
+            workspacePath: activePath!,
+            pinned: true,
           ),
         );
       }
@@ -538,7 +532,7 @@ class SidebarState extends State<Sidebar> {
       final projectThreads = workspaceProjectThreadsByPath[workspacePath]!;
       final projectAllThreads = workspaceThreadsByPath[workspacePath]!;
       addTaskListItem(
-        40,
+        32,
         () => SidebarWorkspaceTile(
           key: ValueKey('sidebar-workspace-$workspacePath'),
           workspace: workspace,
@@ -583,19 +577,15 @@ class SidebarState extends State<Sidebar> {
           } else {
             for (final thread in projectThreads) {
               addTaskListItem(
-                _batchMode ? 57 : 49,
-                () => Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _buildThreadNode(
-                      controller,
-                      thread,
-                      isActiveWorkspace: true,
-                      workspacePath: workspacePath,
-                      pinned: controller.isThreadPinned(thread.id),
-                    ),
-                    const SizedBox(height: 1),
-                  ],
+                // The batch checkbox keeps a 48px tap target inside the
+                // task's 4px vertical padding, so the row needs 56px.
+                _batchMode ? 56 : 32,
+                () => _buildThreadNode(
+                  controller,
+                  thread,
+                  isActiveWorkspace: true,
+                  workspacePath: workspacePath,
+                  pinned: controller.isThreadPinned(thread.id),
                 ),
               );
             }
@@ -609,20 +599,14 @@ class SidebarState extends State<Sidebar> {
               const <String>{};
           for (final thread in projectThreads) {
             addTaskListItem(
-              49,
-              () => Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _buildThreadNode(
-                    controller,
-                    thread,
-                    isActiveWorkspace: false,
-                    workspacePath: workspacePath,
-                    pinned: pinnedIds.contains(thread.id),
-                    acknowledged: acknowledgedIds.contains(thread.id),
-                  ),
-                  const SizedBox(height: 1),
-                ],
+              32,
+              () => _buildThreadNode(
+                controller,
+                thread,
+                isActiveWorkspace: false,
+                workspacePath: workspacePath,
+                pinned: pinnedIds.contains(thread.id),
+                acknowledged: acknowledgedIds.contains(thread.id),
               ),
             );
           }

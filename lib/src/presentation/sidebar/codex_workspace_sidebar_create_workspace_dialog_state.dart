@@ -20,8 +20,8 @@ class CreateWorkspaceDialogState extends State<CreateWorkspaceDialog> {
     super.dispose();
   }
 
-  /// 打开系统目录选择器并更新弹窗中的源文件夹。
-  /// Opens the native directory picker and updates the source folder in the dialog.
+  /// 打开系统目录选择器并向弹窗追加一个源文件夹。
+  /// Opens the native directory picker and appends a source folder to the dialog.
   Future<void> _chooseDirectory() async {
     try {
       final path = await getDirectoryPath(
@@ -37,8 +37,8 @@ class CreateWorkspaceDialogState extends State<CreateWorkspaceDialog> {
     }
   }
 
-  /// 接收桌面拖入的目录；文件或空路径会被拒绝并提示用户。
-  /// Accepts a desktop-dropped directory and rejects files or empty paths with feedback.
+  /// 接收桌面拖入的一个或多个目录；文件或空路径会被拒绝并提示用户。
+  /// Accepts one or more desktop-dropped directories and rejects files or empty paths with feedback.
   void _acceptDroppedDirectories(List<DropItem> items) {
     final directories = items
         .whereType<DropItemDirectory>()
@@ -55,6 +55,8 @@ class CreateWorkspaceDialogState extends State<CreateWorkspaceDialog> {
     _appendDirectories(directories);
   }
 
+  /// 追加非空且不重复的目录路径，并保持用户选择顺序。
+  /// Appends unique, non-empty folder paths while preserving selection order.
   void _appendDirectories(Iterable<String> paths) {
     final additions = paths
         .map((path) => path.trim())
@@ -64,13 +66,13 @@ class CreateWorkspaceDialogState extends State<CreateWorkspaceDialog> {
     setState(() => _sourceDirectories.addAll(additions));
   }
 
-  /// 校验源文件夹并创建工作区，成功后关闭弹窗。
-  /// Validates the source folder, creates the workspace, and closes the dialog on success.
+  /// 校验主目录及附加目录并创建工作区，成功后关闭弹窗。
+  /// Validates the primary and additional folders, creates the workspace, and closes the dialog on success.
   Future<void> _createProject() async {
     if (_sourceDirectories.isEmpty) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('请先添加一个源文件夹。')));
+      ).showSnackBar(const SnackBar(content: Text('请先添加一个主目录。')));
       return;
     }
     setState(() => _creating = true);

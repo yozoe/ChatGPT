@@ -33,9 +33,6 @@ String workspaceDirectoryName(String path) {
   return separator < 0 ? normalized : normalized.substring(separator + 1);
 }
 
-/// Displays the Codex-style project creation flow and accepts a source folder
-/// from either the native picker or a desktop drop.
-
 /// 展示一个主目录或附加目录，并在窄窗口中安全截断路径。
 /// Displays a primary or additional directory while safely truncating its path in narrow windows.
 

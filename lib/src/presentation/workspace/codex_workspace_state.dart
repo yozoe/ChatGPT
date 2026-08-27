@@ -506,8 +506,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     });
   }
 
-  /// 打开创建项目弹窗，并把源文件夹保存为非活动项目。
-  /// Opens the create-project dialog and saves its source folder as an inactive project.
+  /// 打开创建项目弹窗，并把主目录及附加目录保存为非活动项目。
+  /// Opens the create-project dialog and saves its primary and additional folders as an inactive project.
   Future<void> _createWorkspace() async {
     await showDialog<void>(
       context: context,
