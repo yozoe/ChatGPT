@@ -3909,18 +3909,28 @@ class CodexController extends ChangeNotifier {
 
   /// 对当前服务器审批请求作出允许或拒绝的答复。
   /// Answers the current server approval request by allowing or declining it.
-  Future<void> respondToApproval({required bool accepted}) async {
+  Future<void> respondToApproval({
+    required bool accepted,
+    bool allowSimilar = false,
+  }) async {
     final approval = pendingApproval;
     if (approval == null || approvalResponding) return;
 
     approvalResponding = true;
     notifyListeners();
     try {
-      _server.respond(approval.requestId, _approvalResult(approval, accepted));
+      _server.respond(
+        approval.requestId,
+        _approvalResult(approval, accepted, allowSimilar: allowSimilar),
+      );
       if (approval.threadId == null || approval.threadId == activeThreadId) {
         _add(
           TimelineKind.system,
-          accepted ? '已允许本次操作' : '已拒绝操作',
+          !accepted
+              ? '已拒绝操作'
+              : allowSimilar
+              ? '已允许类似操作'
+              : '已允许本次操作',
           approval.title,
         );
       }
@@ -4365,15 +4375,26 @@ class CodexController extends ChangeNotifier {
 
   /// 构造符合不同审批协议的允许或拒绝 JSON-RPC 结果。
   /// Builds an allow-or-deny JSON-RPC result for the relevant approval protocol.
-  JsonMap _approvalResult(PendingApproval approval, bool accepted) {
+  JsonMap _approvalResult(
+    PendingApproval approval,
+    bool accepted, {
+    bool allowSimilar = false,
+  }) {
+    final persistentApproval =
+        approval.kind == ApprovalKind.command ||
+        approval.kind == ApprovalKind.permissions;
+    final persist = accepted && allowSimilar && persistentApproval;
     return switch (approval.kind) {
-      ApprovalKind.command ||
-      ApprovalKind.fileChange => {'decision': accepted ? 'accept' : 'decline'},
+      ApprovalKind.command || ApprovalKind.fileChange => {
+        'decision': accepted
+            ? (persist ? 'acceptForSession' : 'accept')
+            : 'decline',
+      },
       ApprovalKind.permissions => {
         'permissions': accepted && approval.params['permissions'] is Map
             ? JsonMap.from(approval.params['permissions'] as Map)
             : <String, dynamic>{},
-        if (accepted) 'scope': 'turn',
+        if (accepted) 'scope': persist ? 'session' : 'turn',
       },
     };
   }

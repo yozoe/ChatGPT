@@ -1,5 +1,7 @@
 // Extracted class from codex_workspace_conversation.dart.
 // ignore_for_file: unused_import, unnecessary_import, use_key_in_widget_constructors
+import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
@@ -23,6 +25,9 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_mcp_status_panel.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_slash_command.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_slash_command_menu.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_selected_skill_chip.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_skill_details_dialog.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_context_usage_button.dart';
 
 class ComposerPanelState extends State<ComposerPanel> {
   static const _clipboardFileReader = ClipboardFileReader();
@@ -66,6 +71,39 @@ class ComposerPanelState extends State<ComposerPanel> {
 
   List<CodexSkill> get _slashSkills =>
       controller.skills.where((skill) => skill.enabled).toList(growable: false);
+
+  List<CodexSkill> get _filteredSlashSkills {
+    final query = _currentSlashQuery?.trim().toLowerCase();
+    if (query == null || query.isEmpty) return _slashSkills;
+    return _slashSkills
+        .where(
+          (skill) => [
+            skill.name,
+            skill.label,
+            skill.summary,
+            skill.description,
+          ].any((value) => value.toLowerCase().contains(query)),
+        )
+        .toList(growable: false);
+  }
+
+  ({int used, int maximum}) get _contextUsage {
+    // App Server does not currently expose token accounting in the client
+    // protocol. Keep a conservative local estimate so the affordance remains
+    // useful and updates as history, tool output, and the draft change.
+    var characters = 1000; // system instructions and protocol envelope
+    for (final entry in controller.entries) {
+      characters += entry.title.runes.length + entry.detail.runes.length;
+    }
+    characters += composer.text.runes.length;
+    for (final attachment in _attachments) {
+      characters += attachment.path.runes.length + 256;
+    }
+    for (final skill in _selectedSkills) {
+      characters += skill.name.runes.length + skill.description.runes.length;
+    }
+    return (used: (characters / 4).ceil(), maximum: 258000);
+  }
 
   bool get _hasComposerContext =>
       _attachments.isNotEmpty ||
@@ -141,7 +179,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       _slashMenuDismissed = false;
       _slashMenuSelectedIndex = 0;
     }
-    if (slashQuery == '' &&
+    if (slashQuery != null &&
         controller.skills.isEmpty &&
         !controller.skillsLoading) {
       unawaited(controller.refreshSkills());
@@ -179,7 +217,7 @@ class ComposerPanelState extends State<ComposerPanel> {
 
   bool get _showSlashMenu => _currentSlashQuery != null && !_slashMenuDismissed;
 
-  bool get _showSlashSkills => _currentSlashQuery == '';
+  bool get _showSlashSkills => _currentSlashQuery != null;
 
   List<ComposerSlashCommand> get _slashCommands => const [
     ComposerSlashCommand(
@@ -242,7 +280,7 @@ class ComposerPanelState extends State<ComposerPanel> {
 
   void _moveSlashMenuSelection(int delta) {
     final itemCount = _showSlashSkills
-        ? _slashSkills.length + _filteredSlashCommands.length
+        ? _filteredSlashSkills.length + _filteredSlashCommands.length
         : _filteredSlashCommands.length;
     if (itemCount == 0) return;
     setState(() {
@@ -274,7 +312,7 @@ class ComposerPanelState extends State<ComposerPanel> {
   GlobalKey? get _focusedSlashMenuItemKey {
     final commands = _filteredSlashCommands;
     if (_showSlashSkills) {
-      final skills = _slashSkills;
+      final skills = _filteredSlashSkills;
       final index = _slashMenuSelectedIndex.clamp(
         0,
         commands.length + skills.length - 1,
@@ -298,8 +336,9 @@ class ComposerPanelState extends State<ComposerPanel> {
 
   void _selectFocusedSlashCommand() {
     if (_showSlashSkills) {
-      final skills = _slashSkills;
+      final skills = _filteredSlashSkills;
       final commands = _filteredSlashCommands;
+      if (skills.isEmpty && commands.isEmpty) return;
       final index = _slashMenuSelectedIndex.clamp(
         0,
         skills.length + commands.length - 1,
@@ -324,6 +363,30 @@ class ComposerPanelState extends State<ComposerPanel> {
       _slashMenuDismissed = true;
     });
     composer.clear();
+  }
+
+  Future<String> _readSkillContent(CodexSkill skill) async {
+    const maximumBytes = 160000;
+    final file = File(skill.path);
+    final length = await file.length();
+    final stream = length > maximumBytes
+        ? file.openRead(0, maximumBytes)
+        : file.openRead();
+    final content = await stream
+        .transform(const Utf8Decoder(allowMalformed: true))
+        .join();
+    return length > maximumBytes ? '$content\n\n… 技能内容已截断。' : content;
+  }
+
+  void _showSkillDetails(CodexSkill skill) {
+    final content = _readSkillContent(skill);
+    unawaited(
+      showDialog<void>(
+        context: context,
+        builder: (context) =>
+            ComposerSkillDetailsDialog(skill: skill, content: content),
+      ),
+    );
   }
 
   void _dismissSlashMenu() {
@@ -953,17 +1016,20 @@ class ComposerPanelState extends State<ComposerPanel> {
           if (_showSlashMenu) ...[
             ComposerSlashCommandMenu(
               commands: _filteredSlashCommands,
-              skills: _slashSkills,
+              skills: _filteredSlashSkills,
               showSkills: _showSlashSkills,
               skillsLoading: controller.skillsLoading,
               skillsError: controller.skillsError,
+              searchQuery: _currentSlashQuery ?? '',
               commandScrollKeys: _slashCommandScrollKeys,
               skillScrollKeys: _slashSkillScrollKeys,
               selectedIndex: _slashMenuSelectedIndex.clamp(
                 0,
                 math.max(
                   0,
-                  (_showSlashSkills ? _slashSkills : _filteredSlashCommands)
+                  (_showSlashSkills
+                              ? _filteredSlashSkills
+                              : _filteredSlashCommands)
                           .length +
                       (_showSlashSkills ? _filteredSlashCommands.length : 0) -
                       1,
@@ -1221,12 +1287,9 @@ class ComposerPanelState extends State<ComposerPanel> {
                                           setState(() => _recordSkill = false),
                                     ),
                                   for (final skill in _selectedSkills)
-                                    ComposerContextChip(
-                                      key: ValueKey(
-                                        'composer-skill-chip-${skill.name}',
-                                      ),
-                                      icon: _skillIcon(skill.name),
-                                      label: skill.label,
+                                    ComposerSelectedSkillChip(
+                                      skill: skill,
+                                      onOpen: () => _showSkillDetails(skill),
                                       onRemove: () => setState(
                                         () => _selectedSkillPaths.remove(
                                           skill.path,
@@ -1381,6 +1444,16 @@ class ComposerPanelState extends State<ComposerPanel> {
                                   ],
                                   const Spacer(),
                                   if (showModel) ...[
+                                    Builder(
+                                      builder: (context) {
+                                        final usage = _contextUsage;
+                                        return ComposerContextUsageButton(
+                                          usedTokens: usage.used,
+                                          maximumTokens: usage.maximum,
+                                        );
+                                      },
+                                    ),
+                                    const SizedBox(width: 6),
                                     ComposerModelControls(
                                       controller: controller,
                                       compact: constraints.maxWidth < 430,

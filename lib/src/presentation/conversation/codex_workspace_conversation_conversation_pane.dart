@@ -37,6 +37,7 @@ class ConversationPane extends StatelessWidget {
     required this.onReview,
     required this.onUndo,
     required this.onOpenSubagent,
+    required this.onSubmitUserMessageEdit,
   });
 
   final CodexController controller;
@@ -70,6 +71,8 @@ class ConversationPane extends StatelessWidget {
   final Future<void> Function() onReview;
   final Future<void> Function() onUndo;
   final ValueChanged<TimelineEntry> onOpenSubagent;
+  final Future<bool> Function(TimelineEntry entry, String text)
+  onSubmitUserMessageEdit;
 
   /// 构建时间线、审批提示和任务输入区域。
   /// Builds the timeline, approval prompt, and task composer area.
@@ -90,14 +93,6 @@ class ConversationPane extends StatelessWidget {
               borderRadius: BorderRadius.circular(10),
             ),
             child: Text(error, style: TextStyle(color: palette.fault)),
-          ),
-        if (controller.pendingApproval case final approval?)
-          ApprovalPanel(
-            approval: approval,
-            taskLabel: controller.pendingApprovalTaskLabel,
-            enabled: controller.canRespondToApproval,
-            onAccept: () => controller.respondToApproval(accepted: true),
-            onDecline: () => controller.respondToApproval(accepted: false),
           ),
         if (controller.pendingElicitation case final elicitation?)
           ElicitationPanel(
@@ -124,9 +119,24 @@ class ConversationPane extends StatelessWidget {
             onReview: onReview,
             onUndo: onUndo,
             onOpenSubagent: onOpenSubagent,
+            onSubmitUserMessageEdit: onSubmitUserMessageEdit,
             bottomOverlay: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (controller.pendingApproval case final approval?)
+                  ApprovalPanel(
+                    approval: approval,
+                    taskLabel: controller.pendingApprovalTaskLabel,
+                    enabled: controller.canRespondToApproval,
+                    onAccept: () =>
+                        controller.respondToApproval(accepted: true),
+                    onAllowSimilar: () => controller.respondToApproval(
+                      accepted: true,
+                      allowSimilar: true,
+                    ),
+                    onDecline: () =>
+                        controller.respondToApproval(accepted: false),
+                  ),
                 if (controller.hasThreadWriterConflict)
                   ThreadOpenElsewhereNotice(
                     retrying: controller.isRetryingThreadWriterConflict,

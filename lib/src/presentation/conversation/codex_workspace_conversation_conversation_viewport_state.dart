@@ -178,6 +178,7 @@ class ConversationViewportState extends State<ConversationViewport> {
                         onReview: widget.onReview,
                         onUndo: widget.onUndo,
                         onOpenSubagent: widget.onOpenSubagent,
+                        onSubmitUserMessageEdit: widget.onSubmitUserMessageEdit,
                         canUndo:
                             page.key == widget.activeTimelinePageKey &&
                             widget.controller.canUndoFileChanges,

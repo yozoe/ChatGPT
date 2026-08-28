@@ -38,7 +38,7 @@ class TimelineActivityList extends StatelessWidget {
             onTap: () => onExpandedChanged(!expanded),
             borderRadius: BorderRadius.circular(8),
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(2, 4, 6, 4),
+              padding: const EdgeInsets.fromLTRB(2, 2, 6, 2),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -86,7 +86,7 @@ class TimelineActivityList extends StatelessWidget {
               width: double.infinity,
               child: expanded
                   ? Padding(
-                      padding: const EdgeInsets.only(top: 5),
+                      padding: const EdgeInsets.only(top: 3),
                       child: Column(
                         children: [
                           for (final entry in entries)

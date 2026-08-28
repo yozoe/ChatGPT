@@ -12,6 +12,7 @@ class ComposerSlashCommandMenu extends StatelessWidget {
     required this.showSkills,
     required this.skillsLoading,
     required this.skillsError,
+    required this.searchQuery,
     required this.commandScrollKeys,
     required this.skillScrollKeys,
     required this.selectedIndex,
@@ -24,6 +25,7 @@ class ComposerSlashCommandMenu extends StatelessWidget {
   final bool showSkills;
   final bool skillsLoading;
   final String? skillsError;
+  final String searchQuery;
   final Map<ComposerSlashCommandKind, GlobalKey> commandScrollKeys;
   final Map<String, GlobalKey> skillScrollKeys;
   final int selectedIndex;
@@ -72,6 +74,22 @@ class ComposerSlashCommandMenu extends StatelessWidget {
   }
 
   Widget _buildSkills(BuildContext context, YeknomPalette palette) {
+    final hasSearchQuery = searchQuery.trim().isNotEmpty;
+    if (!skillsLoading &&
+        skillsError == null &&
+        hasSearchQuery &&
+        commands.isEmpty &&
+        skills.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.all(16),
+        child: Text(
+          '没有匹配的技能或快捷指令',
+          style: Theme.of(
+            context,
+          ).textTheme.bodySmall?.copyWith(color: palette.muted),
+        ),
+      );
+    }
     return SingleChildScrollView(
       key: const Key('composer-slash-skill-list'),
       padding: const EdgeInsets.fromLTRB(6, 6, 6, 8),
@@ -79,29 +97,32 @@ class ComposerSlashCommandMenu extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           const SizedBox(height: 2),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(9, 4, 9, 5),
-            child: Text(
-              '快捷指令',
-              style: TextStyle(color: palette.muted, fontSize: 12),
+          if (commands.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(9, 4, 9, 5),
+              child: Text(
+                '快捷指令',
+                style: TextStyle(color: palette.muted, fontSize: 12),
+              ),
             ),
-          ),
           for (var index = 0; index < commands.length; index++)
             _buildCommandRow(context, palette, commands[index], index),
-          const SizedBox(height: 5),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(9, 4, 9, 5),
-            child: Text(
-              '技能',
-              style: TextStyle(color: palette.muted, fontSize: 12),
+          if (commands.isNotEmpty && (skills.isNotEmpty || skillsLoading))
+            const SizedBox(height: 5),
+          if (skills.isNotEmpty || skillsLoading || !hasSearchQuery)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(9, 4, 9, 5),
+              child: Text(
+                '技能',
+                style: TextStyle(color: palette.muted, fontSize: 12),
+              ),
             ),
-          ),
           if (skillsLoading && skills.isEmpty)
             const Padding(
               padding: EdgeInsets.all(12),
               child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
             )
-          else if (skills.isEmpty)
+          else if (skills.isEmpty && !hasSearchQuery)
             Padding(
               padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
               child: Text(

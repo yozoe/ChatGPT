@@ -28,6 +28,7 @@ class ConversationTimeline extends StatelessWidget {
     required this.canUndo,
     required this.undoRunning,
     required this.onOpenSubagent,
+    this.onSubmitUserMessageEdit,
     super.key,
   });
 
@@ -49,6 +50,8 @@ class ConversationTimeline extends StatelessWidget {
   final bool canUndo;
   final bool undoRunning;
   final ValueChanged<TimelineEntry> onOpenSubagent;
+  final Future<bool> Function(TimelineEntry entry, String text)?
+  onSubmitUserMessageEdit;
 
   @override
   Widget build(BuildContext context) {
@@ -246,6 +249,9 @@ class ConversationTimeline extends StatelessWidget {
                 workspacePath: pageKey.workspace,
                 streaming: entry.id == streamingAgentEntryId,
                 onOpenSubagent: onOpenSubagent,
+                onSubmitUserMessageEdit: active
+                    ? onSubmitUserMessageEdit
+                    : null,
               );
             },
           ),

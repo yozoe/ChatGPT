@@ -1826,6 +1826,16 @@ void main() {
     );
 
     expect(find.byKey(const Key('composer-model-controls')), findsOneWidget);
+    expect(
+      find.byKey(const Key('composer-context-usage-button')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const Key('composer-context-usage-button')));
+    await tester.pumpAndSettle();
+    expect(find.text('背景信息窗口（估算）：'), findsOneWidget);
+    expect(find.textContaining('共约 258k'), findsOneWidget);
+    await tester.tapAt(Offset.zero);
+    await tester.pump();
     final composerField = tester.widget<TextField>(
       find.byKey(const Key('composer-field')),
     );
@@ -1941,11 +1951,11 @@ void main() {
           )
           ..workspacePath = '/workspace'
           ..status = RuntimeStatus.ready
-          ..skills = const [
+          ..skills = [
             CodexSkill(
               name: 'browser',
               path: '/skills/browser',
-              description: '控制内置浏览器以完成本地开发任务',
+              description: '控制内置浏览器以完成本地开发任务。\n' * 80,
               enabled: true,
               scope: 'user',
               displayName: 'Browser',
@@ -1979,6 +1989,17 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
     expect(find.byKey(const Key('composer-workspace-chip')), findsOneWidget);
+    await tester.enterText(field, '/bro');
+    await tester.pump();
+    expect(find.byKey(const Key('composer-slash-menu')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('composer-slash-skill-browser')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('composer-slash-command-codeReview')),
+      findsNothing,
+    );
     await tester.enterText(field, '/');
     await tester.pump();
     final browserSkill = find.byKey(
@@ -1995,6 +2016,21 @@ void main() {
     expect(
       find.byKey(const ValueKey('composer-skill-chip-browser')),
       findsOneWidget,
+    );
+    await tester.tap(find.byKey(const ValueKey('composer-skill-chip-browser')));
+    await tester.pump();
+    expect(
+      find.byKey(const Key('composer-skill-details-dialog')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('控制内置浏览器以完成本地开发任务'), findsOneWidget);
+    expect(find.text('个人技能'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.byKey(const Key('composer-skill-details-close')));
+    await tester.pump();
+    expect(
+      find.byKey(const Key('composer-skill-details-dialog')),
+      findsNothing,
     );
 
     await tester.enterText(field, '/目标');
@@ -4506,6 +4542,37 @@ void main() {
       },
     ]);
     expect(controller.pendingApproval, isNull);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/commandExecution/requestApproval',
+        requestId: 43,
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'reason': '需要重复执行同类命令',
+          'command': 'touch demo.txt',
+        },
+      ),
+    );
+    await controller.respondToApproval(accepted: true, allowSimilar: true);
+    expect(writes.last, {
+      'id': 43,
+      'result': {'decision': 'acceptForSession'},
+    });
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/fileChange/requestApproval',
+        requestId: 44,
+        params: {'threadId': 'thread-1', 'turnId': 'turn-1'},
+      ),
+    );
+    await controller.respondToApproval(accepted: true, allowSimilar: true);
+    expect(writes.last, {
+      'id': 44,
+      'result': {'decision': 'accept'},
+    });
     controller.dispose();
   });
 
@@ -9159,6 +9226,71 @@ void main() {
     expect(find.text('搜索文件'), findsOneWidget);
   });
 
+  testWidgets('centers task title vertically within its sidebar row', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..threads = [_thread(id: 'vertical-center-task')];
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final tile = find.byKey(
+      const ValueKey('sidebar-thread-tile-vertical-center-task'),
+    );
+    final title = find.byKey(
+      const ValueKey('sidebar-thread-title-fade-vertical-center-task'),
+    );
+    final tileRect = tester.getRect(tile);
+    final titleRect = tester.getRect(title);
+    expect(titleRect.center.dy, closeTo(tileRect.center.dy, 0.5));
+    expect(tileRect.height, closeTo(32, 0.1));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('renders permission approval as a Codex floating action card', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/permissions/requestApproval',
+        requestId: 99,
+        params: {
+          'threadId': 'thread-approval',
+          'reason': '是否允许在工作区之外创建演示文件？',
+          'command': 'touch /tmp/codex-approval-demo.txt',
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(find.byKey(const Key('approval-panel')), findsOneWidget);
+    expect(find.text('权限请求'), findsOneWidget);
+    expect(find.text('允许一次'), findsOneWidget);
+    expect(find.text('拒绝  Esc'), findsOneWidget);
+    expect(find.text('touch /tmp/codex-approval-demo.txt'), findsOneWidget);
+    expect(
+      tester.getRect(find.byKey(const Key('approval-panel'))).bottom,
+      lessThanOrEqualTo(
+        tester.getRect(find.byKey(const Key('composer-panel'))).top,
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('approval-more-options')));
+    await tester.pumpAndSettle();
+    expect(find.text('允许类似操作'), findsOneWidget);
+    await tester.tap(find.text('允许类似操作'));
+    await tester.pump();
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'shows task hover shortcuts and opens task actions on right click',
     (tester) async {
@@ -12336,6 +12468,7 @@ void main() {
     final controller = CodexController(server: server)
       ..workspacePath = '/workspace'
       ..status = RuntimeStatus.ready;
+    expect(controller.canSend, isTrue);
     expect(await controller.sendPrompt('主动停止'), isTrue);
 
     controller.handleServerEventForTesting(
@@ -13228,66 +13361,133 @@ void main() {
     },
   );
 
-  testWidgets(
-    'shows a user-message timestamp only while its bubble is hovered',
-    (tester) async {
-      final controller = CodexController(server: CodexAppServer())
-        ..workspacePath = '/workspace';
-      controller.replaceTimelineEntriesForTesting([
-        TimelineEntry(
-          kind: TimelineKind.user,
-          title: '你',
-          detail: 'review代码',
-          createdAt: DateTime(2026, 8, 25, 8, 53),
-        ),
-        TimelineEntry(
-          kind: TimelineKind.agent,
-          title: 'Codex',
-          detail: '后续回复保持原位。',
-          createdAt: DateTime(2026, 8, 25, 8, 54),
-        ),
-      ]);
-      await tester.pumpWidget(
-        MaterialApp(home: CodexWorkspace(controller: controller)),
-      );
+  testWidgets('shows user-message actions only while its bubble is hovered', (
+    tester,
+  ) async {
+    var copiedText = '';
+    final messenger = tester.binding.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') {
+        copiedText =
+            (call.arguments as Map<Object?, Object?>)['text']! as String;
+      }
+      return null;
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace';
+    controller.replaceTimelineEntriesForTesting([
+      TimelineEntry(
+        kind: TimelineKind.user,
+        title: '你',
+        detail: 'review代码',
+        createdAt: DateTime(2026, 8, 25, 8, 53),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.agent,
+        title: 'Codex',
+        detail: '后续回复保持原位。',
+        createdAt: DateTime(2026, 8, 25, 8, 54),
+      ),
+    ]);
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
 
-      expect(find.byKey(const Key('timeline-user-message-time')), findsNothing);
-      final hoverRegion = find.byKey(
-        const Key('timeline-user-message-hover-region'),
-      );
-      final initialHoverRegion = tester.getRect(hoverRegion);
-      final followingReply = find.text('后续回复保持原位。');
-      final initialFollowingReplyY = tester.getTopLeft(followingReply).dy;
-      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
-      await mouse.moveTo(
-        Offset(initialHoverRegion.center.dx, initialHoverRegion.bottom - 0.5),
-      );
-      await tester.pump();
-      expect(
-        find.byKey(const Key('timeline-user-message-time')),
-        findsOneWidget,
-      );
-      expect(find.text('8:53'), findsOneWidget);
-      expect(tester.getRect(hoverRegion), initialHoverRegion);
-      expect(tester.getTopLeft(followingReply).dy, initialFollowingReplyY);
-      await tester.pump();
-      expect(
-        find.byKey(const Key('timeline-user-message-time')),
-        findsOneWidget,
-      );
+    expect(find.byKey(const Key('timeline-user-message-time')), findsNothing);
+    final hoverRegion = find.byKey(
+      const Key('timeline-user-message-hover-region'),
+    );
+    final initialHoverRegion = tester.getRect(hoverRegion);
+    final followingReply = find.text('后续回复保持原位。');
+    final initialFollowingReplyY = tester.getTopLeft(followingReply).dy;
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.moveTo(
+      Offset(initialHoverRegion.center.dx, initialHoverRegion.bottom - 0.5),
+    );
+    await tester.pump();
+    expect(find.byKey(const Key('timeline-user-message-time')), findsOneWidget);
+    expect(find.text('8:53'), findsOneWidget);
+    expect(find.byTooltip('复制消息'), findsOneWidget);
+    expect(find.byTooltip('修改消息'), findsOneWidget);
+    await tester.tap(find.byTooltip('复制消息'));
+    await tester.pump();
+    expect(copiedText, 'review代码');
+    expect(tester.getRect(hoverRegion), initialHoverRegion);
+    expect(tester.getTopLeft(followingReply).dy, initialFollowingReplyY);
+    await tester.pump();
+    expect(find.byKey(const Key('timeline-user-message-time')), findsOneWidget);
 
-      await mouse.moveTo(Offset.zero);
+    await mouse.moveTo(Offset.zero);
+    await tester.pump();
+    expect(find.byKey(const Key('timeline-user-message-time')), findsNothing);
+    await mouse.moveTo(
+      tester.getCenter(find.byKey(const Key('timeline-user-message'))),
+    );
+    await tester.pump();
+    await tester.pumpWidget(const SizedBox());
+    await mouse.removePointer();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('edits a hovered user message inline and sends it', (
+    tester,
+  ) async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    controller.replaceTimelineEntriesForTesting([
+      TimelineEntry(
+        kind: TimelineKind.user,
+        title: '你',
+        detail: '原始请求',
+        createdAt: DateTime(2026, 8, 25, 8, 53),
+      ),
+    ]);
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final hoverRegion = find.byKey(
+      const Key('timeline-user-message-hover-region'),
+    );
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.moveTo(tester.getCenter(hoverRegion));
+    await tester.pump();
+    await tester.tap(find.byTooltip('修改消息'));
+    await tester.pump();
+    expect(
+      find.byKey(const Key('timeline-user-message-editor')),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<TextField>(
+            find.byKey(const Key('timeline-user-message-editor-field')),
+          )
+          .controller!
+          .text,
+      '原始请求',
+    );
+
+    await tester.enterText(
+      find.byKey(const Key('timeline-user-message-editor-field')),
+      '修订后的请求',
+    );
+    final sendButton = find.byKey(const Key('timeline-user-message-edit-send'));
+    expect(tester.widget<FilledButton>(sendButton).onPressed, isNotNull);
+    await tester.tap(sendButton);
+    for (var index = 0; index < 5; index++) {
       await tester.pump();
-      expect(find.byKey(const Key('timeline-user-message-time')), findsNothing);
-      await mouse.moveTo(
-        tester.getCenter(find.byKey(const Key('timeline-user-message'))),
-      );
-      await tester.pump();
-      await tester.pumpWidget(const SizedBox());
-      await mouse.removePointer();
-      expect(tester.takeException(), isNull);
-    },
-  );
+    }
+
+    expect(controller.entries.map((entry) => entry.detail), contains('修订后的请求'));
+    await mouse.removePointer();
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('fades long sidebar task titles instead of showing an ellipsis', (
     tester,

@@ -26,6 +26,7 @@ class ConversationViewport extends StatefulWidget {
     required this.onReview,
     required this.onUndo,
     required this.onOpenSubagent,
+    required this.onSubmitUserMessageEdit,
     required this.bottomOverlay,
   });
 
@@ -56,6 +57,8 @@ class ConversationViewport extends StatefulWidget {
   final Future<void> Function() onReview;
   final Future<void> Function() onUndo;
   final ValueChanged<TimelineEntry> onOpenSubagent;
+  final Future<bool> Function(TimelineEntry entry, String text)
+  onSubmitUserMessageEdit;
   final Widget bottomOverlay;
 
   @override

@@ -14,6 +14,7 @@ class CodexTimelineEntry extends StatefulWidget {
     required this.workspacePath,
     this.streaming = false,
     this.onOpenSubagent,
+    this.onSubmitUserMessageEdit,
     super.key,
   });
 
@@ -21,6 +22,8 @@ class CodexTimelineEntry extends StatefulWidget {
   final String? workspacePath;
   final bool streaming;
   final ValueChanged<TimelineEntry>? onOpenSubagent;
+  final Future<bool> Function(TimelineEntry entry, String text)?
+  onSubmitUserMessageEdit;
 
   @override
   State<CodexTimelineEntry> createState() => CodexTimelineEntryState();

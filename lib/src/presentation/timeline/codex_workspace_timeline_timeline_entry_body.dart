@@ -18,6 +18,7 @@ class TimelineEntryBody extends StatelessWidget {
     this.streaming = false,
     this.preserveViewportOnMarkdownResolve = false,
     this.onOpenSubagent,
+    this.onSubmitUserMessageEdit,
   });
 
   final TimelineEntry entry;
@@ -25,6 +26,8 @@ class TimelineEntryBody extends StatelessWidget {
   final bool streaming;
   final bool preserveViewportOnMarkdownResolve;
   final VoidCallback? onOpenSubagent;
+  final Future<bool> Function(TimelineEntry entry, String text)?
+  onSubmitUserMessageEdit;
 
   /// 按时间线条目类型构建消息或系统事件视图。
   /// Builds a message or system-event view based on the timeline entry kind.
@@ -47,7 +50,10 @@ class TimelineEntryBody extends StatelessWidget {
       );
     }
     if (entry.kind == TimelineKind.user) {
-      return UserMessageBubble(entry: entry);
+      return UserMessageBubble(
+        entry: entry,
+        onSubmitEdit: onSubmitUserMessageEdit,
+      );
     }
     if (entry.kind == TimelineKind.activity) {
       return ConversationStatusActivityRow(

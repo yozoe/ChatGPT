@@ -119,6 +119,11 @@ class HistoryThreadTileState extends State<HistoryThreadTile> {
                         // Keep the fade aligned with the task bubble's trailing
                         // edge instead of the rendered title's intrinsic width.
                         crossAxisAlignment: CrossAxisAlignment.stretch,
+                        // The row reserves a 24px content box while the title's
+                        // line box is shorter. Center it within that box so the
+                        // task label is vertically aligned with the trailing
+                        // status mark and hover actions.
+                        mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           ShaderMask(
                             key: ValueKey(

@@ -21,7 +21,8 @@ class CodexTimelineEntryState extends State<CodexTimelineEntry> {
     }
     if (!identical(oldWidget.entry, widget.entry) ||
         oldWidget.workspacePath != widget.workspacePath ||
-        oldWidget.streaming != widget.streaming) {
+        oldWidget.streaming != widget.streaming ||
+        oldWidget.onSubmitUserMessageEdit != widget.onSubmitUserMessageEdit) {
       _cachedBody = null;
     }
   }
@@ -35,5 +36,6 @@ class CodexTimelineEntryState extends State<CodexTimelineEntry> {
     onOpenSubagent: widget.onOpenSubagent == null
         ? null
         : () => widget.onOpenSubagent?.call(widget.entry),
+    onSubmitUserMessageEdit: widget.onSubmitUserMessageEdit,
   );
 }

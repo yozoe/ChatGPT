@@ -38,14 +38,22 @@ class PendingApproval {
 
   /// 汇总服务器请求中的原因、命令及权限范围。
   /// Summarizes the reason, command, and permission scope in the request.
+  String? get reason {
+    final value = params['reason']?.toString().trim();
+    return value == null || value.isEmpty ? null : value;
+  }
+
+  String? get command {
+    final value = params['command']?.toString().trim();
+    return value == null || value.isEmpty ? null : value;
+  }
+
   String get detail {
-    final reason = params['reason']?.toString();
-    final command = params['command']?.toString();
     final root = params['grantRoot']?.toString();
     final network = params['networkApprovalContext'];
     return [
-      if (reason != null && reason.isNotEmpty) reason,
-      if (command != null && command.isNotEmpty) command,
+      ?reason,
+      ?command,
       if (root != null && root.isNotEmpty) '授权目录：$root',
       if (network != null) '网络访问：$network',
     ].join('\n');

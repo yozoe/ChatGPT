@@ -22,7 +22,7 @@ class TimelineActivityRow extends StatelessWidget {
       child: Semantics(
         label: '$label。${entry.detail}',
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(2, 5, 6, 5),
+          padding: const EdgeInsets.fromLTRB(2, 3, 6, 3),
           child: Row(
             children: [
               Icon(activityIcon(entry), size: 19, color: palette.muted),

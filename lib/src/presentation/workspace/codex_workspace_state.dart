@@ -1046,6 +1046,26 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     return sent;
   }
 
+  /// Sends a revised historic prompt as the next turn while preserving the
+  /// original transcript as an audit record, matching Codex's inline editor.
+  Future<bool> _submitEditedUserMessage(
+    TimelineEntry entry,
+    String text,
+  ) async {
+    final submission = ComposerSubmission(
+      prompt: text.trim(),
+      attachments: const [],
+      includeWorkspace: false,
+      goal: null,
+      planMode: false,
+      recordSkill: false,
+      skills: const [],
+    );
+    return _controller.canSteer
+        ? _queueDirection(submission)
+        : _send(submission);
+  }
+
   /// Queues composer text and context as a temporary tail item while a turn runs.
   /// 运行中 Composer 的文本与附件上下文先暂存为临时尾项，等待用户明确发送。
   Future<bool> _queueDirection(ComposerSubmission submission) async {
@@ -2239,6 +2259,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                                           onUndo: _undoFileChanges,
                                           onOpenSubagent:
                                               _openSubagentInspector,
+                                          onSubmitUserMessageEdit:
+                                              _submitEditedUserMessage,
                                         ),
                                         if (_reviewOpen && !reviewInline)
                                           CodeReviewPanel(
