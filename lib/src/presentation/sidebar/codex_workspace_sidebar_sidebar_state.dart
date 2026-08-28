@@ -14,18 +14,38 @@ import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_sidebar
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_sidebar.dart';
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_sidebar_task_list_item.dart';
 
-class SidebarState extends State<Sidebar> {
+class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
   bool _batchMode = false;
   String? _batchWorkspacePath;
   final Set<String> _selectedThreadIds = {};
 
   final Map<String, bool> _workspaceExpanded = {};
+  final Map<String, AnimationController> _workspaceExpansionControllers = {};
   final ScrollController _taskListScrollController = ScrollController();
   OverlayEntry? _workspaceDetailsEntry;
   Timer? _workspaceDetailsShowTimer;
   Timer? _workspaceDetailsHideTimer;
 
   bool _isWorkspaceExpanded(String path) => _workspaceExpanded[path] ?? true;
+
+  double _workspaceExpansionProgress(String path) {
+    final controller = _workspaceExpansionControllers[path];
+    if (controller == null) return _isWorkspaceExpanded(path) ? 1 : 0;
+    return Curves.easeOutCubic.transform(controller.value).clamp(0.001, 1.0);
+  }
+
+  void _pruneWorkspaceExpansionControllers(Set<String> workspacePaths) {
+    final stalePaths = _workspaceExpansionControllers.keys
+        .where((path) => !workspacePaths.contains(path))
+        .toList(growable: false);
+    for (final path in stalePaths) {
+      final controller = _workspaceExpansionControllers.remove(path);
+      controller
+        ?..removeListener(_onWorkspaceExpansionTick)
+        ..dispose();
+      _workspaceExpanded.remove(path);
+    }
+  }
 
   void _setBatchMode(bool enabled) {
     setState(() {
@@ -36,9 +56,38 @@ class SidebarState extends State<Sidebar> {
   }
 
   void _toggleWorkspaceExpanded(String path) {
-    setState(() {
-      _workspaceExpanded[path] = !_isWorkspaceExpanded(path);
+    final controller = _workspaceExpansionControllers.putIfAbsent(path, () {
+      final animationController = AnimationController(
+        vsync: this,
+        duration: const Duration(milliseconds: 180),
+        value: _isWorkspaceExpanded(path) ? 1 : 0,
+      );
+      animationController.addStatusListener((status) {
+        if (!mounted || status != AnimationStatus.dismissed) return;
+        if (_isWorkspaceExpanded(path)) {
+          setState(() => _workspaceExpanded[path] = false);
+        }
+      });
+      animationController.addListener(_onWorkspaceExpansionTick);
+      return animationController;
     });
+    setState(() {
+      final expand = switch (controller.status) {
+        AnimationStatus.reverse => true,
+        AnimationStatus.forward => false,
+        _ => !_isWorkspaceExpanded(path),
+      };
+      if (expand) {
+        _workspaceExpanded[path] = true;
+        controller.forward();
+      } else {
+        controller.reverse();
+      }
+    });
+  }
+
+  void _onWorkspaceExpansionTick() {
+    if (mounted) setState(() {});
   }
 
   /// Opens a new task in the project whose row owns the action. A project's
@@ -69,6 +118,11 @@ class SidebarState extends State<Sidebar> {
     _workspaceDetailsHideTimer?.cancel();
     _workspaceDetailsEntry?.remove();
     _taskListScrollController.dispose();
+    for (final controller in _workspaceExpansionControllers.values) {
+      controller
+        ..removeListener(_onWorkspaceExpansionTick)
+        ..dispose();
+    }
     super.dispose();
   }
 
@@ -477,6 +531,9 @@ class SidebarState extends State<Sidebar> {
         : controller.workspacePath == null
         ? const <WorkspaceConfiguration>[]
         : [WorkspaceConfiguration(primaryPath: controller.workspacePath!)];
+    _pruneWorkspaceExpansionControllers(
+      workspaces.map((workspace) => workspace.primaryPath).toSet(),
+    );
     final workspaceThreadsByPath = <String, List<CodexThread>>{};
     final workspaceProjectThreadsByPath = <String, List<CodexThread>>{};
     for (final workspace in workspaces) {
@@ -504,9 +561,35 @@ class SidebarState extends State<Sidebar> {
     // live task state and completion indicators can otherwise make a large
     // conversation library feel like its scroll is blocked.
     final taskListItems = <SidebarTaskListItem>[];
-    void addTaskListItem(double extent, Widget Function() builder) {
+    void addTaskListItem(
+      double extent,
+      Widget Function() builder, {
+      String? animatedWorkspacePath,
+    }) {
+      final progress = animatedWorkspacePath == null
+          ? 1.0
+          : _workspaceExpansionProgress(animatedWorkspacePath);
       taskListItems.add(
-        SidebarTaskListItem(extent: extent, builder: (_) => builder()),
+        SidebarTaskListItem(
+          extent: extent * progress,
+          builder: (_) {
+            final child = builder();
+            if (animatedWorkspacePath == null) return child;
+            if (progress <= 0.001) return const SizedBox.shrink();
+            return ClipRect(
+              child: OverflowBox(
+                alignment: Alignment.topLeft,
+                minHeight: 0,
+                maxHeight: double.infinity,
+                child: Align(
+                  alignment: Alignment.topLeft,
+                  heightFactor: progress,
+                  child: child,
+                ),
+              ),
+            );
+          },
+        ),
       );
     }
 
@@ -538,11 +621,6 @@ class SidebarState extends State<Sidebar> {
           workspace: workspace,
           active: workspacePath == controller.workspacePath,
           pinned: controller.isWorkspacePinned(workspacePath),
-          enabled: controller.canChangePrimaryWorkspace,
-          onTap: () {
-            if (_batchMode) _setBatchMode(false);
-            unawaited(controller.selectWorkspaceAndReconnect(workspacePath));
-          },
           onMore: (anchorContext) =>
               _showWorkspaceActions(anchorContext, workspace),
           onEdit: (_) => _startNewConversationForWorkspace(workspacePath),
@@ -556,6 +634,14 @@ class SidebarState extends State<Sidebar> {
           onHoverEnd: _scheduleWorkspaceDetailsHide,
         ),
       );
+      // Keep the project surface visually distinct from its child task rows.
+      if (_isWorkspaceExpanded(workspacePath)) {
+        addTaskListItem(
+          4,
+          () => const SizedBox(height: 4),
+          animatedWorkspacePath: workspacePath,
+        );
+      }
       if (_isWorkspaceExpanded(workspacePath)) {
         if (isActiveWorkspace) {
           if (controller.threadsError case final error?) {
@@ -565,6 +651,7 @@ class SidebarState extends State<Sidebar> {
                 padding: const EdgeInsets.only(left: 34, top: 4),
                 child: MutedText(error),
               ),
+              animatedWorkspacePath: workspacePath,
             );
           } else if (projectThreads.isEmpty && projectAllThreads.isEmpty) {
             addTaskListItem(
@@ -573,6 +660,7 @@ class SidebarState extends State<Sidebar> {
                 padding: EdgeInsets.only(left: 34, top: 4),
                 child: MutedText('暂无历史任务；发送第一条消息后会创建。'),
               ),
+              animatedWorkspacePath: workspacePath,
             );
           } else {
             for (final thread in projectThreads) {
@@ -587,6 +675,7 @@ class SidebarState extends State<Sidebar> {
                   workspacePath: workspacePath,
                   pinned: controller.isThreadPinned(thread.id),
                 ),
+                animatedWorkspacePath: workspacePath,
               );
             }
           }
@@ -608,6 +697,7 @@ class SidebarState extends State<Sidebar> {
                 pinned: pinnedIds.contains(thread.id),
                 acknowledged: acknowledgedIds.contains(thread.id),
               ),
+              animatedWorkspacePath: workspacePath,
             );
           }
         }

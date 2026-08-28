@@ -1332,26 +1332,18 @@ void main() {
       tester.getTopLeft(firstTile).dy,
       lessThan(tester.getTopLeft(secondTile).dy),
     );
-    expect(
-      tester
-          .widget<InkWell>(
-            find
-                .descendant(of: firstTile, matching: find.byType(InkWell))
-                .first,
-          )
-          .onTap,
-      isNotNull,
+    final activePathBeforeToggle = controller.workspacePath;
+    final firstTileSurface = find.descendant(
+      of: firstTile,
+      matching: find.byType(InkWell),
     );
-    expect(
-      tester
-          .widget<InkWell>(
-            find
-                .descendant(of: secondTile, matching: find.byType(InkWell))
-                .first,
-          )
-          .onTap,
-      isNull,
-    );
+    await tester.ensureVisible(firstTile);
+    await tester.tap(firstTileSurface.first);
+    await tester.pump(const Duration(milliseconds: 220));
+    expect(controller.workspacePath, activePathBeforeToggle);
+    await tester.tap(firstTileSurface.first);
+    await tester.pump(const Duration(milliseconds: 220));
+    expect(find.text('preview-cached-first-task'), findsOneWidget);
     await tester.ensureVisible(firstTile);
     final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
     await tester.ensureVisible(firstTile);
@@ -1505,17 +1497,29 @@ void main() {
       findsOneWidget,
     );
     // 启动后，未选中的项目也会从本地缓存读取任务并保持展开；
-    // 只有点击该项目自己的按钮才会收起。
+    // 整个项目行与左侧文件夹图标都只改变该项目的展开状态。
     final cachedFirstTask = find.text('preview-cached-first-task');
     expect(cachedFirstTask, findsOneWidget);
-    final firstToggle = find.byKey(
-      ValueKey('sidebar-workspace-toggle-$firstPath'),
+    final firstFolder = find.byKey(
+      ValueKey('sidebar-workspace-folder-$firstPath'),
     );
-    await tester.tap(firstToggle);
-    await tester.pump();
-    expect(cachedFirstTask, findsNothing);
-    await tester.tap(firstToggle);
-    await tester.pump();
+    expect(firstFolder, findsOneWidget);
+    final folderSwitcher = find.descendant(
+      of: firstTile,
+      matching: find.byType(AnimatedSwitcher),
+    );
+    expect(folderSwitcher, findsOneWidget);
+    expect(
+      tester.widget<AnimatedSwitcher>(folderSwitcher).duration,
+      const Duration(milliseconds: 180),
+    );
+    final activePathBeforeFolderTap = controller.workspacePath;
+    await tester.tap(firstFolder);
+    await tester.pump(const Duration(milliseconds: 220));
+    expect(controller.workspacePath, activePathBeforeFolderTap);
+    await tester.tap(firstFolder);
+    await tester.pump(const Duration(milliseconds: 220));
+    expect(controller.workspacePath, activePathBeforeFolderTap);
     expect(cachedFirstTask, findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });

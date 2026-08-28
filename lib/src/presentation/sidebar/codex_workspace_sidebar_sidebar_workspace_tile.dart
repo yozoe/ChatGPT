@@ -11,8 +11,6 @@ class SidebarWorkspaceTile extends StatefulWidget {
     required this.workspace,
     required this.active,
     required this.pinned,
-    required this.enabled,
-    required this.onTap,
     required this.onMore,
     required this.onEdit,
     required this.canCreateTask,
@@ -26,8 +24,6 @@ class SidebarWorkspaceTile extends StatefulWidget {
   final WorkspaceConfiguration workspace;
   final bool active;
   final bool pinned;
-  final bool enabled;
-  final VoidCallback onTap;
   final void Function(BuildContext context) onMore;
   final void Function(BuildContext context) onEdit;
   final bool canCreateTask;

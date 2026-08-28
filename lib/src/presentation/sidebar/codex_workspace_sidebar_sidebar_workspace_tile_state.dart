@@ -31,8 +31,8 @@ class SidebarWorkspaceTileState extends State<SidebarWorkspaceTile> {
       },
       child: Semantics(
         selected: widget.active,
-        button: !widget.active,
-        label: widget.active ? '当前工作区 $_displayName' : '切换到工作区 $_displayName',
+        button: true,
+        label: '${widget.expanded ? '收起' : '展开'}项目任务 $_displayName',
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 100),
           curve: Curves.easeOut,
@@ -41,20 +41,36 @@ class SidebarWorkspaceTileState extends State<SidebarWorkspaceTile> {
             borderRadius: BorderRadius.circular(12),
           ),
           child: InkWell(
-            onTap: widget.active || !widget.enabled ? null : widget.onTap,
+            onTap: widget.onToggleExpanded,
             borderRadius: BorderRadius.circular(12),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 2),
               child: Row(
                 children: [
-                  Icon(
-                    widget.active
-                        ? Icons.folder_special_outlined
-                        : Icons.folder_outlined,
-                    size: 16,
-                    color: widget.active ? palette.active : palette.muted,
+                  Tooltip(
+                    message: widget.expanded ? '收起项目任务' : '展开项目任务',
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 180),
+                      transitionBuilder: (child, animation) => FadeTransition(
+                        opacity: animation,
+                        child: ScaleTransition(scale: animation, child: child),
+                      ),
+                      child: KeyedSubtree(
+                        key: ValueKey(widget.expanded),
+                        child: Icon(
+                          key: ValueKey(
+                            'sidebar-workspace-folder-${widget.workspace.primaryPath}',
+                          ),
+                          widget.expanded
+                              ? Icons.folder_open_outlined
+                              : Icons.folder_outlined,
+                          size: 16,
+                          color: widget.active ? palette.active : palette.muted,
+                        ),
+                      ),
+                    ),
                   ),
-                  const SizedBox(width: 9),
+                  const SizedBox(width: 5),
                   Expanded(
                     child: Text(
                       _displayName,
@@ -68,25 +84,6 @@ class SidebarWorkspaceTileState extends State<SidebarWorkspaceTile> {
                             : FontWeight.w500,
                       ),
                     ),
-                  ),
-                  IconButton(
-                    key: ValueKey(
-                      'sidebar-workspace-toggle-${widget.workspace.primaryPath}',
-                    ),
-                    tooltip: widget.expanded ? '收起项目任务' : '展开项目任务',
-                    onPressed: widget.onToggleExpanded,
-                    icon: Icon(
-                      widget.expanded
-                          ? Icons.keyboard_arrow_down
-                          : Icons.keyboard_arrow_right,
-                      size: 16,
-                    ),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints.tightFor(
-                      width: 28,
-                      height: 28,
-                    ),
-                    visualDensity: VisualDensity.compact,
                   ),
                   if (widget.pinned)
                     Icon(Icons.push_pin, size: 13, color: palette.faint),
