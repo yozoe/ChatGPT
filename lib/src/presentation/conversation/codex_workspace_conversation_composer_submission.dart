@@ -11,6 +11,7 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 
 class ComposerSubmission {
   const ComposerSubmission({
+    required this.prompt,
     required this.attachments,
     required this.includeWorkspace,
     required this.goal,
@@ -19,6 +20,8 @@ class ComposerSubmission {
     required this.skills,
   });
 
+  /// The immutable composer text captured when the user submits.
+  final String prompt;
   final List<ComposerAttachment> attachments;
   final bool includeWorkspace;
   final String? goal;

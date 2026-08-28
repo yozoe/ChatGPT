@@ -1027,6 +1027,13 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// Lists the current workspace branches available as a review baseline.
+  Future<List<String>> listGitReviewBaseBranches() async {
+    final workspace = workspacePath;
+    if (workspace == null) return const [];
+    return _gitProjectService.listReviewBaseBranches(workspace);
+  }
+
   /// 暂存一个文件，然后刷新当前工作区的 Git 摘要。
   /// Stages one file and then refreshes the active workspace's Git summary.
   Future<bool> stageGitChange(GitProjectChange change) => _runGitOperation(

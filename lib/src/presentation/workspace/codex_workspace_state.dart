@@ -995,7 +995,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   /// 读取输入框内容、清空编辑器并发送非空任务。
   /// Reads composer content, clears the editor, and sends a nonempty task.
   Future<bool> _send(ComposerSubmission submission) async {
-    final rawPrompt = _composer.text.trim();
+    final rawPrompt = submission.prompt.trim();
     if (rawPrompt.isEmpty && !submission.hasContext) return false;
     final contextLines = <String>[];
     final additionalInput = <Map<String, dynamic>>[];
@@ -1049,7 +1049,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   /// Queues composer text and context as a temporary tail item while a turn runs.
   /// 运行中 Composer 的文本与附件上下文先暂存为临时尾项，等待用户明确发送。
   Future<bool> _queueDirection(ComposerSubmission submission) async {
-    final rawPrompt = _composer.text.trim();
+    final rawPrompt = submission.prompt.trim();
     final hasSubmittedContext =
         submission.attachments.isNotEmpty ||
         submission.includeWorkspace ||

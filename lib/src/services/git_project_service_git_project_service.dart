@@ -55,6 +55,34 @@ class GitProjectService {
     }
   }
 
+  /// Lists local and remote branches that can be used as a review baseline.
+  Future<List<String>> listReviewBaseBranches(String workspace) async {
+    final repository = await _run(workspace, const [
+      'rev-parse',
+      '--is-inside-work-tree',
+    ]);
+    if (repository.exitCode != 0 || repository.stdout.trim() != 'true') {
+      return const [];
+    }
+    final result = await _run(workspace, const [
+      'for-each-ref',
+      '--format=%(refname:short)',
+      'refs/remotes',
+      'refs/heads',
+    ]);
+    if (result.exitCode != 0) throw StateError(_errorOf(result));
+    final output = result.stdout is String ? result.stdout as String : '';
+    final branches =
+        output
+            .split('\n')
+            .map((branch) => branch.trim())
+            .where((branch) => branch.isNotEmpty && !branch.endsWith('/HEAD'))
+            .toSet()
+            .toList(growable: false)
+          ..sort();
+    return branches;
+  }
+
   /// 读取指定改动的只读 Git Diff；未跟踪文件会以 `/dev/null` 为基准生成预览。
   /// Reads a read-only Git diff for a change; untracked files are previewed against `/dev/null`.
   Future<String> readDiff({

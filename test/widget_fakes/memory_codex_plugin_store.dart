@@ -30,6 +30,7 @@ class MemoryCodexPluginStore extends CodexPluginStore {
   final enabledChanges = <String, bool>{};
   String? listedMcpWorkingDirectory;
   String? updatedMcpWorkingDirectory;
+  Object? mcpListError;
 
   /// 从测试内存列表返回已安装与可安装插件。
   /// Returns installed and available plugins from the test memory list.
@@ -41,6 +42,7 @@ class MemoryCodexPluginStore extends CodexPluginStore {
     String? workingDirectory,
   }) async {
     listedMcpWorkingDirectory = workingDirectory;
+    if (mcpListError case final error?) throw error;
     return List.of(mcpServers);
   }
 

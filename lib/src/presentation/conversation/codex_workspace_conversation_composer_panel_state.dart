@@ -19,6 +19,10 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_add_menu_item.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_add_menu_message.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_context_chip.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_code_review_options_panel.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_mcp_status_panel.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_slash_command.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_slash_command_menu.dart';
 
 class ComposerPanelState extends State<ComposerPanel> {
   static const _clipboardFileReader = ClipboardFileReader();
@@ -26,12 +30,27 @@ class ComposerPanelState extends State<ComposerPanel> {
   final Set<String> _selectedSkillPaths = {};
   final Map<String, Uint8List> _securityBookmarks = {};
   final Set<String> _temporaryAttachmentPaths = {};
+  final Map<ComposerSlashCommandKind, GlobalKey> _slashCommandScrollKeys = {};
+  final Map<String, GlobalKey> _slashSkillScrollKeys = {};
   bool _draggingFiles = false;
   bool _includeWorkspace = false;
   bool _planMode = false;
   bool _recordSkill = false;
+  bool _goalMode = false;
+  bool _mcpStatusVisible = false;
+  bool _codeReviewOptionsVisible = false;
+  bool _codeReviewBranchesLoading = false;
+  bool _reviewSubmissionPending = false;
+  bool _reviewSubmissionInFlight = false;
+  bool _settingReviewPrompt = false;
+  String? _codeReviewBranchesError;
+  List<String> _codeReviewBaseBranches = const [];
+  int _codeReviewBranchRequest = 0;
   bool _imeCompositionActive = false;
   bool _imeCompositionJustEnded = false;
+  bool _slashMenuDismissed = false;
+  int _slashMenuSelectedIndex = 0;
+  String _slashMenuQuery = '';
   Timer? _imeCompositionDeferral;
   late int _handledRecordSkillRequest;
   String? _goal;
@@ -44,6 +63,9 @@ class ComposerPanelState extends State<ComposerPanel> {
         (skill) => skill.enabled && _selectedSkillPaths.contains(skill.path),
       )
       .toList(growable: false);
+
+  List<CodexSkill> get _slashSkills =>
+      controller.skills.where((skill) => skill.enabled).toList(growable: false);
 
   bool get _hasComposerContext =>
       _attachments.isNotEmpty ||
@@ -100,12 +122,35 @@ class ComposerPanelState extends State<ComposerPanel> {
     if (controller.status != RuntimeStatus.running) {
       _releaseDetachedAttachmentResources();
     }
+    if (_reviewSubmissionPending) {
+      unawaited(_submitPendingReviewWhenPossible());
+    }
   }
 
   /// 在平台已清除组合范围后，仍将确认输入法候选的 Enter 视为输入法操作。
   /// Keeps the Enter that confirms an IME candidate from being mistaken for a
   /// new send after the platform has already cleared the composing range.
   void _handleComposerEditingChanged() {
+    final slashQuery = _currentSlashQuery;
+    if (!_settingReviewPrompt && _reviewSubmissionPending) {
+      _reviewSubmissionPending = false;
+      _reviewSubmissionInFlight = false;
+    }
+    if (slashQuery != _slashMenuQuery) {
+      _slashMenuQuery = slashQuery ?? '';
+      _slashMenuDismissed = false;
+      _slashMenuSelectedIndex = 0;
+    }
+    if (slashQuery == '' &&
+        controller.skills.isEmpty &&
+        !controller.skillsLoading) {
+      unawaited(controller.refreshSkills());
+    }
+    if (!_settingReviewPrompt && slashQuery != '') {
+      _mcpStatusVisible = false;
+      _codeReviewOptionsVisible = false;
+    }
+    if (mounted) setState(() {});
     final composing = composer.value.composing;
     if (composing.isValid && !composing.isCollapsed) {
       _imeCompositionActive = true;
@@ -121,6 +166,293 @@ class ComposerPanelState extends State<ComposerPanel> {
     _imeCompositionDeferral = Timer(
       const Duration(milliseconds: 16),
       () => _imeCompositionJustEnded = false,
+    );
+  }
+
+  String? get _currentSlashQuery {
+    final text = composer.text;
+    if (!text.startsWith('/') || text.contains('\n')) return null;
+    final query = text.substring(1);
+    if (query.contains(RegExp(r'\s'))) return null;
+    return query;
+  }
+
+  bool get _showSlashMenu => _currentSlashQuery != null && !_slashMenuDismissed;
+
+  bool get _showSlashSkills => _currentSlashQuery == '';
+
+  List<ComposerSlashCommand> get _slashCommands => const [
+    ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.workspaceContext,
+      label: 'IDE 上下文',
+      description: '附加当前项目作为本次任务的上下文',
+      icon: Icons.auto_awesome_outlined,
+    ),
+    ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.mcpStatus,
+      label: 'MCP',
+      description: '检查当前 MCP 服务器状态',
+      icon: Icons.hub_outlined,
+    ),
+    ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.codeReview,
+      label: '代码审查',
+      description: '审查当前未提交的更改',
+      icon: Icons.fact_check_outlined,
+    ),
+    ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.files,
+      label: '文件和文件夹',
+      description: '为本次任务添加文件或目录',
+      icon: Icons.attach_file,
+    ),
+    ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.goal,
+      label: '目标',
+      description: '设置需要持续追求的任务结果',
+      icon: Icons.track_changes_outlined,
+    ),
+    ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.planMode,
+      label: '计划模式',
+      description: '让 Codex 先整理实施计划',
+      icon: Icons.lightbulb_outline,
+    ),
+    ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.recordSkill,
+      label: '录制技能',
+      description: '将这次流程整理成可复用技能',
+      icon: Icons.radio_button_checked,
+    ),
+    ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.newChat,
+      label: '新聊天',
+      description: '清空当前输入并开始一个新任务',
+      icon: Icons.add_comment_outlined,
+    ),
+  ];
+
+  List<ComposerSlashCommand> get _filteredSlashCommands {
+    final query = _currentSlashQuery;
+    if (query == null) return const [];
+    return _slashCommands
+        .where((command) => command.matches(query))
+        .toList(growable: false);
+  }
+
+  void _moveSlashMenuSelection(int delta) {
+    final itemCount = _showSlashSkills
+        ? _slashSkills.length + _filteredSlashCommands.length
+        : _filteredSlashCommands.length;
+    if (itemCount == 0) return;
+    setState(() {
+      _slashMenuSelectedIndex = (_slashMenuSelectedIndex + delta).clamp(
+        0,
+        itemCount - 1,
+      );
+    });
+    _scrollFocusedSlashMenuItemIntoView();
+  }
+
+  void _scrollFocusedSlashMenuItemIntoView() {
+    final key = _focusedSlashMenuItemKey;
+    if (key == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final itemContext = key.currentContext;
+      if (!mounted || itemContext == null) return;
+      unawaited(
+        Scrollable.ensureVisible(
+          itemContext,
+          alignment: 0.35,
+          duration: const Duration(milliseconds: 120),
+          curve: Curves.easeOut,
+        ),
+      );
+    });
+  }
+
+  GlobalKey? get _focusedSlashMenuItemKey {
+    final commands = _filteredSlashCommands;
+    if (_showSlashSkills) {
+      final skills = _slashSkills;
+      final index = _slashMenuSelectedIndex.clamp(
+        0,
+        commands.length + skills.length - 1,
+      );
+      if (index < commands.length) {
+        return _scrollKeyForSlashCommand(commands[index].kind);
+      }
+      if (skills.isEmpty) return null;
+      return _scrollKeyForSlashSkill(skills[index - commands.length].path);
+    }
+    if (commands.isEmpty) return null;
+    final index = _slashMenuSelectedIndex.clamp(0, commands.length - 1);
+    return _scrollKeyForSlashCommand(commands[index].kind);
+  }
+
+  GlobalKey _scrollKeyForSlashCommand(ComposerSlashCommandKind kind) =>
+      _slashCommandScrollKeys.putIfAbsent(kind, GlobalKey.new);
+
+  GlobalKey _scrollKeyForSlashSkill(String path) =>
+      _slashSkillScrollKeys.putIfAbsent(path, GlobalKey.new);
+
+  void _selectFocusedSlashCommand() {
+    if (_showSlashSkills) {
+      final skills = _slashSkills;
+      final commands = _filteredSlashCommands;
+      final index = _slashMenuSelectedIndex.clamp(
+        0,
+        skills.length + commands.length - 1,
+      );
+      if (index < commands.length) {
+        unawaited(_selectSlashCommand(commands[index]));
+        return;
+      }
+      if (skills.isEmpty) return;
+      _selectSlashSkill(skills[index - commands.length]);
+      return;
+    }
+    final commands = _filteredSlashCommands;
+    if (commands.isEmpty) return;
+    final index = _slashMenuSelectedIndex.clamp(0, commands.length - 1);
+    unawaited(_selectSlashCommand(commands[index]));
+  }
+
+  void _selectSlashSkill(CodexSkill skill) {
+    setState(() {
+      _selectedSkillPaths.add(skill.path);
+      _slashMenuDismissed = true;
+    });
+    composer.clear();
+  }
+
+  void _dismissSlashMenu() {
+    if (!_showSlashMenu) return;
+    setState(() => _slashMenuDismissed = true);
+  }
+
+  Future<void> _selectSlashCommand(ComposerSlashCommand command) async {
+    setState(() => _slashMenuDismissed = true);
+    switch (command.kind) {
+      case ComposerSlashCommandKind.workspaceContext:
+        if (controller.workspacePath != null) {
+          setState(() => _includeWorkspace = true);
+        }
+        composer.clear();
+      case ComposerSlashCommandKind.files:
+        composer.clear();
+        await _showAttachmentPicker();
+      case ComposerSlashCommandKind.goal:
+        composer.clear();
+        setState(() {
+          _goal = null;
+          _goalMode = true;
+        });
+      case ComposerSlashCommandKind.planMode:
+        setState(() => _planMode = !_planMode);
+        composer.clear();
+      case ComposerSlashCommandKind.recordSkill:
+        setState(() => _recordSkill = !_recordSkill);
+        composer.clear();
+      case ComposerSlashCommandKind.mcpStatus:
+        composer.value = const TextEditingValue(
+          text: '/',
+          selection: TextSelection.collapsed(offset: 1),
+        );
+        setState(() {
+          _slashMenuDismissed = true;
+          _mcpStatusVisible = true;
+          _codeReviewOptionsVisible = false;
+        });
+        unawaited(controller.refreshMcpServers());
+      case ComposerSlashCommandKind.codeReview:
+        composer.value = const TextEditingValue(
+          text: '/',
+          selection: TextSelection.collapsed(offset: 1),
+        );
+        setState(() {
+          _slashMenuDismissed = true;
+          _mcpStatusVisible = false;
+        });
+        unawaited(_showCodeReviewOptions());
+      case ComposerSlashCommandKind.newChat:
+        composer.clear();
+        controller.createThread();
+    }
+  }
+
+  Future<void> _showCodeReviewOptions() async {
+    final workspace = controller.workspacePath;
+    final request = ++_codeReviewBranchRequest;
+    setState(() {
+      _codeReviewOptionsVisible = true;
+      _codeReviewBranchesLoading = true;
+      _codeReviewBranchesError = null;
+      _codeReviewBaseBranches = const [];
+    });
+    try {
+      final branches = await controller.listGitReviewBaseBranches();
+      if (!mounted ||
+          request != _codeReviewBranchRequest ||
+          workspace != controller.workspacePath) {
+        return;
+      }
+      setState(() => _codeReviewBaseBranches = branches);
+    } catch (error) {
+      if (!mounted ||
+          request != _codeReviewBranchRequest ||
+          workspace != controller.workspacePath) {
+        return;
+      }
+      setState(() => _codeReviewBranchesError = error.toString());
+    } finally {
+      if (mounted &&
+          request == _codeReviewBranchRequest &&
+          workspace == controller.workspacePath) {
+        setState(() => _codeReviewBranchesLoading = false);
+      }
+    }
+  }
+
+  void _dismissMcpStatus() {
+    if (!_mcpStatusVisible) return;
+    composer.clear();
+    setState(() => _mcpStatusVisible = false);
+  }
+
+  Future<void> _reviewUncommittedChanges() async {
+    if (_reviewSubmissionPending) return;
+    _settingReviewPrompt = true;
+    composer.value = const TextEditingValue(
+      text: '审查当前未提交的更改。',
+      selection: TextSelection.collapsed(offset: 11),
+    );
+    _settingReviewPrompt = false;
+    setState(() => _reviewSubmissionPending = true);
+    await _submitPendingReviewWhenPossible();
+  }
+
+  Future<void> _submitPendingReviewWhenPossible() async {
+    if (!_reviewSubmissionPending || _reviewSubmissionInFlight) return;
+    if (!controller.canSend && !controller.canSteer) return;
+    setState(() => _reviewSubmissionInFlight = true);
+    final submitted = await _submit();
+    if (!mounted) return;
+    setState(() {
+      _reviewSubmissionInFlight = false;
+      if (submitted) {
+        _reviewSubmissionPending = false;
+        _codeReviewOptionsVisible = false;
+      }
+    });
+  }
+
+  void _reviewAgainstBaseBranch(String branch) {
+    final prompt = '审查当前分支相对于 $branch 的更改。';
+    setState(() => _codeReviewOptionsVisible = false);
+    composer.value = TextEditingValue(
+      text: prompt,
+      selection: TextSelection.collapsed(offset: prompt.length),
     );
   }
 
@@ -188,11 +520,12 @@ class ComposerPanelState extends State<ComposerPanel> {
         !controller.isCompletedThreadAcknowledged(threadId);
   }
 
-  Future<void> _submit() async {
+  Future<bool> _submit() async {
     final submission = ComposerSubmission(
+      prompt: composer.text.trim(),
       attachments: List.unmodifiable(_attachments),
       includeWorkspace: _includeWorkspace,
-      goal: _goal,
+      goal: _goalMode ? composer.text.trim() : _goal,
       planMode: _planMode,
       recordSkill: _recordSkill,
       skills: _selectedSkills,
@@ -200,7 +533,7 @@ class ComposerPanelState extends State<ComposerPanel> {
     final submitted = controller.canSteer
         ? await widget.onQueueSteer(submission)
         : await widget.onSend(submission);
-    if (!submitted || !mounted) return;
+    if (!submitted || !mounted) return false;
     final submittedTemporaryPaths = submission.attachments
         .where((attachment) => attachment.isTemporary)
         .map((attachment) => attachment.path)
@@ -211,6 +544,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       _selectedSkillPaths.clear();
       _includeWorkspace = false;
       _recordSkill = false;
+      _goalMode = false;
     });
     for (final path in submittedTemporaryPaths) {
       _temporaryAttachmentPaths.remove(path);
@@ -219,6 +553,7 @@ class ComposerPanelState extends State<ComposerPanel> {
     if (controller.status != RuntimeStatus.running) {
       _releaseDetachedAttachmentResources();
     }
+    return true;
   }
 
   /// 先让平台输入法处理确认候选的 Enter，后续 Enter 才提交 Composer 内容。
@@ -615,6 +950,53 @@ class ComposerPanelState extends State<ComposerPanel> {
               onDiscard: (pending) =>
                   controller.discardPendingTurnSteer(pending),
             ),
+          if (_showSlashMenu) ...[
+            ComposerSlashCommandMenu(
+              commands: _filteredSlashCommands,
+              skills: _slashSkills,
+              showSkills: _showSlashSkills,
+              skillsLoading: controller.skillsLoading,
+              skillsError: controller.skillsError,
+              commandScrollKeys: _slashCommandScrollKeys,
+              skillScrollKeys: _slashSkillScrollKeys,
+              selectedIndex: _slashMenuSelectedIndex.clamp(
+                0,
+                math.max(
+                  0,
+                  (_showSlashSkills ? _slashSkills : _filteredSlashCommands)
+                          .length +
+                      (_showSlashSkills ? _filteredSlashCommands.length : 0) -
+                      1,
+                ),
+              ),
+              onSelected: (command) {
+                unawaited(_selectSlashCommand(command));
+              },
+              onSkillSelected: _selectSlashSkill,
+            ),
+            const SizedBox(height: 8),
+          ],
+          if (_mcpStatusVisible) ...[
+            ComposerMcpStatusPanel(
+              servers: controller.mcpServers,
+              loading: controller.mcpServersLoading,
+              error: controller.mcpServersError,
+            ),
+            const SizedBox(height: 8),
+          ],
+          if (_codeReviewOptionsVisible) ...[
+            ComposerCodeReviewOptionsPanel(
+              baseBranches: _codeReviewBaseBranches,
+              loading: _codeReviewBranchesLoading,
+              error: _codeReviewBranchesError,
+              reviewSubmissionPending: _reviewSubmissionPending,
+              onReviewUncommitted: () {
+                unawaited(_reviewUncommittedChanges());
+              },
+              onReviewBranch: _reviewAgainstBaseBranch,
+            ),
+            const SizedBox(height: 8),
+          ],
           Stack(
             clipBehavior: Clip.none,
             children: [
@@ -681,7 +1063,9 @@ class ComposerPanelState extends State<ComposerPanel> {
                                   fontSize: 13,
                                 ),
                                 decoration: InputDecoration(
-                                  hintText: '随心输入',
+                                  hintText: _goalMode
+                                      ? '描述你的目标，定义可衡量的成果，以获得最佳效果'
+                                      : '随心输入',
                                   hintStyle: TextStyle(color: palette.muted),
                                   filled: false,
                                   isCollapsed: true,
@@ -699,14 +1083,52 @@ class ComposerPanelState extends State<ComposerPanel> {
                                     composing.isValid && !composing.isCollapsed;
                                 return CallbackShortcuts(
                                   bindings: {
+                                    if (_showSlashMenu)
+                                      const SingleActivator(
+                                        LogicalKeyboardKey.arrowDown,
+                                      ): () =>
+                                          _moveSlashMenuSelection(1),
+                                    if (_showSlashMenu)
+                                      const SingleActivator(
+                                        LogicalKeyboardKey.arrowUp,
+                                      ): () =>
+                                          _moveSlashMenuSelection(-1),
+                                    if (_showSlashMenu)
+                                      const SingleActivator(
+                                        LogicalKeyboardKey.tab,
+                                      ): _selectFocusedSlashCommand,
+                                    if (_showSlashMenu)
+                                      const SingleActivator(
+                                        LogicalKeyboardKey.escape,
+                                      ): _dismissSlashMenu,
                                     // Do not register Enter while the IME owns
                                     // an active composition. This lets macOS
                                     // cancel or confirm its candidate instead
                                     // of having the composer consume the key.
-                                    if (!imeIsComposing)
+                                    if (!imeIsComposing &&
+                                        _codeReviewOptionsVisible)
+                                      const SingleActivator(
+                                        LogicalKeyboardKey.enter,
+                                      ): () => unawaited(
+                                        _reviewUncommittedChanges(),
+                                      ),
+                                    if (!imeIsComposing &&
+                                        _mcpStatusVisible &&
+                                        !_codeReviewOptionsVisible)
+                                      const SingleActivator(
+                                        LogicalKeyboardKey.enter,
+                                      ): _dismissMcpStatus,
+                                    if (!imeIsComposing &&
+                                        !_showSlashMenu &&
+                                        !_codeReviewOptionsVisible &&
+                                        !_mcpStatusVisible)
                                       const SingleActivator(
                                         LogicalKeyboardKey.enter,
                                       ): _submitFromKeyboard,
+                                    if (!imeIsComposing && _showSlashMenu)
+                                      const SingleActivator(
+                                        LogicalKeyboardKey.enter,
+                                      ): _selectFocusedSlashCommand,
                                     const SingleActivator(
                                       LogicalKeyboardKey.keyV,
                                       meta: true,
@@ -822,7 +1244,10 @@ class ComposerPanelState extends State<ComposerPanel> {
                                   constraints.maxWidth >= 420;
                               final showApproval = constraints.maxWidth >= 340;
                               final showApprovalLabel =
-                                  constraints.maxWidth >= 460;
+                                  constraints.maxWidth >=
+                                  (_goalMode ? 520 : 460);
+                              final showGoalMode =
+                                  _goalMode && constraints.maxWidth >= 400;
                               final showModel = constraints.maxWidth >= 240;
                               return Row(
                                 children: [
@@ -906,6 +1331,54 @@ class ComposerPanelState extends State<ComposerPanel> {
                                         ),
                                       ),
                                     ),
+                                  if (showGoalMode) ...[
+                                    Container(
+                                      width: 1,
+                                      height: 16,
+                                      margin: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                      ),
+                                      color: palette.controlBorder,
+                                    ),
+                                    Semantics(
+                                      button: true,
+                                      label: '目标，点击退出目标输入',
+                                      child: InkWell(
+                                        key: const Key(
+                                          'composer-goal-mode-control',
+                                        ),
+                                        borderRadius: BorderRadius.circular(8),
+                                        onTap: () =>
+                                            setState(() => _goalMode = false),
+                                        child: Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 5,
+                                            vertical: 8,
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                Icons.track_changes_outlined,
+                                                size: 16,
+                                                color: palette.muted,
+                                              ),
+                                              const SizedBox(width: 5),
+                                              Text(
+                                                '目标',
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .bodySmall
+                                                    ?.copyWith(
+                                                      color: palette.muted,
+                                                    ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                   const Spacer(),
                                   if (showModel) ...[
                                     ComposerModelControls(

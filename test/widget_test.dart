@@ -418,11 +418,9 @@ void main() {
   testWidgets('opens the marketplace source form from plugin add menu', (
     tester,
   ) async {
+    final server = _FakeCodexAppServer();
     final controller =
-        CodexController(
-            server: _FakeCodexAppServer(),
-            pluginStore: _MemoryCodexPluginStore(),
-          )
+        CodexController(server: server, pluginStore: _MemoryCodexPluginStore())
           ..workspacePath = '/workspace'
           ..status = RuntimeStatus.ready;
     await tester.pumpWidget(
@@ -1916,6 +1914,275 @@ void main() {
 
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets('opens and applies Composer slash commands', (tester) async {
+    final pluginStore = _MemoryCodexPluginStore()
+      ..mcpServers.addAll(const [
+        CodexMcpServer(
+          name: 'codex_app',
+          enabled: true,
+          transportLabel: 'HTTP',
+          authStatus: 'unsupported',
+        ),
+        CodexMcpServer(
+          name: 'computer-use',
+          enabled: false,
+          transportLabel: '本地进程',
+          authStatus: 'unsupported',
+        ),
+      ]);
+    final git = _FakeGitProjectService()
+      ..reviewBaseBranches = const ['origin/main', 'release/1.0'];
+    final controller =
+        CodexController(
+            server: _FakeCodexAppServer(),
+            pluginStore: pluginStore,
+            gitProjectService: git,
+          )
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready
+          ..skills = const [
+            CodexSkill(
+              name: 'browser',
+              path: '/skills/browser',
+              description: '控制内置浏览器以完成本地开发任务',
+              enabled: true,
+              scope: 'user',
+              displayName: 'Browser',
+              shortDescription: '控制内置浏览器',
+            ),
+            CodexSkill(
+              name: 'openai-docs',
+              path: '/skills/openai-docs',
+              description: '查询 OpenAI 与 Codex 文档',
+              enabled: true,
+              scope: 'system',
+              displayName: 'OpenAI Docs',
+              shortDescription: '查询 Codex 文档',
+            ),
+          ];
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final field = find.byKey(const Key('composer-field'));
+    await tester.enterText(field, '/');
+    await tester.pump();
+
+    expect(find.byKey(const Key('composer-slash-menu')), findsOneWidget);
+    expect(find.byKey(const Key('composer-slash-skill-list')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('composer-slash-command-codeReview')),
+      findsOneWidget,
+    );
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(find.byKey(const Key('composer-workspace-chip')), findsOneWidget);
+    await tester.enterText(field, '/');
+    await tester.pump();
+    final browserSkill = find.byKey(
+      const ValueKey('composer-slash-skill-browser'),
+    );
+    for (var index = 0; index < 8; index++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump(const Duration(milliseconds: 140));
+    }
+    expect(browserSkill, findsOneWidget);
+    expect(find.text('个人'), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('composer-skill-chip-browser')),
+      findsOneWidget,
+    );
+
+    await tester.enterText(field, '/目标');
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('composer-slash-command-goal')));
+    await tester.pump();
+    expect(find.byKey(const Key('composer-goal-mode-control')), findsOneWidget);
+    expect(
+      tester.widget<TextField>(field).decoration!.hintText,
+      '描述你的目标，定义可衡量的成果，以获得最佳效果',
+    );
+    await tester.tap(find.byKey(const Key('composer-goal-mode-control')));
+    await tester.pump();
+    expect(tester.widget<TextField>(field).decoration!.hintText, '随心输入');
+
+    await tester.enterText(field, '/IDE');
+    await tester.pump();
+
+    await tester.tap(
+      find.byKey(const ValueKey('composer-slash-command-workspaceContext')),
+    );
+    await tester.pump();
+    expect(find.byKey(const Key('composer-workspace-chip')), findsOneWidget);
+    expect(tester.widget<TextField>(field).controller!.text, isEmpty);
+    expect(find.byKey(const Key('composer-slash-menu')), findsNothing);
+
+    await tester.enterText(field, '/');
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(find.byKey(const Key('composer-slash-menu')), findsNothing);
+    expect(tester.widget<TextField>(field).controller!.text, '/');
+
+    await tester.enterText(field, '/m');
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(field).controller!.text, '/');
+    expect(find.byKey(const Key('composer-mcp-status-panel')), findsOneWidget);
+    expect(find.text('codex_app'), findsOneWidget);
+    expect(find.text('computer-use'), findsOneWidget);
+    expect(find.text('不支持身份验证'), findsNWidgets(2));
+    expect(find.text('已启用'), findsOneWidget);
+    expect(find.text('已禁用'), findsOneWidget);
+    final entryCountBeforeMcpEnter = controller.entries.length;
+    await tester.tap(field);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(controller.entries, hasLength(entryCountBeforeMcpEnter));
+    expect(tester.widget<TextField>(field).controller!.text, isEmpty);
+    expect(find.byKey(const Key('composer-mcp-status-panel')), findsNothing);
+
+    await tester.enterText(field, '/代码');
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('composer-slash-command-codeReview')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('composer-slash-command-mcpStatus')),
+      findsNothing,
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('composer-slash-command-codeReview')),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('composer-code-review-options-panel')),
+      findsOneWidget,
+    );
+    expect(tester.widget<TextField>(field).controller!.text, '/');
+    expect(
+      find.byKey(const Key('composer-code-review-uncommitted')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('composer-code-review-base-origin/main')),
+      findsOneWidget,
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('composer-code-review-base-origin/main')),
+    );
+    await tester.pump();
+    expect(
+      tester.widget<TextField>(field).controller!.text,
+      '审查当前分支相对于 origin/main 的更改。',
+    );
+    expect(
+      find.byKey(const Key('composer-code-review-options-panel')),
+      findsNothing,
+    );
+
+    await tester.enterText(field, '/代码');
+    await tester.pump();
+    await tester.tap(
+      find.byKey(const ValueKey('composer-slash-command-codeReview')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(field);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    await tester.pump();
+    expect(
+      controller.entries.any((entry) => entry.detail.contains('审查当前未提交的更改。')),
+      isTrue,
+    );
+    expect(find.byKey(const Key('code-review-panel')), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('labels cached MCP rows when refresh fails', (tester) async {
+    final pluginStore = _MemoryCodexPluginStore()
+      ..mcpServers.add(
+        const CodexMcpServer(
+          name: 'cached-server',
+          enabled: true,
+          transportLabel: 'HTTP',
+        ),
+      )
+      ..mcpListError = StateError('连接失败');
+    final controller =
+        CodexController(server: _FakeCodexAppServer(), pluginStore: pluginStore)
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready
+          ..mcpServers = List.of(pluginStore.mcpServers);
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final field = find.byKey(const Key('composer-field'));
+    await tester.enterText(field, '/m');
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+
+    expect(find.text('cached-server'), findsOneWidget);
+    expect(find.textContaining('以下为上次读取的结果。'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'keeps an uncommitted review request until an active turn accepts directions',
+    (tester) async {
+      final controller = CodexController(server: _FakeCodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      final field = find.byKey(const Key('composer-field'));
+      await tester.enterText(field, '/代码');
+      await tester.pump();
+      await tester.tap(
+        find.byKey(const ValueKey('composer-slash-command-codeReview')),
+      );
+      await tester.pumpAndSettle();
+
+      controller
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'initializing-turn'
+        ..activeTurnId = null
+        ..notifyListeners();
+      await tester.pump();
+      await tester.tap(
+        find.byKey(const Key('composer-code-review-uncommitted')),
+      );
+      await tester.pump();
+
+      expect(find.text('等待当前任务接收审查…'), findsOneWidget);
+      expect(controller.pendingTurnSteers, isEmpty);
+
+      controller
+        ..activeTurnId = 'turn-ready'
+        ..notifyListeners();
+      await tester.pump();
+      await tester.pump();
+
+      expect(
+        controller.pendingTurnSteers.map((item) => item.displayText),
+        contains('审查当前未提交的更改。'),
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   testWidgets('does not send a composing IME value when Enter is pressed', (
     tester,

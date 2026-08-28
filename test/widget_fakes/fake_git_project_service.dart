@@ -20,6 +20,7 @@ import 'package:chatgpt/src/services/theme_preferences_store.dart';
 
 class FakeGitProjectService extends GitProjectService {
   GitProjectStatus status = const GitProjectStatus(isRepository: false);
+  List<String> reviewBaseBranches = const [];
   String diff = '';
   String? reversedDiff;
   List<String>? reversedExpectedPaths;
@@ -43,6 +44,10 @@ class FakeGitProjectService extends GitProjectService {
     inspectCalls++;
     return status;
   }
+
+  @override
+  Future<List<String>> listReviewBaseBranches(String workspace) async =>
+      List.of(reviewBaseBranches);
 
   /// 返回预设 Diff，并记录界面请求的文件变更。
   /// Returns the preset diff and records the change requested by the interface.
