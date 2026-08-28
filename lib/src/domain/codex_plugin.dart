@@ -13,6 +13,11 @@ class CodexPlugin {
     this.installPolicy,
     this.authPolicy,
     this.description,
+    this.displayName,
+    this.shortDescription,
+    this.category,
+    this.logoPath,
+    this.sourcePath,
   });
 
   final String id;
@@ -24,6 +29,22 @@ class CodexPlugin {
   final String? installPolicy;
   final String? authPolicy;
   final String? description;
+
+  /// Marketplace presentation metadata loaded from `.codex-plugin/plugin.json`.
+  final String? displayName;
+  final String? shortDescription;
+  final String? category;
+  final String? logoPath;
+  final String? sourcePath;
+
+  String get title =>
+      displayName?.trim().isNotEmpty == true ? displayName!.trim() : name;
+
+  String get summary => shortDescription?.trim().isNotEmpty == true
+      ? shortDescription!.trim()
+      : (description?.trim().isNotEmpty == true
+            ? description!.trim()
+            : sourceLabel);
 
   /// 返回适合在界面中展示的来源名称。
   /// Returns the source name suitable for UI display.
@@ -57,11 +78,21 @@ class CodexPlugin {
     installPolicy: installPolicy,
     authPolicy: authPolicy,
     description: description,
+    displayName: displayName,
+    shortDescription: shortDescription,
+    category: category,
+    logoPath: logoPath,
+    sourcePath: sourcePath,
   );
 
   /// 从 CLI JSON 映射读取插件；缺少必要字段时返回空值。
   /// Reads a plugin from CLI JSON and returns null when required fields are absent.
-  static CodexPlugin? fromJson(Map<String, dynamic> json) {
+  static CodexPlugin? fromJson(
+    Map<String, dynamic> json, {
+    Map<String, dynamic>? interfaceMetadata,
+    String? sourcePath,
+    String? logoPath,
+  }) {
     final id = json['pluginId']?.toString() ?? '';
     final name = json['name']?.toString() ?? '';
     if (id.isEmpty || name.isEmpty) return null;
@@ -75,6 +106,11 @@ class CodexPlugin {
       installPolicy: json['installPolicy']?.toString(),
       authPolicy: json['authPolicy']?.toString(),
       description: json['description']?.toString(),
+      displayName: interfaceMetadata?['displayName']?.toString(),
+      shortDescription: interfaceMetadata?['shortDescription']?.toString(),
+      category: interfaceMetadata?['category']?.toString(),
+      logoPath: logoPath,
+      sourcePath: sourcePath,
     );
   }
 }

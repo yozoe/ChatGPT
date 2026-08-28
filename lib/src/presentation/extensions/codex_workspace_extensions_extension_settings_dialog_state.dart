@@ -300,11 +300,15 @@ class ExtensionSettingsDialogState extends State<ExtensionSettingsDialog> {
           .map(
             (plugin) => ExtensionSettingsRow(
               key: ValueKey('settings-plugin-${plugin.id}'),
-              leading: PluginGlyph(name: plugin.name, active: plugin.enabled),
-              title: plugin.name,
+              leading: PluginGlyph(
+                name: plugin.title,
+                active: plugin.enabled,
+                logoPath: plugin.logoPath,
+              ),
+              title: plugin.title,
               subtitle: plugin.description?.trim().isNotEmpty == true
                   ? plugin.description!.trim()
-                  : plugin.sourceLabel,
+                  : plugin.summary,
               enabled: plugin.enabled,
               busy: widget.controller.pluginSaving,
               active: widget.controller.pluginActionTargetId == plugin.id,

@@ -42,11 +42,17 @@ class PluginsPageState extends State<PluginsPage> {
           if (_personalOnly && plugin.marketplaceName.isNotEmpty) return false;
           return query.isEmpty ||
               plugin.name.toLowerCase().contains(query) ||
+              plugin.title.toLowerCase().contains(query) ||
+              plugin.summary.toLowerCase().contains(query) ||
+              (plugin.category ?? '').toLowerCase().contains(query) ||
               plugin.sourceLabel.toLowerCase().contains(query);
         })
         .toList(growable: false);
     final installed = plugins.where((plugin) => plugin.installed).toList();
     final available = plugins.where((plugin) => !plugin.installed).toList();
+    final featured = available
+        .where((plugin) => _featuredPluginIds.contains(plugin.name))
+        .toList(growable: false);
     return Column(
       children: [
         LibraryTopBar(
@@ -184,8 +190,6 @@ class PluginsPageState extends State<PluginsPage> {
                         ],
                       ),
                       const SizedBox(height: 42),
-                      LibrarySectionHeader(label: '精选'),
-                      const SizedBox(height: 18),
                       if (widget.controller.pluginsLoading)
                         const Center(
                           child: Padding(
@@ -195,34 +199,19 @@ class PluginsPageState extends State<PluginsPage> {
                         )
                       else if (available.isEmpty)
                         Text(
-                          '没有可安装的插件。使用右上角“添加”连接一个插件市场。',
+                          plugins.isEmpty
+                              ? '没有匹配的插件。使用右上角“添加”连接一个插件市场。'
+                              : '暂无可安装的插件。',
                           style: TextStyle(color: palette.muted),
                         )
-                      else
-                        LayoutBuilder(
-                          builder: (context, constraints) {
-                            final twoColumns = constraints.maxWidth >= 700;
-                            return Wrap(
-                              spacing: 28,
-                              runSpacing: 4,
-                              children: available
-                                  .map(
-                                    (plugin) => SizedBox(
-                                      width: twoColumns
-                                          ? (constraints.maxWidth - 28) / 2
-                                          : constraints.maxWidth,
-                                      child: PluginLibraryRow(
-                                        plugin: plugin,
-                                        busy: widget.controller.pluginSaving,
-                                        onInstall: () => widget.controller
-                                            .installPlugin(plugin),
-                                      ),
-                                    ),
-                                  )
-                                  .toList(growable: false),
-                            );
-                          },
-                        ),
+                      else ...[
+                        if (featured.isNotEmpty) ...[
+                          LibrarySectionHeader(label: '精选'),
+                          const SizedBox(height: 18),
+                          _buildPluginGrid(context, featured),
+                        ],
+                        ..._buildCatalogSections(context, available),
+                      ],
                     ],
                   ),
                 ),
@@ -232,4 +221,61 @@ class PluginsPageState extends State<PluginsPage> {
       ],
     );
   }
+
+  static const _featuredPluginIds = <String>{
+    'computer-use',
+    'spreadsheets',
+    'presentations',
+  };
+
+  List<Widget> _buildCatalogSections(
+    BuildContext context,
+    List<CodexPlugin> plugins,
+  ) {
+    final grouped = <String, List<CodexPlugin>>{};
+    for (final plugin in plugins) {
+      if (_featuredPluginIds.contains(plugin.name)) continue;
+      final category = plugin.category?.trim().isNotEmpty == true
+          ? plugin.category!.trim()
+          : '其他';
+      grouped.putIfAbsent(category, () => <CodexPlugin>[]).add(plugin);
+    }
+    final categories = grouped.keys.toList()..sort();
+    final widgets = <Widget>[];
+    for (final category in categories) {
+      final plugins = grouped[category]!;
+      widgets.add(const SizedBox(height: 34));
+      widgets.add(LibrarySectionHeader(label: category));
+      widgets.add(const SizedBox(height: 10));
+      widgets.add(_buildPluginGrid(context, plugins));
+    }
+    return widgets;
+  }
+
+  Widget _buildPluginGrid(BuildContext context, List<CodexPlugin> plugins) =>
+      LayoutBuilder(
+        builder: (context, constraints) {
+          final twoColumns = constraints.maxWidth >= 700;
+          return Wrap(
+            spacing: 28,
+            runSpacing: 4,
+            children: plugins
+                .map(
+                  (plugin) => SizedBox(
+                    width: twoColumns
+                        ? (constraints.maxWidth - 28) / 2
+                        : constraints.maxWidth,
+                    child: PluginLibraryRow(
+                      plugin: plugin,
+                      busy: widget.controller.pluginSaving,
+                      onInstall: plugin.installed
+                          ? null
+                          : () => widget.controller.installPlugin(plugin),
+                    ),
+                  ),
+                )
+                .toList(growable: false),
+          );
+        },
+      );
 }

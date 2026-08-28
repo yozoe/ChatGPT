@@ -16,10 +16,14 @@ class InstalledPluginChip extends StatelessWidget {
     width: 92,
     child: Column(
       children: [
-        PluginGlyph(name: plugin.name, active: plugin.enabled),
+        PluginGlyph(
+          name: plugin.title,
+          active: plugin.enabled,
+          logoPath: plugin.logoPath,
+        ),
         const SizedBox(height: 7),
         Text(
-          plugin.name,
+          plugin.title,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           textAlign: TextAlign.center,

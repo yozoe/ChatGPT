@@ -20,7 +20,9 @@ import 'package:chatgpt/src/domain/git_project_status.dart';
 import 'package:chatgpt/src/domain/task_plan.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/domain/workspace_configuration.dart';
+import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_sidebar_workspace_tile.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
+import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_plugin_glyph.dart';
 import 'package:chatgpt/src/presentation/code_review/code_review_panel.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_timeline_activity_list.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
@@ -36,6 +38,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 
 typedef _FakeRuntimeConfigurationStore = FakeRuntimeConfigurationStore;
@@ -138,6 +141,19 @@ void main() {
     );
     expect(find.byKey(const Key('sidebar-plugins-button')), findsOneWidget);
     expect(tester.widget<Text>(find.text('新对话')).style?.fontSize, 12);
+    final pluginMenuAction = find.byKey(const Key('sidebar-plugins-button'));
+    final pluginMenuMark = find.descendant(
+      of: pluginMenuAction,
+      matching: find.byType(SvgPicture),
+    );
+    expect(pluginMenuMark, findsOneWidget);
+    expect(tester.getSize(pluginMenuAction).height, 32);
+    expect(
+      (tester.getCenter(pluginMenuMark).dy -
+              tester.getCenter(find.text('插件')).dy)
+          .abs(),
+      lessThan(.5),
+    );
     expect(
       tester
           .widget<Icon>(
@@ -1513,13 +1529,30 @@ void main() {
       tester.widget<AnimatedSwitcher>(folderSwitcher).duration,
       const Duration(milliseconds: 180),
     );
+    expect(
+      find.descendant(of: firstFolder, matching: find.byType(SvgPicture)),
+      findsOneWidget,
+    );
     final activePathBeforeFolderTap = controller.workspacePath;
-    await tester.tap(firstFolder);
-    await tester.pump(const Duration(milliseconds: 220));
+    await tester.tap(firstTile);
+    await tester.pump();
     expect(controller.workspacePath, activePathBeforeFolderTap);
-    await tester.tap(firstFolder);
-    await tester.pump(const Duration(milliseconds: 220));
+    expect(tester.widget<SidebarWorkspaceTile>(firstTile).expanded, isFalse);
+    final collapsedFolder = find.descendant(
+      of: find.descendant(
+        of: firstTile,
+        matching: find.byKey(const ValueKey(false)),
+      ),
+      matching: find.byKey(ValueKey('sidebar-workspace-folder-$firstPath')),
+    );
+    expect(
+      find.descendant(of: collapsedFolder, matching: find.byType(SvgPicture)),
+      findsOneWidget,
+    );
+    await tester.tap(firstTile);
+    await tester.pump();
     expect(controller.workspacePath, activePathBeforeFolderTap);
+    expect(tester.widget<SidebarWorkspaceTile>(firstTile).expanded, isTrue);
     expect(cachedFirstTask, findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
@@ -6815,7 +6848,7 @@ void main() {
   testWidgets('renders project files as compact conversation file rows', (
     tester,
   ) async {
-    await tester.binding.setSurfaceSize(const Size(1000, 520));
+    await tester.binding.setSurfaceSize(const Size(1200, 520));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     late Directory workspace;
     late Directory outside;
@@ -6831,7 +6864,9 @@ void main() {
       );
       final buildDirectory = Directory('${workspace.path}/build/output');
       await buildDirectory.create(recursive: true);
-      artifact = File('${buildDirectory.path}/app-debug.apk');
+      artifact = File(
+        '${buildDirectory.path}/codex_workspace_extensions_plugins_page_state.dart',
+      );
       outsideFile = File('${outside.path}/secret.zip');
       await artifact.writeAsBytes(const [0, 1, 2]);
       await outsideFile.writeAsBytes(const [3, 4, 5]);
@@ -6866,11 +6901,15 @@ void main() {
     await _resolveLastAgentMarkdownLinks(tester);
 
     final fileRow = find.ancestor(
-      of: find.text('app-debug.apk'),
+      of: find.text('codex_workspace_extensions_plugins_page_state.dart'),
       matching: find.byType(InkWell),
     );
     expect(fileRow, findsOneWidget);
-    expect(find.text('app-debug.apk'), findsOneWidget);
+    final fileName = tester.widget<Text>(
+      find.text('codex_workspace_extensions_plugins_page_state.dart'),
+    );
+    expect(fileName.maxLines, isNull);
+    expect(fileName.overflow, isNot(TextOverflow.ellipsis));
     expect(
       find.descendant(
         of: fileRow,
@@ -6878,7 +6917,7 @@ void main() {
       ),
       findsOneWidget,
     );
-    expect(tester.getSize(fileRow).width, lessThanOrEqualTo(360));
+    expect(tester.getSize(fileRow).width, greaterThan(360));
     expect(find.text('项目外文件'), findsOneWidget);
     final leadText = find.byWidgetPredicate(
       (widget) =>
@@ -9491,6 +9530,62 @@ void main() {
     controller.dispose();
   });
 
+  testWidgets('renders an SVG plugin logo with the SVG renderer', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: PluginGlyph(
+            name: 'Visualize',
+            active: true,
+            logoPath: '/plugins/visualize/assets/visualize.svg',
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byType(SvgPicture), findsAtLeastNWidgets(1));
+    expect(find.byType(Image), findsNothing);
+  });
+
+  testWidgets('uses the Codex plugin mark when no plugin logo is available', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(body: PluginGlyph(name: 'Plugin', active: false)),
+      ),
+    );
+
+    expect(find.byType(SvgPicture), findsOneWidget);
+    expect(find.byIcon(Icons.extension_outlined), findsNothing);
+  });
+
+  testWidgets('does not repeat installed plugins in the catalog', (
+    tester,
+  ) async {
+    final pluginStore = _MemoryCodexPluginStore()
+      ..plugins.add(
+        const CodexPlugin(
+          id: 'installed@local',
+          name: 'Installed plugin',
+          marketplaceName: 'local',
+          installed: true,
+          enabled: true,
+        ),
+      );
+    final controller = CodexController(pluginStore: pluginStore);
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.tap(find.byKey(const Key('sidebar-plugins-button')));
+    await tester.pump();
+
+    expect(find.text('Installed plugin'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   test('manages Codex marketplaces and uninstalls plugins', () async {
     const marketplace = CodexMarketplace(
       name: 'team-tools',
@@ -9709,6 +9804,43 @@ void main() {
     );
 
     await expectLater(store.listPlugins(), throwsFormatException);
+  });
+
+  test('rejects plugin logos that resolve outside the plugin source', () async {
+    final root = await Directory.systemTemp.createTemp('codex-plugin-logo-');
+    addTearDown(() => root.delete(recursive: true));
+    final source = Directory('${root.path}/plugin')..createSync();
+    final manifestDirectory = Directory('${source.path}/.codex-plugin')
+      ..createSync();
+    await File('${root.path}/outside.png').writeAsBytes(const [1, 2, 3]);
+    await File('${manifestDirectory.path}/plugin.json').writeAsString(
+      jsonEncode({
+        'interface': {'logo': '../outside.png'},
+      }),
+    );
+    final store = CodexPluginStore(
+      executableProvider: () => 'codex-test',
+      processRunner: (executable, arguments) async => ProcessResult(
+        0,
+        0,
+        jsonEncode({
+          'installed': [
+            {
+              'pluginId': 'sample@local',
+              'name': 'sample',
+              'installed': true,
+              'enabled': true,
+              'source': {'path': source.path},
+            },
+          ],
+          'available': [],
+        }),
+        '',
+      ),
+    );
+
+    final plugin = (await store.listPlugins()).single;
+    expect(plugin.logoPath, isNull);
   });
 
   test('resolves the CLI path before running plugin commands', () async {

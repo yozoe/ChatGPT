@@ -2,6 +2,7 @@
 // ignore_for_file: unused_import, unnecessary_import, duplicate_import, use_key_in_widget_constructors
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
+import 'package:chatgpt/src/presentation/workspace/codex_workspace_plugin_mark.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_support.dart';
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_workspace_task_count_request.dart';
@@ -27,6 +28,10 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
   Timer? _workspaceDetailsHideTimer;
 
   bool _isWorkspaceExpanded(String path) => _workspaceExpanded[path] ?? true;
+
+  bool _shouldBuildWorkspaceContents(String path) =>
+      _isWorkspaceExpanded(path) ||
+      (_workspaceExpansionControllers[path]?.isAnimating ?? false);
 
   double _workspaceExpansionProgress(String path) {
     final controller = _workspaceExpansionControllers[path];
@@ -64,9 +69,7 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
       );
       animationController.addStatusListener((status) {
         if (!mounted || status != AnimationStatus.dismissed) return;
-        if (_isWorkspaceExpanded(path)) {
-          setState(() => _workspaceExpanded[path] = false);
-        }
+        setState(() {});
       });
       animationController.addListener(_onWorkspaceExpansionTick);
       return animationController;
@@ -81,6 +84,7 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
         _workspaceExpanded[path] = true;
         controller.forward();
       } else {
+        _workspaceExpanded[path] = false;
         controller.reverse();
       }
     });
@@ -635,14 +639,14 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
         ),
       );
       // Keep the project surface visually distinct from its child task rows.
-      if (_isWorkspaceExpanded(workspacePath)) {
+      if (_shouldBuildWorkspaceContents(workspacePath)) {
         addTaskListItem(
           4,
           () => const SizedBox(height: 4),
           animatedWorkspacePath: workspacePath,
         );
       }
-      if (_isWorkspaceExpanded(workspacePath)) {
+      if (_shouldBuildWorkspaceContents(workspacePath)) {
         if (isActiveWorkspace) {
           if (controller.threadsError case final error?) {
             addTaskListItem(
@@ -775,7 +779,7 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
             ),
             SidebarMenuAction(
               key: const Key('sidebar-plugins-button'),
-              icon: Icons.extension_outlined,
+              leading: buildCodexPluginMark(color: palette.trace, size: 16),
               label: '插件',
               selected: widget.destination == WorkspaceDestination.plugins,
               onTap: () => unawaited(widget.onShowPlugins()),

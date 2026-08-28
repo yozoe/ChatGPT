@@ -75,13 +75,63 @@ class CodexPluginStore {
     final plugins = <String, CodexPlugin>{};
     for (final entry in entries) {
       if (entry is! Map) continue;
-      final plugin = CodexPlugin.fromJson(Map<String, dynamic>.from(entry));
+      final entryMap = Map<String, dynamic>.from(entry);
+      final sourcePath = _sourcePath(entryMap['source']);
+      final metadata = await _readPluginInterface(sourcePath);
+      final logoPath = await _resolveLogoPath(sourcePath, metadata?['logo']);
+      final plugin = CodexPlugin.fromJson(
+        entryMap,
+        interfaceMetadata: metadata,
+        sourcePath: sourcePath,
+        logoPath: logoPath,
+      );
       if (plugin != null) plugins[plugin.id] = plugin;
     }
     return plugins.values.toList(growable: false)..sort((left, right) {
       if (left.installed != right.installed) return left.installed ? -1 : 1;
       return left.name.toLowerCase().compareTo(right.name.toLowerCase());
     });
+  }
+
+  String? _sourcePath(Object? source) {
+    if (source is! Map) return null;
+    final path = source['path']?.toString().trim();
+    return path == null || path.isEmpty ? null : path;
+  }
+
+  Future<Map<String, dynamic>?> _readPluginInterface(String? sourcePath) async {
+    if (sourcePath == null) return null;
+    try {
+      final file = File(
+        '$sourcePath${Platform.pathSeparator}.codex-plugin${Platform.pathSeparator}plugin.json',
+      );
+      if (!await file.exists()) return null;
+      final decoded = jsonDecode(await file.readAsString());
+      if (decoded is! Map || decoded['interface'] is! Map) return null;
+      return Map<String, dynamic>.from(decoded['interface'] as Map);
+    } catch (_) {
+      // A broken optional presentation manifest must not hide a valid plugin.
+      return null;
+    }
+  }
+
+  Future<String?> _resolveLogoPath(String? sourcePath, Object? logo) async {
+    if (sourcePath == null || logo == null) return null;
+    final value = logo.toString().trim();
+    if (value.isEmpty) return null;
+    final relative = value.startsWith('./') ? value.substring(2) : value;
+    if (relative.startsWith('/') || relative.startsWith('\\')) return null;
+    try {
+      final sourceRoot = await Directory(sourcePath).resolveSymbolicLinks();
+      final candidate = await File(
+        '$sourcePath${Platform.pathSeparator}$relative',
+      ).resolveSymbolicLinks();
+      final rootPrefix = '$sourceRoot${Platform.pathSeparator}';
+      if (!candidate.startsWith(rootPrefix)) return null;
+      return candidate;
+    } on FileSystemException {
+      return null;
+    }
   }
 
   /// 返回当前 Codex 配置中的 MCP 服务器。

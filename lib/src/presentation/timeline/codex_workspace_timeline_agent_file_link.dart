@@ -41,32 +41,27 @@ class AgentFileLink extends StatelessWidget {
                 workspacePath: workspacePath,
               ),
             ),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 360),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.insert_drive_file_outlined,
-                      size: 16,
-                      color: palette.active,
-                    ),
-                    const SizedBox(width: 5),
-                    Flexible(
-                      child: Text(
-                        fileName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: palette.active,
-                          height: 1.35,
-                        ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.insert_drive_file_outlined,
+                    size: 16,
+                    color: palette.active,
+                  ),
+                  const SizedBox(width: 5),
+                  Flexible(
+                    child: Text(
+                      fileName,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: palette.active,
+                        height: 1.35,
                       ),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
           ),

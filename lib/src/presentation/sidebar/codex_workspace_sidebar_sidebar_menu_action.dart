@@ -7,15 +7,17 @@ import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_support
 
 class SidebarMenuAction extends StatelessWidget {
   const SidebarMenuAction({
-    required this.icon,
     required this.label,
     required this.onTap,
+    this.icon,
+    this.leading,
     this.enabled = true,
     this.selected = false,
     super.key,
-  });
+  }) : assert(icon != null || leading != null);
 
-  final IconData icon;
+  final IconData? icon;
+  final Widget? leading;
   final String label;
   final VoidCallback onTap;
   final bool enabled;
@@ -34,22 +36,33 @@ class SidebarMenuAction extends StatelessWidget {
         child: InkWell(
           onTap: enabled ? onTap : null,
           borderRadius: BorderRadius.circular(10),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            child: Row(
-              children: [
-                Icon(icon, size: 16, color: color),
-                const SizedBox(width: 12),
-                Text(
-                  label,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: color,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: -0.2,
+          child: SizedBox(
+            height: 32,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: Center(
+                      child: leading ?? Icon(icon!, size: 16, color: color),
+                    ),
                   ),
-                ),
-              ],
+                  const SizedBox(width: 12),
+                  Text(
+                    label,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: color,
+                      fontSize: 12,
+                      height: 1,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: -0.2,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),

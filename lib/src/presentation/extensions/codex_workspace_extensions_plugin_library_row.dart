@@ -15,7 +15,7 @@ class PluginLibraryRow extends StatelessWidget {
   });
   final CodexPlugin plugin;
   final bool busy;
-  final VoidCallback onInstall;
+  final VoidCallback? onInstall;
 
   @override
   Widget build(BuildContext context) {
@@ -24,19 +24,23 @@ class PluginLibraryRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 10),
       child: Row(
         children: [
-          PluginGlyph(name: plugin.name, active: false),
+          PluginGlyph(
+            name: plugin.title,
+            active: plugin.installed && plugin.enabled,
+            logoPath: plugin.logoPath,
+          ),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  plugin.name,
+                  plugin.title,
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 3),
                 Text(
-                  plugin.sourceLabel,
+                  plugin.summary,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(color: palette.muted),
@@ -44,10 +48,13 @@ class PluginLibraryRow extends StatelessWidget {
               ],
             ),
           ),
-          OutlinedButton(
-            onPressed: busy ? null : onInstall,
-            child: const Text('安装'),
-          ),
+          if (plugin.installed)
+            const Icon(Icons.more_horiz, size: 20)
+          else
+            OutlinedButton(
+              onPressed: busy ? null : onInstall,
+              child: const Text('安装'),
+            ),
         ],
       ),
     );
