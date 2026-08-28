@@ -167,10 +167,13 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
             ? controller.canSwitchThreads
             : controller.canChangePrimaryWorkspace,
         canSearchFiles: controller.workspacePath != null,
-        onOpenTask: (result) => controller.openWorkspaceThread(
-          workspace: result.workspacePath,
-          thread: result.thread,
-        ),
+        onOpenTask: (result) {
+          widget.onOpenConversation();
+          return controller.openWorkspaceThread(
+            workspace: result.workspacePath,
+            thread: result.thread,
+          );
+        },
         onNewTask: widget.onNewConversation,
         onOpenWorkspace: widget.onChooseWorkspace,
         onSearchFiles: widget.onShowGitProject,
@@ -455,6 +458,9 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
         selectionMode: isActiveWorkspace && _batchMode,
         batchSelected: _selectedThreadIds.contains(thread.id),
         onTap: () {
+          // Selecting any task is also the explicit way back from a library
+          // workspace to the conversation workbench.
+          widget.onOpenConversation();
           // The active row remains clickable for focus/feedback while its
           // turn runs, but must not attempt to resume or replace the thread.
           if (currentRunningThread && controller.activeThreadId == thread.id) {

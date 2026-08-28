@@ -246,7 +246,8 @@ void main() {
             pluginStore: _MemoryCodexPluginStore(),
           )
           ..workspacePath = '/workspace'
-          ..status = RuntimeStatus.ready;
+          ..status = RuntimeStatus.ready
+          ..threads = [_thread(id: 'thread-1', status: 'idle')];
     await tester.pumpWidget(
       MaterialApp(home: CodexWorkspace(controller: controller)),
     );
@@ -255,14 +256,30 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('scheduled-tasks-page')), findsOneWidget);
     expect(find.text('已安排的任务'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('sidebar-thread-tile-thread-1')),
+    );
+    await tester.pump();
+    expect(find.byKey(const Key('scheduled-tasks-page')), findsNothing);
+    expect(find.byKey(const Key('composer-field')), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('sidebar-plugins-button')));
     await tester.pump();
     expect(find.byKey(const Key('plugins-page')), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('sidebar-thread-tile-thread-1')),
+    );
+    await tester.pump();
+    expect(find.byKey(const Key('plugins-page')), findsNothing);
 
     await tester.tap(find.byKey(const Key('sidebar-pull-requests-button')));
     await tester.pump();
     expect(find.text('Pull Request'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('sidebar-thread-tile-thread-1')),
+    );
+    await tester.pump();
+    expect(find.text('Pull Request'), findsNothing);
     await tester.pumpWidget(const SizedBox());
   });
 

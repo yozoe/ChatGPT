@@ -25,6 +25,7 @@ class Sidebar extends StatefulWidget {
     required this.onShowPlugins,
     required this.onShowScheduledTasks,
     required this.onShowPullRequests,
+    required this.onOpenConversation,
     required this.onNewConversation,
     required this.destination,
   });
@@ -47,6 +48,7 @@ class Sidebar extends StatefulWidget {
   final Future<void> Function() onShowPlugins;
   final Future<void> Function() onShowScheduledTasks;
   final Future<void> Function() onShowPullRequests;
+  final VoidCallback onOpenConversation;
   final VoidCallback onNewConversation;
   final WorkspaceDestination destination;
 

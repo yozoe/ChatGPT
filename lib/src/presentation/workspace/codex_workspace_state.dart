@@ -1888,6 +1888,14 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     setState(() => _destination = WorkspaceDestination.scheduledTasks);
   }
 
+  /// Returns to the conversation workbench when a task is selected from the
+  /// sidebar, including while a library page is currently visible.
+  /// 从侧栏选择任务时返回会话工作台，即使当前正在显示功能库页面。
+  void _showConversation() {
+    if (!mounted || _destination == WorkspaceDestination.conversation) return;
+    setState(() => _destination = WorkspaceDestination.conversation);
+  }
+
   /// Opens the full plugin workspace while the top-bar button keeps its
   /// focused management dialog for compact task-context use.
   Future<void> _showPluginsPage() async {
@@ -2153,6 +2161,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                           onShowPlugins: _showPluginsPage,
                           onShowScheduledTasks: _showScheduledTasks,
                           onShowPullRequests: _showPullRequests,
+                          onOpenConversation: _showConversation,
                           onNewConversation: _startNewConversation,
                           destination: _destination,
                         ),
