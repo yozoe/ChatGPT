@@ -52,10 +52,22 @@ void main() {
       MaterialApp(home: CodexWorkspace(controller: controller)),
     );
     await tester.pump();
+    await tester.drag(
+      find.byKey(const Key('sidebar-resize-handle')),
+      const Offset(100, 0),
+    );
+    await tester.pump();
+    final mainSidebarWidth = tester
+        .getSize(find.byKey(const Key('sidebar-pane')))
+        .width;
     await tester.tap(find.byKey(const Key('sidebar-settings-button')));
     await tester.pump();
 
     expect(tester.takeException(), isNull);
     expect(find.byKey(const Key('settings-general-page')), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const Key('settings-navigation-pane'))).width,
+      mainSidebarWidth,
+    );
   });
 }

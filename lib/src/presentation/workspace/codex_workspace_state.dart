@@ -50,6 +50,17 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   bool get _threadHistoryLoading =>
       _threadHistoryLoadingKey == _displayedThreadKey;
 
+  double _sidebarMaximumFor(double maxWidth) {
+    final compact = maxWidth < 980;
+    return (maxWidth - (compact ? 360 : _inspectorWidth + 420))
+        .clamp(_minimumSidebarWidth, _maximumSidebarWidth)
+        .toDouble();
+  }
+
+  double _sidebarWidthFor(double maxWidth) => _sidebarWidth
+      .clamp(_minimumSidebarWidth, _sidebarMaximumFor(maxWidth))
+      .toDouble();
+
   /// 注册控制器监听器，使时间线在内容更新后自动滚动。
   /// Registers the controller listener that scrolls the timeline after updates.
   @override
@@ -2096,38 +2107,36 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller ?? ref.watch(codexControllerProvider)!;
-    final settingsPage = SettingsPage(
-      controller: controller,
-      navigationWidth: _sidebarWidth
-          .clamp(_minimumSidebarWidth, _maximumSidebarWidth)
-          .toDouble(),
-      themeMode: widget.themeMode,
-      onThemeModeChanged: widget.onThemeModeChanged,
-      onChooseWorkspace: _showWorkspaceDirectories,
-      onConfigureRuntime: _showRuntime,
-      onShowPlugins: _showPlugins,
-      onShowAccount: _showAccount,
-      onOpenConversation: _showConversation,
-    );
     if (_destination == WorkspaceDestination.settings) {
-      return Scaffold(body: SafeArea(child: settingsPage));
+      return Scaffold(
+        body: SafeArea(
+          child: LayoutBuilder(
+            builder: (context, constraints) => SettingsPage(
+              controller: controller,
+              navigationWidth: _sidebarWidthFor(constraints.maxWidth),
+              themeMode: widget.themeMode,
+              onThemeModeChanged: widget.onThemeModeChanged,
+              onChooseWorkspace: _showWorkspaceDirectories,
+              onConfigureRuntime: _showRuntime,
+              onShowPlugins: _showPlugins,
+              onShowAccount: _showAccount,
+              onOpenConversation: _showConversation,
+            ),
+          ),
+        ),
+      );
     }
     return Scaffold(
       body: SafeArea(
         child: LayoutBuilder(
           builder: (context, constraints) {
-            final compact = constraints.maxWidth < 980;
-            final sidebarMaximum =
-                (constraints.maxWidth - (compact ? 360 : _inspectorWidth + 420))
-                    .clamp(_minimumSidebarWidth, _maximumSidebarWidth)
-                    .toDouble();
+            final sidebarMaximum = _sidebarMaximumFor(constraints.maxWidth);
             final inspectorMaximum =
                 (constraints.maxWidth - _sidebarWidth - 420)
                     .clamp(_minimumInspectorWidth, _maximumInspectorWidth)
                     .toDouble();
-            final sidebarWidth = _sidebarWidth
-                .clamp(_minimumSidebarWidth, sidebarMaximum)
-                .toDouble();
+            final sidebarWidth = _sidebarWidthFor(constraints.maxWidth);
+            final compact = constraints.maxWidth < 980;
             final inspectorWidth = _inspectorWidth
                 .clamp(_minimumInspectorWidth, inspectorMaximum)
                 .toDouble();
