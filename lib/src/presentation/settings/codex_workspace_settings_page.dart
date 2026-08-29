@@ -6,6 +6,7 @@ import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_page_
 class SettingsPage extends StatefulWidget {
   const SettingsPage({
     required this.controller,
+    required this.navigationWidth,
     required this.themeMode,
     required this.onThemeModeChanged,
     required this.onChooseWorkspace,
@@ -17,6 +18,9 @@ class SettingsPage extends StatefulWidget {
   });
 
   final CodexController controller;
+
+  /// Width shared with the main workspace sidebar, including user resizing.
+  final double navigationWidth;
   final ThemeMode themeMode;
   final ValueChanged<ThemeMode>? onThemeModeChanged;
   final VoidCallback onChooseWorkspace;

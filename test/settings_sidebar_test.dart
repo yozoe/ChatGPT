@@ -17,11 +17,18 @@ void main() {
     );
     await tester.pump();
 
+    final mainSidebarWidth = tester
+        .getSize(find.byKey(const Key('sidebar-pane')))
+        .width;
     await tester.tap(find.byKey(const Key('sidebar-settings-button')));
     await tester.pump();
     expect(find.byKey(const Key('settings-page')), findsOneWidget);
     expect(find.byKey(const Key('settings-general-page')), findsOneWidget);
     expect(find.byKey(const Key('sidebar-pane')), findsNothing);
+    expect(
+      tester.getSize(find.byKey(const Key('settings-navigation-pane'))).width,
+      mainSidebarWidth,
+    );
 
     await tester.tap(find.byKey(const Key('settings-back-button')));
     await tester.pump();

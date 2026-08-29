@@ -350,126 +350,117 @@ class SettingsPageState extends State<SettingsPage> {
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final navigationWidth = constraints.maxWidth < 720
-            ? (constraints.maxWidth * .42).clamp(220.0, 280.0)
-            : 340.0;
-        return Row(
-          key: const Key('settings-page'),
-          children: [
-            SizedBox(
-              width: navigationWidth,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: palette.bench,
-                  border: Border(right: BorderSide(color: palette.border)),
-                ),
-                child: SafeArea(
-                  child: ListView(
-                    padding: const EdgeInsets.fromLTRB(12, 22, 12, 24),
-                    children: [
-                      TextButton.icon(
-                        key: const Key('settings-back-button'),
-                        onPressed: widget.onOpenConversation,
-                        icon: const Icon(Icons.arrow_back, size: 18),
-                        label: const Align(
-                          alignment: Alignment.centerLeft,
-                          child: Text('返回应用'),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      TextField(
-                        controller: _search,
-                        decoration: const InputDecoration(
-                          hintText: '搜索设置...',
-                          prefixIcon: Icon(Icons.search),
-                          filled: true,
-                          border: InputBorder.none,
-                        ),
-                      ),
-                      _sectionLabel('个人'),
-                      _navItem(
-                        label: '常规',
-                        icon: Icons.settings_outlined,
-                        selected: _section == '常规',
-                      ),
-                      _navItem(label: '导入', icon: Icons.download_outlined),
-                      _navItem(
-                        label: '外观',
-                        icon: Icons.light_mode_outlined,
-                        onTap: () {
-                          widget.onThemeModeChanged?.call(
-                            widget.themeMode == ThemeMode.dark
-                                ? ThemeMode.light
-                                : ThemeMode.dark,
-                          );
-                          _select('外观');
-                        },
-                      ),
-                      _navItem(label: '语音', icon: Icons.mic_none_outlined),
-                      _navItem(
-                        label: '配置',
-                        icon: Icons.shield_outlined,
-                        onTap: widget.onConfigureRuntime,
-                      ),
-                      _navItem(label: '个性化', icon: Icons.auto_awesome_outlined),
-                      _navItem(label: '宠物', icon: Icons.pets_outlined),
-                      _navItem(
-                        label: '键盘快捷键',
-                        icon: Icons.keyboard_alt_outlined,
-                        onTap: _showShortcuts,
-                      ),
-                      _navItem(
-                        label: '账户',
-                        icon: Icons.account_circle_outlined,
-                        trailingArrow: true,
-                        onTap: widget.onShowAccount,
-                      ),
-                      _navItem(
-                        label: '关于',
-                        icon: Icons.info_outline,
-                        onTap: _showAbout,
-                      ),
-                      _sectionLabel('集成'),
-                      _navItem(
-                        label: '电脑操控',
-                        icon: Icons.auto_awesome_motion_outlined,
-                      ),
-                      _navItem(
-                        label: '应用快照',
-                        icon: Icons.screenshot_monitor_outlined,
-                      ),
-                      _navItem(
-                        label: '插件',
-                        icon: Icons.extension_outlined,
-                        onTap: widget.onShowPlugins,
-                      ),
-                      _navItem(label: '浏览器', icon: Icons.web_outlined),
-                      _sectionLabel('编码'),
-                      _navItem(label: '钩子', icon: Icons.anchor_outlined),
-                      _navItem(label: '连接', icon: Icons.language_outlined),
-                      _navItem(label: 'Git', icon: Icons.account_tree_outlined),
-                      _navItem(label: '环境', icon: Icons.computer_outlined),
-                      _navItem(
-                        label: 'Worktrees',
-                        icon: Icons.call_split_outlined,
-                      ),
-                      _sectionLabel('已归档'),
-                      _navItem(label: '已归档的聊天', icon: Icons.archive_outlined),
-                    ],
+    return Row(
+      key: const Key('settings-page'),
+      children: [
+        SizedBox(
+          key: const Key('settings-navigation-pane'),
+          width: widget.navigationWidth,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: palette.bench,
+              border: Border(right: BorderSide(color: palette.border)),
+            ),
+            child: SafeArea(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(12, 22, 12, 24),
+                children: [
+                  TextButton.icon(
+                    key: const Key('settings-back-button'),
+                    onPressed: widget.onOpenConversation,
+                    icon: const Icon(Icons.arrow_back, size: 18),
+                    label: const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text('返回应用'),
+                    ),
                   ),
-                ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: _search,
+                    decoration: const InputDecoration(
+                      hintText: '搜索设置...',
+                      prefixIcon: Icon(Icons.search),
+                      filled: true,
+                      border: InputBorder.none,
+                    ),
+                  ),
+                  _sectionLabel('个人'),
+                  _navItem(
+                    label: '常规',
+                    icon: Icons.settings_outlined,
+                    selected: _section == '常规',
+                  ),
+                  _navItem(label: '导入', icon: Icons.download_outlined),
+                  _navItem(
+                    label: '外观',
+                    icon: Icons.light_mode_outlined,
+                    onTap: () {
+                      widget.onThemeModeChanged?.call(
+                        widget.themeMode == ThemeMode.dark
+                            ? ThemeMode.light
+                            : ThemeMode.dark,
+                      );
+                      _select('外观');
+                    },
+                  ),
+                  _navItem(label: '语音', icon: Icons.mic_none_outlined),
+                  _navItem(
+                    label: '配置',
+                    icon: Icons.shield_outlined,
+                    onTap: widget.onConfigureRuntime,
+                  ),
+                  _navItem(label: '个性化', icon: Icons.auto_awesome_outlined),
+                  _navItem(label: '宠物', icon: Icons.pets_outlined),
+                  _navItem(
+                    label: '键盘快捷键',
+                    icon: Icons.keyboard_alt_outlined,
+                    onTap: _showShortcuts,
+                  ),
+                  _navItem(
+                    label: '账户',
+                    icon: Icons.account_circle_outlined,
+                    trailingArrow: true,
+                    onTap: widget.onShowAccount,
+                  ),
+                  _navItem(
+                    label: '关于',
+                    icon: Icons.info_outline,
+                    onTap: _showAbout,
+                  ),
+                  _sectionLabel('集成'),
+                  _navItem(
+                    label: '电脑操控',
+                    icon: Icons.auto_awesome_motion_outlined,
+                  ),
+                  _navItem(
+                    label: '应用快照',
+                    icon: Icons.screenshot_monitor_outlined,
+                  ),
+                  _navItem(
+                    label: '插件',
+                    icon: Icons.extension_outlined,
+                    onTap: widget.onShowPlugins,
+                  ),
+                  _navItem(label: '浏览器', icon: Icons.web_outlined),
+                  _sectionLabel('编码'),
+                  _navItem(label: '钩子', icon: Icons.anchor_outlined),
+                  _navItem(label: '连接', icon: Icons.language_outlined),
+                  _navItem(label: 'Git', icon: Icons.account_tree_outlined),
+                  _navItem(label: '环境', icon: Icons.computer_outlined),
+                  _navItem(label: 'Worktrees', icon: Icons.call_split_outlined),
+                  _sectionLabel('已归档'),
+                  _navItem(label: '已归档的聊天', icon: Icons.archive_outlined),
+                ],
               ),
             ),
-            Expanded(
-              child: _section == '常规'
-                  ? _generalContent()
-                  : Center(child: Text('“$_section”设置即将推出')),
-            ),
-          ],
-        );
-      },
+          ),
+        ),
+        Expanded(
+          child: _section == '常规'
+              ? _generalContent()
+              : Center(child: Text('“$_section”设置即将推出')),
+        ),
+      ],
     );
   }
 }

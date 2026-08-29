@@ -2098,6 +2098,9 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     final controller = widget.controller ?? ref.watch(codexControllerProvider)!;
     final settingsPage = SettingsPage(
       controller: controller,
+      navigationWidth: _sidebarWidth
+          .clamp(_minimumSidebarWidth, _maximumSidebarWidth)
+          .toDouble(),
       themeMode: widget.themeMode,
       onThemeModeChanged: widget.onThemeModeChanged,
       onChooseWorkspace: _showWorkspaceDirectories,
