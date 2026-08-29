@@ -21,9 +21,11 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('settings-page')), findsOneWidget);
     expect(find.byKey(const Key('settings-general-page')), findsOneWidget);
+    expect(find.byKey(const Key('sidebar-pane')), findsNothing);
 
     await tester.tap(find.byKey(const Key('settings-back-button')));
     await tester.pump();
+    expect(find.byKey(const Key('sidebar-pane')), findsOneWidget);
     await tester.tap(find.byKey(const Key('sidebar-help-button')));
     await tester.pump();
     expect(find.byKey(const Key('help-keyboard-shortcuts')), findsOneWidget);

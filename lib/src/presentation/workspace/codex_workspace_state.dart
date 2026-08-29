@@ -2096,6 +2096,19 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller ?? ref.watch(codexControllerProvider)!;
+    final settingsPage = SettingsPage(
+      controller: controller,
+      themeMode: widget.themeMode,
+      onThemeModeChanged: widget.onThemeModeChanged,
+      onChooseWorkspace: _showWorkspaceDirectories,
+      onConfigureRuntime: _showRuntime,
+      onShowPlugins: _showPlugins,
+      onShowAccount: _showAccount,
+      onOpenConversation: _showConversation,
+    );
+    if (_destination == WorkspaceDestination.settings) {
+      return Scaffold(body: SafeArea(child: settingsPage));
+    }
     return Scaffold(
       body: SafeArea(
         child: LayoutBuilder(
@@ -2205,17 +2218,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                           controller: controller,
                           onOpenGitProject: _showGitProject,
                           onAskCodex: _askCodexAboutGitHubCli,
-                        )
-                      : _destination == WorkspaceDestination.settings
-                      ? SettingsPage(
-                          controller: controller,
-                          themeMode: widget.themeMode,
-                          onThemeModeChanged: widget.onThemeModeChanged,
-                          onChooseWorkspace: _showWorkspaceDirectories,
-                          onConfigureRuntime: _showRuntime,
-                          onShowPlugins: _showPlugins,
-                          onShowAccount: _showAccount,
-                          onOpenConversation: _showConversation,
                         )
                       : Column(
                           children: [
