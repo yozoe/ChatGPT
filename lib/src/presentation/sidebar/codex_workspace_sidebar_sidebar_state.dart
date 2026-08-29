@@ -181,6 +181,104 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
     );
   }
 
+  Future<void> _showHelpMenu(BuildContext anchorContext) async {
+    final renderObject = anchorContext.findRenderObject();
+    if (renderObject is! RenderBox) return;
+    final topLeft = renderObject.localToGlobal(Offset.zero);
+    final viewport = MediaQuery.sizeOf(context);
+    const menuWidth = 280.0;
+    const menuHeight = 168.0;
+    final left = (topLeft.dx - menuWidth + renderObject.size.width).clamp(
+      8.0,
+      viewport.width - menuWidth - 8.0,
+    );
+    final top = (topLeft.dy - menuHeight - 8.0).clamp(
+      8.0,
+      viewport.height - menuHeight - 8.0,
+    );
+    final action = await showMenu<SidebarHelpAction>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        left,
+        top,
+        viewport.width - left - menuWidth,
+        viewport.height - top - menuHeight,
+      ),
+      items: const [
+        PopupMenuItem(
+          key: Key('help-chrome-extension'),
+          value: SidebarHelpAction.chromeExtension,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.language, size: 20),
+            title: Text('设置 Chrome 扩展程序'),
+          ),
+        ),
+        PopupMenuItem(
+          key: Key('help-keyboard-shortcuts'),
+          value: SidebarHelpAction.keyboardShortcuts,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.keyboard_alt_outlined, size: 20),
+            title: Text('键盘快捷键'),
+          ),
+        ),
+        PopupMenuItem(
+          key: Key('help-open-help'),
+          value: SidebarHelpAction.help,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.support_outlined, size: 20),
+            title: Text('帮助'),
+          ),
+        ),
+      ],
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case SidebarHelpAction.chromeExtension:
+        try {
+          await launchUrl(
+            Uri.parse('https://chatgpt.com/codex/chrome-extension'),
+            mode: LaunchMode.externalApplication,
+          );
+        } catch (_) {}
+      case SidebarHelpAction.keyboardShortcuts:
+        _showKeyboardShortcutsDialog();
+      case SidebarHelpAction.help:
+        try {
+          await launchUrl(
+            Uri.parse('https://help.openai.com/'),
+            mode: LaunchMode.externalApplication,
+          );
+        } catch (_) {}
+    }
+  }
+
+  Future<void> _showKeyboardShortcutsDialog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        key: const Key('sidebar-keyboard-shortcuts-dialog'),
+        title: const Text('键盘快捷键'),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(title: Text('新对话'), trailing: Text('⌘ N')),
+            ListTile(title: Text('搜索聊天'), trailing: Text('⌘ K')),
+            ListTile(title: Text('关闭弹窗'), trailing: Text('Esc')),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('完成'),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// 将当前选中的活跃任务提交给带二次确认的批量归档操作。
   /// Sends selected active tasks to the confirmation-backed bulk archive action.
   Future<void> _archiveSelectedThreads(CodexController controller) async {
@@ -858,8 +956,12 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
                           controller: _taskListScrollController,
                           primary: false,
                           padding: const EdgeInsets.only(top: 2, bottom: 4),
+                          // Keep the next project node and its first task
+                          // mounted even when the footer actions reduce the
+                          // visible list height; this preserves immediate
+                          // project switching and completion indicators.
                           scrollCacheExtent: const ScrollCacheExtent.pixels(
-                            480,
+                            800,
                           ),
                           itemCount: taskListItems.length,
                           itemExtentBuilder: (index, _) =>
@@ -886,6 +988,30 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
             ),
             const SizedBox(height: 10),
             const MutedText('本地优先 · stdio JSON-RPC'),
+            const SizedBox(height: 10),
+            Row(
+              key: const Key('sidebar-bottom-actions'),
+              children: [
+                Expanded(
+                  child: SidebarMenuAction(
+                    key: const Key('sidebar-settings-button'),
+                    icon: Icons.settings_outlined,
+                    label: 'custom',
+                    selected:
+                        widget.destination == WorkspaceDestination.settings,
+                    onTap: widget.onShowSettings,
+                  ),
+                ),
+                Builder(
+                  builder: (buttonContext) => IconButton(
+                    key: const Key('sidebar-help-button'),
+                    tooltip: '帮助',
+                    onPressed: () => _showHelpMenu(buttonContext),
+                    icon: const Icon(Icons.help_outline, size: 21),
+                  ),
+                ),
+              ],
+            ),
           ],
         ),
       ),

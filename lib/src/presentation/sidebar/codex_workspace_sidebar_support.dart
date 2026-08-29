@@ -16,7 +16,10 @@ enum WorkspaceDestination {
   pullRequests,
   scheduledTasks,
   plugins,
+  settings,
 }
+
+enum SidebarHelpAction { chromeExtension, keyboardShortcuts, help }
 
 /// 插件工作区内两个互斥的数据来源视图。
 /// Mutually exclusive data-source views within the plugin workspace.

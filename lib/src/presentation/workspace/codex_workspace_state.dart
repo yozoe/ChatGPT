@@ -5,6 +5,7 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.dart';
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
+import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_page.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
 
 /// 拥有短生命周期界面状态，并把可共享业务状态交由 [CodexController] 管理。
@@ -1911,6 +1912,13 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     setState(() => _destination = WorkspaceDestination.pullRequests);
   }
 
+  /// Opens the full application settings workspace from the sidebar footer.
+  /// 从侧栏底部打开完整的应用设置工作区。
+  void _showSettings() {
+    if (!mounted) return;
+    setState(() => _destination = WorkspaceDestination.settings);
+  }
+
   /// Opens the scheduling editor from the scheduled-task workspace.
   Future<void> _showScheduledTaskComposer([String? initialPrompt]) async {
     await showDialog<void>(
@@ -2161,6 +2169,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                           onShowPlugins: _showPluginsPage,
                           onShowScheduledTasks: _showScheduledTasks,
                           onShowPullRequests: _showPullRequests,
+                          onShowSettings: _showSettings,
                           onOpenConversation: _showConversation,
                           onNewConversation: _startNewConversation,
                           destination: _destination,
@@ -2196,6 +2205,17 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                           controller: controller,
                           onOpenGitProject: _showGitProject,
                           onAskCodex: _askCodexAboutGitHubCli,
+                        )
+                      : _destination == WorkspaceDestination.settings
+                      ? SettingsPage(
+                          controller: controller,
+                          themeMode: widget.themeMode,
+                          onThemeModeChanged: widget.onThemeModeChanged,
+                          onChooseWorkspace: _showWorkspaceDirectories,
+                          onConfigureRuntime: _showRuntime,
+                          onShowPlugins: _showPlugins,
+                          onShowAccount: _showAccount,
+                          onOpenConversation: _showConversation,
                         )
                       : Column(
                           children: [
