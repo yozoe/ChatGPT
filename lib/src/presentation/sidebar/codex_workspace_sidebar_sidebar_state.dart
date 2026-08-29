@@ -208,28 +208,37 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
         PopupMenuItem(
           key: Key('help-chrome-extension'),
           value: SidebarHelpAction.chromeExtension,
-          child: ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.language, size: 20),
-            title: Text('设置 Chrome 扩展程序'),
+          child: Material(
+            color: Colors.transparent,
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.language, size: 20),
+              title: Text('设置 Chrome 扩展程序'),
+            ),
           ),
         ),
         PopupMenuItem(
           key: Key('help-keyboard-shortcuts'),
           value: SidebarHelpAction.keyboardShortcuts,
-          child: ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.keyboard_alt_outlined, size: 20),
-            title: Text('键盘快捷键'),
+          child: Material(
+            color: Colors.transparent,
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.keyboard_alt_outlined, size: 20),
+              title: Text('键盘快捷键'),
+            ),
           ),
         ),
         PopupMenuItem(
           key: Key('help-open-help'),
           value: SidebarHelpAction.help,
-          child: ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.support_outlined, size: 20),
-            title: Text('帮助'),
+          child: Material(
+            color: Colors.transparent,
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.support_outlined, size: 20),
+              title: Text('帮助'),
+            ),
           ),
         ),
       ],
@@ -447,45 +456,60 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
       items: const [
         PopupMenuItem(
           value: WorkspaceAction.pin,
-          child: ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.push_pin_outlined),
-            title: Text('置顶'),
+          child: Material(
+            color: Colors.transparent,
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.push_pin_outlined),
+              title: Text('置顶'),
+            ),
           ),
         ),
         PopupMenuItem(
           value: WorkspaceAction.edit,
-          child: ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.edit_outlined),
-            title: Text('编辑'),
+          child: Material(
+            color: Colors.transparent,
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.edit_outlined),
+              title: Text('编辑'),
+            ),
           ),
         ),
         PopupMenuDivider(),
         PopupMenuItem(
           value: WorkspaceAction.worktree,
-          child: ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.call_split_outlined),
-            title: Text('创建永久工作树'),
+          child: Material(
+            color: Colors.transparent,
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.call_split_outlined),
+              title: Text('创建永久工作树'),
+            ),
           ),
         ),
         PopupMenuDivider(),
         PopupMenuItem(
           value: WorkspaceAction.archive,
-          child: ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.archive_outlined),
-            title: Text('归档聊天'),
+          child: Material(
+            color: Colors.transparent,
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.archive_outlined),
+              title: Text('归档聊天'),
+            ),
           ),
         ),
         PopupMenuDivider(),
         PopupMenuItem(
           value: WorkspaceAction.remove,
-          child: ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.close),
-            title: Text('移除项目'),
+          child: Material(
+            color: Colors.transparent,
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.close),
+              title: Text('移除项目'),
+            ),
           ),
         ),
       ],
