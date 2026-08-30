@@ -5897,131 +5897,183 @@ void main() {
     },
   );
 
-  testWidgets(
-    'keeps expanded command activity above the final answer and elapsed footer',
-    (tester) async {
-      await tester.binding.setSurfaceSize(const Size(1400, 1200));
-      addTearDown(() => tester.binding.setSurfaceSize(null));
-      final controller = CodexController(server: CodexAppServer());
-      controller.replaceTimelineEntriesForTesting([
-        TimelineEntry(
-          kind: TimelineKind.user,
-          title: '你',
-          detail: '请完成任务',
-          createdAt: DateTime(2026),
-        ),
-        TimelineEntry(
-          kind: TimelineKind.system,
-          title: '任务已创建',
-          detail: 'Thread thread-1',
-          createdAt: DateTime(2026, 1, 1, 0, 0, 1),
-        ),
-        TimelineEntry(
-          kind: TimelineKind.agent,
-          title: 'Codex',
-          detail: '我先检查项目。',
-          agentPhase: 'commentary',
-          createdAt: DateTime(2026, 1, 1, 0, 0, 2),
-        ),
-        TimelineEntry(
-          kind: TimelineKind.command,
-          title: '执行命令',
-          detail: 'flutter analyze\nNo issues found',
-          createdAt: DateTime(2026, 1, 1, 0, 0, 3),
-        ),
-        TimelineEntry(
-          kind: TimelineKind.approval,
-          title: '已批准命令',
-          detail: 'flutter analyze',
-          createdAt: DateTime(2026, 1, 1, 0, 0, 4),
-        ),
-        TimelineEntry(
-          kind: TimelineKind.agent,
-          title: 'Codex',
-          detail: '任务已经完成。',
-          agentPhase: 'final_answer',
-          createdAt: DateTime(2026, 1, 1, 0, 0, 5),
-        ),
-        TimelineEntry(
-          kind: TimelineKind.elapsed,
-          title: '耗时 4 秒',
-          detail: '',
-          createdAt: DateTime(2026, 1, 1, 0, 0, 6),
-        ),
-        TimelineEntry(
-          kind: TimelineKind.system,
-          title: '任务完成',
-          detail: '',
-          createdAt: DateTime(2026, 1, 1, 0, 0, 7),
-        ),
-      ]);
+  testWidgets('uses elapsed time as the header above expanded task details', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1400, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(server: CodexAppServer());
+    controller.replaceTimelineEntriesForTesting([
+      TimelineEntry(
+        kind: TimelineKind.user,
+        title: '你',
+        detail: '请完成任务',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.system,
+        title: '任务已创建',
+        detail: 'Thread thread-1',
+        createdAt: DateTime(2026, 1, 1, 0, 0, 1),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.agent,
+        title: 'Codex',
+        detail: '我先检查项目。',
+        agentPhase: 'commentary',
+        createdAt: DateTime(2026, 1, 1, 0, 0, 2),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.command,
+        title: '执行命令',
+        detail: 'flutter analyze\nNo issues found',
+        createdAt: DateTime(2026, 1, 1, 0, 0, 3),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.approval,
+        title: '已批准命令',
+        detail: 'flutter analyze',
+        createdAt: DateTime(2026, 1, 1, 0, 0, 4),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.agent,
+        title: 'Codex',
+        detail: '任务已经完成。',
+        agentPhase: 'final_answer',
+        createdAt: DateTime(2026, 1, 1, 0, 0, 5),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.elapsed,
+        title: '耗时 4 秒',
+        detail: '',
+        createdAt: DateTime(2026, 1, 1, 0, 0, 6),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.system,
+        title: '任务完成',
+        detail: '',
+        createdAt: DateTime(2026, 1, 1, 0, 0, 7),
+      ),
+    ]);
 
-      await tester.pumpWidget(
-        MaterialApp(home: CodexWorkspace(controller: controller)),
-      );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
 
-      expect(find.text('已运行了命令'), findsOneWidget);
-      expect(find.text('已运行 flutter analyze'), findsNothing);
-      expect(find.text('No issues found'), findsNothing);
-      expect(
-        tester.getTopLeft(find.text('任务已创建')).dy,
-        lessThan(tester.getTopLeft(find.text('我先检查项目。')).dy),
-      );
-      expect(
-        tester.getTopLeft(find.text('我先检查项目。')).dy,
-        lessThan(tester.getTopLeft(find.text('已运行了命令')).dy),
-      );
-      expect(
-        tester.getTopLeft(find.text('已运行了命令')).dy,
-        lessThan(tester.getTopLeft(find.text('任务已经完成。')).dy),
-      );
-      expect(
-        tester.getTopLeft(find.text('任务已经完成。')).dy,
-        lessThan(tester.getTopLeft(find.text('耗时 4 秒')).dy),
-      );
-      expect(
-        tester.getTopLeft(find.text('耗时 4 秒')).dy,
-        lessThan(tester.getTopLeft(find.text('任务完成')).dy),
-      );
-      final elapsedToggle = find.byKey(
-        const Key('completed-turn-disclosure-toggle'),
-      );
-      expect(
-        find.descendant(of: elapsedToggle, matching: find.byType(Container)),
-        findsNothing,
-      );
-      expect(
-        find.byKey(const Key('completed-turn-disclosure-content')),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(const Key('completed-turn-disclosure-divider')),
-        findsOneWidget,
-      );
+    expect(find.text('已运行了命令'), findsOneWidget);
+    expect(find.text('已运行 flutter analyze'), findsNothing);
+    expect(find.text('No issues found'), findsNothing);
+    expect(
+      tester.getTopLeft(find.text('耗时 4 秒')).dy,
+      lessThan(tester.getTopLeft(find.text('任务已创建')).dy),
+    );
+    expect(
+      tester.getTopLeft(find.text('任务已创建')).dy,
+      lessThan(tester.getTopLeft(find.text('我先检查项目。')).dy),
+    );
+    expect(
+      tester.getTopLeft(find.text('我先检查项目。')).dy,
+      lessThan(tester.getTopLeft(find.text('已运行了命令')).dy),
+    );
+    expect(
+      tester.getTopLeft(find.text('已运行了命令')).dy,
+      lessThan(tester.getTopLeft(find.text('任务已经完成。')).dy),
+    );
+    expect(
+      tester.getTopLeft(find.text('任务已经完成。')).dy,
+      lessThan(tester.getTopLeft(find.text('任务完成')).dy),
+    );
+    final elapsedToggle = find.byKey(
+      const Key('completed-turn-disclosure-toggle'),
+    );
+    expect(
+      find.descendant(of: elapsedToggle, matching: find.byType(Container)),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const Key('completed-turn-disclosure-content')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('completed-turn-disclosure-divider')),
+      findsOneWidget,
+    );
 
-      await tester.tap(find.text('已运行了命令'));
-      await tester.pump();
+    await tester.tap(find.text('已运行了命令'));
+    await tester.pump();
 
-      expect(find.text('已运行 flutter analyze'), findsOneWidget);
+    expect(find.text('已运行 flutter analyze'), findsOneWidget);
 
-      await tester.tap(find.text('已运行了命令'));
-      await tester.pump();
+    await tester.tap(find.text('已运行了命令'));
+    await tester.pump();
 
-      expect(find.text('已运行 flutter analyze'), findsNothing);
+    expect(find.text('已运行 flutter analyze'), findsNothing);
 
-      await tester.tap(elapsedToggle);
-      await tester.pump();
+    await tester.tap(elapsedToggle);
+    await tester.pump();
 
-      expect(find.text('已运行 flutter analyze'), findsNothing);
-      expect(find.text('已批准命令'), findsOneWidget);
-      expect(find.text('任务已经完成。'), findsOneWidget);
-      expect(
-        find.byKey(const Key('completed-turn-disclosure-divider')),
-        findsOneWidget,
-      );
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
+    final expandedDividerY = tester
+        .getTopLeft(find.byKey(const Key('completed-turn-disclosure-divider')))
+        .dy;
+    await tester.pump(const Duration(milliseconds: 90));
+    final animatingDividerY = tester
+        .getTopLeft(find.byKey(const Key('completed-turn-disclosure-divider')))
+        .dy;
+    expect(animatingDividerY, lessThan(expandedDividerY));
+    await tester.pumpAndSettle();
+    final collapsedDividerY = tester
+        .getTopLeft(find.byKey(const Key('completed-turn-disclosure-divider')))
+        .dy;
+    expect(collapsedDividerY, lessThan(animatingDividerY));
+    expect(
+      tester
+          .widget<AnimatedRotation>(
+            find.descendant(
+              of: elapsedToggle,
+              matching: find.byType(AnimatedRotation),
+            ),
+          )
+          .turns,
+      0,
+    );
+    expect(find.text('已运行 flutter analyze'), findsNothing);
+    expect(find.text('已批准命令'), findsOneWidget);
+    expect(find.text('任务已经完成。'), findsOneWidget);
+    expect(
+      find.byKey(const Key('completed-turn-disclosure-divider')),
+      findsOneWidget,
+    );
+
+    await tester.tap(elapsedToggle);
+    await tester.pump();
+
+    expect(
+      tester
+          .widget<AnimatedRotation>(
+            find.descendant(
+              of: elapsedToggle,
+              matching: find.byType(AnimatedRotation),
+            ),
+          )
+          .turns,
+      0.25,
+    );
+    await tester.pump(const Duration(milliseconds: 90));
+    final reopeningDividerY = tester
+        .getTopLeft(find.byKey(const Key('completed-turn-disclosure-divider')))
+        .dy;
+    expect(reopeningDividerY, greaterThan(collapsedDividerY));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .getTopLeft(
+            find.byKey(const Key('completed-turn-disclosure-divider')),
+          )
+          .dy,
+      greaterThan(reopeningDividerY),
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets(
     'renders agent replies without a Codex label and keeps plain duration',

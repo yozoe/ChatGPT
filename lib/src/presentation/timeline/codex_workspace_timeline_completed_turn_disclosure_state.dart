@@ -13,6 +13,8 @@ import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_timel
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_codex_timeline_entry.dart';
 
 class CompletedTurnDisclosureState extends State<CompletedTurnDisclosure> {
+  static const _animationDuration = Duration(milliseconds: 180);
+
   var _expanded = true;
   final _expandedActivityGroups = <String>{};
 
@@ -53,11 +55,6 @@ class CompletedTurnDisclosureState extends State<CompletedTurnDisclosure> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          for (var index = 0; index < visibleItems.length; index++) ...[
-            _completedTurnDetail(visibleItems[index]),
-            if (index != visibleItems.length - 1) const SizedBox(height: 14),
-          ],
-          if (visibleItems.isNotEmpty) const SizedBox(height: 14),
           Semantics(
             button: true,
             expanded: _expanded,
@@ -82,17 +79,48 @@ class CompletedTurnDisclosureState extends State<CompletedTurnDisclosure> {
                         ),
                       ),
                       const SizedBox(width: 3),
-                      Icon(
-                        _expanded
-                            ? Icons.keyboard_arrow_down
-                            : Icons.keyboard_arrow_right,
-                        size: 16,
-                        color: palette.muted,
+                      AnimatedRotation(
+                        turns: _expanded ? 0.25 : 0,
+                        duration: _animationDuration,
+                        curve: Curves.easeOutCubic,
+                        child: Icon(
+                          Icons.keyboard_arrow_right,
+                          size: 16,
+                          color: palette.muted,
+                        ),
                       ),
                     ],
                   ),
                 ),
               ),
+            ),
+          ),
+          AnimatedSize(
+            duration: _animationDuration,
+            curve: Curves.easeOutCubic,
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              key: const Key('completed-turn-disclosure-details'),
+              width: double.infinity,
+              child: visibleItems.isNotEmpty
+                  ? Padding(
+                      padding: const EdgeInsets.only(top: 14),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          for (
+                            var index = 0;
+                            index < visibleItems.length;
+                            index++
+                          ) ...[
+                            _completedTurnDetail(visibleItems[index]),
+                            if (index != visibleItems.length - 1)
+                              const SizedBox(height: 14),
+                          ],
+                        ],
+                      ),
+                    )
+                  : const SizedBox.shrink(),
             ),
           ),
           if (allItems.isNotEmpty)
