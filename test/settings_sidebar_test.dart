@@ -25,6 +25,10 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('settings-page')), findsOneWidget);
     expect(find.byKey(const Key('settings-general-page')), findsOneWidget);
+    expect(find.text('导入（待开发）'), findsOneWidget);
+    expect(find.text('语音（待开发）'), findsOneWidget);
+    expect(find.text('个性化（待开发）'), findsOneWidget);
+    expect(find.text('宠物（待开发）'), findsOneWidget);
     expect(find.byKey(const Key('sidebar-pane')), findsNothing);
     expect(
       tester.getSize(find.byKey(const Key('settings-navigation-pane'))).width,
@@ -70,6 +74,46 @@ void main() {
       tester.getSize(find.byKey(const Key('settings-navigation-pane'))).width,
       mainSidebarWidth,
     );
+
+    await tester.tap(find.byKey(const Key('settings-nav-配置')));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expect(
+      find.byKey(const Key('settings-configuration-page')),
+      findsOneWidget,
+    );
+
+    final backButtonOffset = tester.getTopLeft(
+      find.byKey(const Key('settings-back-button')),
+    );
+    final searchOffset = tester.getTopLeft(
+      find.byKey(const Key('settings-search-field')),
+    );
+    await tester.drag(
+      find.byKey(const Key('settings-navigation-scroll')),
+      const Offset(0, -220),
+    );
+    await tester.pump();
+    expect(
+      tester.getTopLeft(find.byKey(const Key('settings-back-button'))),
+      backButtonOffset,
+    );
+    expect(
+      tester.getTopLeft(find.byKey(const Key('settings-search-field'))),
+      searchOffset,
+    );
+    expect(
+      tester
+          .state<ScrollableState>(
+            find.descendant(
+              of: find.byKey(const Key('settings-navigation-scroll')),
+              matching: find.byType(Scrollable),
+            ),
+          )
+          .position
+          .pixels,
+      greaterThan(0),
+    );
   });
 
   testWidgets('appearance settings expose dock icon choices', (tester) async {
@@ -111,5 +155,56 @@ void main() {
     ]);
     expect(calls[1].arguments, <String, String>{'icon': 'knot'});
     expect(calls[2].arguments, <String, String>{'icon': 'commandCloud'});
+  });
+
+  testWidgets('configuration settings expose persisted task defaults', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('sidebar-settings-button')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('settings-nav-配置')));
+    await tester.pump();
+
+    expect(
+      find.byKey(const Key('settings-configuration-page')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('settings-configuration-approval-mode')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('settings-configuration-reasoning-effort')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('settings-configuration-diagnose-runtime')),
+      findsOneWidget,
+    );
+    expect(find.text('查看模型与 Provider 状态'), findsOneWidget);
+    expect(find.text('查看生效的 config.toml'), findsNothing);
+
+    await tester.tap(
+      find.byKey(const Key('settings-configuration-approval-mode')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(PopupMenuItem<ApprovalMode>).last);
+    await tester.pumpAndSettle();
+
+    expect(controller.approvalMode, ApprovalMode.autoApprove);
+
+    await tester.tap(
+      find.byKey(const Key('settings-open-codex-configuration')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('codex-configuration-dialog')), findsOneWidget);
   });
 }

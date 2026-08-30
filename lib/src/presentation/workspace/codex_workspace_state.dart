@@ -2138,6 +2138,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
               themeMode: widget.themeMode,
               onThemeModeChanged: widget.onThemeModeChanged,
               onChooseWorkspace: _showWorkspaceDirectories,
+              onShowCodexConfiguration: _showCodexConfiguration,
               onConfigureRuntime: _showRuntime,
               onShowPlugins: _showPlugins,
               onShowAccount: _showAccount,

@@ -10,6 +10,7 @@ class SettingsPage extends StatefulWidget {
     required this.themeMode,
     required this.onThemeModeChanged,
     required this.onChooseWorkspace,
+    required this.onShowCodexConfiguration,
     required this.onConfigureRuntime,
     required this.onShowPlugins,
     required this.onShowAccount,
@@ -24,6 +25,7 @@ class SettingsPage extends StatefulWidget {
   final ThemeMode themeMode;
   final ValueChanged<ThemeMode>? onThemeModeChanged;
   final VoidCallback onChooseWorkspace;
+  final Future<void> Function() onShowCodexConfiguration;
   final Future<void> Function() onConfigureRuntime;
   final Future<void> Function() onShowPlugins;
   final Future<void> Function() onShowAccount;

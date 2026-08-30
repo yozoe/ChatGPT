@@ -537,6 +537,232 @@ class SettingsPageState extends State<SettingsPage> {
     ),
   );
 
+  Widget _configurationContent() {
+    final palette = YeknomPalette.of(context);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 620;
+        return ListView(
+          key: const Key('settings-configuration-page'),
+          padding: EdgeInsets.fromLTRB(
+            compact ? 24 : 72,
+            46,
+            compact ? 24 : 72,
+            72,
+          ),
+          children: [
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1050),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '配置',
+                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                      fontSize: 38,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '配置新聊天的权限、运行时状态和模型能力。',
+                    style: TextStyle(color: palette.muted),
+                  ),
+                  const SizedBox(height: 34),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 8,
+                    alignment: WrapAlignment.spaceBetween,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Text(
+                        '智能体默认设置',
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                      TextButton.icon(
+                        key: const Key('settings-open-codex-configuration'),
+                        onPressed: widget.onShowCodexConfiguration,
+                        icon: const Icon(Icons.open_in_new, size: 16),
+                        label: const Text('查看模型与 Provider 状态'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: palette.raised,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: palette.border),
+                    ),
+                    child: Column(
+                      children: [
+                        _settingRow(
+                          title: '批准策略',
+                          description: '选择 Codex 何时请求你批准操作。此偏好会保存并用于后续任务。',
+                          trailing: PopupMenuButton<ApprovalMode>(
+                            key: const Key(
+                              'settings-configuration-approval-mode',
+                            ),
+                            initialValue: widget.controller.approvalMode,
+                            onSelected: (value) async {
+                              await widget.controller.setApprovalMode(value);
+                              if (mounted) setState(() {});
+                            },
+                            itemBuilder: (context) => ApprovalMode.values
+                                .map(
+                                  (mode) => PopupMenuItem(
+                                    value: mode,
+                                    child: Text(mode.label),
+                                  ),
+                                )
+                                .toList(),
+                            child: Chip(
+                              label: Text(widget.controller.approvalMode.label),
+                            ),
+                          ),
+                        ),
+                        Divider(height: 1, color: palette.border),
+                        _settingRow(
+                          title: '沙盒设置',
+                          description:
+                              '文件与命令的实际访问范围由 Codex App Server 和项目权限决定。',
+                          trailing: Text(
+                            '由配置管理',
+                            style: TextStyle(color: palette.muted),
+                          ),
+                        ),
+                        Divider(height: 1, color: palette.border),
+                        _settingRow(
+                          title: '网页搜索',
+                          description: '网络访问能力由当前 Codex 运行时及其配置决定。',
+                          trailing: Text(
+                            '由配置管理',
+                            style: TextStyle(color: palette.muted),
+                          ),
+                        ),
+                        Divider(height: 1, color: palette.border),
+                        _settingRow(
+                          title: '输出详细程度',
+                          description: '回复风格由所选模型和 Codex 配置决定；本应用不会覆盖它。',
+                          trailing: Text(
+                            '模型默认',
+                            style: TextStyle(color: palette.muted),
+                          ),
+                        ),
+                        Divider(height: 1, color: palette.border),
+                        _settingRow(
+                          title: '推理摘要',
+                          description: '是否提供摘要由模型和运行时能力协商，本应用会原样显示可用结果。',
+                          trailing: Text(
+                            '自动',
+                            style: TextStyle(color: palette.muted),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 44),
+                  Text(
+                    '模型功能',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: palette.raised,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: palette.border),
+                    ),
+                    child: Column(
+                      children: [
+                        _settingRow(
+                          title: '默认推理强度',
+                          description: '选择后续新任务的推理强度。可用选项会随当前模型自动更新。',
+                          trailing: PopupMenuButton<ReasoningEffort>(
+                            key: const Key(
+                              'settings-configuration-reasoning-effort',
+                            ),
+                            initialValue: widget.controller.reasoningEffort,
+                            onSelected: (value) async {
+                              await widget.controller.setReasoningEffort(value);
+                              if (mounted) setState(() {});
+                            },
+                            itemBuilder: (context) => widget
+                                .controller
+                                .reasoningEffortOptions
+                                .map(
+                                  (effort) => PopupMenuItem(
+                                    value: effort,
+                                    child: Text(effort.label),
+                                  ),
+                                )
+                                .toList(),
+                            child: Chip(
+                              label: Text(
+                                widget.controller.reasoningEffort.label,
+                              ),
+                            ),
+                          ),
+                        ),
+                        Divider(height: 1, color: palette.border),
+                        _settingRow(
+                          title: '模型能力状态',
+                          description:
+                              '模型和 Provider 会从当前工作区的最终生效配置读取，不会在这里保存密钥或 Base URL。',
+                          trailing: TextButton(
+                            onPressed: widget.onShowCodexConfiguration,
+                            child: const Text('查看状态'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 44),
+                  Text(
+                    '工作空间依赖项',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: palette.raised,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: palette.border),
+                    ),
+                    child: Column(
+                      children: [
+                        _settingRow(
+                          title: 'Codex CLI 运行时',
+                          description: '检查本机 Codex CLI、已解析的可执行文件和最近的运行时诊断日志。',
+                          trailing: OutlinedButton.icon(
+                            key: const Key(
+                              'settings-configuration-diagnose-runtime',
+                            ),
+                            onPressed: widget.onConfigureRuntime,
+                            icon: const Icon(
+                              Icons.manage_search_outlined,
+                              size: 18,
+                            ),
+                            label: const Text('诊断'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
@@ -552,90 +778,128 @@ class SettingsPageState extends State<SettingsPage> {
               border: Border(right: BorderSide(color: palette.border)),
             ),
             child: SafeArea(
-              child: ListView(
-                padding: const EdgeInsets.fromLTRB(12, 22, 12, 24),
+              child: Column(
                 children: [
-                  TextButton.icon(
-                    key: const Key('settings-back-button'),
-                    onPressed: widget.onOpenConversation,
-                    icon: const Icon(Icons.arrow_back, size: 18),
-                    label: const Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text('返回应用'),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 22, 12, 14),
+                    child: Column(
+                      children: [
+                        TextButton.icon(
+                          key: const Key('settings-back-button'),
+                          onPressed: widget.onOpenConversation,
+                          icon: const Icon(Icons.arrow_back, size: 18),
+                          label: const Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text('返回应用'),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        TextField(
+                          key: const Key('settings-search-field'),
+                          controller: _search,
+                          decoration: const InputDecoration(
+                            hintText: '搜索设置...',
+                            prefixIcon: Icon(Icons.search),
+                            filled: true,
+                            border: InputBorder.none,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 14),
-                  TextField(
-                    controller: _search,
-                    decoration: const InputDecoration(
-                      hintText: '搜索设置...',
-                      prefixIcon: Icon(Icons.search),
-                      filled: true,
-                      border: InputBorder.none,
+                  Divider(height: 1, color: palette.border),
+                  Expanded(
+                    child: ListView(
+                      key: const Key('settings-navigation-scroll'),
+                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
+                      children: [
+                        _sectionLabel('个人'),
+                        _navItem(
+                          label: '常规',
+                          icon: Icons.settings_outlined,
+                          selected: _section == '常规',
+                        ),
+                        _navItem(
+                          label: '导入（待开发）',
+                          icon: Icons.download_outlined,
+                        ),
+                        _navItem(
+                          label: '外观',
+                          icon: Icons.light_mode_outlined,
+                          selected: _section == '外观',
+                          onTap: () => _select('外观'),
+                        ),
+                        _navItem(
+                          label: '语音（待开发）',
+                          icon: Icons.mic_none_outlined,
+                        ),
+                        _navItem(
+                          label: '配置',
+                          icon: Icons.shield_outlined,
+                          selected: _section == '配置',
+                        ),
+                        _navItem(
+                          label: '个性化（待开发）',
+                          icon: Icons.auto_awesome_outlined,
+                        ),
+                        _navItem(label: '宠物（待开发）', icon: Icons.pets_outlined),
+                        _navItem(
+                          label: '键盘快捷键',
+                          icon: Icons.keyboard_alt_outlined,
+                          onTap: _showShortcuts,
+                        ),
+                        _navItem(
+                          label: '账户',
+                          icon: Icons.account_circle_outlined,
+                          trailingArrow: true,
+                          onTap: widget.onShowAccount,
+                        ),
+                        _navItem(
+                          label: '关于',
+                          icon: Icons.info_outline,
+                          onTap: _showAbout,
+                        ),
+                        _sectionLabel('集成'),
+                        _navItem(
+                          label: '电脑操控（待开发）',
+                          icon: Icons.auto_awesome_motion_outlined,
+                        ),
+                        _navItem(
+                          label: '应用快照（待开发）',
+                          icon: Icons.screenshot_monitor_outlined,
+                        ),
+                        _navItem(
+                          label: '插件',
+                          icon: Icons.extension_outlined,
+                          onTap: widget.onShowPlugins,
+                        ),
+                        _navItem(label: '浏览器（待开发）', icon: Icons.web_outlined),
+                        _sectionLabel('编码'),
+                        _navItem(label: '钩子（待开发）', icon: Icons.anchor_outlined),
+                        _navItem(
+                          label: '连接（待开发）',
+                          icon: Icons.language_outlined,
+                        ),
+                        _navItem(
+                          label: 'Git（待开发）',
+                          icon: Icons.account_tree_outlined,
+                        ),
+                        _navItem(
+                          label: '环境（待开发）',
+                          icon: Icons.computer_outlined,
+                        ),
+                        _navItem(
+                          label: 'Worktrees（待开发）',
+                          icon: Icons.call_split_outlined,
+                        ),
+                        _sectionLabel('已归档'),
+                        _navItem(
+                          label: '已归档的聊天（待开发）',
+                          icon: Icons.archive_outlined,
+                        ),
+                      ],
                     ),
                   ),
-                  _sectionLabel('个人'),
-                  _navItem(
-                    label: '常规',
-                    icon: Icons.settings_outlined,
-                    selected: _section == '常规',
-                  ),
-                  _navItem(label: '导入', icon: Icons.download_outlined),
-                  _navItem(
-                    label: '外观',
-                    icon: Icons.light_mode_outlined,
-                    selected: _section == '外观',
-                    onTap: () {
-                      _select('外观');
-                    },
-                  ),
-                  _navItem(label: '语音', icon: Icons.mic_none_outlined),
-                  _navItem(
-                    label: '配置',
-                    icon: Icons.shield_outlined,
-                    onTap: widget.onConfigureRuntime,
-                  ),
-                  _navItem(label: '个性化', icon: Icons.auto_awesome_outlined),
-                  _navItem(label: '宠物', icon: Icons.pets_outlined),
-                  _navItem(
-                    label: '键盘快捷键',
-                    icon: Icons.keyboard_alt_outlined,
-                    onTap: _showShortcuts,
-                  ),
-                  _navItem(
-                    label: '账户',
-                    icon: Icons.account_circle_outlined,
-                    trailingArrow: true,
-                    onTap: widget.onShowAccount,
-                  ),
-                  _navItem(
-                    label: '关于',
-                    icon: Icons.info_outline,
-                    onTap: _showAbout,
-                  ),
-                  _sectionLabel('集成'),
-                  _navItem(
-                    label: '电脑操控',
-                    icon: Icons.auto_awesome_motion_outlined,
-                  ),
-                  _navItem(
-                    label: '应用快照',
-                    icon: Icons.screenshot_monitor_outlined,
-                  ),
-                  _navItem(
-                    label: '插件',
-                    icon: Icons.extension_outlined,
-                    onTap: widget.onShowPlugins,
-                  ),
-                  _navItem(label: '浏览器', icon: Icons.web_outlined),
-                  _sectionLabel('编码'),
-                  _navItem(label: '钩子', icon: Icons.anchor_outlined),
-                  _navItem(label: '连接', icon: Icons.language_outlined),
-                  _navItem(label: 'Git', icon: Icons.account_tree_outlined),
-                  _navItem(label: '环境', icon: Icons.computer_outlined),
-                  _navItem(label: 'Worktrees', icon: Icons.call_split_outlined),
-                  _sectionLabel('已归档'),
-                  _navItem(label: '已归档的聊天', icon: Icons.archive_outlined),
                 ],
               ),
             ),
@@ -646,6 +910,8 @@ class SettingsPageState extends State<SettingsPage> {
               ? _generalContent()
               : _section == '外观'
               ? _appearanceContent()
+              : _section == '配置'
+              ? _configurationContent()
               : Center(child: Text('“$_section”设置即将推出')),
         ),
       ],
