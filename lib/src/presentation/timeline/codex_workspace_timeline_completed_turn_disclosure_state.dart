@@ -39,17 +39,18 @@ class CompletedTurnDisclosureState extends State<CompletedTurnDisclosure> {
         .where((entry) => entry.kind == TimelineKind.agent)
         .lastOrNull;
     final finalAnswerId = (explicitFinalAnswer ?? fallbackFinalAnswer)?.id;
-    final visibleItems = _expanded
-        ? allItems
-        : allItems
-              .where((item) {
-                final entry = item.entry;
-                return entry != null &&
-                    (entry.id == finalAnswerId ||
-                        entry.kind == TimelineKind.approval ||
-                        entry.kind == TimelineKind.error);
-              })
-              .toList(growable: false);
+    final collapsedItems = allItems
+        .where((item) {
+          final entry = item.entry;
+          return entry != null &&
+              (entry.id == finalAnswerId ||
+                  entry.kind == TimelineKind.approval ||
+                  entry.kind == TimelineKind.error);
+        })
+        .toList(growable: false);
+    final processItems = allItems
+        .where((item) => !collapsedItems.contains(item))
+        .toList(growable: false);
     return Semantics(
       container: true,
       child: Column(
@@ -95,34 +96,19 @@ class CompletedTurnDisclosureState extends State<CompletedTurnDisclosure> {
               ),
             ),
           ),
-          AnimatedSize(
+          AnimatedCrossFade(
             duration: _animationDuration,
-            curve: Curves.easeOutCubic,
+            firstCurve: Curves.easeOutCubic,
+            secondCurve: Curves.easeOutCubic,
+            sizeCurve: Curves.easeOutCubic,
             alignment: Alignment.topLeft,
-            child: SizedBox(
-              key: const Key('completed-turn-disclosure-details'),
-              width: double.infinity,
-              child: visibleItems.isNotEmpty
-                  ? Padding(
-                      padding: const EdgeInsets.only(top: 14),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          for (
-                            var index = 0;
-                            index < visibleItems.length;
-                            index++
-                          ) ...[
-                            _completedTurnDetail(visibleItems[index]),
-                            if (index != visibleItems.length - 1)
-                              const SizedBox(height: 14),
-                          ],
-                        ],
-                      ),
-                    )
-                  : const SizedBox.shrink(),
-            ),
+            firstChild: const SizedBox(width: double.infinity),
+            secondChild: _completedTurnDetails(processItems),
+            crossFadeState: _expanded
+                ? CrossFadeState.showSecond
+                : CrossFadeState.showFirst,
           ),
+          _completedTurnDetails(collapsedItems),
           if (allItems.isNotEmpty)
             const Padding(
               key: Key('completed-turn-disclosure-divider'),
@@ -133,6 +119,25 @@ class CompletedTurnDisclosureState extends State<CompletedTurnDisclosure> {
       ),
     );
   }
+
+  Widget _completedTurnDetails(List<ConversationTimelineItem> items) =>
+      SizedBox(
+        width: double.infinity,
+        child: items.isNotEmpty
+            ? Padding(
+                padding: const EdgeInsets.only(top: 14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (var index = 0; index < items.length; index++) ...[
+                      _completedTurnDetail(items[index]),
+                      if (index != items.length - 1) const SizedBox(height: 14),
+                    ],
+                  ],
+                ),
+              )
+            : const SizedBox.shrink(),
+      );
 
   Widget _completedTurnDetail(ConversationTimelineItem item) {
     if (item.activities case final activities?) {
