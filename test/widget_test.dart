@@ -23,6 +23,7 @@ import 'package:chatgpt/src/domain/workspace_configuration.dart';
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_sidebar_workspace_tile.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_plugin_glyph.dart';
+import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_support.dart';
 import 'package:chatgpt/src/presentation/code_review/code_review_panel.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_timeline_activity_list.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
@@ -2395,7 +2396,7 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
 
-    expect(controller.entries, hasLength(entryCount + 1));
+    expect(controller.entries, hasLength(entryCount + 2));
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -5897,7 +5898,7 @@ void main() {
   );
 
   testWidgets(
-    'elapsed disclosure hides process details but keeps the final answer visible',
+    'keeps expanded command activity above the final answer and elapsed footer',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(1400, 1200));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -5910,28 +5911,48 @@ void main() {
           createdAt: DateTime(2026),
         ),
         TimelineEntry(
+          kind: TimelineKind.system,
+          title: '任务已创建',
+          detail: 'Thread thread-1',
+          createdAt: DateTime(2026, 1, 1, 0, 0, 1),
+        ),
+        TimelineEntry(
+          kind: TimelineKind.agent,
+          title: 'Codex',
+          detail: '我先检查项目。',
+          agentPhase: 'commentary',
+          createdAt: DateTime(2026, 1, 1, 0, 0, 2),
+        ),
+        TimelineEntry(
           kind: TimelineKind.command,
           title: '执行命令',
           detail: 'flutter analyze\nNo issues found',
-          createdAt: DateTime(2026, 1, 1, 0, 0, 1),
+          createdAt: DateTime(2026, 1, 1, 0, 0, 3),
         ),
         TimelineEntry(
           kind: TimelineKind.approval,
           title: '已批准命令',
           detail: 'flutter analyze',
-          createdAt: DateTime(2026, 1, 1, 0, 0, 2),
+          createdAt: DateTime(2026, 1, 1, 0, 0, 4),
         ),
         TimelineEntry(
           kind: TimelineKind.agent,
           title: 'Codex',
           detail: '任务已经完成。',
-          createdAt: DateTime(2026, 1, 1, 0, 0, 3),
+          agentPhase: 'final_answer',
+          createdAt: DateTime(2026, 1, 1, 0, 0, 5),
         ),
         TimelineEntry(
           kind: TimelineKind.elapsed,
           title: '耗时 4 秒',
           detail: '',
-          createdAt: DateTime(2026, 1, 1, 0, 0, 4),
+          createdAt: DateTime(2026, 1, 1, 0, 0, 6),
+        ),
+        TimelineEntry(
+          kind: TimelineKind.system,
+          title: '任务完成',
+          detail: '',
+          createdAt: DateTime(2026, 1, 1, 0, 0, 7),
         ),
       ]);
 
@@ -5943,12 +5964,24 @@ void main() {
       expect(find.text('已运行 flutter analyze'), findsNothing);
       expect(find.text('No issues found'), findsNothing);
       expect(
-        tester.getTopLeft(find.text('已批准命令')).dy,
-        lessThan(tester.getTopLeft(find.text('耗时 4 秒')).dy),
+        tester.getTopLeft(find.text('任务已创建')).dy,
+        lessThan(tester.getTopLeft(find.text('我先检查项目。')).dy),
+      );
+      expect(
+        tester.getTopLeft(find.text('我先检查项目。')).dy,
+        lessThan(tester.getTopLeft(find.text('已运行了命令')).dy),
+      );
+      expect(
+        tester.getTopLeft(find.text('已运行了命令')).dy,
+        lessThan(tester.getTopLeft(find.text('任务已经完成。')).dy),
       );
       expect(
         tester.getTopLeft(find.text('任务已经完成。')).dy,
         lessThan(tester.getTopLeft(find.text('耗时 4 秒')).dy),
+      );
+      expect(
+        tester.getTopLeft(find.text('耗时 4 秒')).dy,
+        lessThan(tester.getTopLeft(find.text('任务完成')).dy),
       );
       final elapsedToggle = find.byKey(
         const Key('completed-turn-disclosure-toggle'),
@@ -8354,6 +8387,333 @@ void main() {
       controller.dispose();
     },
   );
+
+  test(
+    'rejects stale replies until turn start while recording task creation first',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..queueListRequests = true
+        ..startThreadCompleter = Completer<String>()
+        ..startTurnCompleter = Completer<void>()
+        ..startThreadResponseIds.add('startup-order-thread');
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+
+      final sending = controller.sendPrompt('创建任务');
+      await Future<void>.delayed(Duration.zero);
+
+      // Until thread/start returns an ID, an ID-less buffered event cannot be
+      // attributed to the new task.
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/agentMessage/delta',
+          params: {'itemId': 'stale-reply', 'delta': '旧任务的迟到回复'},
+        ),
+      );
+      expect(
+        controller.entries.map((entry) => entry.title),
+        isNot(contains('Codex')),
+      );
+
+      server.startThreadCompleter!.complete('startup-order-thread');
+      await Future<void>.delayed(Duration.zero);
+      expect(server.listRequests, hasLength(1));
+
+      // The new turn has not been requested while the sidebar refresh is in
+      // flight, so even a same-thread or ID-less reply must still be stale.
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/agentMessage/delta',
+          params: {'itemId': 'startup-reply', 'delta': '提前到达的回复'},
+        ),
+      );
+      expect(
+        controller.entries.map((entry) => entry.title),
+        isNot(contains('Codex')),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'startup-order-thread',
+            'turn': {'id': 'stale-turn', 'status': 'completed'},
+          },
+        ),
+      );
+      expect(controller.status, RuntimeStatus.running);
+      expect(
+        controller.entries.map((entry) => entry.title),
+        isNot(contains('任务完成')),
+      );
+      server.listRequests.single.complete(const [
+        {'id': 'startup-order-thread', 'preview': '创建任务'},
+      ]);
+      for (
+        var index = 0;
+        index < 10 && server.startedTurnThreadId == null;
+        index++
+      ) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(server.startedTurnThreadId, 'startup-order-thread');
+
+      // Once turn/start has actually been issued, compatible ID-less events
+      // are accepted and remain below the local creation boundary.
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/agentMessage/delta',
+          params: {'itemId': 'started-reply', 'delta': '新任务回复'},
+        ),
+      );
+      server.startTurnCompleter!.complete();
+
+      expect(await sending, isTrue);
+      final titles = controller.entries.map((entry) => entry.title).toList();
+      expect(titles.indexOf('你'), lessThan(titles.indexOf('任务已创建')));
+      expect(titles.indexOf('任务已创建'), lessThan(titles.indexOf('Codex')));
+      controller.dispose();
+    },
+  );
+
+  test('orders final answers by App Server phase after command activity', () {
+    final entries = [
+      TimelineEntry(
+        kind: TimelineKind.agent,
+        title: 'Codex',
+        detail: '提前到达的最终回复',
+        createdAt: DateTime(2026),
+        agentPhase: 'final_answer',
+      ),
+      TimelineEntry(
+        kind: TimelineKind.elapsed,
+        title: '耗时 1 秒',
+        detail: '',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.system,
+        title: '任务已创建',
+        detail: 'Thread thread-1',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.agent,
+        title: 'Codex',
+        detail: '我会查阅官方说明',
+        createdAt: DateTime(2026),
+        agentPhase: 'commentary',
+      ),
+      TimelineEntry(
+        kind: TimelineKind.command,
+        title: '执行命令',
+        detail: 'search hooks',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.system,
+        title: '任务完成',
+        detail: '',
+        createdAt: DateTime(2026),
+      ),
+    ];
+
+    expect(orderAgentMessagePhases(entries).map((entry) => entry.detail), [
+      'Thread thread-1',
+      '我会查阅官方说明',
+      'search hooks',
+      '提前到达的最终回复',
+      '',
+      '',
+    ]);
+  });
+
+  test('records agent message phase without splitting streamed deltas', () {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/started',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'agent-1',
+            'type': 'agentMessage',
+            'phase': 'final_answer',
+          },
+        },
+      ),
+    );
+    for (final delta in ['甲', '乙']) {
+      controller.handleServerEventForTesting(
+        ServerEvent(
+          method: 'item/agentMessage/delta',
+          params: {
+            'threadId': 'thread-1',
+            'turnId': 'turn-1',
+            'itemId': 'agent-1',
+            'delta': delta,
+          },
+        ),
+      );
+    }
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'agent-1',
+            'type': 'agentMessage',
+            'phase': 'final_answer',
+            'text': '甲乙',
+          },
+        },
+      ),
+    );
+
+    final agents = controller.entries.where(
+      (entry) => entry.kind == TimelineKind.agent,
+    );
+    expect(agents, hasLength(1));
+    expect(agents.single.detail, '甲乙');
+    expect(agents.single.agentPhase, 'final_answer');
+    controller.dispose();
+  });
+
+  test('keeps unphased compatible-server messages in arrival order', () {
+    final entries = [
+      TimelineEntry(
+        kind: TimelineKind.agent,
+        title: 'Codex',
+        detail: '兼容消息',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.command,
+        title: '执行命令',
+        detail: 'command',
+        createdAt: DateTime(2026),
+      ),
+    ];
+
+    expect(orderAgentMessagePhases(entries), entries);
+  });
+
+  test('repairs a legacy unphased turn with process output after elapsed', () {
+    final entries = [
+      TimelineEntry(
+        kind: TimelineKind.agent,
+        title: 'Codex',
+        detail: '最终回复',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.elapsed,
+        title: '耗时 1 秒',
+        detail: '',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.system,
+        title: '任务已创建',
+        detail: 'Thread legacy',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.command,
+        title: '执行命令',
+        detail: 'flutter run -d macos',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.system,
+        title: '任务完成',
+        detail: '',
+        createdAt: DateTime(2026),
+      ),
+    ];
+
+    expect(orderAgentMessagePhases(entries).map((entry) => entry.detail), [
+      'Thread legacy',
+      'flutter run -d macos',
+      '最终回复',
+      '',
+      '',
+    ]);
+  });
+
+  test('keeps failed and unknown terminal statuses after final answers', () {
+    final entries = [
+      TimelineEntry(
+        kind: TimelineKind.agent,
+        title: 'Codex',
+        detail: '失败前回复',
+        agentPhase: 'final_answer',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.elapsed,
+        title: '耗时 1 秒',
+        detail: '',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.command,
+        title: '执行命令',
+        detail: '失败命令',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.error,
+        title: '任务失败',
+        detail: '失败原因',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.user,
+        title: '你',
+        detail: '继续',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.agent,
+        title: 'Codex',
+        detail: '未知状态前回复',
+        agentPhase: 'final_answer',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.elapsed,
+        title: '耗时 2 秒',
+        detail: '',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.system,
+        title: '任务已结束',
+        detail: '未知状态',
+        createdAt: DateTime(2026),
+      ),
+    ];
+
+    expect(orderAgentMessagePhases(entries).map((entry) => entry.detail), [
+      '失败命令',
+      '失败前回复',
+      '',
+      '失败原因',
+      '继续',
+      '未知状态前回复',
+      '',
+      '未知状态',
+    ]);
+  });
 
   test(
     'switches to an inactive task workspace before resuming its task',

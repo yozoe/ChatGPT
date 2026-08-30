@@ -25,6 +25,7 @@ class TimelineEntry {
     this.sourceItemId,
     this.activityKind,
     this.activityStatus,
+    this.agentPhase,
     this.linkedThreadId,
     this.activityPrompt,
   }) : id = id == null || id.trim().isEmpty ? _newId() : id.trim();
@@ -53,6 +54,9 @@ class TimelineEntry {
   /// Machine-readable lifecycle state retained for status styling.
   final String? activityStatus;
 
+  /// App Server agent-message phase (`commentary` or `final_answer`).
+  final String? agentPhase;
+
   /// 协作活动对应的子线程；非协作条目保持为空。
   /// Child thread associated with a collaboration activity; null otherwise.
   final String? linkedThreadId;
@@ -70,6 +74,7 @@ class TimelineEntry {
     String? sourceItemId,
     String? activityKind,
     String? activityStatus,
+    String? agentPhase,
     String? linkedThreadId,
     String? activityPrompt,
   }) {
@@ -83,6 +88,7 @@ class TimelineEntry {
       sourceItemId: sourceItemId ?? this.sourceItemId,
       activityKind: activityKind ?? this.activityKind,
       activityStatus: activityStatus ?? this.activityStatus,
+      agentPhase: agentPhase ?? this.agentPhase,
       linkedThreadId: linkedThreadId ?? this.linkedThreadId,
       activityPrompt: activityPrompt ?? this.activityPrompt,
     );
@@ -100,6 +106,7 @@ class TimelineEntry {
     'sourceItemId': ?sourceItemId,
     'activityKind': ?activityKind,
     'activityStatus': ?activityStatus,
+    'agentPhase': ?agentPhase,
     'linkedThreadId': ?linkedThreadId,
     'activityPrompt': ?activityPrompt,
   };
@@ -126,6 +133,7 @@ class TimelineEntry {
       sourceItemId: value['sourceItemId']?.toString(),
       activityKind: value['activityKind']?.toString(),
       activityStatus: value['activityStatus']?.toString(),
+      agentPhase: value['agentPhase']?.toString(),
       linkedThreadId: value['linkedThreadId']?.toString(),
       activityPrompt: value['activityPrompt']?.toString(),
     );

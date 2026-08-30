@@ -19,66 +19,88 @@ class CompletedTurnDisclosureState extends State<CompletedTurnDisclosure> {
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
-    final detailItems = <ConversationTimelineItem>[];
+    final allItems = <ConversationTimelineItem>[];
     appendStandardTimelineItems(
-      detailItems,
+      allItems,
       widget.entries.indexed
           .map((item) => IndexedTimelineEntry(item.$2, item.$1))
           .toList(growable: false),
     );
+    final explicitFinalAnswer = widget.entries
+        .where(
+          (entry) =>
+              entry.kind == TimelineKind.agent &&
+              entry.agentPhase == 'final_answer',
+        )
+        .lastOrNull;
+    final fallbackFinalAnswer = widget.entries
+        .where((entry) => entry.kind == TimelineKind.agent)
+        .lastOrNull;
+    final finalAnswerId = (explicitFinalAnswer ?? fallbackFinalAnswer)?.id;
+    final visibleItems = _expanded
+        ? allItems
+        : allItems
+              .where((item) {
+                final entry = item.entry;
+                return entry != null &&
+                    (entry.id == finalAnswerId ||
+                        entry.kind == TimelineKind.approval ||
+                        entry.kind == TimelineKind.error);
+              })
+              .toList(growable: false);
     return Semantics(
       container: true,
-      button: true,
-      expanded: _expanded,
-      label: widget.duration.title,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Material(
-            color: Colors.transparent,
-            child: InkWell(
-              key: const Key('completed-turn-disclosure-toggle'),
-              onTap: () => setState(() => _expanded = !_expanded),
-              borderRadius: BorderRadius.circular(10),
-              child: Padding(
-                key: const Key('completed-turn-disclosure-content'),
-                padding: const EdgeInsets.fromLTRB(7, 4, 5, 4),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      widget.duration.title,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: palette.muted,
-                        fontWeight: FontWeight.w600,
+          for (var index = 0; index < visibleItems.length; index++) ...[
+            _completedTurnDetail(visibleItems[index]),
+            if (index != visibleItems.length - 1) const SizedBox(height: 14),
+          ],
+          if (visibleItems.isNotEmpty) const SizedBox(height: 14),
+          Semantics(
+            button: true,
+            expanded: _expanded,
+            label: widget.duration.title,
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                key: const Key('completed-turn-disclosure-toggle'),
+                onTap: () => setState(() => _expanded = !_expanded),
+                borderRadius: BorderRadius.circular(10),
+                child: Padding(
+                  key: const Key('completed-turn-disclosure-content'),
+                  padding: const EdgeInsets.fromLTRB(7, 4, 5, 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        widget.duration.title,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: palette.muted,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 3),
-                    Icon(
-                      _expanded
-                          ? Icons.keyboard_arrow_down
-                          : Icons.keyboard_arrow_right,
-                      size: 16,
-                      color: palette.muted,
-                    ),
-                  ],
+                      const SizedBox(width: 3),
+                      Icon(
+                        _expanded
+                            ? Icons.keyboard_arrow_down
+                            : Icons.keyboard_arrow_right,
+                        size: 16,
+                        color: palette.muted,
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
-          if (detailItems.isNotEmpty)
+          if (allItems.isNotEmpty)
             const Padding(
               key: Key('completed-turn-disclosure-divider'),
               padding: EdgeInsets.only(top: 8),
               child: Divider(height: 1),
             ),
-          if (_expanded && detailItems.isNotEmpty) ...[
-            const SizedBox(height: 14),
-            for (var index = 0; index < detailItems.length; index++) ...[
-              _completedTurnDetail(detailItems[index]),
-              if (index != detailItems.length - 1) const SizedBox(height: 14),
-            ],
-          ],
         ],
       ),
     );

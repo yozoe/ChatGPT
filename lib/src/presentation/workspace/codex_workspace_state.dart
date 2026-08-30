@@ -345,7 +345,11 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   /// 侧栏切换时从共享时间线重新构建。
   void _captureActiveTimelinePage() {
     _timelinePages[_displayedThreadKey] = TimelinePageData(
-      entries: List.unmodifiable(_controller.entries),
+      // Timeline pages are retained independently of the controller. Normalize
+      // a compatible server's out-of-order completion records before they
+      // enter that cache, so an already-mounted page cannot preserve the raw
+      // arrival order.
+      entries: List.unmodifiable(orderAgentMessagePhases(_controller.entries)),
       fileChanges: List.unmodifiable(_controller.fileChanges),
       turnDiff: _controller.turnDiff,
       showFileChangeSummary:

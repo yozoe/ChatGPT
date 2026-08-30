@@ -37,6 +37,7 @@ enum PluginAddAction { createPlugin, addMarketplace, recordSkill }
 List<ConversationTimelineItem> conversationTimelineItems(
   List<TimelineEntry> entries,
 ) {
+  final timelineEntries = orderAgentMessagePhases(entries);
   final items = <ConversationTimelineItem>[];
   final pendingTurnEntries = <IndexedTimelineEntry>[];
 
@@ -46,8 +47,8 @@ List<ConversationTimelineItem> conversationTimelineItems(
     pendingTurnEntries.clear();
   }
 
-  for (var index = 0; index < entries.length; index++) {
-    final entry = entries[index];
+  for (var index = 0; index < timelineEntries.length; index++) {
+    final entry = timelineEntries[index];
     // 旧版缓存可能仍含逐文件的协议记录。文件变更会由专用摘要卡片
     // 和审查入口呈现，不应占据会话流。
     // Older caches may retain per-file protocol records. File changes are
@@ -61,38 +62,28 @@ List<ConversationTimelineItem> conversationTimelineItems(
       continue;
     }
     if (entry.kind == TimelineKind.elapsed) {
-      // App Server emits the final agent message before the turn duration.
-      // Keep that last answer, approvals, and errors outside the disclosure:
-      // collapsing elapsed details must never hide the user-visible outcome or
-      // a decision/audit record.
-      final finalAgentIndex = pendingTurnEntries.lastIndexWhere(
-        (item) => item.entry.kind == TimelineKind.agent,
-      );
-      final processEntries = <IndexedTimelineEntry>[];
-      final visibleEntries = <IndexedTimelineEntry>[];
-      for (
-        var pendingIndex = 0;
-        pendingIndex < pendingTurnEntries.length;
-        pendingIndex++
-      ) {
-        final item = pendingTurnEntries[pendingIndex];
-        final staysVisible =
-            pendingIndex == finalAgentIndex ||
-            item.entry.kind == TimelineKind.approval ||
-            item.entry.kind == TimelineKind.error;
-        (staysVisible ? visibleEntries : processEntries).add(item);
-      }
-      // Keep audit records and the final answer at their original position
-      // relative to the duration. Moving them after the disclosure would make
-      // an approval or error that happened during the turn look post-completion.
-      appendStandardTimelineItems(items, visibleEntries);
+      final processEntries = pendingTurnEntries
+          .where((item) {
+            final itemEntry = item.entry;
+            return itemEntry.kind != TimelineKind.agent &&
+                itemEntry.kind != TimelineKind.approval &&
+                itemEntry.kind != TimelineKind.error;
+          })
+          .toList(growable: false);
       if (processEntries.isEmpty) {
+        appendStandardTimelineItems(items, pendingTurnEntries);
         items.add(ConversationTimelineItem.entry(entry, index));
       } else {
+        // Keep the complete turn in one stable widget. The disclosure renders
+        // expanded process entries in their original position, followed by the
+        // final answer and then this duration footer. Splitting the final answer
+        // out before the disclosure made command output appear underneath it.
         items.add(
           ConversationTimelineItem.completedTurn(
             entry,
-            processEntries.map((item) => item.entry).toList(growable: false),
+            pendingTurnEntries
+                .map((item) => item.entry)
+                .toList(growable: false),
             index,
           ),
         );
@@ -105,6 +96,83 @@ List<ConversationTimelineItem> conversationTimelineItems(
   flushPendingTurnEntries();
   return items;
 }
+
+/// Uses the App Server's authoritative agent-message phase to keep commentary
+/// inline with work while placing `final_answer` after tools and before the
+/// duration/terminal status, regardless of notification arrival order.
+List<TimelineEntry> orderAgentMessagePhases(List<TimelineEntry> entries) {
+  final ordered = <TimelineEntry>[];
+  var turnStart = 0;
+  while (turnStart < entries.length) {
+    var nextUser = turnStart + 1;
+    while (nextUser < entries.length &&
+        entries[nextUser].kind != TimelineKind.user) {
+      nextUser++;
+    }
+    final turnEntries = entries.sublist(turnStart, nextUser);
+    var finalAnswers = turnEntries
+        .where(
+          (entry) =>
+              entry.kind == TimelineKind.agent &&
+              entry.agentPhase == 'final_answer',
+        )
+        .toList(growable: false);
+    if (finalAnswers.isEmpty) {
+      final elapsedIndex = turnEntries.indexWhere(
+        (entry) => entry.kind == TimelineKind.elapsed,
+      );
+      final hasProcessAfterElapsed =
+          elapsedIndex >= 0 &&
+          turnEntries
+              .skip(elapsedIndex + 1)
+              .any((entry) => !isTerminalTaskStatus(entry));
+      if (hasProcessAfterElapsed) {
+        final legacyFinalAnswer = turnEntries
+            .take(elapsedIndex)
+            .where((entry) => entry.kind == TimelineKind.agent)
+            .lastOrNull;
+        if (legacyFinalAnswer != null) {
+          // Older persisted timelines did not retain phase. Only repair the
+          // structurally impossible shape where process output follows the
+          // elapsed boundary; ordinary unphased messages keep arrival order.
+          finalAnswers = [legacyFinalAnswer];
+        }
+      }
+    }
+    if (finalAnswers.isEmpty) {
+      ordered.addAll(turnEntries);
+    } else {
+      final finalAnswerIds = finalAnswers.map((entry) => entry.id).toSet();
+      final elapsedEntries = turnEntries
+          .where((entry) => entry.kind == TimelineKind.elapsed)
+          .toList(growable: false);
+      final terminalEntries = turnEntries
+          .where(isTerminalTaskStatus)
+          .toList(growable: false);
+      ordered
+        ..addAll(
+          turnEntries.where(
+            (entry) =>
+                !finalAnswerIds.contains(entry.id) &&
+                entry.kind != TimelineKind.elapsed &&
+                !isTerminalTaskStatus(entry),
+          ),
+        )
+        ..addAll(finalAnswers)
+        ..addAll(elapsedEntries)
+        ..addAll(terminalEntries);
+    }
+    turnStart = nextUser;
+  }
+  return ordered;
+}
+
+bool isTerminalTaskStatus(TimelineEntry entry) =>
+    (entry.kind == TimelineKind.system &&
+        (entry.title == '任务完成' ||
+            entry.title == '任务已停止' ||
+            entry.title == '任务已结束')) ||
+    (entry.kind == TimelineKind.error && entry.title == '任务失败');
 
 /// Adds uncompleted entries to the timeline, retaining compact tool groups.
 void appendStandardTimelineItems(

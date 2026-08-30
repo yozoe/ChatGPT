@@ -45,6 +45,7 @@ class FakeCodexAppServer extends CodexAppServer {
   Object? itemPageError;
   List<JsonMap>? itemPages;
   var itemPageIndex = 0;
+  Completer<String>? startThreadCompleter;
   String? resumedThreadId;
   int resumeCalls = 0;
   String? resumedModelProvider;
@@ -163,6 +164,7 @@ class FakeCodexAppServer extends CodexAppServer {
     startedModelProvider = modelProvider;
     startedModel = model;
     startedConfig = config;
+    if (startThreadCompleter case final completer?) return completer.future;
     return startThreadResponseIds.isEmpty
         ? 'new-thread'
         : startThreadResponseIds.removeAt(0);

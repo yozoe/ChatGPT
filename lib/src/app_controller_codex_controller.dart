@@ -109,6 +109,7 @@ class CodexController extends ChangeNotifier {
   final List<ScheduledTask> _scheduledTasks = [];
   final Map<String, Timer> _scheduledTaskTimers = {};
   final Map<String, int> _agentEntryIndexByItem = {};
+  final Map<String, String> _agentPhaseByItem = {};
   String? _activeStreamingAgentItemId;
   final LinkedHashMap<String, SubagentThreadView> _subagentThreadViews =
       LinkedHashMap();
@@ -200,6 +201,7 @@ class CodexController extends ChangeNotifier {
   // is intentionally independent of [status], which describes the task that
   // is currently open in the workbench.
   final Set<String> _runningThreadIds = {};
+  bool _preparingTurnStart = false;
   // Owning workspace for every thread that is still executing on the shared
   // App Server. This lets the foreground project change without losing the
   // background task's routing or completion reminder.
@@ -2300,6 +2302,7 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
 
     String? requestedThreadId = activeThreadId;
+    _preparingTurnStart = true;
     try {
       requestedThreadId ??= await _server.startThread(
         workingDirectory: workspace,
@@ -2337,6 +2340,16 @@ class CodexController extends ChangeNotifier {
         activeThreadId = threadId;
         _activeThreadAttached = true;
       }
+      if (activeThreadId == threadId) {
+        // Establish the local lifecycle boundary before any further awaits.
+        // App Server notifications are handled reentrantly while refreshing
+        // the sidebar or storing an optional goal; appending this afterwards
+        // could put an incoming reply above its own creation record.
+        final shortId = threadId.length > 12
+            ? threadId.substring(0, 12)
+            : threadId;
+        _add(TimelineKind.system, '任务已创建', 'Thread $shortId');
+      }
       _ownedThreadIds.add(threadId);
       _threadHistoryInitialized = true;
       // App Server may not include a newly-created thread in the first list
@@ -2352,12 +2365,10 @@ class CodexController extends ChangeNotifier {
       if (objective != null && objective.isNotEmpty) {
         await _server.setThreadGoal(threadId: threadId, objective: objective);
       }
-      if (activeThreadId == threadId) {
-        final shortId = threadId.length > 12
-            ? threadId.substring(0, 12)
-            : threadId;
-        _add(TimelineKind.system, '任务已创建', 'Thread $shortId');
-      }
+      // From this point onward even an ID-less compatible-server event can
+      // belong to the requested turn. Before the request is issued, any turn
+      // event is necessarily stale and must not enter the new timeline.
+      _preparingTurnStart = false;
       await _server.startTurn(
         threadId: threadId,
         prompt: text,
@@ -2368,6 +2379,7 @@ class CodexController extends ChangeNotifier {
       notifyListeners();
       return true;
     } catch (error) {
+      _preparingTurnStart = false;
       _runningThreadIds.remove(requestedThreadId);
       if (requestedThreadId != null) {
         _threadWorkspaceById.remove(requestedThreadId);
@@ -4161,6 +4173,12 @@ class CodexController extends ChangeNotifier {
       case 'turn/completed':
         final currentThreadId = activeThreadId;
         final eventThreadId = _threadIdFromEvent(event.params);
+        if (_preparingTurnStart &&
+            (eventThreadId == null || eventThreadId == currentThreadId)) {
+          // A new turn has not been requested yet. A late completion for the
+          // thread being reused must not finish the optimistic new task.
+          return;
+        }
         final backgroundCompletionNeedsReconciliation =
             eventThreadId == null && _hasBackgroundRunningTasks;
         // A background history read can return a slightly stale turn ID. A
@@ -4448,7 +4466,12 @@ class CodexController extends ChangeNotifier {
     final index = _agentEntryIndexByItem[itemId];
     if (index == null) {
       _agentEntryIndexByItem[itemId] = _entries.length;
-      _add(TimelineKind.agent, 'Codex', text);
+      _add(
+        TimelineKind.agent,
+        'Codex',
+        text,
+        agentPhase: _agentPhaseByItem[itemId],
+      );
       return;
     }
     final previous = _entries[index];
@@ -4978,7 +5001,15 @@ class CodexController extends ChangeNotifier {
             if (text.isNotEmpty) _add(TimelineKind.user, '你', text);
           case 'agentMessage':
             final text = item['text']?.toString() ?? _findText(item);
-            if (text.isNotEmpty) _add(TimelineKind.agent, 'Codex', text);
+            if (text.isNotEmpty) {
+              final phase = _label(item['phase']);
+              _add(
+                TimelineKind.agent,
+                'Codex',
+                text,
+                agentPhase: phase.isEmpty ? null : phase,
+              );
+            }
           case 'commandExecution':
             _appendCompletedCommandItem(item);
           case 'plan':
@@ -5017,6 +5048,11 @@ class CodexController extends ChangeNotifier {
     final rawItem = params['item'];
     if (rawItem is! Map) return;
     final item = JsonMap.from(rawItem);
+    final itemId = _label(item['id']);
+    if (item['type']?.toString() == 'agentMessage' && itemId.isNotEmpty) {
+      final phase = _label(item['phase']);
+      if (phase.isNotEmpty) _agentPhaseByItem[itemId] = phase;
+    }
     final activity = _liveTurnActivityFor(item);
     if (activity == null) return;
     if (activity.kind == 'reasoning') {
@@ -5038,6 +5074,20 @@ class CodexController extends ChangeNotifier {
     if (rawItem is! Map) return;
     final item = JsonMap.from(rawItem);
     final itemId = _label(item['id']);
+    if (item['type']?.toString() == 'agentMessage' && itemId.isNotEmpty) {
+      final phase = _label(item['phase']);
+      if (phase.isNotEmpty) {
+        _agentPhaseByItem[itemId] = phase;
+        final entryIndex = _agentEntryIndexByItem[itemId];
+        if (entryIndex != null &&
+            entryIndex >= 0 &&
+            entryIndex < _entries.length) {
+          _entries[entryIndex] = _entries[entryIndex].copyWith(
+            agentPhase: phase,
+          );
+        }
+      }
+    }
     if (item['type']?.toString() == 'agentMessage' &&
         (itemId.isEmpty || itemId == _activeStreamingAgentItemId)) {
       _activeStreamingAgentItemId = null;
@@ -5364,10 +5414,15 @@ class CodexController extends ChangeNotifier {
   /// Limits timeline mutations to notifications for the thread being shown.
   /// A connection can remain subscribed to previously resumed threads.
   bool _isEventForActiveThread(JsonMap params) {
+    if (_preparingTurnStart) return false;
     final threadId = _threadIdFromEvent(params) ?? '';
     // Older App Server notifications may omit the thread ID. That fallback is
-    // only safe when there is no background task competing for the event.
-    if (threadId.isEmpty) return !_hasBackgroundRunningTasks;
+    // only safe once this client has issued turn/start and no background task
+    // is competing for the event. Otherwise an event buffered from an earlier
+    // task could be appended to the new turn.
+    if (threadId.isEmpty) {
+      return !_hasBackgroundRunningTasks;
+    }
     return threadId == activeThreadId;
   }
 
@@ -5960,6 +6015,9 @@ class CodexController extends ChangeNotifier {
                   detail: text,
                   createdAt: createdAt,
                   sourceItemId: _label(item['id']),
+                  agentPhase: _label(item['phase']).isEmpty
+                      ? null
+                      : _label(item['phase']),
                 );
               }
             case 'reasoning':
@@ -7140,6 +7198,7 @@ class CodexController extends ChangeNotifier {
   /// Cancels streaming timers and clears the Agent-entry index.
   void _clearStreamingState({bool clearPendingTurnSteer = true}) {
     _agentEntryIndexByItem.clear();
+    _agentPhaseByItem.clear();
     _activeStreamingAgentItemId = null;
     _completedCommandItemIds.clear();
     activeTurnId = null;
@@ -7397,6 +7456,7 @@ class CodexController extends ChangeNotifier {
     String? sourceItemId,
     String? activityKind,
     String? activityStatus,
+    String? agentPhase,
     String? linkedThreadId,
     String? activityPrompt,
   }) {
@@ -7409,6 +7469,7 @@ class CodexController extends ChangeNotifier {
       sourceItemId: sourceItemId,
       activityKind: activityKind,
       activityStatus: activityStatus,
+      agentPhase: agentPhase,
       linkedThreadId: linkedThreadId,
       activityPrompt: activityPrompt,
     );
@@ -7424,6 +7485,7 @@ class CodexController extends ChangeNotifier {
     String? sourceItemId,
     String? activityKind,
     String? activityStatus,
+    String? agentPhase,
     String? linkedThreadId,
     String? activityPrompt,
   }) {
@@ -7435,6 +7497,7 @@ class CodexController extends ChangeNotifier {
       sourceItemId: sourceItemId,
       activityKind: activityKind,
       activityStatus: activityStatus,
+      agentPhase: agentPhase,
       linkedThreadId: linkedThreadId,
       activityPrompt: activityPrompt,
     );
