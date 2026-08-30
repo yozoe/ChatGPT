@@ -1420,6 +1420,30 @@ class CodexController extends ChangeNotifier {
         : '$home/.codex/config.toml';
   }
 
+  /// Lists hooks exactly as the active Codex runtime resolves them.
+  Future<List<CodexHook>> listCodexHooks() {
+    if (!_server.isRunning) {
+      throw StateError('请先启动 Codex 运行时后再读取钩子。');
+    }
+    return _server.listHooks(workingDirectory: workspacePath);
+  }
+
+  /// Changes hook enablement through Codex's persisted configuration API.
+  Future<void> setCodexHookEnabled(CodexHook hook, bool enabled) async {
+    if (!_server.isRunning) {
+      throw StateError('请先启动 Codex 运行时后再修改钩子。');
+    }
+    await _server.setHookEnabled(hook, enabled);
+  }
+
+  /// Records or revokes trust through Codex for this exact hook hash.
+  Future<void> setCodexHookTrusted(CodexHook hook, bool trusted) async {
+    if (!_server.isRunning) {
+      throw StateError('请先启动 Codex 运行时后再修改钩子。');
+    }
+    await _server.setHookTrusted(hook, trusted);
+  }
+
   /// 让 App Server 按当前项目重新解析配置，并只保留用于展示的非敏感字段。
   /// Asks App Server to resolve configuration for the current workspace and retains only non-sensitive display fields.
   Future<void> refreshCodexConfiguration({bool notify = true}) async {

@@ -4,6 +4,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:chatgpt/src/domain/codex_hook.dart';
 import 'codex_app_server_support.dart';
 import 'codex_app_server_codex_runtime_probe.dart';
 import 'codex_app_server_server_event.dart';
@@ -228,6 +229,64 @@ class CodexAppServer {
       );
     }
     return JsonMap.from(result);
+  }
+
+  /// Lists the hooks resolved by Codex across all supported configuration layers.
+  Future<List<CodexHook>> listHooks({String? workingDirectory}) async {
+    final response = await request('hooks/list', {'cwd': ?workingDirectory});
+    _throwIfError(response);
+    final result = response['result'];
+    if (result is! Map || result['data'] is! Iterable) {
+      throw const FormatException('App Server did not return hooks.');
+    }
+    return [
+      for (final group in result['data'] as Iterable)
+        if (group is Map && group['hooks'] is Iterable)
+          for (final value in group['hooks'] as Iterable)
+            if (value is Map)
+              CodexHook(
+                key: value['key']?.toString() ?? '',
+                eventName: value['eventName']?.toString() ?? 'unknown',
+                handlerType: value['handlerType']?.toString() ?? 'unknown',
+                source: value['source']?.toString() ?? 'unknown',
+                sourcePath: value['sourcePath']?.toString() ?? '',
+                enabled: value['enabled'] == true,
+                trustStatus: value['trustStatus']?.toString() ?? 'untrusted',
+                currentHash: value['currentHash']?.toString() ?? '',
+                command: value['command']?.toString(),
+                timeoutSec: (value['timeoutSec'] as num?)?.toInt(),
+                statusMessage: value['statusMessage']?.toString(),
+                pluginId: value['pluginId']?.toString(),
+              ),
+    ];
+  }
+
+  /// Persists a hook enablement setting through Codex's configuration writer.
+  Future<void> setHookEnabled(CodexHook hook, bool enabled) =>
+      _writeHookState(hook, 'enabled', enabled);
+
+  /// Persists trust for the exact hook definition returned by Codex.
+  Future<void> setHookTrusted(CodexHook hook, bool trusted) =>
+      _writeHookState(hook, 'trusted_hash', trusted ? hook.currentHash : null);
+
+  Future<void> _writeHookState(
+    CodexHook hook,
+    String field,
+    Object? value,
+  ) async {
+    // The App Server owns TOML escaping, atomic writes, and the current hook hash.
+    // A null value removes the persisted trust entry.
+    final response = await request('config/batchWrite', {
+      'edits': [
+        {
+          'op': value == null ? 'remove' : 'set',
+          'keyPath': 'hooks.state."${hook.key}".$field',
+          'value': ?value,
+          'mergeStrategy': 'replace',
+        },
+      ],
+    });
+    _throwIfError(response);
   }
 
   /// 在指定项目中创建线程，并返回服务器分配的线程 ID。

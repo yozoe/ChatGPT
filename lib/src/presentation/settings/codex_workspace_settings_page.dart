@@ -3,7 +3,7 @@ import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_page_
 
 /// Codex 风格的应用设置工作区。
 /// Codex-style application settings workspace.
-class SettingsPage extends StatefulWidget {
+class SettingsPage extends ConsumerStatefulWidget {
   const SettingsPage({
     required this.controller,
     required this.navigationWidth,
@@ -32,5 +32,5 @@ class SettingsPage extends StatefulWidget {
   final VoidCallback onOpenConversation;
 
   @override
-  State<SettingsPage> createState() => SettingsPageState();
+  ConsumerState<SettingsPage> createState() => SettingsPageState();
 }

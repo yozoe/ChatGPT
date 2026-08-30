@@ -5,7 +5,12 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 /// 管理设置页面的局部导航和临时显示偏好。
 /// Owns settings-page local navigation and transient display preferences.
-class SettingsPageState extends State<SettingsPage> {
+final codexHooksProvider = FutureProvider.autoDispose
+    .family<List<CodexHook>, CodexController>(
+      (ref, controller) => controller.listCodexHooks(),
+    );
+
+class SettingsPageState extends ConsumerState<SettingsPage> {
   final TextEditingController _search = TextEditingController();
   String _section = '常规';
   String _defaultEditor = 'VS Code';
@@ -38,6 +43,8 @@ class SettingsPageState extends State<SettingsPage> {
   }
 
   void _select(String section) => setState(() => _section = section);
+
+  void _refreshHooks() => ref.invalidate(codexHooksProvider(widget.controller));
 
   Future<void> _selectDockIcon(int index) async {
     final selected = await _dockIconService.select(
@@ -763,6 +770,300 @@ class SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  Widget _hooksContent() {
+    final palette = YeknomPalette.of(context);
+    final hooks = ref.watch(codexHooksProvider(widget.controller));
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 620;
+        return ListView(
+          key: const Key('settings-hooks-page'),
+          padding: EdgeInsets.fromLTRB(
+            compact ? 24 : 72,
+            46,
+            compact ? 24 : 72,
+            72,
+          ),
+          children: [
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1050),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '钩子',
+                              style: Theme.of(context).textTheme.headlineMedium
+                                  ?.copyWith(
+                                    fontSize: 38,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text.rich(
+                              key: const Key('settings-hooks-description'),
+                              TextSpan(
+                                text: '通过配置和已启用的插件管理生命周期钩子。',
+                                style: TextStyle(color: palette.muted),
+                                children: [
+                                  TextSpan(
+                                    text: ' 了解更多',
+                                    style: TextStyle(color: palette.active),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Tooltip(
+                        message: '刷新钩子列表',
+                        child: IconButton(
+                          key: const Key('settings-hooks-refresh'),
+                          onPressed: _refreshHooks,
+                          icon: const Icon(Icons.refresh_outlined),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 46),
+                  hooks.when(
+                    loading: () =>
+                        const Center(child: CircularProgressIndicator()),
+                    error: (error, _) => _hooksMessage(
+                      key: const Key('settings-hooks-error-state'),
+                      title: '无法读取钩子',
+                      detail: '$error',
+                    ),
+                    data: (items) => items.isEmpty
+                        ? _hooksMessage(
+                            key: const Key('settings-hooks-empty-state'),
+                            title: '未找到钩子',
+                            detail: 'Codex 已检查项目、用户配置和已启用插件。',
+                          )
+                        : _hooksList(items),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _hooksMessage({
+    required Key key,
+    required String title,
+    required String detail,
+  }) => DecoratedBox(
+    key: key,
+    decoration: BoxDecoration(
+      color: YeknomPalette.of(context).raised,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: YeknomPalette.of(context).border),
+    ),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            detail,
+            style: TextStyle(color: YeknomPalette.of(context).muted),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  Widget _hooksList(List<CodexHook> hooks) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        '由 Codex 发现的钩子',
+        style: Theme.of(
+          context,
+        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+      ),
+      const SizedBox(height: 18),
+      for (final hook in hooks) ...[
+        InkWell(
+          key: Key('settings-hook-${hook.key}'),
+          onTap: () => _showHooks(hooks),
+          borderRadius: BorderRadius.circular(16),
+          child: _hookTile(hook),
+        ),
+        const SizedBox(height: 12),
+      ],
+    ],
+  );
+
+  Widget _hookTile(CodexHook hook) {
+    final palette = YeknomPalette.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: palette.raised,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: palette.border),
+      ),
+      child: ListTile(
+        leading: Icon(
+          hook.source == 'plugin'
+              ? Icons.extension_outlined
+              : Icons.anchor_outlined,
+        ),
+        title: Text(hook.eventName),
+        subtitle: Text(
+          '${hook.source}${hook.pluginId == null ? '' : ' · ${hook.pluginId}'}',
+        ),
+        trailing: hook.isTrusted
+            ? const Icon(Icons.verified_outlined, color: Colors.green)
+            : Icon(Icons.error_outline, color: Colors.orange.shade700),
+      ),
+    );
+  }
+
+  Future<void> _showHooks(List<CodexHook> hooks) => showDialog<void>(
+    context: context,
+    builder: (context) {
+      final palette = YeknomPalette.of(context);
+      return Dialog(
+        child: Material(
+          color: palette.raised,
+          borderRadius: BorderRadius.circular(22),
+          child: Container(
+            width: 700,
+            padding: const EdgeInsets.all(28),
+            decoration: BoxDecoration(borderRadius: BorderRadius.circular(22)),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.anchor_outlined),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        '钩子详情',
+                        style: Theme.of(context).textTheme.headlineSmall
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF211713),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: const Text('钩子可在沙盒外运行，因此，请审查最近安装或修改的所有钩子'),
+                ),
+                const SizedBox(height: 18),
+                Flexible(
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: hooks.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 12),
+                    itemBuilder: (context, index) => _hookDetails(hooks[index]),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    },
+  );
+
+  Widget _hookDetails(CodexHook hook) => DecoratedBox(
+    decoration: BoxDecoration(
+      border: Border.all(color: YeknomPalette.of(context).border),
+      borderRadius: BorderRadius.circular(16),
+    ),
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            hook.eventName,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+          Text(
+            '${hook.source} · ${hook.sourcePath}',
+            style: TextStyle(color: YeknomPalette.of(context).muted),
+          ),
+          if (hook.command != null) SelectableText('命令　${hook.command}'),
+          if (hook.timeoutSec != null) Text('超时　${hook.timeoutSec}秒'),
+          SwitchListTile(
+            key: Key('settings-hook-enabled-${hook.key}'),
+            contentPadding: EdgeInsets.zero,
+            title: const Text('已启用'),
+            value: hook.enabled,
+            onChanged: (value) => _setHookEnabled(hook, value),
+          ),
+          OutlinedButton.icon(
+            onPressed: () => _setHookTrusted(hook, !hook.isTrusted),
+            icon: Icon(
+              hook.isTrusted
+                  ? Icons.remove_moderator_outlined
+                  : Icons.verified_user_outlined,
+            ),
+            label: Text(hook.isTrusted ? '撤销信任' : '信任此版本'),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  Future<void> _setHookEnabled(CodexHook hook, bool value) async {
+    try {
+      await widget.controller.setCodexHookEnabled(hook, value);
+      _refreshHooks();
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('无法更新钩子：$error')));
+      }
+    }
+  }
+
+  Future<void> _setHookTrusted(CodexHook hook, bool value) async {
+    try {
+      await widget.controller.setCodexHookTrusted(hook, value);
+      _refreshHooks();
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('无法更新钩子信任：$error')));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
@@ -875,7 +1176,12 @@ class SettingsPageState extends State<SettingsPage> {
                         ),
                         _navItem(label: '浏览器（待开发）', icon: Icons.web_outlined),
                         _sectionLabel('编码'),
-                        _navItem(label: '钩子（待开发）', icon: Icons.anchor_outlined),
+                        _navItem(
+                          label: '钩子',
+                          icon: Icons.anchor_outlined,
+                          selected: _section == '钩子',
+                          onTap: () => _select('钩子'),
+                        ),
                         _navItem(
                           label: '连接（待开发）',
                           icon: Icons.language_outlined,
@@ -912,6 +1218,8 @@ class SettingsPageState extends State<SettingsPage> {
               ? _appearanceContent()
               : _section == '配置'
               ? _configurationContent()
+              : _section == '钩子'
+              ? _hooksContent()
               : Center(child: Text('“$_section”设置即将推出')),
         ),
       ],

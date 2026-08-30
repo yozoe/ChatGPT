@@ -18,6 +18,7 @@ export 'package:url_launcher/url_launcher.dart';
 export 'package:chatgpt/src/app_controller.dart';
 export 'package:chatgpt/src/codex_hover_popup.dart';
 export 'package:chatgpt/src/domain/codex_file_change.dart';
+export 'package:chatgpt/src/domain/codex_hook.dart';
 export 'package:chatgpt/src/domain/codex_marketplace.dart';
 export 'package:chatgpt/src/domain/codex_mcp_server.dart';
 export 'package:chatgpt/src/domain/codex_plugin.dart';

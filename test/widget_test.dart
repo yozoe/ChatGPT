@@ -1029,6 +1029,43 @@ void main() {
     },
   );
 
+  testWidgets('shows a hook loading failure instead of a false empty state', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer());
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(home: CodexWorkspace(controller: controller)),
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('sidebar-settings-button')));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('settings-nav-钩子')),
+      240,
+      scrollable: find.descendant(
+        of: find.byKey(const Key('settings-navigation-scroll')),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    await tester.tap(find.byKey(const Key('settings-nav-钩子')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('settings-hooks-page')), findsOneWidget);
+    expect(find.byKey(const Key('settings-hooks-description')), findsOneWidget);
+    final hooksErrorState = find.byKey(const Key('settings-hooks-error-state'));
+    expect(hooksErrorState, findsOneWidget);
+    expect(tester.getSize(hooksErrorState).width, greaterThan(300));
+    expect(find.text('无法读取钩子'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('settings-hooks-refresh')));
+    await tester.pump();
+
+    expect(find.byKey(const Key('settings-hooks-error-state')), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'keeps the active reply on stable text metrics until Markdown completes',
     (tester) async {
@@ -5998,6 +6035,7 @@ void main() {
       find.byKey(const Key('completed-turn-disclosure-divider')),
       findsOneWidget,
     );
+    expect(find.byType(AnimatedCrossFade), findsOneWidget);
 
     await tester.tap(find.text('已运行了命令'));
     await tester.pump();
@@ -6012,6 +6050,12 @@ void main() {
     await tester.tap(elapsedToggle);
     await tester.pump();
 
+    expect(
+      tester
+          .widget<AnimatedCrossFade>(find.byType(AnimatedCrossFade))
+          .crossFadeState,
+      CrossFadeState.showFirst,
+    );
     final expandedDividerY = tester
         .getTopLeft(find.byKey(const Key('completed-turn-disclosure-divider')))
         .dy;
@@ -6047,6 +6091,12 @@ void main() {
     await tester.tap(elapsedToggle);
     await tester.pump();
 
+    expect(
+      tester
+          .widget<AnimatedCrossFade>(find.byType(AnimatedCrossFade))
+          .crossFadeState,
+      CrossFadeState.showSecond,
+    );
     expect(
       tester
           .widget<AnimatedRotation>(
