@@ -16,7 +16,7 @@ class CodexLoadingMarkPainter extends CustomPainter {
     final center = size.center(Offset.zero);
     final radius = size.shortestSide * 0.29;
     final stroke = Paint()
-      ..color = const Color(0xFF9B9B9B)
+      ..color = const Color(0xFFF48A27)
       ..style = PaintingStyle.stroke
       ..strokeWidth = size.shortestSide * 0.105
       ..strokeCap = StrokeCap.round

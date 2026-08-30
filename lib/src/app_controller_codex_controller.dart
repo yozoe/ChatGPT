@@ -29,6 +29,7 @@ import 'package:chatgpt/src/services/conversation_history_store.dart';
 import 'package:chatgpt/src/services/git_project_service.dart';
 import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
+import 'package:chatgpt/src/services/task_completion_notifier.dart';
 import 'app_controller_support.dart';
 import 'app_controller_thread_archive_result.dart';
 import 'app_controller_live_turn_activity.dart';
@@ -55,6 +56,7 @@ class CodexController extends ChangeNotifier {
     LocalSessionThreadStore? localSessionThreadStore,
     CodexPluginStore? pluginStore,
     GitProjectService? gitProjectService,
+    TaskCompletionNotifier? taskCompletionNotifier,
   }) : _server = server ?? CodexAppServer(),
        _runtimeConfigurationStore =
            runtimeConfigurationStore ??
@@ -66,7 +68,9 @@ class CodexController extends ChangeNotifier {
            ConversationHistoryStore(),
        _localSessionThreadStore =
            localSessionThreadStore ?? LocalSessionThreadStore(),
-       _gitProjectService = gitProjectService ?? GitProjectService() {
+       _gitProjectService = gitProjectService ?? GitProjectService(),
+       _taskCompletionNotifier =
+           taskCompletionNotifier ?? TaskCompletionNotifier() {
     _pluginStore =
         pluginStore ??
         CodexPluginStore(executableProvider: _server.resolveExecutable);
@@ -88,6 +92,7 @@ class CodexController extends ChangeNotifier {
   final ConversationHistoryStore _conversationHistoryStore;
   final LocalSessionThreadStore _localSessionThreadStore;
   final GitProjectService _gitProjectService;
+  final TaskCompletionNotifier _taskCompletionNotifier;
   late final CodexPluginStore _pluginStore;
   StreamSubscription<ServerEvent>? _eventSubscription;
   final List<TimelineEntry> _entries = [];
@@ -96,6 +101,10 @@ class CodexController extends ChangeNotifier {
   final Map<String, CodexFileChange> _fileChangesByPath = {};
   final Set<String> _pinnedThreadIds = {};
   final Set<String> _acknowledgedCompletedThreadIds = {};
+  // This is intentionally app-session scoped. The Dock badge indicates work
+  // completed since the app was opened and clears once every such result has
+  // been viewed, while per-workspace acknowledgement remains persisted.
+  final Set<String> _unacknowledgedCompletionThreadIds = {};
   final List<RuntimeLogEntry> _runtimeLogs = [];
   final List<ScheduledTask> _scheduledTasks = [];
   final Map<String, Timer> _scheduledTaskTimers = {};
@@ -265,8 +274,11 @@ class CodexController extends ChangeNotifier {
     String? workspace,
   }) async {
     if (workspace != null && workspacePath != workspace) return;
-    if (!_acknowledgedCompletedThreadIds.add(threadId)) return;
-    _scheduleConversationHistorySave();
+    final changed = _acknowledgedCompletedThreadIds.add(threadId);
+    final badgeChanged = _unacknowledgedCompletionThreadIds.remove(threadId);
+    if (!changed && !badgeChanged) return;
+    if (changed) _scheduleConversationHistorySave();
+    if (badgeChanged) _updateDockCompletionBadge();
     notifyListeners();
   }
 
@@ -4870,6 +4882,22 @@ class CodexController extends ChangeNotifier {
         ? _acknowledgedCompletedThreadIds.remove(threadId)
         : _acknowledgedCompletedThreadIds.add(threadId);
     if (changed) _scheduleConversationHistorySave();
+    if (visible) {
+      if (_unacknowledgedCompletionThreadIds.add(threadId)) {
+        unawaited(_taskCompletionNotifier.notifyTaskCompleted());
+        _updateDockCompletionBadge();
+      }
+    } else if (_unacknowledgedCompletionThreadIds.remove(threadId)) {
+      _updateDockCompletionBadge();
+    }
+  }
+
+  void _updateDockCompletionBadge() {
+    unawaited(
+      _taskCompletionNotifier.setDockBadge(
+        visible: _unacknowledgedCompletionThreadIds.isNotEmpty,
+      ),
+    );
   }
 
   bool _isTerminalThreadStatus(String? status) {

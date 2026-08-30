@@ -11622,6 +11622,45 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('previews an edited SVG as an image on hover', (tester) async {
+    final directory = await Directory.systemTemp.createTemp('codex-svg-hover-');
+    addTearDown(() => directory.delete(recursive: true));
+    final svgPath = '${directory.path}/preview.svg';
+    await File(svgPath).writeAsString(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80">'
+      '<circle cx="40" cy="40" r="30" fill="red"/></svg>',
+    );
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    controller.handleServerEventForTesting(
+      ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {'path': svgPath, 'kind': 'modified', 'diff': ''},
+            ],
+          },
+        },
+      ),
+    );
+    await tester.pump();
+    final row = find.byKey(ValueKey('file-change-row-$svgPath'));
+    final mouseRegion = tester.widget<MouseRegion>(row);
+    mouseRegion.onEnter?.call(const PointerEnterEvent());
+    await tester.pump(codexHoverPopupDelay);
+
+    expect(find.byKey(const Key('file-change-hover-preview')), findsOneWidget);
+    expect(find.textContaining('SVG'), findsNothing);
+    mouseRegion.onExit?.call(const PointerExitEvent());
+    await tester.pump(const Duration(milliseconds: 140));
+  });
+
   test(
     'hydrates a missing file Diff from the read-only Git workspace',
     () async {

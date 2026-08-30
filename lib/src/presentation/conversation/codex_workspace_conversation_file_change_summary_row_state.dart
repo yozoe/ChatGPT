@@ -59,7 +59,10 @@ class FileChangeSummaryRowState extends State<FileChangeSummaryRow> {
         .clamp(1.0, _previewMaxHeight)
         .toDouble();
     final previewLineCount = previewLines(_diff).length;
-    final estimatedHeight = _diff.trim().isEmpty
+    final isSvg = widget.change.path.toLowerCase().endsWith('.svg');
+    final estimatedHeight = isSvg
+        ? 250.0
+        : _diff.trim().isEmpty
         ? 96.0
         : 60.0 +
               (previewLineCount > 12 ? 12 : previewLineCount) * 18.0 +

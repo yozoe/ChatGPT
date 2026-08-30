@@ -8,6 +8,7 @@ import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_support.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_diff_preview_line.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 class FileChangeHoverPreview extends StatelessWidget {
   const FileChangeHoverPreview({
@@ -23,6 +24,8 @@ class FileChangeHoverPreview extends StatelessWidget {
   final double width;
   final double maxHeight;
   final double height;
+
+  bool get _isSvg => path.toLowerCase().endsWith('.svg');
 
   @override
   Widget build(BuildContext context) {
@@ -90,7 +93,26 @@ class FileChangeHoverPreview extends StatelessWidget {
               ),
             ),
             Divider(height: 1, color: palette.border),
-            if (diff.trim().isEmpty)
+            if (_isSvg)
+              Expanded(
+                child: ColoredBox(
+                  color: Colors.white,
+                  child: Center(
+                    child: SvgPicture.file(
+                      File(path),
+                      width: width - 36,
+                      height: height - 88,
+                      fit: BoxFit.contain,
+                      semanticsLabel: path,
+                      errorBuilder: (context, error, stackTrace) => Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: MutedText('SVG 预览失败：${error.toString()}'),
+                      ),
+                    ),
+                  ),
+                ),
+              )
+            else if (diff.trim().isEmpty)
               const Padding(
                 padding: EdgeInsets.all(16),
                 child: MutedText('App Server 未提供可显示的 Diff。'),

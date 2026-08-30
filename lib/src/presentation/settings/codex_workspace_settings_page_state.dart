@@ -1,5 +1,7 @@
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
 import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_page.dart';
+import 'package:chatgpt/src/services/dock_icon_service.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 /// 管理设置页面的局部导航和临时显示偏好。
 /// Owns settings-page local navigation and transient display preferences.
@@ -12,14 +14,44 @@ class SettingsPageState extends State<SettingsPage> {
   String _terminalPosition = '底部';
   bool _preventSleep = false;
   bool _promptSuggestions = false;
+  bool _usePointerCursor = false;
+  String _reduceMotion = '系统';
+  String _diffMarkers = '颜色';
+  bool _fontSmoothing = true;
+  int _dockIcon = 0;
+  final DockIconService _dockIconService = DockIconService();
+  final TextEditingController _uiFontSize = TextEditingController(text: '14');
+  final TextEditingController _codeFontSize = TextEditingController(text: '13');
+
+  @override
+  void initState() {
+    super.initState();
+    _restoreDockIconSelection();
+  }
 
   @override
   void dispose() {
     _search.dispose();
+    _uiFontSize.dispose();
+    _codeFontSize.dispose();
     super.dispose();
   }
 
   void _select(String section) => setState(() => _section = section);
+
+  Future<void> _selectDockIcon(int index) async {
+    final selected = await _dockIconService.select(
+      index == 0 ? 'knot' : 'commandCloud',
+    );
+    if (!mounted || !selected) return;
+    setState(() => _dockIcon = index);
+  }
+
+  Future<void> _restoreDockIconSelection() async {
+    final icon = await _dockIconService.selected();
+    if (!mounted || icon == null) return;
+    setState(() => _dockIcon = icon == 'commandCloud' ? 1 : 0);
+  }
 
   Future<void> _showShortcuts() async {
     await showDialog<void>(
@@ -347,6 +379,164 @@ class SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  Widget _dockIconTile({required int index, required String label}) {
+    final palette = YeknomPalette.of(context);
+    final selected = _dockIcon == index;
+    return Semantics(
+      label: 'Dock 图标：$label',
+      selected: selected,
+      button: true,
+      child: InkWell(
+        key: Key('settings-dock-icon-$index'),
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => _selectDockIcon(index),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          width: 96,
+          height: 96,
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: selected ? palette.selected : Colors.transparent,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: selected ? palette.trace : palette.border,
+              width: selected ? 2 : 1,
+            ),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(11),
+            child: index == 0
+                ? Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: SvgPicture.asset(
+                      'assets/branding/codex-desk-icon-traced-light.svg',
+                      fit: BoxFit.contain,
+                    ),
+                  )
+                : Image.asset('icon.png', fit: BoxFit.cover),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _appearanceContent() {
+    final palette = YeknomPalette.of(context);
+    final heading = Theme.of(context).textTheme.headlineMedium?.copyWith(
+      fontSize: 38,
+      fontWeight: FontWeight.w500,
+    );
+    return ListView(
+      key: const Key('settings-appearance-page'),
+      padding: const EdgeInsets.fromLTRB(58, 26, 58, 58),
+      children: [
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1500),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('偏好设置', style: heading),
+              const SizedBox(height: 32),
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  color: palette.raised,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: palette.border),
+                ),
+                child: Column(
+                  children: [
+                    _settingRow(
+                      title: '使用指针光标',
+                      description: '悬停交互元素时切换为指针光标',
+                      trailing: Switch(
+                        value: _usePointerCursor,
+                        onChanged: (value) =>
+                            setState(() => _usePointerCursor = value),
+                      ),
+                    ),
+                    Divider(height: 1, color: palette.border),
+                    _settingRow(
+                      title: 'Dock 图标',
+                      description: '选择应用在 Dock 中使用的图标',
+                      trailing: Wrap(
+                        spacing: 12,
+                        children: [
+                          _dockIconTile(index: 0, label: '结绳'),
+                          _dockIconTile(index: 1, label: '命令云'),
+                        ],
+                      ),
+                    ),
+                    Divider(height: 1, color: palette.border),
+                    _settingRow(
+                      title: '减少动态效果',
+                      description: '减少动画效果或匹配系统设置',
+                      trailing: SegmentedButton<String>(
+                        segments: const [
+                          ButtonSegment(value: '系统', label: Text('系统')),
+                          ButtonSegment(value: '开启', label: Text('开启')),
+                          ButtonSegment(value: '关闭', label: Text('关闭')),
+                        ],
+                        selected: {_reduceMotion},
+                        onSelectionChanged: (selection) =>
+                            setState(() => _reduceMotion = selection.first),
+                      ),
+                    ),
+                    Divider(height: 1, color: palette.border),
+                    _settingRow(
+                      title: 'UI 字号',
+                      description: '调整 ChatGPT 界面使用的基准字号',
+                      trailing: _fontField(_uiFontSize),
+                    ),
+                    Divider(height: 1, color: palette.border),
+                    _settingRow(
+                      title: '代码字体大小',
+                      description: '调整聊天和差异视图中代码使用的基础字号',
+                      trailing: _fontField(_codeFontSize),
+                    ),
+                    Divider(height: 1, color: palette.border),
+                    _settingRow(
+                      title: '差异标记',
+                      description: '使用颜色或 +/- 标记显示更改',
+                      trailing: SegmentedButton<String>(
+                        segments: const [
+                          ButtonSegment(value: '颜色', label: Text('颜色')),
+                          ButtonSegment(value: '+/-', label: Text('+/-')),
+                        ],
+                        selected: {_diffMarkers},
+                        onSelectionChanged: (selection) =>
+                            setState(() => _diffMarkers = selection.first),
+                      ),
+                    ),
+                    Divider(height: 1, color: palette.border),
+                    _settingRow(
+                      title: '字体平滑',
+                      description: '使用 macOS 原生字体抗锯齿',
+                      trailing: Switch(
+                        value: _fontSmoothing,
+                        onChanged: (value) =>
+                            setState(() => _fontSmoothing = value),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _fontField(TextEditingController controller) => SizedBox(
+    width: 128,
+    child: TextField(
+      controller: controller,
+      keyboardType: TextInputType.number,
+      textAlign: TextAlign.center,
+      decoration: const InputDecoration(suffixText: 'px'),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
@@ -394,12 +584,8 @@ class SettingsPageState extends State<SettingsPage> {
                   _navItem(
                     label: '外观',
                     icon: Icons.light_mode_outlined,
+                    selected: _section == '外观',
                     onTap: () {
-                      widget.onThemeModeChanged?.call(
-                        widget.themeMode == ThemeMode.dark
-                            ? ThemeMode.light
-                            : ThemeMode.dark,
-                      );
                       _select('外观');
                     },
                   ),
@@ -458,6 +644,8 @@ class SettingsPageState extends State<SettingsPage> {
         Expanded(
           child: _section == '常规'
               ? _generalContent()
+              : _section == '外观'
+              ? _appearanceContent()
               : Center(child: Text('“$_section”设置即将推出')),
         ),
       ],

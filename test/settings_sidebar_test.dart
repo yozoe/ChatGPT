@@ -2,6 +2,7 @@ import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/app_controller.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -69,5 +70,46 @@ void main() {
       tester.getSize(find.byKey(const Key('settings-navigation-pane'))).width,
       mainSidebarWidth,
     );
+  });
+
+  testWidgets('appearance settings expose dock icon choices', (tester) async {
+    const channel = MethodChannel('codex_desk/dock_icon');
+    final calls = <MethodCall>[];
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('sidebar-settings-button')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('settings-nav-外观')));
+    await tester.pump();
+
+    expect(find.byKey(const Key('settings-appearance-page')), findsOneWidget);
+    expect(find.byKey(const Key('settings-dock-icon-0')), findsOneWidget);
+    expect(find.byKey(const Key('settings-dock-icon-1')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('settings-dock-icon-0')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('settings-dock-icon-1')));
+    await tester.pump();
+    expect(find.text('Dock 图标'), findsOneWidget);
+    expect(calls.map((call) => call.method), <String>[
+      'getDockIcon',
+      'setDockIcon',
+      'setDockIcon',
+    ]);
+    expect(calls[1].arguments, <String, String>{'icon': 'knot'});
+    expect(calls[2].arguments, <String, String>{'icon': 'commandCloud'});
   });
 }

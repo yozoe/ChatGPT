@@ -74,7 +74,7 @@ class MainFlutterWindow: NSWindow {
 
     RegisterGeneratedPlugins(registry: flutterViewController)
     DispatchQueue.main.async {
-      DockIcon.apply()
+      DockIcon.applySelected()
     }
     try? FileManager.default.removeItem(at: Self.clipboardTemporaryDirectory)
 
@@ -106,6 +106,60 @@ class MainFlutterWindow: NSWindow {
         result(Self.deleteClipboardTemporaryItem(atPath: path))
       default:
         result(FlutterMethodNotImplemented)
+      }
+    }
+
+    let taskCompletionChannel = FlutterMethodChannel(
+      name: "codex_desk/task_completion",
+      binaryMessenger: flutterViewController.engine.binaryMessenger
+    )
+    taskCompletionChannel.setMethodCallHandler { call, result in
+      guard let appDelegate = NSApp.delegate as? AppDelegate else {
+        result(FlutterError(
+          code: "app_delegate_unavailable",
+          message: "The application delegate is unavailable.",
+          details: nil
+        ))
+        return
+      }
+      switch call.method {
+      case "notifyTaskCompleted":
+        appDelegate.notifyTaskCompleted { delivered in
+          result(delivered)
+        }
+      case "setDockBadge":
+        let arguments = call.arguments as? [String: Any]
+        appDelegate.setDockBadge(visible: arguments?["visible"] as? Bool ?? false)
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+
+    let dockIconChannel = FlutterMethodChannel(
+      name: "codex_desk/dock_icon",
+      binaryMessenger: flutterViewController.engine.binaryMessenger
+    )
+    dockIconChannel.setMethodCallHandler { call, result in
+      if call.method == "getDockIcon" {
+        result(DockIcon.selectedIdentifier)
+        return
+      }
+      guard call.method == "setDockIcon", let arguments = call.arguments as? [String: Any], let icon = arguments["icon"] as? String else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      switch icon {
+      case "knot":
+        result(DockIcon.select(named: "CodexDockIcon"))
+      case "commandCloud":
+        result(DockIcon.select(named: "DockIcon"))
+      default:
+        result(FlutterError(
+          code: "unknown_dock_icon",
+          message: "The requested Dock icon is not available.",
+          details: nil
+        ))
       }
     }
 

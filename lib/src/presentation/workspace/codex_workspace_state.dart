@@ -46,6 +46,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   String? _selectedSubagentParentThreadId;
   String _selectedSubagentTitle = '子智能体';
   late CodexController _controller;
+  double? _settingsReturnTimelineOffset;
 
   bool get _threadHistoryLoading =>
       _threadHistoryLoadingKey == _displayedThreadKey;
@@ -1906,6 +1907,23 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   void _showConversation() {
     if (!mounted || _destination == WorkspaceDestination.conversation) return;
     setState(() => _destination = WorkspaceDestination.conversation);
+    final offset = _settingsReturnTimelineOffset;
+    _settingsReturnTimelineOffset = null;
+    if (offset == null) return;
+    void restoreOffset(int remainingFrames) {
+      if (!mounted || !_timelineScrollController.hasClients) return;
+      final position = _timelineScrollController.position;
+      _timelineScrollController.jumpTo(
+        offset.clamp(position.minScrollExtent, position.maxScrollExtent),
+      );
+      if (remainingFrames > 0) {
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => restoreOffset(remainingFrames - 1),
+        );
+      }
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => restoreOffset(1));
   }
 
   /// Opens the full plugin workspace while the top-bar button keeps its
@@ -1927,6 +1945,9 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   /// 从侧栏底部打开完整的应用设置工作区。
   void _showSettings() {
     if (!mounted) return;
+    if (_timelineScrollController.hasClients) {
+      _settingsReturnTimelineOffset = _timelineScrollController.offset;
+    }
     setState(() => _destination = WorkspaceDestination.settings);
   }
 
