@@ -122,10 +122,14 @@ void main() {
     CodexController.testingRuntimeConfigurationStore = null;
   });
 
-  testWidgets('shows the Codex Desk shell', (tester) async {
+  testWidgets('shows the Xedoc shell', (tester) async {
     await tester.pumpWidget(const CodexDeskApp());
 
-    expect(find.text('Codex Desk'), findsOneWidget);
+    expect(find.text('Xedoc'), findsOneWidget);
+    expect(find.byIcon(Icons.auto_awesome), findsNothing);
+    final brandText = tester.widget<Text>(find.text('Xedoc'));
+    expect(brandText.style?.fontSize, 17);
+    expect(brandText.style?.fontWeight, FontWeight.w700);
     expect(find.text('新建第一个工作区'), findsOneWidget);
     expect(find.text('等待目录'), findsOneWidget);
     expect(find.byKey(const Key('runtime-start-button')), findsNothing);
@@ -1358,7 +1362,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      Theme.of(tester.element(find.text('Codex Desk'))).brightness,
+      Theme.of(tester.element(find.text('Xedoc'))).brightness,
       Brightness.light,
     );
     final picker = tester.widget<Ink>(

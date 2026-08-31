@@ -7,6 +7,7 @@ import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.d
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
 import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_page.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
+import 'package:flutter/scheduler.dart';
 
 /// 拥有短生命周期界面状态，并把可共享业务状态交由 [CodexController] 管理。
 /// Owns short-lived UI state while delegating shared business state to [CodexController].
@@ -18,6 +19,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       {};
   final Map<ThreadViewportKey, bool> _timelineFollowsLatest = {};
   final Map<ThreadViewportKey, bool> _timelineIsAboveLatest = {};
+  final Map<ThreadViewportKey, bool> _pendingTimelineAboveLatest = {};
   final Map<ThreadViewportKey, double> _timelineViewportDimensions = {};
   final Map<ThreadViewportKey, TimelinePageData> _timelinePages = {};
   final Map<ThreadViewportKey, bool> _fileChangeSummaryExpanded = {};
@@ -25,6 +27,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   late ScrollController _timelineScrollController;
   late ThreadViewportKey _displayedThreadKey;
   bool _timelineScrollScheduled = false;
+  bool _timelineAboveLatestUpdateScheduled = false;
   int _timelineScrollRequestGeneration = 0;
   int _timelineScrollAnimationGeneration = 0;
   ThreadViewportKey? _timelineScrollAnimationViewport;
@@ -116,6 +119,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     _controller.removeListener(_handleControllerUpdate);
     _composer.dispose();
     _recordSkillRequest.dispose();
+    _pendingTimelineAboveLatest.clear();
     for (final controller in _timelineScrollControllers.values.toSet()) {
       controller.dispose();
     }
@@ -282,9 +286,47 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     ThreadViewportKey viewportKey,
     bool aboveLatest,
   ) {
-    if ((_timelineIsAboveLatest[viewportKey] ?? false) == aboveLatest) return;
     if (!mounted) return;
-    setState(() => _timelineIsAboveLatest[viewportKey] = aboveLatest);
+    final current = _timelineIsAboveLatest[viewportKey] ?? false;
+    if (current == aboveLatest &&
+        _pendingTimelineAboveLatest[viewportKey] == null) {
+      return;
+    }
+    // Scroll notifications can be dispatched while the viewport is laying
+    // itself out. Mutating the map is harmless, but scheduling a rebuild in
+    // that phase triggers Flutter's "Build scheduled during frame" assertion.
+    // Keep ordinary event-driven updates synchronous and defer only while the
+    // frame's persistent callbacks (build/layout/paint) are running.
+    if (SchedulerBinding.instance.schedulerPhase !=
+        SchedulerPhase.persistentCallbacks) {
+      _pendingTimelineAboveLatest.remove(viewportKey);
+      _timelineIsAboveLatest[viewportKey] = aboveLatest;
+      setState(() {});
+      return;
+    }
+    _pendingTimelineAboveLatest[viewportKey] = aboveLatest;
+    if (_timelineAboveLatestUpdateScheduled) return;
+    _timelineAboveLatestUpdateScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _timelineAboveLatestUpdateScheduled = false;
+      if (!mounted) {
+        _pendingTimelineAboveLatest.clear();
+        return;
+      }
+      final pendingUpdates = Map<ThreadViewportKey, bool>.from(
+        _pendingTimelineAboveLatest,
+      );
+      _pendingTimelineAboveLatest.clear();
+      var changed = false;
+      for (final entry in pendingUpdates.entries) {
+        if ((_timelineIsAboveLatest[entry.key] ?? false) == entry.value) {
+          continue;
+        }
+        _timelineIsAboveLatest[entry.key] = entry.value;
+        changed = true;
+      }
+      if (changed) setState(() {});
+    });
   }
 
   /// Smoothly returns the active timeline to its actual end and resumes live
@@ -473,6 +515,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       }
       _timelineFollowsLatest.remove(key);
       _timelineIsAboveLatest.remove(key);
+      _pendingTimelineAboveLatest.remove(key);
       _timelineViewportDimensions.remove(key);
       _timelinePages.remove(key);
       _fileChangeSummaryExpanded.remove(key);

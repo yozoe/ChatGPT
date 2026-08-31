@@ -69,14 +69,15 @@ class TopBar extends StatelessWidget {
             return Row(
               children: [
                 if (showIdentity) ...[
-                  Icon(Icons.auto_awesome, color: palette.ack),
-                  const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      'Codex Desk',
+                      'Xedoc',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.titleMedium,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 8),
