@@ -102,9 +102,12 @@ class CodexController extends ChangeNotifier {
   final Set<String> _pinnedThreadIds = {};
   final Set<String> _acknowledgedCompletedThreadIds = {};
   // This is intentionally app-session scoped. The Dock badge indicates work
-  // completed since the app was opened and clears once every such result has
-  // been viewed, while per-workspace acknowledgement remains persisted.
+  // completed since the app was opened and clears when each result is
+  // explicitly opened, while per-workspace acknowledgement remains persisted.
   final Set<String> _unacknowledgedCompletionThreadIds = {};
+  // Prevent duplicate OS notifications when the same completion event is
+  // replayed, while allowing later turns in the same thread to notify again.
+  final Set<String> _notifiedCompletionKeys = {};
   final List<RuntimeLogEntry> _runtimeLogs = [];
   final List<ScheduledTask> _scheduledTasks = [];
   final Map<String, Timer> _scheduledTaskTimers = {};
@@ -213,6 +216,10 @@ class CodexController extends ChangeNotifier {
   final Map<String, FailedTurnRetry> _failedTurnRetries = {};
   String? _retryingFailedTurnThreadId;
   String? activeThreadId;
+  // A task selected while the initial runtime connection is in flight may not
+  // be present in the first server list response. Retain the model so the
+  // normal post-start resume can still target the user's selection.
+  CodexThread? _startupSelectedThread;
 
   /// 返回已加载的子智能体详情；未打开过的线程不会隐式触发读取。
   /// Returns a loaded subagent detail view without implicitly starting I/O.
@@ -270,14 +277,17 @@ class CodexController extends ChangeNotifier {
   bool isCompletedThreadAcknowledged(String threadId) =>
       _acknowledgedCompletedThreadIds.contains(threadId);
 
-  /// Persists that the user has opened a completed thread.
+  /// Persists that a completed thread was viewed, optionally clearing its Dock
+  /// badge when the view was an explicit task open.
   Future<void> acknowledgeCompletedThread(
     String threadId, {
     String? workspace,
+    bool clearDockBadge = true,
   }) async {
     if (workspace != null && workspacePath != workspace) return;
     final changed = _acknowledgedCompletedThreadIds.add(threadId);
-    final badgeChanged = _unacknowledgedCompletionThreadIds.remove(threadId);
+    final badgeChanged =
+        clearDockBadge && _unacknowledgedCompletionThreadIds.remove(threadId);
     if (!changed && !badgeChanged) return;
     if (changed) _scheduleConversationHistorySave();
     if (badgeChanged) _updateDockCompletionBadge();
@@ -1170,6 +1180,11 @@ class CodexController extends ChangeNotifier {
   /// 是否可打开当前项目中的另一项任务；切换会让运行中的任务在后台继续，
   /// 不会中断它。
   bool get canSwitchThreads =>
+      // The restored task list is usable before the automatic runtime
+      // connection finishes.  Allowing the sidebar to record a selection here
+      // keeps the first click responsive; [resumeThread] defers the protocol
+      // request until the connection reaches ready.
+      (_startingRuntime && status == RuntimeStatus.starting) ||
       status == RuntimeStatus.ready ||
       (status == RuntimeStatus.running && activeThreadId != null);
 
@@ -3310,6 +3325,15 @@ class CodexController extends ChangeNotifier {
   /// 恢复指定线程，并将其历史消息与工具记录写入时间线。
   /// Resumes a thread and writes its historic messages and tool records to the timeline.
   Future<void> resumeThread(CodexThread thread) async {
+    // During automatic startup the local history is already rendered, but the
+    // App Server may still be probing or handshaking.  Apply the selection to
+    // the cached conversation immediately and let startRuntime's normal
+    // restored-thread step resume it once the server is ready.
+    if (_startingRuntime && status == RuntimeStatus.starting) {
+      _selectThreadWhileRuntimeStarting(thread);
+      return;
+    }
+    _startupSelectedThread = null;
     if (!canSwitchThreads || !_server.isRunning) return;
     if (activeThreadId == thread.id && _activeThreadAttached) return;
     if (_isThreadArchived(thread.id)) {
@@ -3477,6 +3501,23 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Switches the visible cached task while the automatic runtime connection
+  /// is still in flight.  No App Server call is attempted from this path.
+  void _selectThreadWhileRuntimeStarting(CodexThread thread) {
+    if (activeThreadId == thread.id && !_activeThreadAttached) return;
+    _cacheActiveThreadView(includeUnattached: true);
+    _startupSelectedThread = thread;
+    activeThreadId = thread.id;
+    _activeThreadAttached = false;
+    final cachedView = _cachedThreadView(thread.id);
+    if (cachedView != null) {
+      _restoreThreadView(cachedView);
+    } else {
+      _clearThreadTimelineForRestoration();
+    }
+    notifyListeners();
+  }
+
   bool _isActiveWriterConflict(String message) =>
       message.toLowerCase().contains('already has an active writer');
 
@@ -3498,7 +3539,8 @@ class CodexController extends ChangeNotifier {
         break;
       }
     }
-    if (thread == null) return;
+    thread ??= _startupSelectedThread;
+    if (thread == null || thread.id != id) return;
     await resumeThread(thread);
   }
 
@@ -4522,7 +4564,11 @@ class CodexController extends ChangeNotifier {
         : const <String, dynamic>{};
     final completionStatus = _completionStatusFromParams(params);
     final completionOutcome = _turnCompletionOutcome(completionStatus);
-    final completedThreadId = activeThreadId;
+    // Prefer the currently focused thread, but retain the server-provided ID
+    // when a completion races a focus/runtime transition. The conversation
+    // can still render “任务完成” in that window, so notification and Dock
+    // feedback must not be skipped solely because the local focus is empty.
+    final completedThreadId = activeThreadId ?? _threadIdFromEvent(params);
     final failedTurnError = _findText(turnMap['error']).isNotEmpty
         ? _findText(turnMap['error'])
         : 'Codex 未能完成当前任务。';
@@ -4560,7 +4606,11 @@ class CodexController extends ChangeNotifier {
         _updateThreadStatus(activeThreadId, 'idle');
         // A newly finished task remains identifiable until the user sees the
         // end of its timeline or explicitly opens its task row.
-        _setCompletionReminder(completedThreadId, visible: true);
+        _setCompletionReminder(
+          completedThreadId,
+          visible: true,
+          completionId: _turnIdFromEvent(params),
+        );
         _add(TimelineKind.system, '任务完成', '你可以继续在同一线程追问。');
       case TurnCompletionOutcome.unknown:
         status = RuntimeStatus.ready;
@@ -4586,6 +4636,7 @@ class CodexController extends ChangeNotifier {
     final ownerWorkspace = _threadWorkspaceById.remove(threadId);
     final completionStatus = _completionStatusFromParams(params);
     final completionOutcome = _turnCompletionOutcome(completionStatus);
+    final completionId = _turnIdFromEvent(params);
     final turn = params['turn'];
     final turnMap = turn is Map
         ? JsonMap.from(turn)
@@ -4600,17 +4651,25 @@ class CodexController extends ChangeNotifier {
         : 'idle';
     final showReminder = completionOutcome == TurnCompletionOutcome.succeeded;
     if (ownerWorkspace != null && ownerWorkspace != workspacePath) {
+      if (showReminder) {
+        _showCompletionFeedback(threadId, completionId: completionId);
+      }
       unawaited(
         _persistInactiveWorkspaceCompletion(
           workspace: ownerWorkspace,
           threadId: threadId,
           status: completedStatus,
           showReminder: showReminder,
+          completionId: completionId,
         ),
       );
     } else {
       _updateThreadStatus(threadId, completedStatus);
-      _setCompletionReminder(threadId, visible: showReminder);
+      _setCompletionReminder(
+        threadId,
+        visible: showReminder,
+        completionId: completionId,
+      );
     }
     _clearPendingApprovalsForThread(threadId);
   }
@@ -4622,6 +4681,7 @@ class CodexController extends ChangeNotifier {
     required String threadId,
     required String status,
     required bool showReminder,
+    String? completionId,
   }) {
     final previousSave =
         _inactiveWorkspaceCompletionQueues[workspace] ?? Future<void>.value();
@@ -4638,6 +4698,7 @@ class CodexController extends ChangeNotifier {
           threadId: threadId,
           status: status,
           showReminder: showReminder,
+          completionId: completionId,
         ),
       );
     }();
@@ -4654,6 +4715,7 @@ class CodexController extends ChangeNotifier {
     required String threadId,
     required String status,
     required bool showReminder,
+    String? completionId,
   }) async {
     try {
       final historyKey = _historyKeyFor(workspace);
@@ -4666,7 +4728,11 @@ class CodexController extends ChangeNotifier {
       // loading. Apply the result to the live view in that case.
       if (workspacePath == workspace) {
         _updateThreadStatus(threadId, status);
-        _setCompletionReminder(threadId, visible: showReminder);
+        _setCompletionReminder(
+          threadId,
+          visible: showReminder,
+          completionId: completionId,
+        );
         if (activeThreadId == threadId && status != 'active') {
           this.status = RuntimeStatus.ready;
           _activeThreadAttached = true;
@@ -4923,20 +4989,39 @@ class CodexController extends ChangeNotifier {
     };
   }
 
-  void _setCompletionReminder(String? threadId, {required bool visible}) {
+  void _setCompletionReminder(
+    String? threadId, {
+    required bool visible,
+    String? completionId,
+  }) {
     if (threadId == null) return;
     final changed = visible
         ? _acknowledgedCompletedThreadIds.remove(threadId)
         : _acknowledgedCompletedThreadIds.add(threadId);
     if (changed) _scheduleConversationHistorySave();
     if (visible) {
-      if (_unacknowledgedCompletionThreadIds.add(threadId)) {
-        unawaited(_taskCompletionNotifier.notifyTaskCompleted());
-        _updateDockCompletionBadge();
-      }
+      _showCompletionFeedback(threadId, completionId: completionId);
     } else if (_unacknowledgedCompletionThreadIds.remove(threadId)) {
       _updateDockCompletionBadge();
     }
+  }
+
+  void _showCompletionFeedback(String threadId, {String? completionId}) {
+    final badgeChanged = _unacknowledgedCompletionThreadIds.add(threadId);
+    final notificationKey = completionId == null
+        ? null
+        : '$threadId:$completionId';
+    final shouldNotify = notificationKey == null
+        ? badgeChanged
+        : _notifiedCompletionKeys.add(notificationKey);
+    if (shouldNotify) {
+      unawaited(_taskCompletionNotifier.notifyTaskCompleted());
+    }
+    // Re-send the current state for every completion. The Dock process or
+    // native tile may have refreshed independently since the previous update;
+    // relying only on set membership would then leave the badge missing even
+    // though the in-app completion is still unacknowledged.
+    _updateDockCompletionBadge();
   }
 
   void _updateDockCompletionBadge() {
@@ -7327,9 +7412,9 @@ class CodexController extends ChangeNotifier {
 
   /// Caches the current attached task before switching to another task.
   /// 切换任务前缓存当前已连接任务的页面状态。
-  void _cacheActiveThreadView() {
+  void _cacheActiveThreadView({bool includeUnattached = false}) {
     final id = activeThreadId;
-    if (id == null || !_activeThreadAttached) return;
+    if (id == null || (!_activeThreadAttached && !includeUnattached)) return;
     _threadViewCache
       ..remove(id)
       ..[id] = _currentThreadViewSnapshot();

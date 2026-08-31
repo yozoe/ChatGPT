@@ -397,7 +397,13 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
         _controller.isCompletedThreadAcknowledged(threadId)) {
       return;
     }
-    unawaited(_controller.acknowledgeCompletedThread(threadId));
+    // Reaching the latest timeline content marks the in-app reminder as
+    // viewed, but the Dock badge remains until the user explicitly opens the
+    // task. This keeps the desktop-level notification visible long enough to
+    // be noticed even when the completed task is already on screen.
+    unawaited(
+      _controller.acknowledgeCompletedThread(threadId, clearDockBadge: false),
+    );
   }
 
   /// Re-checks bottom visibility after layout so content collapse or viewport

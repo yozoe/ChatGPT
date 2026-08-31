@@ -33,6 +33,7 @@ import 'package:chatgpt/src/services/conversation_history_store.dart';
 import 'package:chatgpt/src/services/git_project_service.dart';
 import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/theme_preferences_store.dart';
+import 'package:chatgpt/src/services/task_completion_notifier.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8966,6 +8967,33 @@ void main() {
     controller.dispose();
   });
 
+  test('keeps cached task selection responsive while runtime starts', () async {
+    final primary = await Directory.systemTemp.createTemp(
+      'codex-desk-startup-task-selection-',
+    );
+    addTearDown(() => primary.delete(recursive: true));
+    final server = _BlockingRuntimeFakeServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = primary.path
+      ..threads = [_thread(id: 'cached-a'), _thread(id: 'cached-b')];
+
+    final startup = controller.startRuntime();
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.status, RuntimeStatus.starting);
+    expect(controller.canSwitchThreads, isTrue);
+
+    await controller.resumeThread(controller.threads.last);
+    expect(controller.activeThreadId, 'cached-b');
+    expect(server.resumeCalls, 0);
+
+    server.probeCompleter.complete(
+      const CodexRuntimeProbe(isAvailable: true, executablePath: '/fake/codex'),
+    );
+    await startup;
+    expect(server.resumedThreadId, 'cached-b');
+    controller.dispose();
+  });
+
   test(
     'automatically reconnects after changing the primary workspace',
     () async {
@@ -13359,11 +13387,28 @@ void main() {
   testWidgets(
     'acknowledges the current task when its timeline is already at the bottom',
     (tester) async {
-      final controller = CodexController(server: CodexAppServer())
-        ..workspacePath = '/workspace'
-        ..status = RuntimeStatus.running
-        ..activeThreadId = 'current-thread'
-        ..threads = [_thread(id: 'current-thread', status: 'active')];
+      const completionChannel = MethodChannel('codex_desk/task_completion');
+      final completionCalls = <MethodCall>[];
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(completionChannel, (call) async {
+        completionCalls.add(call);
+        return null;
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(completionChannel, null),
+      );
+      final controller =
+          CodexController(
+              server: CodexAppServer(),
+              taskCompletionNotifier: TaskCompletionNotifier(
+                channel: completionChannel,
+              ),
+            )
+            ..workspacePath = '/workspace'
+            ..status = RuntimeStatus.running
+            ..activeThreadId = 'current-thread'
+            ..threads = [_thread(id: 'current-thread', status: 'active')];
 
       await tester.pumpWidget(
         MaterialApp(home: CodexWorkspace(controller: controller)),
@@ -13388,6 +13433,28 @@ void main() {
       expect(
         controller.isCompletedThreadAcknowledged('current-thread'),
         isTrue,
+      );
+      expect(
+        completionCalls
+            .where((call) => call.method == 'setDockBadge')
+            .map((call) => call.arguments),
+        [
+          <String, bool>{'visible': true},
+        ],
+      );
+      expect(
+        completionCalls.where((call) => call.method == 'notifyTaskCompleted'),
+        hasLength(1),
+      );
+      await controller.acknowledgeCompletedThread('current-thread');
+      expect(
+        completionCalls
+            .where((call) => call.method == 'setDockBadge')
+            .map((call) => call.arguments),
+        [
+          <String, bool>{'visible': true},
+          <String, bool>{'visible': false},
+        ],
       );
       await tester.pumpWidget(const SizedBox());
     },

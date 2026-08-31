@@ -72,8 +72,19 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
   }
 
   func setDockBadge(visible: Bool) {
-    NSApp.dockTile.badgeLabel = visible ? "•" : nil
-    NSApp.dockTile.display()
+    // NSDockTile is AppKit UI state and must be mutated on the main thread.
+    // Flutter method-channel callbacks can arrive off-main in release builds;
+    // dispatching here prevents a successful notification from missing its
+    // Dock refresh.
+    let update = {
+      NSApp.dockTile.badgeLabel = visible ? "•" : nil
+      NSApp.dockTile.display()
+    }
+    if Thread.isMainThread {
+      update()
+    } else {
+      DispatchQueue.main.async(execute: update)
+    }
   }
 
   private func enqueueTaskCompletionNotification(
