@@ -40,7 +40,7 @@ class ConversationTimeline extends StatelessWidget {
   final bool fileChangeSummaryExpanded;
   final ValueChanged<bool> onFileChangeSummaryExpandedChanged;
   final bool Function(String activityId) activityExpanded;
-  final ValueChanged<double> onMetricsChanged;
+  final ValueChanged<ScrollMetrics> onMetricsChanged;
   final void Function(ScrollMetrics metrics, ScrollDirection direction)
   onUserScrollDirection;
   final void Function(String activityId, bool expanded)
@@ -124,7 +124,7 @@ class ConversationTimeline extends StatelessWidget {
 
     return NotificationListener<ScrollMetricsNotification>(
       onNotification: (notification) {
-        if (active) onMetricsChanged(notification.metrics.viewportDimension);
+        if (active) onMetricsChanged(notification.metrics);
         return false;
       },
       child: NotificationListener<UserScrollNotification>(

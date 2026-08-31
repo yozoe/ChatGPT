@@ -31,6 +31,8 @@ class ConversationPane extends StatelessWidget {
     required this.activityExpanded,
     required this.onTimelineMetricsChanged,
     required this.onTimelineUserScrollDirection,
+    required this.showScrollToBottom,
+    required this.onScrollToBottom,
     required this.onActivityExpandedChanged,
     required this.onSend,
     required this.onQueueSteer,
@@ -52,7 +54,7 @@ class ConversationPane extends StatelessWidget {
   onFileChangeSummaryExpandedChanged;
   final bool Function(ThreadViewportKey pageKey, String activityId)
   activityExpanded;
-  final void Function(ThreadViewportKey pageKey, double viewportDimension)
+  final void Function(ThreadViewportKey pageKey, ScrollMetrics metrics)
   onTimelineMetricsChanged;
   final void Function(
     ThreadViewportKey pageKey,
@@ -60,6 +62,8 @@ class ConversationPane extends StatelessWidget {
     ScrollDirection direction,
   )
   onTimelineUserScrollDirection;
+  final bool showScrollToBottom;
+  final VoidCallback onScrollToBottom;
   final void Function(
     ThreadViewportKey pageKey,
     String activityId,
@@ -113,8 +117,11 @@ class ConversationPane extends StatelessWidget {
             onFileChangeSummaryExpandedChanged:
                 onFileChangeSummaryExpandedChanged,
             activityExpanded: activityExpanded,
-            onTimelineMetricsChanged: onTimelineMetricsChanged,
+            onTimelineMetricsChanged: (metrics) =>
+                onTimelineMetricsChanged(activeTimelinePageKey, metrics),
             onTimelineUserScrollDirection: onTimelineUserScrollDirection,
+            showScrollToBottom: showScrollToBottom,
+            onScrollToBottom: onScrollToBottom,
             onActivityExpandedChanged: onActivityExpandedChanged,
             onReview: onReview,
             onUndo: onUndo,

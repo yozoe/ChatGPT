@@ -17,6 +17,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   final Map<ThreadViewportKey, ScrollController> _timelineScrollControllers =
       {};
   final Map<ThreadViewportKey, bool> _timelineFollowsLatest = {};
+  final Map<ThreadViewportKey, bool> _timelineIsAboveLatest = {};
   final Map<ThreadViewportKey, double> _timelineViewportDimensions = {};
   final Map<ThreadViewportKey, TimelinePageData> _timelinePages = {};
   final Map<ThreadViewportKey, bool> _fileChangeSummaryExpanded = {};
@@ -25,6 +26,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   late ThreadViewportKey _displayedThreadKey;
   bool _timelineScrollScheduled = false;
   int _timelineScrollRequestGeneration = 0;
+  int _timelineScrollAnimationGeneration = 0;
+  ThreadViewportKey? _timelineScrollAnimationViewport;
   ThreadViewportKey? _threadHistoryLoadingKey;
   bool _suppressTimelineScrollAfterThreadResume = false;
   WorkspaceDestination _destination = WorkspaceDestination.conversation;
@@ -89,6 +92,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     _selectedSubagentThreadId = null;
     _selectedSubagentParentThreadId = null;
     _timelineScrollGeneration++;
+    _timelineScrollAnimationViewport = null;
+    _timelineScrollAnimationGeneration++;
     _timelineScrollScheduled = false;
     _threadHistoryLoadingKey = null;
     _displayedThreadKey = _viewportKey(_controller.activeThreadId);
@@ -132,6 +137,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     }
     if (_controller.isResumingThread) {
       _timelineScrollGeneration++;
+      _timelineScrollAnimationViewport = null;
+      _timelineScrollAnimationGeneration++;
       _timelineScrollScheduled = false;
       _suppressTimelineScrollAfterThreadResume = true;
       // Cancel an animation that may still be finishing from the previous
@@ -230,6 +237,10 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     return _timelineScrollControllers.putIfAbsent(key, () {
       final controller = ScrollController();
       _timelineFollowsLatest[key] = true;
+      controller.addListener(() {
+        if (!controller.hasClients) return;
+        _setTimelineAboveLatest(key, controller.position.extentAfter > 1);
+      });
       return controller;
     });
   }
@@ -250,14 +261,77 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     // content.
     if (direction == ScrollDirection.forward) {
       _timelineFollowsLatest[viewportKey] = false;
+      if (_timelineScrollAnimationViewport == viewportKey) {
+        _timelineScrollAnimationViewport = null;
+        _timelineScrollAnimationGeneration++;
+      }
+      _setTimelineAboveLatest(viewportKey, metrics.extentAfter > 1);
       _timelineScrollRequestGeneration++;
       _timelineScrollScheduled = false;
       return;
     }
+    _setTimelineAboveLatest(viewportKey, metrics.extentAfter > 1);
     if (metrics.extentAfter <= 48) {
       _timelineFollowsLatest[viewportKey] = true;
       _scheduleCompletedThreadAcknowledgementAtBottom(viewportKey, controller);
     }
+  }
+
+  /// Updates the affordance without rebuilding continuously during a gesture.
+  void _setTimelineAboveLatest(
+    ThreadViewportKey viewportKey,
+    bool aboveLatest,
+  ) {
+    if ((_timelineIsAboveLatest[viewportKey] ?? false) == aboveLatest) return;
+    if (!mounted) return;
+    setState(() => _timelineIsAboveLatest[viewportKey] = aboveLatest);
+  }
+
+  /// Smoothly returns the active timeline to its actual end and resumes live
+  /// updates. A fresh generation cancels any queued automatic correction from
+  /// fighting the user-triggered animation.
+  void _scrollTimelineToBottom() {
+    final viewportKey = _displayedThreadKey;
+    final controller = _timelineScrollController;
+    if (!controller.hasClients) return;
+    _timelineScrollRequestGeneration++;
+    _timelineScrollScheduled = false;
+    _timelineFollowsLatest[viewportKey] = true;
+    final target = controller.position.maxScrollExtent;
+    final animationGeneration = ++_timelineScrollAnimationGeneration;
+    _timelineScrollAnimationViewport = viewportKey;
+    unawaited(
+      controller
+          .animateTo(
+            target,
+            duration: const Duration(milliseconds: 260),
+            curve: Curves.easeOutCubic,
+          )
+          .then((_) {
+            if (!mounted ||
+                animationGeneration != _timelineScrollAnimationGeneration ||
+                _timelineScrollAnimationViewport != viewportKey ||
+                viewportKey != _displayedThreadKey ||
+                controller != _timelineScrollController ||
+                !controller.hasClients) {
+              return;
+            }
+            _timelineScrollAnimationViewport = null;
+            // Content can grow while the animation is running. Settle once
+            // more at the latest extent without reintroducing a visible jump.
+            if (controller.position.extentAfter > 1) {
+              controller.jumpTo(controller.position.maxScrollExtent);
+            }
+            _setTimelineAboveLatest(viewportKey, false);
+            _acknowledgeCompletedThreadAtBottom(viewportKey, controller);
+          })
+          .catchError((_) {
+            if (animationGeneration == _timelineScrollAnimationGeneration &&
+                _timelineScrollAnimationViewport == viewportKey) {
+              _timelineScrollAnimationViewport = null;
+            }
+          }),
+    );
   }
 
   /// Clears the current task's completion reminder once its latest timeline
@@ -305,10 +379,12 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
 
   void _handleTimelineMetricsChanged(
     ThreadViewportKey viewportKey,
-    double viewportDimension,
+    ScrollMetrics metrics,
   ) {
     final scrollController = _timelineScrollControllers[viewportKey];
     if (scrollController == null) return;
+    _setTimelineAboveLatest(viewportKey, metrics.extentAfter > 1);
+    final viewportDimension = metrics.viewportDimension;
     final previousViewportDimension = _timelineViewportDimensions[viewportKey];
     _timelineViewportDimensions[viewportKey] = viewportDimension;
     final viewportResized =
@@ -334,6 +410,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   void _activateTimelineViewport(String? threadId) {
     final key = _viewportKey(threadId);
     if (_displayedThreadKey == key) return;
+    _timelineScrollAnimationViewport = null;
+    _timelineScrollAnimationGeneration++;
     _displayedThreadKey = key;
     _timelineScrollController = _timelineControllerFor(key);
   }
@@ -389,7 +467,12 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
         .toList(growable: false);
     for (final key in staleKeys) {
       final controller = _timelineScrollControllers.remove(key);
+      if (_timelineScrollAnimationViewport == key) {
+        _timelineScrollAnimationViewport = null;
+        _timelineScrollAnimationGeneration++;
+      }
       _timelineFollowsLatest.remove(key);
+      _timelineIsAboveLatest.remove(key);
       _timelineViewportDimensions.remove(key);
       _timelinePages.remove(key);
       _fileChangeSummaryExpanded.remove(key);
@@ -407,6 +490,10 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   /// Positions the timeline at the latest content without animation next frame.
   void _scheduleTimelineScroll() {
     if (!mounted || _timelineScrollScheduled) return;
+    // A user-triggered return animation owns the position until it finishes.
+    // Do not mark automatic scrolling as scheduled when it intentionally does
+    // nothing, or later streaming updates would be ignored forever.
+    if (_timelineScrollAnimationViewport == _displayedThreadKey) return;
     _timelineScrollScheduled = true;
     final requestGeneration = ++_timelineScrollRequestGeneration;
     final generation = _timelineScrollGeneration;
@@ -2313,6 +2400,11 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                                               _handleTimelineMetricsChanged,
                                           onTimelineUserScrollDirection:
                                               _handleTimelineUserScrollDirection,
+                                          showScrollToBottom:
+                                              _timelineIsAboveLatest[_displayedThreadKey] ??
+                                              false,
+                                          onScrollToBottom:
+                                              _scrollTimelineToBottom,
                                           onActivityExpandedChanged:
                                               (pageKey, activityId, expanded) {
                                                 setState(() {

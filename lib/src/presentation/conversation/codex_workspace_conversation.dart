@@ -9,6 +9,7 @@ export 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 export 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_pending_turn_steer_queue.dart';
 export 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_timeline_page_data.dart';
 export 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_conversation_timeline.dart';
+export 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_scroll_to_bottom_button.dart';
 export 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_codex_loading_mark.dart';
 export 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_codex_loading_mark_painter.dart';
 export 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_diff_stats.dart';

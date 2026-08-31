@@ -22,6 +22,8 @@ class ConversationViewport extends StatefulWidget {
     required this.activityExpanded,
     required this.onTimelineMetricsChanged,
     required this.onTimelineUserScrollDirection,
+    required this.showScrollToBottom,
+    required this.onScrollToBottom,
     required this.onActivityExpandedChanged,
     required this.onReview,
     required this.onUndo,
@@ -40,14 +42,15 @@ class ConversationViewport extends StatefulWidget {
   onFileChangeSummaryExpandedChanged;
   final bool Function(ThreadViewportKey pageKey, String activityId)
   activityExpanded;
-  final void Function(ThreadViewportKey pageKey, double viewportDimension)
-  onTimelineMetricsChanged;
+  final ValueChanged<ScrollMetrics> onTimelineMetricsChanged;
   final void Function(
     ThreadViewportKey pageKey,
     ScrollMetrics metrics,
     ScrollDirection direction,
   )
   onTimelineUserScrollDirection;
+  final bool showScrollToBottom;
+  final VoidCallback onScrollToBottom;
   final void Function(
     ThreadViewportKey pageKey,
     String activityId,

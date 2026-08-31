@@ -846,6 +846,98 @@ void main() {
     },
   );
 
+  testWidgets(
+    'shows a scroll-to-bottom affordance after reading older messages',
+    (tester) async {
+      final controller = CodexController(server: _FakeCodexAppServer())
+        ..workspacePath = '/workspace'
+        ..replaceTimelineEntriesForTesting(
+          List<TimelineEntry>.generate(
+            30,
+            (index) => TimelineEntry(
+              kind: TimelineKind.agent,
+              title: 'Codex',
+              detail: '可滚动内容 $index\n${'内容 ' * 12}',
+              createdAt: DateTime(2026, 1, 1, 0, 0, index),
+            ),
+          ),
+        );
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+
+      final timelineFinder = find.descendant(
+        of: find.byKey(
+          const ValueKey('conversation-timeline-/workspace:draft'),
+        ),
+        matching: find.byType(ListView),
+      );
+      final timeline = tester.widget<ListView>(timelineFinder);
+      timeline.controller!.jumpTo(
+        timeline.controller!.position.maxScrollExtent,
+      );
+      await tester.pump();
+
+      await tester.drag(timelineFinder, const Offset(0, 260));
+      await tester.pumpAndSettle();
+
+      final scrollToBottom = find.byKey(
+        const Key('conversation-scroll-to-bottom-button'),
+      );
+      expect(scrollToBottom, findsOneWidget);
+      expect(find.byTooltip('滚动到最新消息'), findsOneWidget);
+
+      await tester.tap(scrollToBottom);
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(timeline.controller!.position.extentAfter, greaterThan(1));
+
+      // A user gesture that interrupts the return animation must keep its
+      // reading position instead of being forced to the newest item.
+      await tester.drag(timelineFinder, const Offset(0, 80));
+      await tester.pumpAndSettle();
+      expect(timeline.controller!.position.extentAfter, greaterThan(1));
+      expect(scrollToBottom, findsOneWidget);
+
+      await tester.tap(scrollToBottom);
+      await tester.pumpAndSettle();
+
+      expect(timeline.controller!.position.extentAfter, lessThan(1));
+      expect(scrollToBottom, findsNothing);
+
+      timeline.controller!.jumpTo(
+        timeline.controller!.position.maxScrollExtent - 260,
+      );
+      await tester.pump();
+      expect(scrollToBottom, findsOneWidget);
+
+      await tester.tap(scrollToBottom);
+      controller.replaceTimelineEntriesForTesting([
+        ...controller.entries,
+        TimelineEntry(
+          kind: TimelineKind.agent,
+          title: 'Codex',
+          detail: '动画期间抵达的最新内容\n${'后续内容 ' * 12}',
+          createdAt: DateTime(2026, 1, 1, 0, 1),
+        ),
+      ]);
+      await tester.pumpAndSettle();
+
+      controller.replaceTimelineEntriesForTesting([
+        ...controller.entries,
+        TimelineEntry(
+          kind: TimelineKind.agent,
+          title: 'Codex',
+          detail: '动画结束后抵达的内容\n${'继续跟随 ' * 12}',
+          createdAt: DateTime(2026, 1, 1, 0, 2),
+        ),
+      ]);
+      await tester.pumpAndSettle();
+      expect(timeline.controller!.position.extentAfter, lessThan(1));
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets('opens a first-time history viewport at the latest message', (
     tester,
   ) async {

@@ -10,6 +10,7 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_conversation_viewport.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_conversation_timeline.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_codex_loading_mark.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_scroll_to_bottom_button.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_task_plan_panel.dart';
 
 class ConversationViewportState extends State<ConversationViewport> {
@@ -159,10 +160,7 @@ class ConversationViewportState extends State<ConversationViewport> {
                         activityExpanded: (activityId) =>
                             widget.activityExpanded(page.key, activityId),
                         onMetricsChanged: (viewportDimension) =>
-                            widget.onTimelineMetricsChanged(
-                              page.key,
-                              viewportDimension,
-                            ),
+                            widget.onTimelineMetricsChanged(viewportDimension),
                         onUserScrollDirection: (metrics, direction) =>
                             widget.onTimelineUserScrollDirection(
                               page.key,
@@ -221,6 +219,23 @@ class ConversationViewportState extends State<ConversationViewport> {
                 right: 24,
                 bottom: _bottomOverlayHeight + 20,
                 child: const IgnorePointer(child: LiveThinkingRow()),
+              ),
+            if (widget.showScrollToBottom && !widget.threadHistoryLoading)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom:
+                    _bottomOverlayHeight +
+                    (plan == null
+                        ? showFloatingThinking
+                              ? 68
+                              : 20
+                        : planHeight + 20),
+                child: Center(
+                  child: ConversationScrollToBottomButton(
+                    onPressed: widget.onScrollToBottom,
+                  ),
+                ),
               ),
             if (widget.threadHistoryLoading)
               Positioned.fill(
