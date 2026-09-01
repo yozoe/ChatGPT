@@ -9,6 +9,104 @@ import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart'
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_support.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_timeline_page_data.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_file_change_summary_card.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_user_message_rail.dart';
+
+BuildContext? _conversationTimelineContextForKey(
+  BuildContext rootContext,
+  Key targetKey,
+) {
+  BuildContext? result;
+  void visit(Element element) {
+    if (result != null) return;
+    if (element.widget.key == targetKey) {
+      result = element;
+      return;
+    }
+    element.visitChildElements(visit);
+  }
+
+  rootContext.visitChildElements(visit);
+  return result;
+}
+
+RenderSliverMultiBoxAdaptor? _conversationTimelineSliver(
+  BuildContext rootContext,
+) {
+  RenderSliverMultiBoxAdaptor? result;
+  void visit(RenderObject renderObject) {
+    if (result != null) return;
+    if (renderObject is RenderSliverMultiBoxAdaptor) {
+      result = renderObject;
+      return;
+    }
+    renderObject.visitChildren(visit);
+  }
+
+  final renderObject = rootContext.findRenderObject();
+  if (renderObject != null) visit(renderObject);
+  return result;
+}
+
+double _conversationTimelineChildOffset(RenderBox child) =>
+    (child.parentData! as SliverMultiBoxAdaptorParentData).layoutOffset ?? 0;
+
+Future<void> _revealConversationTimelineItem({
+  required BuildContext timelineContext,
+  required ScrollController scrollController,
+  required Key targetKey,
+  required int targetIndex,
+  required int itemCount,
+}) async {
+  var targetContext = _conversationTimelineContextForKey(
+    timelineContext,
+    targetKey,
+  );
+  if (targetContext == null && scrollController.hasClients) {
+    final position = scrollController.position;
+    final indexFraction = itemCount <= 1 ? 0.0 : targetIndex / (itemCount - 1);
+    scrollController.jumpTo(position.maxScrollExtent * indexFraction);
+    for (var attempt = 0; attempt < 12 && targetContext == null; attempt++) {
+      if (!timelineContext.mounted) return;
+      await WidgetsBinding.instance.endOfFrame;
+      if (!timelineContext.mounted) return;
+      targetContext = _conversationTimelineContextForKey(
+        timelineContext,
+        targetKey,
+      );
+      if (targetContext != null) break;
+
+      final sliver = _conversationTimelineSliver(timelineContext);
+      final firstChild = sliver?.firstChild;
+      final lastChild = sliver?.lastChild;
+      if (sliver == null || firstChild == null || lastChild == null) return;
+      final firstIndex = sliver.indexOf(firstChild);
+      final lastIndex = sliver.indexOf(lastChild);
+      final firstOffset = _conversationTimelineChildOffset(firstChild);
+      final lastOffset = _conversationTimelineChildOffset(lastChild);
+      final itemSpan = math.max(1, lastIndex - firstIndex + 1);
+      final extent = math.max(
+        1.0,
+        lastOffset + lastChild.size.height - firstOffset,
+      );
+      final estimatedItemExtent = extent / itemSpan;
+      final targetOffset =
+          firstOffset + (targetIndex - firstIndex) * estimatedItemExtent;
+      final nextOffset = targetOffset.clamp(
+        0.0,
+        scrollController.position.maxScrollExtent,
+      );
+      if ((nextOffset - scrollController.position.pixels).abs() < 1) return;
+      scrollController.jumpTo(nextOffset);
+    }
+  }
+  if (targetContext == null || !targetContext.mounted) return;
+  await Scrollable.ensureVisible(
+    targetContext,
+    alignment: 0.18,
+    duration: const Duration(milliseconds: 260),
+    curve: Curves.easeOutCubic,
+  );
+}
 
 class ConversationTimeline extends StatelessWidget {
   const ConversationTimeline({
@@ -101,6 +199,17 @@ class ConversationTimeline extends StatelessWidget {
       for (var index = 0; index < timelineItems.length; index++)
         timelineItemKey(timelineItems[index]): listIndexForTimelineIndex(index),
     };
+    final userMessageTargets = <String, ({Key key, int index})>{};
+    for (var index = 0; index < timelineItems.length; index++) {
+      final item = timelineItems[index];
+      final entry = item.entry;
+      if (entry?.kind != TimelineKind.user) continue;
+      final key = timelineItemKey(item);
+      userMessageTargets[entry!.id] = (
+        key: key,
+        index: timelineItemIndexes[key]!,
+      );
+    }
 
     // SliverList estimates the scroll extent from the children that have
     // already been laid out.  Timeline rows are intentionally variable-height
@@ -117,6 +226,11 @@ class ConversationTimeline extends StatelessWidget {
         (activeTurnStartedAt == null ? 0 : 1) +
         (hasLiveStatus ? 1 : 0) +
         (data.showFileChangeSummary ? 1 : 0);
+    final userMessages = timelineItems
+        .map((item) => item.entry)
+        .whereType<TimelineEntry>()
+        .where((entry) => entry.kind == TimelineKind.user)
+        .toList(growable: false);
     final timelineCacheExtent = math.min(
       96000.0,
       math.max(2000.0, itemCount * 800.0),
@@ -144,116 +258,151 @@ class ConversationTimeline extends StatelessWidget {
             }
             return false;
           },
-          child: ListView.separated(
-            key: PageStorageKey('conversation-timeline-${pageKey.storageKey}'),
-            controller: scrollController,
-            scrollCacheExtent: ScrollCacheExtent.pixels(timelineCacheExtent),
-            padding: EdgeInsets.fromLTRB(24, 12, 24, bottomPadding),
-            itemCount: itemCount,
-            findItemIndexCallback: (key) {
-              final timelineIndex = timelineItemIndexes[key];
-              if (timelineIndex != null) return timelineIndex;
-              if (key ==
-                  ValueKey('file-change-summary-${pageKey.storageKey}')) {
-                return timelineItems.length +
-                    (activeTurnStartedAt == null ? 0 : 1) +
-                    (hasLiveStatus ? 1 : 0);
-              }
-              return null;
-            },
-            separatorBuilder: (_, index) {
-              if (activeTurnStartedAt != null && index == liveElapsedIndex) {
-                return const Padding(
-                  key: Key('live-elapsed-divider'),
-                  padding: EdgeInsets.symmetric(vertical: 14),
-                  child: Divider(height: 1),
-                );
-              }
-              return const SizedBox(height: 29);
-            },
-            itemBuilder: (context, index) {
-              if (activeTurnStartedAt != null && index == liveElapsedIndex) {
-                return LiveElapsedRow(startedAt: activeTurnStartedAt);
-              }
-              final timelineIndex =
-                  activeTurnStartedAt != null && index > liveElapsedIndex
-                  ? index - 1
-                  : index;
-              if (timelineIndex >= timelineItems.length) {
-                var tailIndex = timelineIndex - timelineItems.length;
-                if (visibleLiveActivity != null && tailIndex-- == 0) {
-                  return visibleLiveActivity.kind == 'commandExecution'
-                      ? LiveCommandRow(command: visibleLiveActivity.detail)
-                      : LiveActivityRow(
-                          activity: visibleLiveActivity,
-                          onOpenSubagent:
-                              visibleLiveActivity.linkedThreadId == null
-                              ? null
-                              : () => onOpenSubagent(
-                                  TimelineEntry(
-                                    kind: TimelineKind.activity,
-                                    title: visibleLiveActivity.label,
-                                    detail: visibleLiveActivity.detail,
-                                    createdAt: DateTime.now(),
-                                    sourceItemId: visibleLiveActivity.itemId,
-                                    activityKind: 'collaboration',
-                                    activityStatus: visibleLiveActivity.status,
-                                    linkedThreadId:
-                                        visibleLiveActivity.linkedThreadId,
-                                    activityPrompt: visibleLiveActivity.prompt,
-                                  ),
-                                ),
-                        );
-                }
-                if (!data.showFileChangeSummary || tailIndex != 0) {
-                  throw StateError(
-                    'Unexpected conversation timeline item index.',
+          child: Stack(
+            children: [
+              ListView.separated(
+                key: PageStorageKey(
+                  'conversation-timeline-${pageKey.storageKey}',
+                ),
+                controller: scrollController,
+                scrollCacheExtent: ScrollCacheExtent.pixels(
+                  timelineCacheExtent,
+                ),
+                padding: EdgeInsets.fromLTRB(56, 12, 24, bottomPadding),
+                itemCount: itemCount,
+                findItemIndexCallback: (key) {
+                  final timelineIndex = timelineItemIndexes[key];
+                  if (timelineIndex != null) return timelineIndex;
+                  if (key ==
+                      ValueKey('file-change-summary-${pageKey.storageKey}')) {
+                    return timelineItems.length +
+                        (activeTurnStartedAt == null ? 0 : 1) +
+                        (hasLiveStatus ? 1 : 0);
+                  }
+                  return null;
+                },
+                separatorBuilder: (_, index) {
+                  if (activeTurnStartedAt != null &&
+                      index == liveElapsedIndex) {
+                    return const Padding(
+                      key: Key('live-elapsed-divider'),
+                      padding: EdgeInsets.symmetric(vertical: 14),
+                      child: Divider(height: 1),
+                    );
+                  }
+                  return const SizedBox(height: 29);
+                },
+                itemBuilder: (context, index) {
+                  if (activeTurnStartedAt != null &&
+                      index == liveElapsedIndex) {
+                    return LiveElapsedRow(startedAt: activeTurnStartedAt);
+                  }
+                  final timelineIndex =
+                      activeTurnStartedAt != null && index > liveElapsedIndex
+                      ? index - 1
+                      : index;
+                  if (timelineIndex >= timelineItems.length) {
+                    var tailIndex = timelineIndex - timelineItems.length;
+                    if (visibleLiveActivity != null && tailIndex-- == 0) {
+                      return visibleLiveActivity.kind == 'commandExecution'
+                          ? LiveCommandRow(command: visibleLiveActivity.detail)
+                          : LiveActivityRow(
+                              activity: visibleLiveActivity,
+                              onOpenSubagent:
+                                  visibleLiveActivity.linkedThreadId == null
+                                  ? null
+                                  : () => onOpenSubagent(
+                                      TimelineEntry(
+                                        kind: TimelineKind.activity,
+                                        title: visibleLiveActivity.label,
+                                        detail: visibleLiveActivity.detail,
+                                        createdAt: DateTime.now(),
+                                        sourceItemId:
+                                            visibleLiveActivity.itemId,
+                                        activityKind: 'collaboration',
+                                        activityStatus:
+                                            visibleLiveActivity.status,
+                                        linkedThreadId:
+                                            visibleLiveActivity.linkedThreadId,
+                                        activityPrompt:
+                                            visibleLiveActivity.prompt,
+                                      ),
+                                    ),
+                            );
+                    }
+                    if (!data.showFileChangeSummary || tailIndex != 0) {
+                      throw StateError(
+                        'Unexpected conversation timeline item index.',
+                      );
+                    }
+                    return FileChangeSummaryCard(
+                      key: ValueKey(
+                        'file-change-summary-${pageKey.storageKey}',
+                      ),
+                      changes: data.fileChanges,
+                      turnDiff: data.turnDiff,
+                      expanded: fileChangeSummaryExpanded,
+                      onExpandedChanged: onFileChangeSummaryExpandedChanged,
+                      onReview: onReview,
+                      onUndo: onUndo,
+                      canUndo: canUndo,
+                      undoRunning: undoRunning,
+                    );
+                  }
+                  final item = timelineItems[timelineIndex];
+                  if (item.completedTurnEntries case final entries?) {
+                    return CompletedTurnDisclosure(
+                      key: timelineItemKey(item),
+                      duration: item.entry!,
+                      entries: entries,
+                      workspacePath: pageKey.workspace,
+                      onOpenSubagent: onOpenSubagent,
+                    );
+                  }
+                  if (item.activities case final activities?) {
+                    final activityId = item.stableId;
+                    return TimelineActivityList(
+                      key: timelineItemKey(item),
+                      entries: activities,
+                      expanded: activityExpanded(activityId),
+                      onExpandedChanged: (expanded) =>
+                          onActivityExpandedChanged(activityId, expanded),
+                    );
+                  }
+                  final entry = item.entry!;
+                  return CodexTimelineEntry(
+                    entry,
+                    key: timelineItemKey(item),
+                    workspacePath: pageKey.workspace,
+                    streaming: entry.id == streamingAgentEntryId,
+                    onOpenSubagent: onOpenSubagent,
+                    onSubmitUserMessageEdit: active
+                        ? onSubmitUserMessageEdit
+                        : null,
                   );
-                }
-                return FileChangeSummaryCard(
-                  key: ValueKey('file-change-summary-${pageKey.storageKey}'),
-                  changes: data.fileChanges,
-                  turnDiff: data.turnDiff,
-                  expanded: fileChangeSummaryExpanded,
-                  onExpandedChanged: onFileChangeSummaryExpandedChanged,
-                  onReview: onReview,
-                  onUndo: onUndo,
-                  canUndo: canUndo,
-                  undoRunning: undoRunning,
-                );
-              }
-              final item = timelineItems[timelineIndex];
-              if (item.completedTurnEntries case final entries?) {
-                return CompletedTurnDisclosure(
-                  key: timelineItemKey(item),
-                  duration: item.entry!,
-                  entries: entries,
-                  workspacePath: pageKey.workspace,
-                  onOpenSubagent: onOpenSubagent,
-                );
-              }
-              if (item.activities case final activities?) {
-                final activityId = item.stableId;
-                return TimelineActivityList(
-                  key: timelineItemKey(item),
-                  entries: activities,
-                  expanded: activityExpanded(activityId),
-                  onExpandedChanged: (expanded) =>
-                      onActivityExpandedChanged(activityId, expanded),
-                );
-              }
-              final entry = item.entry!;
-              return CodexTimelineEntry(
-                entry,
-                key: timelineItemKey(item),
-                workspacePath: pageKey.workspace,
-                streaming: entry.id == streamingAgentEntryId,
-                onOpenSubagent: onOpenSubagent,
-                onSubmitUserMessageEdit: active
-                    ? onSubmitUserMessageEdit
-                    : null,
-              );
-            },
+                },
+              ),
+              if (userMessages.isNotEmpty)
+                Positioned(
+                  left: 16,
+                  top: 12,
+                  bottom: bottomPadding,
+                  child: ConversationUserMessageRail(
+                    messages: userMessages,
+                    onMessageSelected: (messageId) async {
+                      final target = userMessageTargets[messageId];
+                      if (target == null) return;
+                      await _revealConversationTimelineItem(
+                        timelineContext: context,
+                        scrollController: scrollController,
+                        targetKey: target.key,
+                        targetIndex: target.index,
+                        itemCount: itemCount,
+                      );
+                    },
+                  ),
+                ),
+            ],
           ),
         ),
       ),

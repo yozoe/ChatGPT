@@ -21,7 +21,12 @@ import 'package:chatgpt/src/domain/task_plan.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/domain/workspace_configuration.dart';
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_sidebar_workspace_tile.dart';
+import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_thread_viewport_key.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_conversation_timeline.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_timeline_page_data.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_user_message_rail.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_user_message_rail_mark.dart';
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_plugin_glyph.dart';
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_support.dart';
 import 'package:chatgpt/src/presentation/code_review/code_review_panel.dart';
@@ -107,6 +112,191 @@ Future<dynamic> _resolveLastAgentMarkdownLinks(WidgetTester tester) async {
 }
 
 void main() {
+  testWidgets('conversation rail tapers around the hovered user message', (
+    tester,
+  ) async {
+    final messages = List.generate(
+      7,
+      (index) => TimelineEntry(
+        id: 'hover-user-$index',
+        kind: TimelineKind.user,
+        title: 'You',
+        detail: '用户消息 $index',
+        createdAt: DateTime(2026, 1, 1, 0, 0, index),
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Align(
+          alignment: Alignment.centerLeft,
+          child: SizedBox(
+            width: 28,
+            height: 180,
+            child: ConversationUserMessageRail(
+              messages: messages,
+              onMessageSelected: (_) async {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    Finder marker(int index) => find.byKey(
+      ValueKey('conversation-user-message-rail-mark-hover-user-$index'),
+    );
+    List<double> markerWidths() => List.generate(
+      messages.length,
+      (index) => tester.getSize(marker(index)).width,
+    );
+
+    expect(markerWidths().toSet(), {8.0});
+
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    addTearDown(mouse.removePointer);
+    await mouse.addPointer(location: const Offset(100, 10));
+    await mouse.moveTo(
+      tester.getCenter(
+        find.byKey(
+          const ValueKey('conversation-user-message-rail-hit-hover-user-3'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final hoveredWidths = markerWidths();
+    expect(hoveredWidths[3], 28);
+    expect(hoveredWidths[3], greaterThan(hoveredWidths[2]));
+    expect(hoveredWidths[2], greaterThan(hoveredWidths[1]));
+    expect(hoveredWidths[1], greaterThan(hoveredWidths[0]));
+    expect(hoveredWidths[4], hoveredWidths[2]);
+    expect(hoveredWidths[5], hoveredWidths[1]);
+    expect(hoveredWidths[6], hoveredWidths[0]);
+
+    await mouse.moveTo(const Offset(100, 10));
+    await tester.pumpAndSettle();
+    expect(markerWidths().toSet(), {8.0});
+  });
+
+  testWidgets('conversation rail stays fixed and locates a user message', (
+    tester,
+  ) async {
+    final controller = ScrollController();
+    addTearDown(controller.dispose);
+    final entries = [
+      TimelineEntry(
+        id: 'user-one',
+        kind: TimelineKind.user,
+        title: 'You',
+        detail: '第一条用户消息',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        id: 'agent-one',
+        kind: TimelineKind.agent,
+        title: 'Assistant',
+        detail: List.generate(
+          400,
+          (index) => '这条助手回复不应生成标记 $index',
+        ).join('\n\n'),
+        createdAt: DateTime(2026, 1, 1, 0, 0, 1),
+      ),
+      TimelineEntry(
+        id: 'user-two',
+        kind: TimelineKind.user,
+        title: 'You',
+        detail: '第二条用户消息\n有两行',
+        createdAt: DateTime(2026, 1, 1, 0, 0, 2),
+      ),
+    ];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 700,
+          height: 240,
+          child: ConversationTimeline(
+            pageKey: const ThreadViewportKey(
+              workspace: null,
+              threadId: 'rail-test',
+            ),
+            data: TimelinePageData(
+              entries: entries,
+              fileChanges: const [],
+              turnDiff: null,
+              showFileChangeSummary: false,
+              activeActivity: null,
+              streamingAgentEntryId: null,
+              activeTurnStartedAt: null,
+              isThinking: false,
+            ),
+            scrollController: controller,
+            bottomPadding: 12,
+            active: true,
+            fileChangeSummaryExpanded: false,
+            onFileChangeSummaryExpandedChanged: (_) {},
+            activityExpanded: (_) => false,
+            onMetricsChanged: (_) {},
+            onUserScrollDirection: (_, _) {},
+            onActivityExpandedChanged: (_, _) {},
+            onReview: () async {},
+            onUndo: () async {},
+            canUndo: false,
+            undoRunning: false,
+            onOpenSubagent: (_) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final firstMarker = find.byKey(
+      const ValueKey('conversation-user-message-rail-mark-user-one'),
+    );
+    expect(find.byType(ConversationUserMessageRailMark), findsNWidgets(2));
+    expect(
+      find.byKey(
+        const ValueKey('conversation-user-message-rail-mark-user-one'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(
+        const ValueKey('conversation-user-message-rail-mark-user-two'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(
+        const ValueKey('conversation-user-message-rail-mark-agent-one'),
+      ),
+      findsNothing,
+    );
+    expect(controller.position.maxScrollExtent, greaterThan(0));
+    final markerPositionBeforeScroll = tester.getTopLeft(firstMarker);
+    final maximumOffset = controller.position.maxScrollExtent;
+    controller.jumpTo(maximumOffset);
+    await tester.pump();
+    expect(tester.getTopLeft(firstMarker), markerPositionBeforeScroll);
+    expect(
+      find.byKey(
+        const ValueKey('timeline-entry-no-workspace:rail-test-user-one'),
+      ),
+      findsNothing,
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey('conversation-user-message-rail-hit-user-one')),
+    );
+    await tester.pumpAndSettle();
+    expect(controller.offset, lessThan(maximumOffset));
+    final targetPosition = tester.getTopLeft(
+      find.byKey(
+        const ValueKey('timeline-entry-no-workspace:rail-test-user-one'),
+      ),
+    );
+    expect(targetPosition.dy, greaterThanOrEqualTo(0));
+    expect(targetPosition.dy, lessThan(240));
+  });
+
   late _MemoryConversationHistoryStore historyStore;
   late _FakeRuntimeConfigurationStore runtimeConfigurationStore;
 
