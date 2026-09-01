@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:chatgpt/src/app_controller.dart';
+import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/services/conversation_attachment_store.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -28,6 +29,52 @@ void main() {
 
       expect(await attachments.exists(), isTrue);
       expect(await attachments.list().isEmpty, isTrue);
+    },
+  );
+
+  test(
+    'rejects stale clipboard image paths before sending to App Server',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-desk-stale-clipboard-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final controller =
+          CodexController(
+              server: FakeCodexAppServer(),
+              conversationAttachmentStore: ConversationAttachmentStore(
+                directory: Directory('${root.path}/conversation-images'),
+              ),
+            )
+            ..workspacePath = root.path
+            ..status = RuntimeStatus.ready;
+
+      final sent = await controller.sendPrompt(
+        '请检查旧截图',
+        imagePaths: const [
+          '/var/folders/nr/0prp0wxd57s33ld6bnlnw7rc0000gn/T/'
+              'CodexDeskClipboard/clipboard-image-387.png',
+        ],
+        additionalInput: const [
+          {
+            'type': 'localImage',
+            'path':
+                '/var/folders/nr/0prp0wxd57s33ld6bnlnw7rc0000gn/T/'
+                'CodexDeskClipboard/clipboard-image-387.png',
+          },
+        ],
+      );
+
+      expect(sent, isFalse);
+      expect(
+        controller.entries.any(
+          (entry) =>
+              entry.kind == TimelineKind.error &&
+              entry.detail.contains('找不到待保存的图片'),
+        ),
+        isTrue,
+      );
+      controller.dispose();
     },
   );
 

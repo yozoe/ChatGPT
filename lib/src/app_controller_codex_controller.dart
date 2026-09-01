@@ -757,7 +757,11 @@ class CodexController extends ChangeNotifier {
     required List<JsonMap> additionalInput,
   }) async {
     final temporaryPaths = imagePaths
-        .where(_temporaryAttachmentPaths.contains)
+        .where(
+          (path) =>
+              _temporaryAttachmentPaths.contains(path) ||
+              _isClipboardTemporaryPath(path),
+        )
         .toSet();
     if (temporaryPaths.isEmpty) {
       return (
@@ -1449,16 +1453,23 @@ class CodexController extends ChangeNotifier {
       final decoded = jsonDecode(await file.readAsString());
       final values = decoded is Map ? decoded['activities'] : null;
       if (values is! Iterable || !isCurrent()) return;
+      final activeThread = activeThreadId;
       final next = <String, LiveTurnActivity>{};
-      var timelineChanged = false;
+      final previousEntryCount = _entries.length;
+      _entries.removeWhere(_isUnscopedBridgeEntry);
+      var timelineChanged = _entries.length != previousEntryCount;
       for (final value in values) {
         if (value is! Map) continue;
+        final activity = JsonMap.from(value);
+        // The bridge file is shared by all clients using the same workspace.
+        // An activity without an explicit parent cannot be safely attributed
+        // to the visible conversation, so ignore it instead of leaking a
+        // different session's child agent into every timeline.
+        final parentThreadId = _collaborationParentThreadId(activity);
+        if (activeThread == null || parentThreadId != activeThread) continue;
         final id = _label(value['id']);
         if (id.isEmpty) continue;
-        final statusResult = _collaborationStatus(
-          JsonMap.from(value),
-          live: true,
-        );
+        final statusResult = _collaborationStatus(activity, live: true);
         final title = _label(value['title']);
         final linkedThreadId = _firstNonEmptyLabel([
           value['newThreadId'],
@@ -1551,6 +1562,18 @@ class CodexController extends ChangeNotifier {
       if (label.isNotEmpty) return label;
     }
     return '';
+  }
+
+  String? _collaborationParentThreadId(JsonMap item) {
+    final parent = _firstNonEmptyLabel([
+      item['parentThreadId'],
+      item['parent_thread_id'],
+      item['sourceThreadId'],
+      item['source_thread_id'],
+      item['ownerThreadId'],
+      item['owner_thread_id'],
+    ]);
+    return parent.isEmpty ? null : parent;
   }
 
   @visibleForTesting
@@ -7744,9 +7767,17 @@ class CodexController extends ChangeNotifier {
         ..clear()
         ..addAll(snapshot.acknowledgedCompletedThreadIds);
       if (snapshot.entries.isNotEmpty) {
+        final restoredEntries = snapshot.entries
+            .where((entry) => !_isUnscopedBridgeEntry(entry))
+            .toList(growable: false);
         _entries
           ..clear()
-          ..addAll(snapshot.entries);
+          ..addAll(restoredEntries);
+        if (restoredEntries.length != snapshot.entries.length) {
+          // Drop bridge records written by older versions that had no parent
+          // thread field and therefore could not be scoped to a conversation.
+          _scheduleConversationHistorySave();
+        }
       }
       _fileChangesByPath
         ..clear()
@@ -8137,6 +8168,19 @@ class CodexController extends ChangeNotifier {
   /// Removes the Dart state-error prefix for user-displayable error text.
   String _messageOf(Object error) =>
       error.toString().replaceFirst('Bad state: ', '');
+
+  bool _isClipboardTemporaryPath(String path) => RegExp(
+    r'(^|[/\\])CodexDeskClipboard[/\\]clipboard-image-[^/\\]+$',
+    caseSensitive: false,
+  ).hasMatch(path);
+
+  bool _isUnscopedBridgeEntry(TimelineEntry entry) {
+    final source = entry.sourceItemId ?? '';
+    final linked = entry.linkedThreadId ?? '';
+    return entry.activityKind == 'collaboration' &&
+        source.startsWith('external-bridge-') &&
+        linked.startsWith('external-bridge-');
+  }
 
   /// 系统临时目录根会被系统随时清理，不能作为稳定的 Codex 项目。
   /// The system temporary-directory root is not a stable Codex project.

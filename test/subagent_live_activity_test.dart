@@ -85,18 +85,22 @@ void main() {
               'id': 'external-review',
               'title': '全局代码审查',
               'status': 'started',
+              'parentThreadId': 'parent-thread',
               'prompt': '审查未提交改动',
             },
             {
               'id': 'external-finished',
               'title': '已完成任务',
               'status': 'completed',
+              'parentThreadId': 'parent-thread',
             },
             {
               'id': 'external-active',
               'title': '活动状态兼容',
+              'parentThreadId': 'parent-thread',
               'agentStatus': {'state': 'in_progress'},
             },
+            {'id': 'external-unscoped', 'title': '其他会话任务', 'status': 'started'},
           ],
         }),
       );
@@ -107,6 +111,7 @@ void main() {
         runtimeConfigurationStore: runtime,
       );
       await controller.waitForInitialConfiguration();
+      controller.activeThreadId = 'parent-thread';
       await controller.refreshCollaborationBridgeForTesting();
 
       expect(controller.activeCollaborationActivities, hasLength(2));
@@ -131,4 +136,56 @@ void main() {
       controller.dispose();
     },
   );
+
+  test('does not leak bridge activities from another parent session', () async {
+    final workspace = await Directory.systemTemp.createTemp(
+      'codex-desk-collaboration-scope-',
+    );
+    addTearDown(() => workspace.delete(recursive: true));
+    final bridgeDirectory = await Directory(
+      '${workspace.path}${Platform.pathSeparator}.codex',
+    ).create();
+    await File(
+      '${bridgeDirectory.path}${Platform.pathSeparator}codex-desk-collaboration.json',
+    ).writeAsString(
+      jsonEncode({
+        'activities': [
+          {
+            'id': 'other-session',
+            'title': '另一个会话',
+            'status': 'started',
+            'parentThreadId': 'other-parent',
+          },
+          {
+            'id': 'current-session',
+            'title': '当前会话',
+            'status': 'started',
+            'parentThreadId': 'current-parent',
+          },
+        ],
+      }),
+    );
+    final runtime = FakeRuntimeConfigurationStore()..workspace = workspace.path;
+    final controller = CodexController(
+      server: CodexAppServer(),
+      runtimeConfigurationStore: runtime,
+    );
+    await controller.waitForInitialConfiguration();
+    controller.activeThreadId = 'current-parent';
+    await controller.refreshCollaborationBridgeForTesting();
+
+    expect(
+      controller.activeCollaborationActivities.map(
+        (activity) => activity.label,
+      ),
+      ['当前会话'],
+    );
+    expect(
+      controller.entries.where(
+        (entry) => entry.activityKind == 'collaboration',
+      ),
+      hasLength(1),
+    );
+    controller.dispose();
+  });
 }
