@@ -39,6 +39,7 @@ import 'package:chatgpt/src/services/git_project_service.dart';
 import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/theme_preferences_store.dart';
 import 'package:chatgpt/src/services/task_completion_notifier.dart';
+import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_url_normalizer.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -112,6 +113,22 @@ Future<dynamic> _resolveLastAgentMarkdownLinks(WidgetTester tester) async {
 }
 
 void main() {
+  test('browser URL normalizer accepts web URLs and rejects other schemes', () {
+    expect(
+      normalizeBrowserUrl('example.com'),
+      Uri.parse('https://example.com'),
+    );
+    expect(
+      normalizeBrowserUrl('http://localhost:3000/path'),
+      Uri.parse('http://localhost:3000/path'),
+    );
+    expect(normalizeBrowserUrl('file:///tmp/example.txt'), isNull);
+    expect(normalizeBrowserUrl('javascript:alert(1)'), isNull);
+    expect(normalizeBrowserUrl('https://example.com/a b'), isNull);
+    expect(isBrowserWebUri(Uri.parse('https://example.com')), isTrue);
+    expect(isBrowserWebUri(Uri.parse('mailto:user@example.com')), isFalse);
+  });
+
   testWidgets('conversation rail tapers around the hovered user message', (
     tester,
   ) async {
