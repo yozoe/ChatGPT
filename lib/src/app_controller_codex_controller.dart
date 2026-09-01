@@ -281,6 +281,11 @@ class CodexController extends ChangeNotifier {
   bool hasUnacknowledgedCompletion(String threadId) =>
       _unacknowledgedCompletionThreadIds.contains(threadId);
 
+  /// Registers the workspace callback for native app activation events.
+  void setDockActivationHandler(void Function()? handler) {
+    _taskCompletionNotifier.setDockActivationHandler(handler);
+  }
+
   /// Persists that a completed thread was viewed, optionally clearing its Dock
   /// badge when the view was an explicit task open.
   Future<void> acknowledgeCompletedThread(

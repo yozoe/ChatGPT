@@ -50,6 +50,10 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   bool _reviewOpen = false;
   CodeReviewSource _reviewSource = CodeReviewSource.latestTurn;
   final GlobalKey _reviewPanelKey = GlobalKey();
+  // Native WebView creation is expensive on macOS. Keep the browser mounted
+  // after its first use, but do not construct it during the initial frame.
+  // 原生 WebView 在 macOS 上初始化成本较高；首次使用后保活，但首帧不创建。
+  bool _browserPageMounted = false;
   String? _selectedSubagentThreadId;
   String? _selectedSubagentParentThreadId;
   String _selectedSubagentTitle = '子智能体';
@@ -81,6 +85,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     _timelineScrollController = _timelineControllerFor(_displayedThreadKey);
     _captureActiveTimelinePage();
     _controller.addListener(_handleControllerUpdate);
+    _controller.setDockActivationHandler(_handleDockActivation);
     WidgetsBinding.instance.addObserver(this);
   }
 
@@ -94,8 +99,10 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     if (identical(nextController, _controller)) return;
     final previousController = _controller;
     previousController.removeListener(_handleControllerUpdate);
+    previousController.setDockActivationHandler(null);
     _controller = nextController;
     _controller.addListener(_handleControllerUpdate);
+    _controller.setDockActivationHandler(_handleDockActivation);
     _selectedSubagentThreadId = null;
     _selectedSubagentParentThreadId = null;
     _timelineScrollGeneration++;
@@ -121,6 +128,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _controller.setDockActivationHandler(null);
     _controller.removeListener(_handleControllerUpdate);
     _composer.dispose();
     _recordSkillRequest.dispose();
@@ -158,6 +166,17 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
         }
         unawaited(_controller.acknowledgeCompletedThread(threadId));
     }
+  }
+
+  void _handleDockActivation() {
+    final threadId = _controller.activeThreadId;
+    if (!mounted ||
+        _destination != WorkspaceDestination.conversation ||
+        threadId == null ||
+        !_controller.hasUnacknowledgedCompletion(threadId)) {
+      return;
+    }
+    unawaited(_controller.acknowledgeCompletedThread(threadId));
   }
 
   /// 响应控制器更新；显式注入时由工作区重建，Provider 场景仍由 ref.watch 重建。
@@ -2130,8 +2149,13 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
 
   /// 打开独立浏览器工作区并保留其 WebView 生命周期。
   /// Opens the dedicated browser workspace while retaining its WebView lifecycle.
-  void _showBrowser() =>
-      setState(() => _destination = WorkspaceDestination.browser);
+  void _showBrowser() {
+    if (!mounted) return;
+    setState(() {
+      _browserPageMounted = true;
+      _destination = WorkspaceDestination.browser;
+    });
+  }
 
   /// Opens the scheduling editor from the scheduled-task workspace.
   Future<void> _showScheduledTaskComposer([String? initialPrompt]) async {
@@ -2421,12 +2445,14 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      Offstage(
-                        offstage: _destination != WorkspaceDestination.browser,
-                        child: BrowserWorkspacePage(
-                          onOpenConversation: _showConversation,
+                      if (_browserPageMounted)
+                        Offstage(
+                          offstage:
+                              _destination != WorkspaceDestination.browser,
+                          child: BrowserWorkspacePage(
+                            onOpenConversation: _showConversation,
+                          ),
                         ),
-                      ),
                       if (_destination != WorkspaceDestination.browser)
                         _destination == WorkspaceDestination.scheduledTasks
                             ? ScheduledTasksPage(

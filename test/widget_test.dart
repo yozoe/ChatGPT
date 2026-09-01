@@ -1418,6 +1418,36 @@ void main() {
   });
 
   testWidgets(
+    'defers native browser creation until the browser workspace opens',
+    (tester) async {
+      final controller = CodexController(server: _FakeCodexAppServer());
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(home: CodexWorkspace(controller: controller)),
+        ),
+      );
+
+      expect(find.byKey(const Key('browser-workspace-page')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('sidebar-settings-button')));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('settings-nav-浏览器')),
+        240,
+        scrollable: find.descendant(
+          of: find.byKey(const Key('settings-navigation-scroll')),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      await tester.tap(find.byKey(const Key('settings-nav-浏览器')));
+      await tester.pump();
+
+      expect(find.byKey(const Key('browser-workspace-page')), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
     'keeps the active reply on stable text metrics until Markdown completes',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(1200, 900));

@@ -32,4 +32,22 @@ void main() {
     expect(calls[2].arguments, <String, bool>{'visible': false});
     expect(calls[3].arguments, <String, Object>{'visible': true, 'count': 3});
   });
+
+  test('forwards native Dock activation to the registered handler', () async {
+    const channel = MethodChannel('codex_desk/task_completion_activation');
+    final notifier = TaskCompletionNotifier(channel: channel);
+    var activations = 0;
+    notifier.setDockActivationHandler(() => activations++);
+
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    const codec = StandardMethodCodec();
+    await messenger.handlePlatformMessage(
+      channel.name,
+      codec.encodeMethodCall(const MethodCall('dockActivated')),
+      (_) {},
+    );
+
+    expect(activations, 1);
+  });
 }

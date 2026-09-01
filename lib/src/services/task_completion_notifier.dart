@@ -6,10 +6,23 @@ import 'package:flutter/services.dart';
 /// remains usable in widget tests and on platforms without a desktop bridge.
 class TaskCompletionNotifier {
   TaskCompletionNotifier({MethodChannel? channel})
-    : _channel = channel ?? const MethodChannel(_channelName);
+    : _channel = channel ?? const MethodChannel(_channelName) {
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'dockActivated') {
+        _dockActivationHandler?.call();
+      }
+    });
+  }
 
   static const _channelName = 'codex_desk/task_completion';
   final MethodChannel _channel;
+  void Function()? _dockActivationHandler;
+
+  /// Receives a host activation event, including a click on the running app's
+  /// Dock icon. Only one workspace is expected to own this channel at a time.
+  void setDockActivationHandler(void Function()? handler) {
+    _dockActivationHandler = handler;
+  }
 
   /// Shows the system notification emitted for a successfully completed task.
   Future<void> notifyTaskCompleted() => _invoke('notifyTaskCompleted');

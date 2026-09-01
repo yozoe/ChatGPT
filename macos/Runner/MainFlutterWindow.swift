@@ -2,6 +2,8 @@ import Cocoa
 import FlutterMacOS
 
 class MainFlutterWindow: NSWindow {
+  private var taskCompletionChannel: FlutterMethodChannel?
+  private var appActivationObserver: NSObjectProtocol?
   private static let frameAutosaveName = "CodexDeskMainWindow"
   private static let clipboardTemporaryDirectory = FileManager.default.temporaryDirectory
     .appendingPathComponent("CodexDeskClipboard", isDirectory: true)
@@ -113,6 +115,7 @@ class MainFlutterWindow: NSWindow {
       name: "codex_desk/task_completion",
       binaryMessenger: flutterViewController.engine.binaryMessenger
     )
+    self.taskCompletionChannel = taskCompletionChannel
     taskCompletionChannel.setMethodCallHandler { call, result in
       switch call.method {
       case "notifyTaskCompleted":
@@ -147,6 +150,13 @@ class MainFlutterWindow: NSWindow {
         result(FlutterMethodNotImplemented)
       }
     }
+    appActivationObserver = NotificationCenter.default.addObserver(
+      forName: NSApplication.didBecomeActiveNotification,
+      object: NSApp,
+      queue: .main
+    ) { [weak self] _ in
+      self?.taskCompletionChannel?.invokeMethod("dockActivated", arguments: nil)
+    }
 
     let dockIconChannel = FlutterMethodChannel(
       name: "codex_desk/dock_icon",
@@ -176,5 +186,11 @@ class MainFlutterWindow: NSWindow {
     }
 
     super.awakeFromNib()
+  }
+
+  deinit {
+    if let observer = appActivationObserver {
+      NotificationCenter.default.removeObserver(observer)
+    }
   }
 }

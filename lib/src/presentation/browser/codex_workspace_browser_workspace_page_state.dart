@@ -231,6 +231,7 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
     return Padding(
+      key: const Key('browser-workspace-page'),
       padding: const EdgeInsets.fromLTRB(32, 32, 32, 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
