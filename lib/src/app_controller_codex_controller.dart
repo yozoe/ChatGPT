@@ -5026,8 +5026,8 @@ class CodexController extends ChangeNotifier {
 
   void _updateDockCompletionBadge() {
     unawaited(
-      _taskCompletionNotifier.setDockBadge(
-        visible: _unacknowledgedCompletionThreadIds.isNotEmpty,
+      _taskCompletionNotifier.setDockBadgeCount(
+        _unacknowledgedCompletionThreadIds.length,
       ),
     );
   }

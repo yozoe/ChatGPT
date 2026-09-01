@@ -20,13 +20,16 @@ void main() {
     await notifier.notifyTaskCompleted();
     await notifier.setDockBadge(visible: true);
     await notifier.setDockBadge(visible: false);
+    await notifier.setDockBadgeCount(3);
 
     expect(calls.map((call) => call.method), <String>[
       'notifyTaskCompleted',
       'setDockBadge',
       'setDockBadge',
+      'setDockBadge',
     ]);
     expect(calls[1].arguments, <String, bool>{'visible': true});
     expect(calls[2].arguments, <String, bool>{'visible': false});
+    expect(calls[3].arguments, <String, Object>{'visible': true, 'count': 3});
   });
 }

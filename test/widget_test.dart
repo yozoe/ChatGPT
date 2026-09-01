@@ -132,6 +132,11 @@ void main() {
     expect(brandText.style?.fontSize, 17);
     expect(brandText.style?.fontWeight, FontWeight.w700);
     expect(find.text('新建第一个工作区'), findsOneWidget);
+    expect(find.text('从一个工作区开始'), findsOneWidget);
+    expect(
+      find.byKey(const Key('sidebar-first-workspace-create-button')),
+      findsOneWidget,
+    );
     expect(find.text('等待目录'), findsOneWidget);
     expect(find.byKey(const Key('runtime-start-button')), findsNothing);
     expect(find.byTooltip('停止运行时'), findsNothing);
@@ -1369,10 +1374,7 @@ void main() {
     final picker = tester.widget<Ink>(
       find.byKey(const Key('workspace-picker-surface')),
     );
-    expect(
-      (picker.decoration! as BoxDecoration).color,
-      YeknomPalette.of(tester.element(find.text('新建第一个工作区'))).raised,
-    );
+    expect((picker.decoration! as BoxDecoration).color, Colors.transparent);
   });
 
   testWidgets('shows saved workspaces as a switchable sidebar list', (
@@ -13439,7 +13441,7 @@ void main() {
             .where((call) => call.method == 'setDockBadge')
             .map((call) => call.arguments),
         [
-          <String, bool>{'visible': true},
+          <String, Object>{'visible': true, 'count': 1},
         ],
       );
       expect(
@@ -13452,8 +13454,8 @@ void main() {
             .where((call) => call.method == 'setDockBadge')
             .map((call) => call.arguments),
         [
-          <String, bool>{'visible': true},
-          <String, bool>{'visible': false},
+          <String, Object>{'visible': true, 'count': 1},
+          <String, Object>{'visible': false, 'count': 0},
         ],
       );
       await tester.pumpWidget(const SizedBox());

@@ -18,7 +18,7 @@ void main() {
     }
   });
 
-  test('debug defaults to persistent storage without using Keychain', () async {
+  test('persists values locally without using Keychain', () async {
     final first = CodexKeychainStorage(
       developmentDirectory: temporaryDirectory,
     );

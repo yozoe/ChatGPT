@@ -15,8 +15,15 @@ class TaskCompletionNotifier {
   Future<void> notifyTaskCompleted() => _invoke('notifyTaskCompleted');
 
   /// Shows or hides the macOS Dock completion badge.
-  Future<void> setDockBadge({required bool visible}) =>
-      _invoke('setDockBadge', <String, bool>{'visible': visible});
+  Future<void> setDockBadge({required bool visible, int? count}) => _invoke(
+    'setDockBadge',
+    <String, Object>{'visible': visible, if (count != null) 'count': count},
+  );
+
+  /// 设置 macOS Dock 完成徽标中显示的数字。
+  /// Sets the numeric count shown in the macOS Dock completion badge.
+  Future<void> setDockBadgeCount(int count) =>
+      setDockBadge(visible: count > 0, count: count);
 
   Future<void> _invoke(String method, [Object? arguments]) async {
     try {

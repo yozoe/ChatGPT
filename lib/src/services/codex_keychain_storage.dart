@@ -1,28 +1,39 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter/foundation.dart' show kReleaseMode;
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'app_storage_scope.dart';
 
-/// 为 Release 提供独立 Keychain，为开发与测试提供隔离且可原子写入的本地存储。
-/// Release builds use a dedicated Keychain service; development and tests use isolated atomically written local storage.
+/// 将 Codex Desk 偏好和加密密钥保存到应用专用的本地文件。
+/// Stores Codex Desk preferences and encryption keys in an app-specific local file.
+///
+/// The class name is retained for source compatibility with existing callers.
 class CodexKeychainStorage {
-  /// Creates build-appropriate storage; tests may inject either implementation.
-  CodexKeychainStorage({
-    FlutterSecureStorage? storage,
-    FlutterSecureStorage? legacyStorage,
-    bool? useDevelopmentStorage,
-    Directory? developmentDirectory,
-  }) : _storage = storage ?? _dedicatedStorage,
-       _legacyStorage = legacyStorage ?? storage ?? _legacySharedStorage,
-       _useDevelopmentStorage =
-           useDevelopmentStorage ??
-           (storage == null && legacyStorage == null && !kReleaseMode),
-       _developmentDirectory = developmentDirectory;
+  CodexKeychainStorage({Directory? developmentDirectory})
+    : _developmentDirectory = developmentDirectory,
+      _legacyMigrationEnabled = kReleaseMode && developmentDirectory == null;
 
-  static const _dedicatedStorage = FlutterSecureStorage(
+  final Directory? _developmentDirectory;
+  final bool _legacyMigrationEnabled;
+  Future<void>? _legacyMigrationFuture;
+
+  static const _migrationMarker =
+      '__codex_desk.keychain_migration.completed.v1';
+  static const _legacyKeys = <String>[
+    'codex_desk.history.encryption_key.v1',
+    'codex_desk.runtime.executable.v1',
+    'codex_desk.workspace.last_path.v1',
+    'codex_desk.workspace.additional_paths.v1',
+    'codex_desk.workspaces.v2',
+    'codex_desk.workspaces.pinned.v1',
+    'codex_desk.reasoning_effort.v1',
+    'codex_desk.model.selected.v1',
+    'codex_desk.approval_mode.v1',
+    'codex_desk.scheduled_tasks.v1',
+  ];
+  static const _legacyDedicatedStorage = FlutterSecureStorage(
     mOptions: MacOsOptions(
       accountName: 'com.yozoe.chatgpt.secure-storage',
       usesDataProtectionKeychain: false,
@@ -32,77 +43,90 @@ class CodexKeychainStorage {
     mOptions: MacOsOptions(usesDataProtectionKeychain: false),
   );
 
-  final FlutterSecureStorage _storage;
-  final FlutterSecureStorage _legacyStorage;
-  final bool _useDevelopmentStorage;
-  final Directory? _developmentDirectory;
+  static Future<void> _storageMutations = Future<void>.value();
 
-  static Future<void> _developmentMutations = Future<void>.value();
-
-  /// 读取专属服务的值；首次缺失时从旧服务迁移并保留原始值。
-  /// Reads a dedicated-service value; when absent, migrates it from the legacy service while retaining the original value.
+  /// Reads a value from the local storage file.
   Future<String?> read({required String key}) async {
-    if (_useDevelopmentStorage) {
-      return (await _readDevelopmentValues())[key];
+    var values = await _readValues();
+    if (_legacyMigrationEnabled && values[_migrationMarker] == null) {
+      await _ensureLegacyMigration();
+      values = await _readValues();
     }
-    final current = await _storage.read(key: key);
-    if (current != null) return current;
-    final legacy = await _legacyStorage.read(key: key);
-    if (legacy == null) return null;
-    await _storage.write(key: key, value: legacy);
-    return legacy;
+    return values[key];
   }
 
-  /// 将值写入 Codex Desk 专属 Keychain 服务。
-  /// Writes a value to the dedicated Codex Desk Keychain service.
+  /// Writes a value to the local storage file.
   Future<void> write({required String key, required String value}) {
-    if (_useDevelopmentStorage) {
-      return _mutateDevelopmentValues((values) => values[key] = value);
-    }
-    return _storage.write(key: key, value: value);
+    return _mutateValues((values) => values[key] = value);
   }
 
-  /// 从专属服务与旧服务删除值，避免用户清除设置后旧值再次迁移回来。
-  /// Deletes a value from both dedicated and legacy services so cleared settings cannot be migrated back.
+  /// Deletes a value from the local storage file.
   Future<void> delete({required String key}) async {
-    if (_useDevelopmentStorage) {
-      await _mutateDevelopmentValues((values) => values.remove(key));
-      return;
-    }
-    await _storage.delete(key: key);
-    await _legacyStorage.delete(key: key);
+    await _mutateValues((values) => values.remove(key));
   }
 
-  /// 开发存储只承载测试/Debug 配置，格式异常必须显式失败而不能静默覆盖。
-  /// Development storage holds only test/Debug configuration; malformed data fails rather than being silently overwritten.
-  Future<Map<String, String>> _readDevelopmentValues() async {
-    final file = _developmentFile();
+  /// Malformed data fails rather than being silently overwritten.
+  Future<Map<String, String>> _readValues() async {
+    final file = _storageFile();
     if (!await file.exists()) return <String, String>{};
     final decoded = jsonDecode(await file.readAsString());
     if (decoded is! Map || decoded['values'] is! Map) {
-      throw const FormatException('开发存储格式无效。');
+      throw const FormatException('本地存储格式无效。');
     }
     return (decoded['values'] as Map).map(
       (key, value) => MapEntry(key.toString(), value.toString()),
     );
   }
 
+  Future<void> _ensureLegacyMigration() {
+    final existing = _legacyMigrationFuture;
+    if (existing != null) return existing;
+    final migration = _migrateLegacyValues().catchError((_) {});
+    _legacyMigrationFuture = migration;
+    return migration;
+  }
+
+  /// Performs the one-time upgrade from the old Release Keychain service.
+  /// Existing installs may show one authorization prompt during this upgrade;
+  /// successful completion records a marker so later launches stay local-only.
+  Future<void> _migrateLegacyValues() async {
+    final values = await _readValues();
+    if (values[_migrationMarker] != null) return;
+    var migrationStatus = 'completed';
+    for (final key in _legacyKeys) {
+      if (values.containsKey(key)) continue;
+      try {
+        final legacy =
+            await _legacyDedicatedStorage.read(key: key) ??
+            await _legacySharedStorage.read(key: key);
+        if (legacy != null) values[key] = legacy;
+      } catch (_) {
+        // A denied or unavailable Keychain should not make local storage
+        // unusable or cause an authorization prompt on every read.
+        migrationStatus = 'skipped';
+        break;
+      }
+    }
+    values[_migrationMarker] = migrationStatus;
+    await _writeValues(values);
+  }
+
   /// 串行化读取—修改—写入序列，防止并发偏好更新互相覆盖。
   /// Serializes read-modify-write operations so concurrent preferences cannot overwrite each other.
-  Future<void> _mutateDevelopmentValues(
+  Future<void> _mutateValues(
     void Function(Map<String, String> values) mutation,
   ) {
-    final result = _developmentMutations.then((_) async {
-      final values = await _readDevelopmentValues();
+    final result = _storageMutations.then((_) async {
+      final values = await _readValues();
       mutation(values);
-      await _writeDevelopmentValues(values);
+      await _writeValues(values);
     });
-    _developmentMutations = result.catchError((Object _) {});
+    _storageMutations = result.catchError((Object _) {});
     return result;
   }
 
-  Future<void> _writeDevelopmentValues(Map<String, String> values) async {
-    final file = _developmentFile();
+  Future<void> _writeValues(Map<String, String> values) async {
+    final file = _storageFile();
     await file.parent.create(recursive: true);
     final temporary = File(
       '${file.path}.$pid.${DateTime.now().microsecondsSinceEpoch}.tmp',
@@ -118,9 +142,11 @@ class CodexKeychainStorage {
     }
   }
 
-  File _developmentFile() {
+  File _storageFile() {
     final directory =
         _developmentDirectory ?? AppStorageScope.defaultDirectory();
+    // Keep the existing filename so current local preferences survive the
+    // storage backend change.
     return File('${directory.path}/development-storage-v1.json');
   }
 }

@@ -114,22 +114,34 @@ class MainFlutterWindow: NSWindow {
       binaryMessenger: flutterViewController.engine.binaryMessenger
     )
     taskCompletionChannel.setMethodCallHandler { call, result in
-      guard let appDelegate = NSApp.delegate as? AppDelegate else {
-        result(FlutterError(
-          code: "app_delegate_unavailable",
-          message: "The application delegate is unavailable.",
-          details: nil
-        ))
-        return
-      }
       switch call.method {
       case "notifyTaskCompleted":
+        guard let appDelegate = NSApp.delegate as? AppDelegate else {
+          result(FlutterError(
+            code: "app_delegate_unavailable",
+            message: "The application delegate is unavailable.",
+            details: nil
+          ))
+          return
+        }
         appDelegate.notifyTaskCompleted { delivered in
           result(delivered)
         }
       case "setDockBadge":
         let arguments = call.arguments as? [String: Any]
-        appDelegate.setDockBadge(visible: arguments?["visible"] as? Bool ?? false)
+        let visible = arguments?["visible"] as? Bool ?? false
+        let count = arguments?["count"] as? Int ?? (visible ? 1 : 0)
+        // Update the application Dock tile directly instead of requiring an
+        // AppDelegate cast. This keeps the diagnostic button usable even when
+        // the host delegate is supplied by another Flutter embedding.
+        let update = {
+          DockBadge.apply(count: count)
+        }
+        if Thread.isMainThread {
+          update()
+        } else {
+          DispatchQueue.main.async(execute: update)
+        }
         result(nil)
       default:
         result(FlutterMethodNotImplemented)

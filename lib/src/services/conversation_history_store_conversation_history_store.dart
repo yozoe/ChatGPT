@@ -95,8 +95,8 @@ class ConversationHistoryStore {
     await temporary.rename(file.path);
   }
 
-  /// 使用存储在 Keychain 中的密钥将明文封装为 AES-GCM JSON。
-  /// Encrypts plaintext into an AES-GCM JSON envelope using the Keychain key.
+  /// 使用本地存储的密钥将明文封装为 AES-GCM JSON。
+  /// Encrypts plaintext into an AES-GCM JSON envelope using the local key.
   Future<String> _encrypt(String value) async {
     final algorithm = AesGcm.with256bits();
     final secretKey = SecretKey(await _readOrCreateEncryptionKey());
@@ -137,8 +137,8 @@ class ConversationHistoryStore {
     return utf8.decode(clearText);
   }
 
-  /// 从 Keychain 读取 256 位密钥，不存在时安全生成并保存。
-  /// Reads the 256-bit key from Keychain, generating and storing it when absent.
+  /// 从本地存储读取 256 位密钥，不存在时安全生成并保存。
+  /// Reads the 256-bit key from local storage, generating and storing it when absent.
   Future<List<int>> _readOrCreateEncryptionKey() async {
     final stored = await _secureStorage.read(key: _encryptionKey);
     if (stored != null && stored.isNotEmpty) return base64Decode(stored);

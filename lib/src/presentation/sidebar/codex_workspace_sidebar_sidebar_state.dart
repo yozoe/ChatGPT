@@ -944,35 +944,116 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
             Expanded(
               child: Ink(
                 key: const Key('workspace-picker-surface'),
-                decoration: BoxDecoration(
-                  color: workspaces.isEmpty
-                      ? palette.raised
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(10),
-                ),
+                decoration: BoxDecoration(color: Colors.transparent),
                 child: ClipRRect(
-                  borderRadius: BorderRadius.circular(9),
                   child: workspaces.isEmpty
                       ? InkWell(
                           key: const Key('sidebar-workspace-empty'),
                           onTap: controller.canCreateWorkspace
                               ? widget.onCreateWorkspace
                               : null,
-                          child: const Padding(
-                            padding: EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 14,
-                            ),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  Icons.create_new_folder_outlined,
-                                  size: 16,
+                          borderRadius: BorderRadius.circular(14),
+                          child: LayoutBuilder(
+                            builder: (context, constraints) {
+                              final minHeight = constraints.hasBoundedHeight
+                                  ? constraints.maxHeight
+                                  : 0.0;
+                              return SingleChildScrollView(
+                                child: ConstrainedBox(
+                                  constraints: BoxConstraints(
+                                    minHeight: minHeight,
+                                  ),
+                                  child: Center(
+                                    child: Container(
+                                      margin: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                      ),
+                                      padding: const EdgeInsets.fromLTRB(
+                                        18,
+                                        24,
+                                        18,
+                                        20,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: palette.module,
+                                        borderRadius: BorderRadius.circular(14),
+                                        border: Border.all(
+                                          color: palette.border,
+                                        ),
+                                      ),
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Container(
+                                            width: 48,
+                                            height: 48,
+                                            decoration: BoxDecoration(
+                                              color: palette.signalSelected,
+                                              shape: BoxShape.circle,
+                                            ),
+                                            child: Icon(
+                                              Icons.folder_open_outlined,
+                                              size: 24,
+                                              color: palette.signal,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 16),
+                                          Text(
+                                            '从一个工作区开始',
+                                            textAlign: TextAlign.center,
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .titleSmall
+                                                ?.copyWith(
+                                                  color: palette.trace,
+                                                  fontWeight: FontWeight.w700,
+                                                ),
+                                          ),
+                                          const SizedBox(height: 7),
+                                          Text(
+                                            '选择一个项目文件夹，开始运行 Codex 任务。',
+                                            textAlign: TextAlign.center,
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodySmall
+                                                ?.copyWith(
+                                                  color: palette.muted,
+                                                  height: 1.35,
+                                                ),
+                                          ),
+                                          const SizedBox(height: 18),
+                                          SizedBox(
+                                            width: double.infinity,
+                                            child: FilledButton.icon(
+                                              key: const Key(
+                                                'sidebar-first-workspace-create-button',
+                                              ),
+                                              onPressed:
+                                                  controller.canCreateWorkspace
+                                                  ? widget.onCreateWorkspace
+                                                  : null,
+                                              icon: const Icon(
+                                                Icons.add,
+                                                size: 16,
+                                              ),
+                                              label: const Text('新建第一个工作区'),
+                                              style: FilledButton.styleFrom(
+                                                minimumSize:
+                                                    const Size.fromHeight(36),
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 12,
+                                                    ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
                                 ),
-                                SizedBox(width: 9),
-                                Expanded(child: Text('新建第一个工作区')),
-                              ],
-                            ),
+                              );
+                            },
                           ),
                         )
                       : ListView.builder(
