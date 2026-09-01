@@ -659,8 +659,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     });
   }
 
-  /// 打开创建项目弹窗，并把主目录及附加目录保存为非活动项目。
-  /// Opens the create-project dialog and saves its primary and additional folders as an inactive project.
+  /// 打开创建项目弹窗，并将可选的源目录保存为非活动项目。
+  /// Opens the create-project dialog and saves optional source folders on an inactive project.
   Future<void> _createWorkspace() async {
     await showDialog<void>(
       context: context,
@@ -668,7 +668,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
       builder: (dialogContext) => CreateWorkspaceDialog(
         onCreate: (paths, name) async {
           final created = await _controller.createWorkspace(
-            paths.first,
+            paths.isEmpty ? null : paths.first,
             additionalPaths: paths.skip(1).toList(),
             name: name,
           );
@@ -783,9 +783,13 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                             key: ValueKey(
                               'workspace-profile-${workspace.primaryPath}',
                             ),
-                            path: workspace.primaryPath,
+                            path: workspace.isUnrooted
+                                ? null
+                                : workspace.primaryPath,
                             label: active ? '当前工作区' : '工作区',
-                            description: workspace.additionalPaths.isEmpty
+                            description: workspace.isUnrooted
+                                ? '未添加源文件夹'
+                                : workspace.additionalPaths.isEmpty
                                 ? '仅主目录'
                                 : '${workspace.additionalPaths.length} 个附加目录',
                             primary: active,
@@ -802,7 +806,9 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                                           'switch-workspace-${workspace.primaryPath}',
                                         ),
                                         onPressed:
-                                            controller.canChangePrimaryWorkspace
+                                            !workspace.isUnrooted &&
+                                                controller
+                                                    .canChangePrimaryWorkspace
                                             ? () => controller
                                                   .selectWorkspaceAndReconnect(
                                                     workspace.primaryPath,
@@ -936,13 +942,13 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
           overrideController: widget.controller,
           builder: (context, controller) {
             final currentPrimary = primary;
-            final additional = controller.workspaceConfigurations
+            final currentConfiguration = controller.workspaceConfigurations
                 .firstWhere(
                   (candidate) => candidate.primaryPath == currentPrimary,
                   orElse: () =>
                       WorkspaceConfiguration(primaryPath: currentPrimary),
-                )
-                .additionalPaths;
+                );
+            final additional = currentConfiguration.additionalPaths;
             final palette = YeknomPalette.of(context);
             return KeyedSubtree(
               // 保留旧的管理入口 key，便于嵌入方平滑迁移到新的编辑器。
@@ -1001,7 +1007,9 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
                         const SizedBox(height: 16),
                         Expanded(
                           child: WorkspaceSourcesCard(
-                            primary: currentPrimary,
+                            primary: currentConfiguration.isUnrooted
+                                ? null
+                                : currentPrimary,
                             additional: additional,
                             onRemovePrimary:
                                 controller.canChangePrimaryWorkspace

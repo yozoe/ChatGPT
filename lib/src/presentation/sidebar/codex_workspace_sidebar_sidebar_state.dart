@@ -757,6 +757,7 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
               _showWorkspaceActions(anchorContext, workspace),
           onEdit: (_) => _startNewConversationForWorkspace(workspacePath),
           canCreateTask:
+              !workspace.isUnrooted &&
               controller.canCreateThread &&
               (isActiveWorkspace || controller.canChangePrimaryWorkspace),
           expanded: _isWorkspaceExpanded(workspacePath),

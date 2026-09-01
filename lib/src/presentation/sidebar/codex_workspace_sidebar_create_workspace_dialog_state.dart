@@ -66,15 +66,9 @@ class CreateWorkspaceDialogState extends State<CreateWorkspaceDialog> {
     setState(() => _sourceDirectories.addAll(additions));
   }
 
-  /// 校验主目录及附加目录并创建工作区，成功后关闭弹窗。
-  /// Validates the primary and additional folders, creates the workspace, and closes the dialog on success.
+  /// 创建项目；源文件夹可稍后在项目编辑器中添加。
+  /// Creates the project; source folders can be added later in the editor.
   Future<void> _createProject() async {
-    if (_sourceDirectories.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('请先添加一个主目录。')));
-      return;
-    }
     setState(() => _creating = true);
     final created = await widget.onCreate(
       List.unmodifiable(_sourceDirectories),
@@ -140,7 +134,7 @@ class CreateWorkspaceDialogState extends State<CreateWorkspaceDialog> {
                 ),
                 const SizedBox(height: 25),
                 Text(
-                  '源文件夹',
+                  '源文件夹（可选）',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     fontSize: 16,
                     fontWeight: FontWeight.w700,

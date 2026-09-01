@@ -8163,6 +8163,72 @@ void main() {
   );
 
   test(
+    'creates a directory-free project and promotes its first source folder',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'codex-desk-unrooted-project-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final store = _FakeRuntimeConfigurationStore();
+      final controller = CodexController(
+        server: _FakeCodexAppServer(),
+        runtimeConfigurationStore: store,
+      );
+      await controller.waitForInitialConfiguration();
+
+      expect(await controller.createWorkspace(null, name: '无目录项目'), isTrue);
+
+      final unrooted = controller.workspaceConfigurations.single;
+      final unrootedPath = unrooted.primaryPath;
+      expect(unrooted.isUnrooted, isTrue);
+      expect(unrooted.additionalPaths, isEmpty);
+      expect(store.savedWorkspaces?.single.isUnrooted, isTrue);
+      await controller.toggleWorkspacePinned(unrootedPath);
+
+      await controller.addWorkspaceRootToWorkspace(
+        unrootedPath,
+        directory.path,
+      );
+
+      final promoted = controller.workspaceConfigurations.single;
+      expect(promoted.isUnrooted, isFalse);
+      expect(promoted.primaryPath, await directory.resolveSymbolicLinks());
+      expect(promoted.name, '无目录项目');
+      expect(controller.isWorkspacePinned(promoted.primaryPath), isTrue);
+      expect(store.savedPinnedWorkspaces, {promoted.primaryPath});
+      controller.dispose();
+    },
+  );
+
+  test(
+    'does not activate an unrooted project while restoring projects',
+    () async {
+      final unrootedPath = '${WorkspaceConfiguration.unrootedPathPrefix}saved';
+      final store = _FakeRuntimeConfigurationStore()
+        ..workspaces = [
+          WorkspaceConfiguration(
+            id: 'unrooted-project',
+            primaryPath: unrootedPath,
+            name: '无目录项目',
+          ),
+        ];
+      final server = _ManagedRuntimeFakeServer();
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: store,
+      );
+
+      await controller.connectRestoredWorkspace();
+
+      expect(controller.workspacePath, isNull);
+      expect(controller.workspaceConfigurations.single.isUnrooted, isTrue);
+      expect(store.savedWorkspace, isNull);
+      expect(server.startCalls, 0);
+      controller.dispose();
+    },
+  );
+
+  test(
     'switches projects while a turn runs and routes its completion to the owner',
     () async {
       final root = await Directory.systemTemp.createTemp(

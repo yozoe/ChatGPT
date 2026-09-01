@@ -1780,31 +1780,25 @@ class CodexController extends ChangeNotifier {
     await resumeThread(thread);
   }
 
-  /// 保存一个可切换项目，但不改变活动工作区、任务或运行时连接；首个路径为主目录，
-  /// 后续路径作为附加目录随项目保存。
+  /// 保存一个可切换项目，但不改变活动工作区、任务或运行时连接；源目录可选。
   /// Saves a switchable project without changing the active workspace, tasks, or runtime connection.
-  /// The first path is the primary directory; subsequent paths are saved as
-  /// additional directories for later tasks.
+  /// When supplied, the first path is the primary directory and subsequent
+  /// paths are saved as additional directories for later tasks.
   Future<bool> createWorkspace(
-    String path, {
+    String? path, {
     String name = '',
     List<String> additionalPaths = const [],
   }) async {
-    final normalized = path.trim();
-    if (normalized.isEmpty || _creatingWorkspace) return false;
+    final normalized = path?.trim() ?? '';
+    if (_creatingWorkspace) return false;
     _creatingWorkspace = true;
     if (!_disposed) notifyListeners();
     try {
-      final directory = Directory(normalized);
-      if (!await directory.exists()) {
-        lastError = '该项目目录不存在：$normalized';
-        return false;
-      }
-      final canonicalPath = await directory.resolveSymbolicLinks();
-      if (await _isSystemTemporaryDirectory(canonicalPath)) {
-        lastError = '系统临时目录不能作为项目，请选择实际项目文件夹。';
-        return false;
-      }
+      final projectId = _newWorkspaceProjectId();
+      final canonicalPath = normalized.isEmpty
+          ? '${WorkspaceConfiguration.unrootedPathPrefix}$projectId'
+          : await _canonicalProjectDirectory(normalized);
+      if (canonicalPath == null) return false;
 
       final canonicalAdditionalPaths = <String>[];
       for (final additionalPath in additionalPaths) {
@@ -1835,7 +1829,7 @@ class CodexController extends ChangeNotifier {
       WorkspaceConfiguration? previousConfiguration;
       String? newProjectId;
       if (existingIndex < 0) {
-        newProjectId = _newWorkspaceProjectId();
+        newProjectId = projectId;
         _workspaceConfigurations.add(
           WorkspaceConfiguration(
             id: newProjectId,
@@ -1897,6 +1891,21 @@ class CodexController extends ChangeNotifier {
       _creatingWorkspace = false;
       if (!_disposed) notifyListeners();
     }
+  }
+
+  /// Resolves a selected local project directory while enforcing project-path policy.
+  Future<String?> _canonicalProjectDirectory(String path) async {
+    final directory = Directory(path);
+    if (!await directory.exists()) {
+      lastError = '该项目目录不存在：$path';
+      return null;
+    }
+    final canonicalPath = await directory.resolveSymbolicLinks();
+    if (await _isSystemTemporaryDirectory(canonicalPath)) {
+      lastError = '系统临时目录不能作为项目，请选择实际项目文件夹。';
+      return null;
+    }
+    return canonicalPath;
   }
 
   /// 从工作区列表移除一个非当前记录；只删除本地偏好，不删除目录或历史缓存。
@@ -2070,6 +2079,27 @@ class CodexController extends ChangeNotifier {
     );
     if (index < 0) return;
     final configuration = _workspaceConfigurations[index];
+    if (configuration.isUnrooted) {
+      _workspaceConfigurations[index] = WorkspaceConfiguration(
+        id: configuration.id,
+        primaryPath: canonicalPath,
+        name: configuration.name,
+      );
+      final pinMoved = _pinnedWorkspacePaths.remove(primaryPath);
+      if (pinMoved) {
+        _pinnedWorkspacePaths.add(canonicalPath);
+      }
+      _workspaceTaskLists.remove(primaryPath);
+      _add(TimelineKind.system, '已添加项目主目录', canonicalPath);
+      notifyListeners();
+      await _saveWorkspaceConfigurations();
+      if (pinMoved) {
+        await _runtimeConfigurationStore.savePinnedWorkspaces(
+          _pinnedWorkspacePaths,
+        );
+      }
+      return;
+    }
     if (canonicalPath == primaryPath ||
         configuration.additionalPaths.contains(canonicalPath)) {
       return;
@@ -6946,11 +6976,18 @@ class CodexController extends ChangeNotifier {
     };
   }
 
-  /// 校验并规范化一个已保存工作区，过滤失效、重复或与主目录相同的附加路径。
+  /// 校验并规范化一个已保存项目，保留尚未关联本地目录的项目。
   /// Validates and canonicalizes a saved workspace, filtering missing, duplicate, or primary-matching additional paths.
   Future<WorkspaceConfiguration?> _restoreWorkspaceConfiguration(
     WorkspaceConfiguration stored,
   ) async {
+    if (stored.isUnrooted) {
+      return WorkspaceConfiguration(
+        id: stored.id ?? _newWorkspaceProjectId(),
+        primaryPath: stored.primaryPath,
+        name: stored.name,
+      );
+    }
     final primaryDirectory = Directory(stored.primaryPath);
     if (stored.primaryPath.isEmpty || !await primaryDirectory.exists()) {
       return null;
@@ -7039,8 +7076,11 @@ class CodexController extends ChangeNotifier {
       final legacyAdditional = await _runtimeConfigurationStore
           .readAdditionalWorkspaces();
       var activePath = workspacePath ?? restoredActivePath;
-      if (activePath == null && restoredConfigurations.isNotEmpty) {
-        activePath = restoredConfigurations.first.primaryPath;
+      final firstRootedWorkspace = restoredConfigurations
+          .where((workspace) => !workspace.isUnrooted)
+          .firstOrNull;
+      if (activePath == null && firstRootedWorkspace != null) {
+        activePath = firstRootedWorkspace.primaryPath;
         workspacePath = activePath;
         await _runtimeConfigurationStore.saveWorkspace(activePath);
         _add(TimelineKind.system, '已恢复可用工作区', activePath);

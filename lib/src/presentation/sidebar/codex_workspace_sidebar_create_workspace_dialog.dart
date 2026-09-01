@@ -6,9 +6,8 @@ import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart'
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_support.dart';
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_create_workspace_dialog_state.dart';
 
-/// Codex 风格的创建项目弹窗，支持选择或拖入一个主目录及多个附加目录。
-/// Codex-style project creation dialog accepting one primary folder and
-/// multiple additional folders from the native picker or desktop drop.
+/// Codex 风格的创建项目弹窗，源文件夹为可选项。
+/// Codex-style project creation dialog with optional source folders.
 class CreateWorkspaceDialog extends StatefulWidget {
   const CreateWorkspaceDialog({required this.onCreate});
 

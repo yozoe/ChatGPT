@@ -15,7 +15,7 @@ class WorkspaceSourcesCard extends StatelessWidget {
     required this.onAdd,
   });
 
-  final String primary;
+  final String? primary;
   final List<String> additional;
   final VoidCallback? onRemovePrimary;
   final Future<void> Function(String path) onRemoveAdditional;
@@ -37,11 +37,23 @@ class WorkspaceSourcesCard extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            WorkspaceSourceRow(
-              path: primary,
-              primary: true,
-              onRemove: onRemovePrimary,
-            ),
+            if (primary case final path?)
+              WorkspaceSourceRow(
+                path: path,
+                primary: true,
+                onRemove: onRemovePrimary,
+              )
+            else
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 26, vertical: 20),
+                child: Row(
+                  children: [
+                    Icon(Icons.folder_off_outlined, size: 18),
+                    SizedBox(width: 17),
+                    Text('尚未添加源文件夹'),
+                  ],
+                ),
+              ),
             for (final path in additional)
               WorkspaceSourceRow(
                 path: path,

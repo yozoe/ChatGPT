@@ -161,7 +161,7 @@ class ApprovalPanel extends StatelessWidget {
                         foregroundColor: palette.muted,
                         padding: const EdgeInsets.symmetric(
                           horizontal: 12,
-                          vertical: 8,
+                          vertical: 10,
                         ),
                         minimumSize: Size.zero,
                       ),
@@ -176,7 +176,7 @@ class ApprovalPanel extends StatelessWidget {
                         foregroundColor: palette.trace,
                         padding: const EdgeInsets.symmetric(
                           horizontal: 12,
-                          vertical: 8,
+                          vertical: 10,
                         ),
                         minimumSize: Size.zero,
                       ),

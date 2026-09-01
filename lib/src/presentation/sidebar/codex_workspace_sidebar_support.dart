@@ -29,6 +29,7 @@ enum PluginLibraryTab { plugins, skills }
 /// Identifies a retained timeline viewport within its owning workspace.
 /// 在所属项目范围内标识保留的时间线视口。
 String workspaceDirectoryName(String path) {
+  if (WorkspaceConfiguration.isUnrootedPath(path)) return '未命名项目';
   final normalized = path.endsWith(Platform.pathSeparator)
       ? path.substring(0, path.length - 1)
       : path;

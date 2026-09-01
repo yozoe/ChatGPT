@@ -1,6 +1,7 @@
-/// 一个可重复打开的 Codex Desk 工作区，由主目录和仅用于新任务的附加目录组成。
-/// A reopenable Codex Desk workspace composed of one primary directory and additional roots for new tasks.
+/// 一个可重复打开的 Codex Desk 项目；项目可暂时不关联本地目录。
+/// A reopenable Codex Desk project, which can temporarily have no local directory.
 class WorkspaceConfiguration {
+  static const unrootedPathPrefix = 'codex-desk://unrooted/';
   WorkspaceConfiguration({
     required this.primaryPath,
     List<String> additionalPaths = const [],
@@ -16,8 +17,14 @@ class WorkspaceConfiguration {
   final List<String> additionalPaths;
   final String? name;
 
-  /// 从持久化 JSON 中读取工作区；无效主目录会由调用方忽略。
-  /// Reads a persisted workspace from JSON; callers discard entries with invalid primary paths.
+  /// Whether this project has not yet been given a local source directory.
+  bool get isUnrooted => primaryPath.startsWith(unrootedPathPrefix);
+
+  static bool isUnrootedPath(String path) =>
+      path.startsWith(unrootedPathPrefix);
+
+  /// 从持久化 JSON 中读取项目；调用方会忽略无效的本地目录。
+  /// Reads a persisted project; callers discard invalid local directory entries.
   factory WorkspaceConfiguration.fromJson(Map<Object?, Object?> json) {
     final primaryPath = json['primaryPath']?.toString().trim() ?? '';
     final additional = json['additionalPaths'];

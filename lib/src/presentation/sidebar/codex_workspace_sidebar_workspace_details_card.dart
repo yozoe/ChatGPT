@@ -29,7 +29,9 @@ class WorkspaceDetailsCard extends StatelessWidget {
       < 0 => '任务数不可用',
       final count => '$count 个任务',
     };
-    final paths = [workspace.primaryPath, ...workspace.additionalPaths];
+    final paths = workspace.isUnrooted
+        ? workspace.additionalPaths
+        : [workspace.primaryPath, ...workspace.additionalPaths];
     return Material(
       color: palette.module,
       elevation: 14,
@@ -78,6 +80,11 @@ class WorkspaceDetailsCard extends StatelessWidget {
               icon: Icons.chat_bubble_outline,
               label: taskCountLabel,
             ),
+            if (workspace.isUnrooted)
+              const WorkspaceDetailsRow(
+                icon: Icons.folder_off_outlined,
+                label: '未添加源文件夹',
+              ),
             Divider(height: 1, color: palette.border),
             for (final path in paths)
               WorkspaceDetailsRow(
