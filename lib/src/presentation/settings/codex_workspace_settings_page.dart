@@ -15,7 +15,6 @@ class SettingsPage extends ConsumerStatefulWidget {
     required this.onAddMarketplace,
     required this.onManageMarketplaces,
     required this.onShowAccount,
-    required this.onShowBrowser,
     required this.onOpenConversation,
     super.key,
   });
@@ -32,7 +31,6 @@ class SettingsPage extends ConsumerStatefulWidget {
   final Future<void> Function() onAddMarketplace;
   final Future<void> Function() onManageMarketplaces;
   final Future<void> Function() onShowAccount;
-  final VoidCallback onShowBrowser;
   final VoidCallback onOpenConversation;
 
   @override

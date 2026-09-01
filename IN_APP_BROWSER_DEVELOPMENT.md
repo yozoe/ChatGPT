@@ -2,9 +2,9 @@
 
 ## 状态
 
-本文档定义 Codex Desk 的 macOS 内置浏览器开发范围与验收标准。阶段 0 技术验证和阶段 1 的最小浏览器工作区已交付：设置中的“集成 > 浏览器”会切换到独立的 macOS 浏览器工作区，提供地址栏、前进、后退、刷新/停止和外部打开；返回会话时保留 WebView 生命周期。偏好、历史、下载和统一 Markdown 链接路由仍在后续阶段开发。当前尚未实现的网页链接继续通过系统默认浏览器打开。
+本文档定义 Codex Desk 的 macOS 内置浏览器开发范围与验收标准。阶段 0 的 WebView 技术验证已完成，并保留了独立浏览器工作区承载层；设置中的“集成 > 浏览器”只管理能力说明和权限策略，不手动创建 WebView。浏览器应由智能体在任务执行中按需唤起，但当前 App Server 尚未提供公开 browser tool 协议，因此自动调用、偏好、历史、下载和统一 Markdown 链接路由仍在后续阶段开发。
 
-首个交付目标是一个由用户主动打开、在 Codex Desk 内显示网页的浏览器工作区。它不会在第一阶段替代 Chrome，也不会让 Codex 自动操控网页。
+首个交付目标是一个由智能体在任务执行中按需唤起、在 Codex Desk 内显示网页的浏览器工作区。设置页只管理能力，不承担手动打开入口；它不会替代 Chrome，也不会在用户未确认时执行高风险网页操作。
 
 ## 目标与边界
 
@@ -29,7 +29,7 @@
 
 | 位置 | 当前行为 | 对浏览器开发的影响 |
 | --- | --- | --- |
-| `lib/src/presentation/settings/codex_workspace_settings_page_state.dart` | “浏览器”切换到独立浏览器工作区 | 后续接入 Riverpod 偏好、历史和下载设置。 |
+| `lib/src/presentation/settings/codex_workspace_settings_page_state.dart` | “浏览器”仅显示智能体调用状态和能力边界 | 后续接入 Riverpod 偏好、历史和下载设置。 |
 | `url_launcher` | 帮助、认证、Markdown 等链接使用 `LaunchMode.externalApplication` | 需收敛为统一的 `BrowserLinkOpener`，再按偏好决定内部或外部打开。 |
 | `macos/Runner/Release.entitlements` | 声明网络客户端 entitlement，但应用未启用 App Sandbox | 加载远程网页不需新增网络 entitlement；下载目录选择不是操作系统强制的权限边界，必须由应用下载服务校验和限制。 |
 | Application Support 与 Riverpod | 已用于偏好与加密对话历史 | 浏览器偏好、历史、下载元数据须有独立 store 与 Provider，不能混入对话缓存。 |
@@ -119,9 +119,9 @@ DNS 结果可能在导航后变化，WebView 的主机名分类无法可靠防�
 
 验证 WKWebView 可在 Flutter macOS 窗口中创建、获得键盘焦点、加载测试页、处理重定向/新窗口/加载失败、返回导航状态，并能在退出或标签关闭后释放。输出依赖选型与最小集成测试结论。
 
-### 阶段 1：可用的内置浏览器
+### 阶段 1：智能体唤起的内置浏览器
 
-交付设置总开关和链接位置偏好、单标签浏览器工作区、地址栏与基本导航，以及统一链接路由。验收：关闭功能或选择外部打开时，不会创建 WebView；选内置打开时，HTTP/HTTPS 链接在当前应用加载；会话与运行中任务不受切换影响。
+交付 App Server/browser tool 协议适配、设置总开关和链接位置偏好、单标签浏览器工作区、地址栏与基本导航，以及统一链接路由。验收：设置页不直接创建 WebView；仅当智能体发出受支持的浏览器请求且功能已启用时，才在当前应用加载 HTTP/HTTPS 页面；会话与运行中任务不受切换影响。
 
 ### 阶段 2：持久化与下载
 

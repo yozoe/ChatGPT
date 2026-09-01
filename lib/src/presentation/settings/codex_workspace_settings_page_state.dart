@@ -57,6 +57,47 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
     unawaited(widget.controller.refreshArchivedThreads());
   }
 
+  /// 打开浏览器能力说明；浏览器工作区只能由智能体协议按需唤起。
+  /// Opens browser capability settings; the browser workspace can only be invoked on demand by the agent protocol.
+  void _selectBrowser() => _select('浏览器');
+
+  /// 构建只管理策略、不手动创建 WebView 的浏览器设置内容。
+  /// Builds browser settings that manage policy without manually creating a WebView.
+  Widget _browserContent() {
+    final palette = YeknomPalette.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(72, 46, 72, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '浏览器',
+            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+              fontSize: 38,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '浏览器由智能体在任务执行中按需调用。此页面仅用于配置能力与权限。',
+            style: TextStyle(color: palette.muted),
+          ),
+          const SizedBox(height: 24),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.auto_awesome_outlined),
+              title: const Text('智能体浏览器调用'),
+              subtitle: const Text(
+                '当前 App Server 尚未提供 browser tool 协议。接入协议后，智能体发起浏览请求时会自动打开浏览器工作区。',
+              ),
+              trailing: const Chip(label: Text('等待协议接入')),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _selectPlugins() {
     setState(() => _section = '插件');
     unawaited(
@@ -1586,7 +1627,8 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                         _navItem(
                           label: '浏览器',
                           icon: Icons.web_outlined,
-                          onTap: widget.onShowBrowser,
+                          selected: _section == '浏览器',
+                          onTap: _selectBrowser,
                         ),
                         _sectionLabel('编码'),
                         _navItem(
@@ -1637,6 +1679,8 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
               ? _hooksContent()
               : _section == '插件'
               ? _pluginsContent()
+              : _section == '浏览器'
+              ? _browserContent()
               : _section == '已归档的聊天'
               ? _archivedContent()
               : Center(child: Text('“$_section”设置即将推出')),

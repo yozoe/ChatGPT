@@ -2147,16 +2147,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     setState(() => _destination = WorkspaceDestination.settings);
   }
 
-  /// 打开独立浏览器工作区并保留其 WebView 生命周期。
-  /// Opens the dedicated browser workspace while retaining its WebView lifecycle.
-  void _showBrowser() {
-    if (!mounted) return;
-    setState(() {
-      _browserPageMounted = true;
-      _destination = WorkspaceDestination.browser;
-    });
-  }
-
   /// Opens the scheduling editor from the scheduled-task workspace.
   Future<void> _showScheduledTaskComposer([String? initialPrompt]) async {
     await showDialog<void>(
@@ -2349,7 +2339,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
               onAddMarketplace: _showAddMarketplace,
               onManageMarketplaces: _showMarketplaces,
               onShowAccount: _showAccount,
-              onShowBrowser: _showBrowser,
               onOpenConversation: _showConversation,
             ),
           ),
