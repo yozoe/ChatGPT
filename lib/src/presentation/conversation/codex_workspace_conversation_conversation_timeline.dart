@@ -108,6 +108,8 @@ Future<void> _revealConversationTimelineItem({
   );
 }
 
+/// 渲染主会话时间线，并负责滚动定位、实时活动和附件预览的组合布局。
+/// Renders the main conversation timeline and composes scrolling, live activity, and attachment previews.
 class ConversationTimeline extends StatelessWidget {
   const ConversationTimeline({
     required this.pageKey,

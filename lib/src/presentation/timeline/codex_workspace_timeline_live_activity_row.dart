@@ -9,6 +9,8 @@ import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_suppo
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_collaboration_activity_badge.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_live_activity_shimmer.dart';
 
+/// 渲染单项实时运行状态，并按活动类型提供子线程入口或进度动画。
+/// Renders one live activity with a subthread affordance or progress animation by activity type.
 class LiveActivityRow extends StatelessWidget {
   const LiveActivityRow({required this.activity, this.onOpenSubagent});
 

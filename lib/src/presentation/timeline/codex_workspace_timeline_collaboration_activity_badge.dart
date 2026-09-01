@@ -8,6 +8,8 @@ import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.d
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_support.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_subagent_avatar.dart';
 
+/// 以头像和名称显示一个子智能体协作活动的紧凑徽标。
+/// Compact avatar-and-label badge for one subagent collaboration activity.
 class CollaborationActivityBadge extends StatelessWidget {
   const CollaborationActivityBadge({
     required this.label,

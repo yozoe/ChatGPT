@@ -60,6 +60,8 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
     }
   }
 
+  /// 在 WebView 控制器就绪后加载新的智能体目标，并过滤不安全地址。
+  /// Loads a new agent-provided target once the WebView is ready, after safety validation.
   Future<void> _loadInitialUrlIfReady() async {
     final value = widget.initialUrl?.trim();
     if (value == null || value.isEmpty || value == _requestedInitialUrl) {

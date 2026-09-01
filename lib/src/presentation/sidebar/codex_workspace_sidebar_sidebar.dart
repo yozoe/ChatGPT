@@ -6,6 +6,8 @@ import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart'
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_support.dart';
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_sidebar_state.dart';
 
+/// Codex 风格左侧导航栏，承载工作区、任务列表和常用入口。
+/// Codex-style left navigation containing workspaces, tasks, and primary actions.
 class Sidebar extends StatefulWidget {
   const Sidebar({
     required this.width,

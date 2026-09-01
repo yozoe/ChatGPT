@@ -69,6 +69,8 @@ class AgentsPage extends StatelessWidget {
     );
   }
 
+  /// 合并已持久化活动与当前实时活动，并按最近创建时间排序。
+  /// Merges persisted and live activities, then sorts them by creation time.
   List<
     ({
       String threadId,

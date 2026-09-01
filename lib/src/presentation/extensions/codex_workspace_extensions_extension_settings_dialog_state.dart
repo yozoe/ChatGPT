@@ -14,6 +14,8 @@ import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_e
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_add_mcp_server_dialog.dart';
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_plugin_glyph.dart';
 
+/// 管理扩展设置页签、搜索条件和按需刷新的短生命周期 UI 状态。
+/// Owns tab selection, search filtering, and on-demand refresh state for extension settings.
 class ExtensionSettingsDialogState extends State<ExtensionSettingsDialog> {
   final TextEditingController _search = TextEditingController();
   ExtensionSettingsTab _tab = ExtensionSettingsTab.plugins;
@@ -24,6 +26,8 @@ class ExtensionSettingsDialogState extends State<ExtensionSettingsDialog> {
     super.dispose();
   }
 
+  /// 切换扩展类别时清空搜索，并只刷新当前选中的数据源。
+  /// Switches extension categories, clears search, and refreshes the selected data source.
   void _select(ExtensionSettingsTab tab) {
     if (_tab == tab) return;
     setState(() {

@@ -9,6 +9,8 @@ import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart'
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_support.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_elicitation_panel.dart';
 
+/// 管理动态 elicitation 表单的初始值、触摸状态和提交载荷。
+/// Manages dynamic elicitation form defaults, touched state, validation, and submission payloads.
 class ElicitationPanelState extends State<ElicitationPanel> {
   final _formKey = GlobalKey<FormState>();
   final Map<String, TextEditingController> _textControllers = {};
@@ -39,6 +41,8 @@ class ElicitationPanelState extends State<ElicitationPanel> {
     super.dispose();
   }
 
+  /// 将表单控件转换为 MCP elicitation 接口需要的内容对象。
+  /// Converts form controls into the content object required by MCP elicitation.
   JsonMap _content() {
     final content = <String, dynamic>{};
     for (final field in widget.elicitation.fields) {
@@ -63,6 +67,8 @@ class ElicitationPanelState extends State<ElicitationPanel> {
     return content;
   }
 
+  /// 校验动态字段后提交回答，并由控制器处理请求生命周期。
+  /// Validates dynamic fields and submits the answer through the controller.
   Future<void> _accept() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
     await widget.onRespond(action: 'accept', content: _content());

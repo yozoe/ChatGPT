@@ -15,6 +15,8 @@ import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_sidebar
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_sidebar.dart';
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_sidebar_task_list_item.dart';
 
+/// 管理侧栏展开动画、批量任务选择、搜索和悬停详情等交互状态。
+/// Owns sidebar expansion animations, batch selection, search, and hover-detail interactions.
 class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
   bool _batchMode = false;
   String? _batchWorkspacePath;
@@ -60,6 +62,8 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
     });
   }
 
+  /// 切换项目任务列表的展开状态，并保留对应的动画控制器。
+  /// Toggles a workspace task list while retaining its animation controller.
   void _toggleWorkspaceExpanded(String path) {
     final controller = _workspaceExpansionControllers.putIfAbsent(path, () {
       final animationController = AnimationController(
@@ -290,6 +294,8 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
 
   /// 将当前选中的活跃任务提交给带二次确认的批量归档操作。
   /// Sends selected active tasks to the confirmation-backed bulk archive action.
+  /// 批量归档选中的任务，完成后清空选择并刷新列表状态。
+  /// Archives selected tasks as one operation, then clears selection and refreshes list state.
   Future<void> _archiveSelectedThreads(CodexController controller) async {
     final selected = controller.threads
         .where((thread) => _selectedThreadIds.contains(thread.id))

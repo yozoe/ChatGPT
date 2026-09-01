@@ -9,6 +9,8 @@ import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_support.dart';
 
+/// 展示 App Server 的待审批请求，并提供一次性或持久化的允许/拒绝操作。
+/// Presents an App Server approval request with allow-once, allow-similar, and decline actions.
 class ApprovalPanel extends StatelessWidget {
   const ApprovalPanel({
     required this.approval,

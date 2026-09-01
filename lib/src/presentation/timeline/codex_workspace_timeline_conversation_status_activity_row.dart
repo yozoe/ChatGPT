@@ -8,6 +8,8 @@ import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.d
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_support.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_collaboration_activity_badge.dart';
 
+/// 将持久化的协作、网络重试等状态条目渲染为时间线中的一行。
+/// Renders persisted collaboration and network-retry status entries as one timeline row.
 class ConversationStatusActivityRow extends StatelessWidget {
   const ConversationStatusActivityRow({
     required this.entry,

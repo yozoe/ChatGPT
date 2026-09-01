@@ -54,6 +54,8 @@ Future<bool> isBrowserWebUriSafe(Uri uri) async {
   }
 }
 
+/// 判断解析后的 IP 是否属于本机、私网、链路本地或多播地址。
+/// Reports whether a resolved IP is loopback, private, link-local, or multicast.
 bool _isBlockedAddress(InternetAddress address) {
   if (address.type == InternetAddressType.IPv4) {
     final octets = address.rawAddress;

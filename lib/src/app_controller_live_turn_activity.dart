@@ -31,6 +31,8 @@ import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'app_controller_support.dart';
 
+/// 描述当前 turn 中尚未完成的一项实时活动，可来自 App Server 或外部桥接。
+/// Describes an unfinished activity in the current turn from App Server or an external bridge.
 class LiveTurnActivity {
   const LiveTurnActivity({
     required this.itemId,

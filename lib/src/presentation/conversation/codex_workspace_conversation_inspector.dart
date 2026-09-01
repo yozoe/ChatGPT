@@ -13,6 +13,8 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_inspector_file_changes_list.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_inspector_subagents_summary.dart';
 
+/// 右侧环境检查器，集中呈现审批、文件变更和子智能体摘要。
+/// Right-side environment inspector for approvals, file changes, and subagent summaries.
 class Inspector extends StatelessWidget {
   const Inspector({
     required this.width,

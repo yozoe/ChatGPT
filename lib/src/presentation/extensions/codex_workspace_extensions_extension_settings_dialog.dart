@@ -7,6 +7,8 @@ import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart'
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_support.dart';
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_extension_settings_dialog_state.dart';
 
+/// 提供插件、MCP 服务器和技能的统一扩展管理入口。
+/// Provides a unified management entry point for plugins, MCP servers, and skills.
 class ExtensionSettingsDialog extends StatefulWidget {
   const ExtensionSettingsDialog({
     required this.controller,

@@ -8,6 +8,8 @@ import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_support.dart';
 
+/// 为时间线分页计算提供稳定的条目快照和滚动元数据。
+/// Holds a stable timeline snapshot and scroll metadata used by timeline paging.
 class TimelinePageData {
   const TimelinePageData({
     required this.entries,

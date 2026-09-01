@@ -175,6 +175,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     }
   }
 
+  /// 处理 Dock 激活回调，只确认当前会话的完成提醒。
+  /// Handles Dock activation while acknowledging only the currently visible thread.
   void _handleDockActivation() {
     final threadId = _controller.activeThreadId;
     if (!mounted ||
@@ -186,7 +188,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     unawaited(_controller.acknowledgeCompletedThread(threadId));
   }
 
-  /// Opens the embedded browser when the agent emits a supported browser request.
+  /// 智能体发出受支持的浏览器请求后切换到保活的内置浏览器工作区。
+  /// Opens the retained embedded browser workspace for a supported agent request.
   void _handleBrowserInvocation(String url) {
     if (!mounted || !_controller.browserEnabled) return;
     setState(() {

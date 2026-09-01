@@ -106,6 +106,8 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
     );
   }
 
+  /// 进入扩展管理页并并行刷新插件、MCP 与技能目录。
+  /// Opens extension management and refreshes plugins, MCP servers, and skills in parallel.
   void _selectPlugins() {
     setState(() => _section = '插件');
     unawaited(
@@ -117,6 +119,8 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
     );
   }
 
+  /// 将原插件对话框嵌入设置内容区，保持两种入口共享同一管理界面。
+  /// Embeds the existing extension dialog in settings so both entry points share one UI.
   Widget _pluginsContent() => LayoutBuilder(
     builder: (context, constraints) {
       final horizontalPadding = constraints.maxWidth < 620 ? 24.0 : 72.0;

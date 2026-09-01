@@ -9,6 +9,8 @@ import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart'
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_support.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_inspector_diff_expansion_tile.dart';
 
+/// 在检查器中展示本轮完整 Diff 及各文件变更的可展开列表。
+/// Displays the turn-wide diff and per-file changes as expandable inspector rows.
 class InspectorFileChangesList extends StatelessWidget {
   const InspectorFileChangesList({
     required this.changes,

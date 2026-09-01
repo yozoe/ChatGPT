@@ -10,6 +10,8 @@ import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_subag
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_support.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_subagent_thread_error.dart';
 
+/// 展示选中子智能体的只读时间线，避免打断主会话的编辑状态。
+/// Shows a read-only selected-subagent timeline without disturbing the main conversation draft.
 class SubagentThreadPanel extends StatelessWidget {
   const SubagentThreadPanel({
     required this.controller,
