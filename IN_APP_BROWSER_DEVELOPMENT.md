@@ -2,7 +2,7 @@
 
 ## 状态
 
-本文档定义 Codex Desk 的 macOS 内置浏览器开发范围与验收标准。阶段 0 技术验证和阶段 1 的最小浏览器工作区已交付：设置中的“集成 > 浏览器”可以创建 macOS WebView，提供地址栏、前进、后退、刷新/停止和外部打开；偏好、历史、下载和统一 Markdown 链接路由仍在后续阶段开发。当前尚未实现的网页链接继续通过系统默认浏览器打开。
+本文档定义 Codex Desk 的 macOS 内置浏览器开发范围与验收标准。阶段 0 技术验证和阶段 1 的最小浏览器工作区已交付：设置中的“集成 > 浏览器”会切换到独立的 macOS 浏览器工作区，提供地址栏、前进、后退、刷新/停止和外部打开；返回会话时保留 WebView 生命周期。偏好、历史、下载和统一 Markdown 链接路由仍在后续阶段开发。当前尚未实现的网页链接继续通过系统默认浏览器打开。
 
 首个交付目标是一个由用户主动打开、在 Codex Desk 内显示网页的浏览器工作区。它不会在第一阶段替代 Chrome，也不会让 Codex 自动操控网页。
 
@@ -29,7 +29,7 @@
 
 | 位置 | 当前行为 | 对浏览器开发的影响 |
 | --- | --- | --- |
-| `lib/src/presentation/settings/codex_workspace_settings_page_state.dart` | “浏览器”已打开最小工作区 | 后续接入 Riverpod 偏好、历史和下载设置。 |
+| `lib/src/presentation/settings/codex_workspace_settings_page_state.dart` | “浏览器”切换到独立浏览器工作区 | 后续接入 Riverpod 偏好、历史和下载设置。 |
 | `url_launcher` | 帮助、认证、Markdown 等链接使用 `LaunchMode.externalApplication` | 需收敛为统一的 `BrowserLinkOpener`，再按偏好决定内部或外部打开。 |
 | `macos/Runner/Release.entitlements` | 声明网络客户端 entitlement，但应用未启用 App Sandbox | 加载远程网页不需新增网络 entitlement；下载目录选择不是操作系统强制的权限边界，必须由应用下载服务校验和限制。 |
 | Application Support 与 Riverpod | 已用于偏好与加密对话历史 | 浏览器偏好、历史、下载元数据须有独立 store 与 Provider，不能混入对话缓存。 |

@@ -1,7 +1,6 @@
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
 import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_page.dart';
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_extension_settings_dialog.dart';
-import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_workspace_page.dart';
 import 'package:chatgpt/src/services/dock_icon_service.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
@@ -68,14 +67,6 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
       ]),
     );
   }
-
-  /// 打开实验性内置浏览器，保留设置导航和其余页面状态。
-  /// Opens the experimental embedded browser while retaining settings navigation and other page state.
-  void _selectBrowser() => _select('浏览器');
-
-  /// 构建实验性内置浏览器的设置工作区内容。
-  /// Builds the settings-workspace content for the experimental embedded browser.
-  Widget _browserContent() => const BrowserWorkspacePage();
 
   Widget _pluginsContent() => LayoutBuilder(
     builder: (context, constraints) {
@@ -1595,8 +1586,7 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                         _navItem(
                           label: '浏览器',
                           icon: Icons.web_outlined,
-                          selected: _section == '浏览器',
-                          onTap: _selectBrowser,
+                          onTap: widget.onShowBrowser,
                         ),
                         _sectionLabel('编码'),
                         _navItem(
@@ -1647,8 +1637,6 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
               ? _hooksContent()
               : _section == '插件'
               ? _pluginsContent()
-              : _section == '浏览器'
-              ? _browserContent()
               : _section == '已归档的聊天'
               ? _archivedContent()
               : Center(child: Text('“$_section”设置即将推出')),

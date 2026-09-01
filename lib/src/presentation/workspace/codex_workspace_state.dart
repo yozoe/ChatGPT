@@ -6,6 +6,7 @@ import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.dart';
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
 import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_page.dart';
+import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_workspace_page.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
 import 'package:flutter/scheduler.dart';
 
@@ -2127,6 +2128,11 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     setState(() => _destination = WorkspaceDestination.settings);
   }
 
+  /// 打开独立浏览器工作区并保留其 WebView 生命周期。
+  /// Opens the dedicated browser workspace while retaining its WebView lifecycle.
+  void _showBrowser() =>
+      setState(() => _destination = WorkspaceDestination.browser);
+
   /// Opens the scheduling editor from the scheduled-task workspace.
   Future<void> _showScheduledTaskComposer([String? initialPrompt]) async {
     await showDialog<void>(
@@ -2319,6 +2325,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
               onAddMarketplace: _showAddMarketplace,
               onManageMarketplaces: _showMarketplaces,
               onShowAccount: _showAccount,
+              onShowBrowser: _showBrowser,
               onOpenConversation: _showConversation,
             ),
           ),
@@ -2411,210 +2418,248 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                   }),
                 ),
                 Expanded(
-                  child: _destination == WorkspaceDestination.scheduledTasks
-                      ? ScheduledTasksPage(
-                          controller: controller,
-                          onCreate: _showScheduledTaskComposer,
-                        )
-                      : _destination == WorkspaceDestination.plugins
-                      ? PluginsPage(
-                          controller: controller,
-                          onAddMarketplace: _showAddMarketplace,
-                          onOpenSettings: _showPlugins,
-                          onCreatePlugin: _createPluginWithCodex,
-                          onRecordSkill: _recordSkillWithCodex,
-                        )
-                      : _destination == WorkspaceDestination.pullRequests
-                      ? PullRequestsPage(
-                          controller: controller,
-                          onOpenGitProject: _showGitProject,
-                          onAskCodex: _askCodexAboutGitHubCli,
-                        )
-                      : Column(
-                          children: [
-                            TopBar(
-                              key: const Key('workbench-column-topbar'),
-                              controller: controller,
-                              themeMode: widget.themeMode,
-                              themePreset: widget.themePreset,
-                              onThemeModeChanged: widget.onThemeModeChanged,
-                              onThemePresetChanged: widget.onThemePresetChanged,
-                              onChooseWorkspace: _showWorkspaceDirectories,
-                              onAccount: _showAccount,
-                              onCodexConfiguration: _showCodexConfiguration,
-                              onPlugins: _showPlugins,
-                              showIdentity: false,
-                              showControls: true,
-                              showTaskContext: true,
-                              onShowFileChanges: () =>
-                                  _showCodeReview(CodeReviewSource.latestTurn),
-                            ),
-                            const Divider(height: 1),
-                            Expanded(
-                              child: Row(
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Offstage(
+                        offstage: _destination != WorkspaceDestination.browser,
+                        child: BrowserWorkspacePage(
+                          onOpenConversation: _showConversation,
+                        ),
+                      ),
+                      if (_destination != WorkspaceDestination.browser)
+                        _destination == WorkspaceDestination.scheduledTasks
+                            ? ScheduledTasksPage(
+                                controller: controller,
+                                onCreate: _showScheduledTaskComposer,
+                              )
+                            : _destination == WorkspaceDestination.plugins
+                            ? PluginsPage(
+                                controller: controller,
+                                onAddMarketplace: _showAddMarketplace,
+                                onOpenSettings: _showPlugins,
+                                onCreatePlugin: _createPluginWithCodex,
+                                onRecordSkill: _recordSkillWithCodex,
+                              )
+                            : _destination == WorkspaceDestination.pullRequests
+                            ? PullRequestsPage(
+                                controller: controller,
+                                onOpenGitProject: _showGitProject,
+                                onAskCodex: _askCodexAboutGitHubCli,
+                              )
+                            : Column(
                                 children: [
-                                  Expanded(
-                                    child: Stack(
-                                      fit: StackFit.expand,
-                                      children: [
-                                        ConversationPane(
-                                          controller: controller,
-                                          composer: _composer,
-                                          recordSkillRequest:
-                                              _recordSkillRequest,
-                                          timelinePages: _timelinePages,
-                                          timelineScrollControllers:
-                                              _timelineScrollControllers,
-                                          activeTimelinePageKey:
-                                              _displayedThreadKey,
-                                          threadHistoryLoading:
-                                              _threadHistoryLoading,
-                                          fileChangeSummaryExpanded: (pageKey) =>
-                                              _fileChangeSummaryExpanded[pageKey] ??
-                                              false,
-                                          onFileChangeSummaryExpandedChanged:
-                                              (pageKey, expanded) {
-                                                setState(() {
-                                                  _fileChangeSummaryExpanded[pageKey] =
-                                                      expanded;
-                                                });
-                                              },
-                                          activityExpanded: (pageKey, activityId) =>
-                                              _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
-                                              false,
-                                          onTimelineMetricsChanged:
-                                              _handleTimelineMetricsChanged,
-                                          onTimelineUserScrollDirection:
-                                              _handleTimelineUserScrollDirection,
-                                          showScrollToBottom:
-                                              _timelineIsAboveLatest[_displayedThreadKey] ??
-                                              false,
-                                          onScrollToBottom:
-                                              _scrollTimelineToBottom,
-                                          onActivityExpandedChanged:
-                                              (pageKey, activityId, expanded) {
-                                                setState(() {
-                                                  _activityListExpanded['${pageKey.storageKey}/$activityId'] =
-                                                      expanded;
-                                                });
-                                              },
-                                          onSend: _send,
-                                          onQueueSteer: _queueDirection,
-                                          onReview: () => _showCodeReview(
-                                            CodeReviewSource.latestTurn,
-                                          ),
-                                          onUndo: _undoFileChanges,
-                                          onOpenSubagent:
-                                              _openSubagentInspector,
-                                          onSubmitUserMessageEdit:
-                                              _submitEditedUserMessage,
-                                        ),
-                                        if (_reviewOpen && !reviewInline)
-                                          CodeReviewPanel(
-                                            key: _reviewPanelKey,
-                                            controller: controller,
-                                            source: _reviewSource,
-                                            compact: true,
-                                            onSourceChanged:
-                                                _changeCodeReviewSource,
-                                            onClose: _closeCodeReview,
-                                          ),
-                                        if (_selectedSubagentThreadId != null &&
-                                            (compact ||
-                                                (_reviewOpen && !reviewInline)))
-                                          SubagentThreadPanel(
-                                            controller: controller,
-                                            threadId:
-                                                _selectedSubagentThreadId!,
-                                            fallbackTitle:
-                                                _selectedSubagentTitle,
-                                            onOpenSubagent:
-                                                _openSubagentInspector,
-                                            onClose: _closeSubagentInspector,
-                                          ),
-                                      ],
+                                  TopBar(
+                                    key: const Key('workbench-column-topbar'),
+                                    controller: controller,
+                                    themeMode: widget.themeMode,
+                                    themePreset: widget.themePreset,
+                                    onThemeModeChanged:
+                                        widget.onThemeModeChanged,
+                                    onThemePresetChanged:
+                                        widget.onThemePresetChanged,
+                                    onChooseWorkspace:
+                                        _showWorkspaceDirectories,
+                                    onAccount: _showAccount,
+                                    onCodexConfiguration:
+                                        _showCodexConfiguration,
+                                    onPlugins: _showPlugins,
+                                    showIdentity: false,
+                                    showControls: true,
+                                    showTaskContext: true,
+                                    onShowFileChanges: () => _showCodeReview(
+                                      CodeReviewSource.latestTurn,
                                     ),
                                   ),
-                                  if (reviewInline) ...[
-                                    PaneResizeHandle(
-                                      key: const Key('review-resize-handle'),
-                                      onDragDelta: (delta) => setState(() {
-                                        _reviewWidth = (_reviewWidth - delta)
-                                            .clamp(
-                                              _minimumReviewWidth,
-                                              reviewMaximum,
-                                            )
-                                            .toDouble();
-                                      }),
-                                    ),
-                                    SizedBox(
-                                      width: reviewWidth,
-                                      child: Stack(
-                                        fit: StackFit.expand,
-                                        children: [
-                                          CodeReviewPanel(
-                                            key: _reviewPanelKey,
-                                            controller: controller,
-                                            source: _reviewSource,
-                                            compact: false,
-                                            onSourceChanged:
-                                                _changeCodeReviewSource,
-                                            onClose: _closeCodeReview,
+                                  const Divider(height: 1),
+                                  Expanded(
+                                    child: Row(
+                                      children: [
+                                        Expanded(
+                                          child: Stack(
+                                            fit: StackFit.expand,
+                                            children: [
+                                              ConversationPane(
+                                                controller: controller,
+                                                composer: _composer,
+                                                recordSkillRequest:
+                                                    _recordSkillRequest,
+                                                timelinePages: _timelinePages,
+                                                timelineScrollControllers:
+                                                    _timelineScrollControllers,
+                                                activeTimelinePageKey:
+                                                    _displayedThreadKey,
+                                                threadHistoryLoading:
+                                                    _threadHistoryLoading,
+                                                fileChangeSummaryExpanded:
+                                                    (pageKey) =>
+                                                        _fileChangeSummaryExpanded[pageKey] ??
+                                                        false,
+                                                onFileChangeSummaryExpandedChanged:
+                                                    (pageKey, expanded) {
+                                                      setState(() {
+                                                        _fileChangeSummaryExpanded[pageKey] =
+                                                            expanded;
+                                                      });
+                                                    },
+                                                activityExpanded:
+                                                    (pageKey, activityId) =>
+                                                        _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
+                                                        false,
+                                                onTimelineMetricsChanged:
+                                                    _handleTimelineMetricsChanged,
+                                                onTimelineUserScrollDirection:
+                                                    _handleTimelineUserScrollDirection,
+                                                showScrollToBottom:
+                                                    _timelineIsAboveLatest[_displayedThreadKey] ??
+                                                    false,
+                                                onScrollToBottom:
+                                                    _scrollTimelineToBottom,
+                                                onActivityExpandedChanged:
+                                                    (
+                                                      pageKey,
+                                                      activityId,
+                                                      expanded,
+                                                    ) {
+                                                      setState(() {
+                                                        _activityListExpanded['${pageKey.storageKey}/$activityId'] =
+                                                            expanded;
+                                                      });
+                                                    },
+                                                onSend: _send,
+                                                onQueueSteer: _queueDirection,
+                                                onReview: () => _showCodeReview(
+                                                  CodeReviewSource.latestTurn,
+                                                ),
+                                                onUndo: _undoFileChanges,
+                                                onOpenSubagent:
+                                                    _openSubagentInspector,
+                                                onSubmitUserMessageEdit:
+                                                    _submitEditedUserMessage,
+                                              ),
+                                              if (_reviewOpen && !reviewInline)
+                                                CodeReviewPanel(
+                                                  key: _reviewPanelKey,
+                                                  controller: controller,
+                                                  source: _reviewSource,
+                                                  compact: true,
+                                                  onSourceChanged:
+                                                      _changeCodeReviewSource,
+                                                  onClose: _closeCodeReview,
+                                                ),
+                                              if (_selectedSubagentThreadId !=
+                                                      null &&
+                                                  (compact ||
+                                                      (_reviewOpen &&
+                                                          !reviewInline)))
+                                                SubagentThreadPanel(
+                                                  controller: controller,
+                                                  threadId:
+                                                      _selectedSubagentThreadId!,
+                                                  fallbackTitle:
+                                                      _selectedSubagentTitle,
+                                                  onOpenSubagent:
+                                                      _openSubagentInspector,
+                                                  onClose:
+                                                      _closeSubagentInspector,
+                                                ),
+                                            ],
+                                          ),
+                                        ),
+                                        if (reviewInline) ...[
+                                          PaneResizeHandle(
+                                            key: const Key(
+                                              'review-resize-handle',
+                                            ),
+                                            onDragDelta: (delta) =>
+                                                setState(() {
+                                                  _reviewWidth =
+                                                      (_reviewWidth - delta)
+                                                          .clamp(
+                                                            _minimumReviewWidth,
+                                                            reviewMaximum,
+                                                          )
+                                                          .toDouble();
+                                                }),
+                                          ),
+                                          SizedBox(
+                                            width: reviewWidth,
+                                            child: Stack(
+                                              fit: StackFit.expand,
+                                              children: [
+                                                CodeReviewPanel(
+                                                  key: _reviewPanelKey,
+                                                  controller: controller,
+                                                  source: _reviewSource,
+                                                  compact: false,
+                                                  onSourceChanged:
+                                                      _changeCodeReviewSource,
+                                                  onClose: _closeCodeReview,
+                                                ),
+                                                if (_selectedSubagentThreadId
+                                                    case final id?)
+                                                  SubagentThreadPanel(
+                                                    controller: controller,
+                                                    threadId: id,
+                                                    fallbackTitle:
+                                                        _selectedSubagentTitle,
+                                                    onOpenSubagent:
+                                                        _openSubagentInspector,
+                                                    onClose:
+                                                        _closeSubagentInspector,
+                                                  ),
+                                              ],
+                                            ),
+                                          ),
+                                        ] else if (!compact &&
+                                            !_reviewOpen) ...[
+                                          PaneResizeHandle(
+                                            key: const Key(
+                                              'inspector-resize-handle',
+                                            ),
+                                            onDragDelta: (delta) => setState(() {
+                                              _inspectorWidth =
+                                                  (_inspectorWidth - delta)
+                                                      .clamp(
+                                                        _minimumInspectorWidth,
+                                                        inspectorMaximum,
+                                                      )
+                                                      .toDouble();
+                                            }),
                                           ),
                                           if (_selectedSubagentThreadId
                                               case final id?)
-                                            SubagentThreadPanel(
+                                            SizedBox(
+                                              width: inspectorWidth,
+                                              child: SubagentThreadPanel(
+                                                controller: controller,
+                                                threadId: id,
+                                                fallbackTitle:
+                                                    _selectedSubagentTitle,
+                                                onOpenSubagent:
+                                                    _openSubagentInspector,
+                                                onClose:
+                                                    _closeSubagentInspector,
+                                              ),
+                                            )
+                                          else
+                                            Inspector(
+                                              width: inspectorWidth,
                                               controller: controller,
-                                              threadId: id,
-                                              fallbackTitle:
-                                                  _selectedSubagentTitle,
-                                              onOpenSubagent:
-                                                  _openSubagentInspector,
-                                              onClose: _closeSubagentInspector,
+                                              onShowGitProject: () =>
+                                                  _showCodeReview(
+                                                    CodeReviewSource
+                                                        .gitWorkspace,
+                                                  ),
                                             ),
                                         ],
-                                      ),
+                                      ],
                                     ),
-                                  ] else if (!compact && !_reviewOpen) ...[
-                                    PaneResizeHandle(
-                                      key: const Key('inspector-resize-handle'),
-                                      onDragDelta: (delta) => setState(() {
-                                        _inspectorWidth =
-                                            (_inspectorWidth - delta)
-                                                .clamp(
-                                                  _minimumInspectorWidth,
-                                                  inspectorMaximum,
-                                                )
-                                                .toDouble();
-                                      }),
-                                    ),
-                                    if (_selectedSubagentThreadId
-                                        case final id?)
-                                      SizedBox(
-                                        width: inspectorWidth,
-                                        child: SubagentThreadPanel(
-                                          controller: controller,
-                                          threadId: id,
-                                          fallbackTitle: _selectedSubagentTitle,
-                                          onOpenSubagent:
-                                              _openSubagentInspector,
-                                          onClose: _closeSubagentInspector,
-                                        ),
-                                      )
-                                    else
-                                      Inspector(
-                                        width: inspectorWidth,
-                                        controller: controller,
-                                        onShowGitProject: () => _showCodeReview(
-                                          CodeReviewSource.gitWorkspace,
-                                        ),
-                                      ),
-                                  ],
+                                  ),
                                 ],
                               ),
-                            ),
-                          ],
-                        ),
+                    ],
+                  ),
                 ),
               ],
             );

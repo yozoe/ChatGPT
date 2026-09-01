@@ -3,7 +3,8 @@
 Uri? normalizeBrowserUrl(String value) {
   final trimmed = value.trim();
   if (trimmed.isEmpty || trimmed.contains(RegExp(r'\s'))) return null;
-  final candidate = trimmed.contains('://') ? trimmed : 'https://$trimmed';
+  final hasScheme = RegExp(r'^[A-Za-z][A-Za-z0-9+.-]*:').hasMatch(trimmed);
+  final candidate = hasScheme ? trimmed : 'https://$trimmed';
   final uri = Uri.tryParse(candidate);
   if (uri == null || !uri.hasAuthority) return null;
   return isBrowserWebUri(uri) ? uri : null;

@@ -123,6 +123,8 @@ void main() {
       Uri.parse('http://localhost:3000/path'),
     );
     expect(normalizeBrowserUrl('file:///tmp/example.txt'), isNull);
+    expect(normalizeBrowserUrl('mailto:user@example.com'), isNull);
+    expect(normalizeBrowserUrl('tel:+123456789'), isNull);
     expect(normalizeBrowserUrl('javascript:alert(1)'), isNull);
     expect(normalizeBrowserUrl('https://example.com/a b'), isNull);
     expect(isBrowserWebUri(Uri.parse('https://example.com')), isTrue);

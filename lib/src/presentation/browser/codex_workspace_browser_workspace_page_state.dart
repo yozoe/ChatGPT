@@ -40,17 +40,30 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
       return;
     }
     setState(() => _error = null);
-    await controller.loadUrl(
-      urlRequest: URLRequest(url: WebUri(uri.toString())),
-    );
+    try {
+      await controller.loadUrl(
+        urlRequest: URLRequest(url: WebUri(uri.toString())),
+      );
+    } catch (error) {
+      if (mounted) setState(() => _error = '无法加载此地址：$error');
+    }
   }
 
   /// 在系统默认浏览器中打开当前已加载的页面。
   /// Opens the currently loaded page in the system default browser.
   Future<void> openInDefaultBrowser() async {
     final uri = normalizeBrowserUrl(_address.text);
-    if (uri == null) return;
-    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (uri == null) {
+      if (mounted) setState(() => _error = '请输入有效的 HTTP 或 HTTPS 地址。');
+      return;
+    }
+    bool opened;
+    try {
+      opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (error) {
+      if (mounted) setState(() => _error = '无法在系统默认浏览器中打开此地址：$error');
+      return;
+    }
     if (!mounted || opened) return;
     setState(() => _error = '无法在系统默认浏览器中打开此地址。');
   }
@@ -60,8 +73,12 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
   Future<void> goBack() async {
     final controller = _webView;
     if (controller == null || !await controller.canGoBack()) return;
-    await controller.goBack();
-    await refreshNavigationState();
+    try {
+      await controller.goBack();
+      await refreshNavigationState();
+    } catch (error) {
+      if (mounted) setState(() => _error = '后退失败：$error');
+    }
   }
 
   /// 前进到 WebView 的下一条导航记录，并刷新工具栏的可用状态。
@@ -69,8 +86,12 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
   Future<void> goForward() async {
     final controller = _webView;
     if (controller == null || !await controller.canGoForward()) return;
-    await controller.goForward();
-    await refreshNavigationState();
+    try {
+      await controller.goForward();
+      await refreshNavigationState();
+    } catch (error) {
+      if (mounted) setState(() => _error = '前进失败：$error');
+    }
   }
 
   /// 重新加载当前页面；加载中时停止当前导航。
@@ -79,10 +100,18 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
     final controller = _webView;
     if (controller == null) return;
     if (_loading) {
-      await controller.stopLoading();
+      try {
+        await controller.stopLoading();
+      } catch (error) {
+        if (mounted) setState(() => _error = '停止加载失败：$error');
+      }
       return;
     }
-    await controller.reload();
+    try {
+      await controller.reload();
+    } catch (error) {
+      if (mounted) setState(() => _error = '刷新失败：$error');
+    }
   }
 
   /// 从原生控制器读取可前进/后退状态，避免异步结果写入已销毁页面。
@@ -90,8 +119,14 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
   Future<void> refreshNavigationState() async {
     final controller = _webView;
     if (controller == null) return;
-    final canGoBack = await controller.canGoBack();
-    final canGoForward = await controller.canGoForward();
+    bool canGoBack;
+    bool canGoForward;
+    try {
+      canGoBack = await controller.canGoBack();
+      canGoForward = await controller.canGoForward();
+    } catch (_) {
+      return;
+    }
     if (!mounted || !identical(controller, _webView)) return;
     setState(() {
       _canGoBack = canGoBack;
@@ -124,10 +159,16 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
     if (url == null || isBrowserWebUri(url)) {
       return NavigationActionPolicy.ALLOW;
     }
-    final opened = await launchUrl(
-      Uri.parse(url.toString()),
-      mode: LaunchMode.externalApplication,
-    );
+    bool opened;
+    try {
+      opened = await launchUrl(
+        Uri.parse(url.toString()),
+        mode: LaunchMode.externalApplication,
+      );
+    } catch (error) {
+      if (mounted) setState(() => _error = '此地址无法在系统默认应用中打开：$error');
+      return NavigationActionPolicy.CANCEL;
+    }
     if (mounted && !opened) {
       setState(() => _error = '此地址无法在系统默认应用中打开。');
     }
@@ -142,6 +183,47 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
     mimeType: 'text/html',
     encoding: 'utf-8',
   );
+
+  /// 在未注册原生平台（例如 Widget 测试）时显示可测试的降级占位页。
+  /// Shows a testable fallback when the native platform is not registered, such as in widget tests.
+  Widget buildWebView() {
+    if (InAppWebViewPlatform.instance == null) {
+      return const Center(child: Text('macOS 内置浏览器仅可在桌面应用中使用。'));
+    }
+    return InAppWebView(
+      key: const Key('browser-native-webview'),
+      initialData: initialPage(),
+      initialSettings: InAppWebViewSettings(
+        isInspectable: kDebugMode,
+        mediaPlaybackRequiresUserGesture: true,
+      ),
+      onWebViewCreated: (controller) {
+        _webView = controller;
+        unawaited(refreshNavigationState());
+      },
+      onLoadStart: (controller, url) {
+        if (!mounted) return;
+        setState(() => _loading = true);
+        updateUrl(url);
+      },
+      onLoadStop: (controller, url) {
+        if (!mounted) return;
+        setState(() => _loading = false);
+        updateUrl(url);
+      },
+      onUpdateVisitedHistory: (controller, url, isReload) => updateUrl(url),
+      onReceivedError: (controller, request, error) {
+        if (request.isForMainFrame != true) return;
+        if (!mounted) return;
+        setState(() {
+          _loading = false;
+          _error = error.description;
+        });
+        unawaited(refreshNavigationState());
+      },
+      shouldOverrideUrlLoading: decideNavigation,
+    );
+  }
 
   /// 构建浏览器页面并让 WebView 生命周期跟随该页面的挂载状态。
   /// Builds the browser page so the WebView lifecycle follows this page's mount state.
@@ -217,39 +299,7 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
                 ),
                 child: Stack(
                   children: [
-                    InAppWebView(
-                      key: const Key('browser-native-webview'),
-                      initialData: initialPage(),
-                      initialSettings: InAppWebViewSettings(
-                        isInspectable: kDebugMode,
-                        mediaPlaybackRequiresUserGesture: true,
-                      ),
-                      onWebViewCreated: (controller) {
-                        _webView = controller;
-                        unawaited(refreshNavigationState());
-                      },
-                      onLoadStart: (controller, url) {
-                        if (!mounted) return;
-                        setState(() => _loading = true);
-                        updateUrl(url);
-                      },
-                      onLoadStop: (controller, url) {
-                        if (!mounted) return;
-                        setState(() => _loading = false);
-                        updateUrl(url);
-                      },
-                      onUpdateVisitedHistory: (controller, url, isReload) =>
-                          updateUrl(url),
-                      onReceivedError: (controller, request, error) {
-                        if (!mounted) return;
-                        setState(() {
-                          _loading = false;
-                          _error = error.description;
-                        });
-                        unawaited(refreshNavigationState());
-                      },
-                      shouldOverrideUrlLoading: decideNavigation,
-                    ),
+                    buildWebView(),
                     if (_loading)
                       const Align(
                         alignment: Alignment.topCenter,

@@ -105,7 +105,7 @@
 
 ### P1：核心体验
 
-- `已完成` 按 [IN_APP_BROWSER_DEVELOPMENT.md](IN_APP_BROWSER_DEVELOPMENT.md) 完成 macOS `WKWebView` 阶段 0 技术验证，并交付阶段 1 的最小浏览器工作区：设置入口可创建独立 WebView，支持 HTTP/HTTPS 地址栏、前进、后退、刷新/停止、外部打开、非 Web scheme 拦截和异步生命周期保护。
+- `已完成` 按 [IN_APP_BROWSER_DEVELOPMENT.md](IN_APP_BROWSER_DEVELOPMENT.md) 完成 macOS `WKWebView` 阶段 0 技术验证，并交付阶段 1 的最小浏览器工作区：设置入口切换到独立 WebView 工作区，支持 HTTP/HTTPS 地址栏、前进、后退、刷新/停止、外部打开、非 Web scheme 拦截和异步生命周期保护，返回会话时保留 WebView 状态。
 - `进行中` 按 [IN_APP_BROWSER_DEVELOPMENT.md](IN_APP_BROWSER_DEVELOPMENT.md) 完善内置浏览器：接入链接打开位置偏好、独立浏览数据/历史、下载确认与受控下载路径；不共享 Chrome/Safari 登录态，不自动向 Codex 发送页面数据，浏览器受控能力另行进行协议与安全评审。
 - `已完成` 用户消息气泡保持右侧对齐，内部单行与换行文本维持自然左对齐；悬停时在时间旁提供复制和修改入口，修改会原位展开 Codex 风格内联编辑器，支持取消和发送，修订内容作为下一轮任务提交（运行中则排入调整方向），不修改既有会话审计记录。
 - `已完成` 收紧“已运行命令”等活动摘要与展开明细的上下间距，减少时间线活动清单的空白。
