@@ -27,90 +27,88 @@ class ComposerSkillDetailsDialog extends StatelessWidget {
       ),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 640, maxHeight: 560),
-        child: Scrollbar(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(18, 16, 14, 14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.hub_outlined, size: 18, color: palette.active),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        skill.label,
-                        style: TextStyle(
-                          color: palette.trace,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                    IconButton(
-                      key: const Key('composer-skill-details-close'),
-                      tooltip: '关闭技能详情',
-                      onPressed: () => Navigator.pop(context),
-                      icon: Icon(Icons.close, size: 18, color: palette.muted),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  skill.description.isEmpty ? skill.summary : skill.description,
-                  style: TextStyle(color: palette.muted, fontSize: 13),
-                ),
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 5,
-                  children: [
-                    _detailLabel(palette, _scopeLabel(skill.scope)),
-                    _detailLabel(palette, skill.path),
-                  ],
-                ),
-                const SizedBox(height: 14),
-                Divider(height: 1, color: palette.border),
-                const SizedBox(height: 12),
-                Text(
-                  '技能内容',
-                  style: TextStyle(
-                    color: palette.trace,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 7),
-                FutureBuilder<String>(
-                  future: content,
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState != ConnectionState.done) {
-                      return const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 24),
-                        child: Center(
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                      );
-                    }
-                    if (snapshot.hasError) {
-                      return SelectableText(
-                        '无法读取此技能的内容：${snapshot.error}',
-                        style: TextStyle(color: palette.fault, fontSize: 12),
-                      );
-                    }
-                    return SelectableText(
-                      snapshot.data ?? '',
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(18, 16, 14, 14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.hub_outlined, size: 18, color: palette.active),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      skill.label,
                       style: TextStyle(
                         color: palette.trace,
-                        fontSize: 12,
-                        height: 1.45,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    key: const Key('composer-skill-details-close'),
+                    tooltip: '关闭技能详情',
+                    onPressed: () => Navigator.pop(context),
+                    icon: Icon(Icons.close, size: 18, color: palette.muted),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                skill.description.isEmpty ? skill.summary : skill.description,
+                style: TextStyle(color: palette.muted, fontSize: 13),
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 5,
+                children: [
+                  _detailLabel(palette, _scopeLabel(skill.scope)),
+                  _detailLabel(palette, skill.path),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Divider(height: 1, color: palette.border),
+              const SizedBox(height: 12),
+              Text(
+                '技能内容',
+                style: TextStyle(
+                  color: palette.trace,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 7),
+              FutureBuilder<String>(
+                future: content,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState != ConnectionState.done) {
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 24),
+                      child: Center(
+                        child: CircularProgressIndicator(strokeWidth: 2),
                       ),
                     );
-                  },
-                ),
-              ],
-            ),
+                  }
+                  if (snapshot.hasError) {
+                    return SelectableText(
+                      '无法读取此技能的内容：${snapshot.error}',
+                      style: TextStyle(color: palette.fault, fontSize: 12),
+                    );
+                  }
+                  return SelectableText(
+                    snapshot.data ?? '',
+                    style: TextStyle(
+                      color: palette.trace,
+                      fontSize: 12,
+                      height: 1.45,
+                    ),
+                  );
+                },
+              ),
+            ],
           ),
         ),
       ),

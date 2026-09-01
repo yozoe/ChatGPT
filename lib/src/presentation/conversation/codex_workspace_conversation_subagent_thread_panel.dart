@@ -6,6 +6,7 @@ import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.dart';
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
+import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_subagent_avatar.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_support.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_subagent_thread_error.dart';
 
@@ -50,7 +51,7 @@ class SubagentThreadPanel extends StatelessWidget {
                   onPressed: onClose,
                   icon: const Icon(Icons.arrow_back, size: 18),
                 ),
-                Icon(Icons.auto_awesome, size: 16, color: palette.ack),
+                SubagentAvatar(agentId: threadId, size: 18),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(

@@ -70,7 +70,13 @@ class ConversationStatusActivityRow extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(2, 2, 6, 2),
             child: Row(
               children: [
-                Flexible(child: CollaborationActivityBadge(label: entry.title)),
+                Flexible(
+                  child: CollaborationActivityBadge(
+                    label: entry.title,
+                    agentId:
+                        entry.linkedThreadId ?? entry.sourceItemId ?? entry.id,
+                  ),
+                ),
                 if (entry.detail.isNotEmpty) ...[
                   const SizedBox(width: 7),
                   Text(

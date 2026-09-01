@@ -1,0 +1,210 @@
+import 'dart:io';
+
+import 'package:chatgpt/src/app_controller.dart';
+import 'package:chatgpt/src/services/conversation_attachment_store.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'widget_test_fakes.dart';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  test(
+    'rolls back earlier durable copies when a later image cannot be read',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-desk-attachment-rollback-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final source = File('${root.path}/first.png');
+      await source.writeAsBytes(const [137, 80, 78, 71]);
+      final attachments = Directory('${root.path}/conversation-images');
+      final store = ConversationAttachmentStore(directory: attachments);
+
+      await expectLater(
+        store.persist([source.path, '${root.path}/missing.png']),
+        throwsA(isA<FileSystemException>()),
+      );
+
+      expect(await attachments.exists(), isTrue);
+      expect(await attachments.list().isEmpty, isTrue);
+    },
+  );
+
+  test(
+    'removes a durable steer image when App Server rejects the direction',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-desk-steer-attachment-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final source = File('${root.path}/clipboard-image.png');
+      await source.writeAsBytes(const [137, 80, 78, 71]);
+      final attachments = Directory('${root.path}/conversation-images');
+      final server = FakeCodexAppServer()
+        ..steerTurnError = StateError('turn rejected');
+      final controller =
+          CodexController(
+              server: server,
+              conversationAttachmentStore: ConversationAttachmentStore(
+                directory: attachments,
+              ),
+            )
+            ..workspacePath = root.path
+            ..activeThreadId = 'thread-1'
+            ..activeTurnId = 'turn-1'
+            ..status = RuntimeStatus.running;
+      controller.retainTemporaryAttachment(source.path);
+
+      expect(
+        await controller.steerCurrentTurn(
+          '请重新检查图片',
+          imagePaths: [source.path],
+          additionalInput: [
+            {'type': 'localImage', 'path': source.path},
+          ],
+        ),
+        isFalse,
+      );
+      expect(await source.exists(), isTrue);
+      expect(await attachments.list().isEmpty, isTrue);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'reuses a failed turn image instead of copying it again on retry',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-desk-retry-attachment-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final source = File('${root.path}/clipboard-image.png');
+      await source.writeAsBytes(const [137, 80, 78, 71]);
+      final attachments = Directory('${root.path}/conversation-images');
+      final runtime = FakeRuntimeConfigurationStore()..workspace = root.path;
+      final server = FakeCodexAppServer()
+        ..startTurnError = StateError('runtime rejected turn')
+        ..listResponse = [
+          {
+            'id': 'new-thread',
+            'preview': '请检查图片',
+            'createdAt': 1,
+            'updatedAt': 1,
+            'status': 'active',
+          },
+        ];
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: runtime,
+        conversationAttachmentStore: ConversationAttachmentStore(
+          directory: attachments,
+        ),
+      );
+      await controller.waitForInitialConfiguration();
+      controller.status = RuntimeStatus.ready;
+      controller.retainTemporaryAttachment(source.path);
+
+      expect(
+        await controller.sendPrompt(
+          '请检查图片',
+          imagePaths: [source.path],
+          additionalInput: [
+            {'type': 'localImage', 'path': source.path},
+          ],
+        ),
+        isFalse,
+      );
+      final durablePath = controller.entries
+          .where((entry) => entry.imagePaths.isNotEmpty)
+          .single
+          .imagePaths
+          .single;
+      expect(await attachments.list().length, 1);
+      expect(controller.hasFailedTurnRetry, isTrue);
+
+      server.startTurnError = null;
+      expect(await controller.retryFailedTurn(), isTrue);
+      expect(await attachments.list().length, 1);
+      expect(server.startedTurnAdditionalInput, [
+        {'type': 'localImage', 'path': durablePath},
+      ]);
+      controller.dispose();
+    },
+  );
+
+  test('restores a sent clipboard image after a controller restart', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'codex-desk-persisted-image-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final workspace = await Directory('${root.path}/workspace').create();
+    final clipboardDirectory = await Directory(
+      '${root.path}/CodexDeskClipboard',
+    ).create();
+    final source = File('${clipboardDirectory.path}/clipboard-image-1.png');
+    await source.writeAsBytes(const [137, 80, 78, 71]);
+    final attachments = Directory('${root.path}/conversation-images');
+    final history = MemoryConversationHistoryStore();
+    final runtime = FakeRuntimeConfigurationStore()..workspace = workspace.path;
+    final server = FakeCodexAppServer();
+    final firstController = CodexController(
+      server: server,
+      runtimeConfigurationStore: runtime,
+      conversationHistoryStore: history,
+      conversationAttachmentStore: ConversationAttachmentStore(
+        directory: attachments,
+      ),
+    );
+    await firstController.waitForInitialConfiguration();
+    firstController.status = RuntimeStatus.ready;
+    firstController.retainTemporaryAttachment(source.path);
+
+    final sent = await firstController.sendPrompt(
+      '请查看图片',
+      imagePaths: [source.path],
+      additionalInput: [
+        {'type': 'localImage', 'path': source.path},
+      ],
+    );
+
+    expect(sent, isTrue);
+    final durablePath = firstController.entries
+        .where((entry) => entry.imagePaths.isNotEmpty)
+        .single
+        .imagePaths
+        .single;
+    expect(durablePath, isNot(source.path));
+    expect(await File(durablePath).readAsBytes(), [137, 80, 78, 71]);
+    expect(server.startedTurnAdditionalInput, [
+      {'type': 'localImage', 'path': durablePath},
+    ]);
+    expect(
+      ConversationAttachmentStore.storesImageBytesEncryptedAtRest,
+      isFalse,
+    );
+    await firstController.saveConversationHistoryForTesting();
+    firstController.dispose();
+    await source.delete();
+
+    final restoredController = CodexController(
+      server: FakeCodexAppServer(),
+      runtimeConfigurationStore: runtime,
+      conversationHistoryStore: history,
+      conversationAttachmentStore: ConversationAttachmentStore(
+        directory: attachments,
+      ),
+    );
+    await restoredController.waitForInitialConfiguration();
+
+    expect(
+      restoredController.entries
+          .where((entry) => entry.imagePaths.isNotEmpty)
+          .single
+          .imagePaths,
+      [durablePath],
+    );
+    expect(await File(durablePath).exists(), isTrue);
+    restoredController.dispose();
+  });
+}

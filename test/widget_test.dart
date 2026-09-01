@@ -31,10 +31,12 @@ import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_p
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_support.dart';
 import 'package:chatgpt/src/presentation/code_review/code_review_panel.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_timeline_activity_list.dart';
+import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_subagent_avatar.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/services/agent_markdown_link.dart';
 import 'package:chatgpt/src/services/codex_plugin_store.dart';
 import 'package:chatgpt/src/services/conversation_history_store.dart';
+import 'package:chatgpt/src/services/conversation_attachment_store.dart';
 import 'package:chatgpt/src/services/git_project_service.dart';
 import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/theme_preferences_store.dart';
@@ -113,15 +115,145 @@ Future<dynamic> _resolveLastAgentMarkdownLinks(WidgetTester tester) async {
 }
 
 void main() {
+  test('assigns each subagent a stable supplied avatar', () {
+    final reviewAvatar = SubagentAvatar.assetFor('review-thread');
+
+    expect(reviewAvatar, 'assets/subagents/subagent-10.png');
+    expect(SubagentAvatar.assetFor('review-thread'), reviewAvatar);
+    expect(
+      SubagentAvatar.assetFor('implementation-thread'),
+      isNot(reviewAvatar),
+    );
+  });
+
+  testWidgets('shows subagents in a grouped workspace directory', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer());
+    controller.replaceTimelineEntriesForTesting([
+      TimelineEntry(
+        id: 'completed-agent-entry',
+        kind: TimelineKind.activity,
+        title: 'Final integration audit',
+        detail: '已完成',
+        createdAt: DateTime.now().subtract(const Duration(hours: 2)),
+        activityKind: 'collaboration',
+        activityStatus: 'completed',
+        linkedThreadId: 'final-integration-audit',
+        activityPrompt: '审查最终集成。',
+      ),
+    ]);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(home: CodexWorkspace(controller: controller)),
+      ),
+    );
+    await tester.tap(find.byKey(const Key('sidebar-agents-button')));
+    await tester.pump();
+
+    expect(find.byKey(const Key('agents-page')), findsOneWidget);
+    expect(find.text('已开启 · 0'), findsOneWidget);
+    expect(find.text('完成 · 1'), findsOneWidget);
+    expect(find.text('Final integration audit'), findsOneWidget);
+    expect(find.text('2 小时前'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('shows every concurrently running subagent in the inspector', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'parent-thread'
+      ..activeTurnId = 'parent-turn';
+    for (final item in const [
+      {
+        'id': 'spawn-review',
+        'type': 'collabToolCall',
+        'newThreadId': 'review-thread',
+        'agentStatus': {'name': 'Review changes', 'status': 'running'},
+      },
+      {
+        'id': 'spawn-tests',
+        'type': 'collabToolCall',
+        'newThreadId': 'test-thread',
+        'agentStatus': {'name': 'Check tests', 'status': 'running'},
+      },
+    ]) {
+      controller.handleServerEventForTesting(
+        ServerEvent(
+          method: 'item/started',
+          params: {
+            'threadId': 'parent-thread',
+            'turnId': 'parent-turn',
+            'item': item,
+          },
+        ),
+      );
+    }
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(home: CodexWorkspace(controller: controller)),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('2 个运行中'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('sidebar-agents-button')));
+    await tester.pump();
+    expect(find.text('已开启 · 2'), findsOneWidget);
+    expect(find.text('Review changes'), findsOneWidget);
+    expect(find.text('Check tests'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('opens the subagent directory from the inspector summary', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(server: CodexAppServer());
+    controller.replaceTimelineEntriesForTesting([
+      TimelineEntry(
+        id: 'inspector-agent-entry',
+        kind: TimelineKind.activity,
+        title: 'Login entry integration',
+        detail: '已完成',
+        createdAt: DateTime.now(),
+        activityKind: 'collaboration',
+        activityStatus: 'completed',
+        linkedThreadId: 'login-entry-integration',
+      ),
+    ]);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(home: CodexWorkspace(controller: controller)),
+      ),
+    );
+    expect(
+      find.byKey(const Key('inspector-subagents-open-all')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const Key('inspector-subagents-open-all')));
+    await tester.pump();
+
+    expect(find.byKey(const Key('agents-page')), findsOneWidget);
+    expect(find.text('Login entry integration'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   test('browser URL normalizer accepts web URLs and rejects other schemes', () {
     expect(
       normalizeBrowserUrl('example.com'),
       Uri.parse('https://example.com'),
     );
-    expect(
-      normalizeBrowserUrl('http://localhost:3000/path'),
-      Uri.parse('http://localhost:3000/path'),
-    );
+    expect(normalizeBrowserUrl('http://localhost:3000/path'), isNull);
     expect(normalizeBrowserUrl('file:///tmp/example.txt'), isNull);
     expect(normalizeBrowserUrl('mailto:user@example.com'), isNull);
     expect(normalizeBrowserUrl('tel:+123456789'), isNull);
@@ -243,6 +375,7 @@ void main() {
               turnDiff: null,
               showFileChangeSummary: false,
               activeActivity: null,
+              activeCollaborationActivities: const [],
               streamingAgentEntryId: null,
               activeTurnStartedAt: null,
               isThinking: false,
@@ -1420,7 +1553,9 @@ void main() {
   testWidgets(
     'defers native browser creation until the browser workspace opens',
     (tester) async {
-      final controller = CodexController(server: _FakeCodexAppServer());
+      final controller = CodexController(
+        server: CodexAppServer(messageSink: (_) {}),
+      );
       await tester.pumpWidget(
         ProviderScope(
           child: MaterialApp(home: CodexWorkspace(controller: controller)),
@@ -1442,6 +1577,18 @@ void main() {
       await tester.tap(find.byKey(const Key('settings-nav-浏览器')));
       await tester.pump();
 
+      expect(find.byKey(const Key('browser-workspace-page')), findsNothing);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'browser/open',
+          requestId: 'browser-test-1',
+          params: {'url': 'https://example.com'},
+        ),
+      );
+      await tester.pump();
+      expect(find.byKey(const Key('browser-workspace-page')), findsNothing);
+      await controller.respondToApproval(accepted: true);
+      await tester.pump();
       expect(find.byKey(const Key('browser-workspace-page')), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
     },
@@ -1612,7 +1759,7 @@ void main() {
       await tester.tap(
         find.byKey(const Key('completed-turn-disclosure-toggle')),
       );
-      await tester.pump();
+      await tester.pumpAndSettle();
       expect(find.text('已运行了命令'), findsNothing);
 
       controller.replaceTimelineEntriesForTesting([
@@ -3908,11 +4055,18 @@ void main() {
     },
   );
 
-  testWidgets(
+  test(
     'retains a temporary steering image when completion races the acknowledgement',
-    (tester) async {
+    () async {
       const channel = MethodChannel('codex_desk/clipboard');
-      const imagePath = '/tmp/CodexDeskClipboard/steer-race.png';
+      final sourceFile = await File(
+        '${Directory.systemTemp.path}/codex-desk-steer-race.png',
+      ).create();
+      await sourceFile.writeAsBytes(<int>[137, 80, 78, 71]);
+      final imagePath = sourceFile.path;
+      addTearDown(() async {
+        if (await sourceFile.exists()) await sourceFile.delete();
+      });
       final messenger =
           TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
       var deleteCalls = 0;
@@ -3931,26 +4085,37 @@ void main() {
       addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
       final steerCompleter = Completer<String>();
       final server = _FakeCodexAppServer()..steerCompleter = steerCompleter;
-      final controller = CodexController(server: server)
-        ..workspacePath = '/workspace'
-        ..status = RuntimeStatus.running
-        ..activeThreadId = 'thread-1'
-        ..activeTurnId = 'turn-1';
-      await tester.pumpWidget(
-        MaterialApp(home: CodexWorkspace(controller: controller)),
+      final attachmentDirectory = await Directory.systemTemp.createTemp(
+        'codex-desk-steer-attachments-',
       );
-
-      final field = find.byKey(const Key('composer-field'));
-      await tester.tap(field);
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
-      await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
-      await tester.pump();
-      await tester.enterText(field, '按截图调整');
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-      await tester.pump();
-      await tester.tap(find.byKey(const Key('adjust-direction-button')));
-      await tester.pump();
+      addTearDown(() => attachmentDirectory.delete(recursive: true));
+      final controller =
+          CodexController(
+              server: server,
+              conversationAttachmentStore: ConversationAttachmentStore(
+                directory: attachmentDirectory,
+              ),
+            )
+            ..workspacePath = '/workspace'
+            ..status = RuntimeStatus.running
+            ..activeThreadId = 'thread-1'
+            ..activeTurnId = 'turn-1';
+      controller.retainTemporaryAttachment(imagePath);
+      final steer = controller.steerCurrentTurn(
+        '按截图调整',
+        additionalInput: [
+          {'type': 'localImage', 'path': imagePath},
+        ],
+        imagePaths: [imagePath],
+      );
+      for (
+        var attempt = 0;
+        attempt < 20 && server.steeredTurnPrompt == null;
+        attempt++
+      ) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(server.steeredTurnPrompt, '按截图调整');
 
       controller.handleServerEventForTesting(
         const ServerEvent(
@@ -3961,25 +4126,21 @@ void main() {
           },
         ),
       );
-      await tester.pump();
       expect(deleteCalls, 0);
 
       steerCompleter.complete('turn-2');
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 50));
+      expect(await steer, isTrue);
 
       final acceptedDirection = controller.entries.singleWhere(
         (entry) => entry.kind == TimelineKind.user && entry.detail == '按截图调整',
       );
-      expect(acceptedDirection.imagePaths, [imagePath]);
-      expect(
-        find.byKey(const ValueKey('timeline-image-$imagePath')),
-        findsOneWidget,
-      );
+      expect(acceptedDirection.imagePaths, hasLength(1));
+      final durableImagePath = acceptedDirection.imagePaths.single;
+      expect(durableImagePath, isNot(imagePath));
+      expect(await File(durableImagePath).exists(), isTrue);
       expect(deleteCalls, 0);
 
-      await tester.pumpWidget(const SizedBox());
-      await tester.pump();
+      controller.dispose();
       expect(deleteCalls, 1);
     },
   );
@@ -4213,9 +4374,16 @@ void main() {
       ..listResponse = [
         {'id': 'new-thread'},
       ];
+    final persistedImages = await Directory.systemTemp.createTemp(
+      'codex-desk-timeline-images-',
+    );
+    addTearDown(() => persistedImages.delete(recursive: true));
     final controller = CodexController(
       server: server,
       runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+      conversationAttachmentStore: ConversationAttachmentStore(
+        directory: persistedImages,
+      ),
     );
     await controller.waitForInitialConfiguration();
     controller
@@ -4314,13 +4482,31 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
 
+    final durablePath = controller.entries
+        .where((entry) => entry.imagePaths.isNotEmpty)
+        .single
+        .imagePaths
+        .single;
+    final durableImageProvider = FileImage(File(durablePath));
+    PaintingBinding.instance.imageCache.putIfAbsent(
+      durableImageProvider,
+      () => OneFrameImageStreamCompleter(
+        Future.value(ImageInfo(image: testImage)),
+      ),
+    );
+    addTearDown(() {
+      PaintingBinding.instance.imageCache.evict(durableImageProvider);
+    });
     expect(server.startedTurnAdditionalInput, [
-      {'type': 'localImage', 'path': imagePath},
+      {'type': 'localImage', 'path': durablePath},
     ]);
     expect(deleteCalls, 0);
     expect(temporaryImage.existsSync(), isTrue);
-    expect(find.byKey(ValueKey('timeline-image-$imagePath')), findsOneWidget);
-    await tester.tap(find.byKey(ValueKey('timeline-image-preview-$imagePath')));
+    expect(await File(durablePath).exists(), isTrue);
+    expect(find.byKey(ValueKey('timeline-image-$durablePath')), findsOneWidget);
+    await tester.tap(
+      find.byKey(ValueKey('timeline-image-preview-$durablePath')),
+    );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 200));
     expect(
@@ -6772,6 +6958,80 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets('shows every running subagent in the active session timeline', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+
+    void send(String method, Map<String, dynamic> item) {
+      controller.handleServerEventForTesting(
+        ServerEvent(
+          method: method,
+          params: {'threadId': 'thread-1', 'turnId': 'turn-1', 'item': item},
+        ),
+      );
+    }
+
+    send('item/started', {
+      'id': 'spawn-review',
+      'type': 'collabToolCall',
+      'newThreadId': 'review-thread',
+      'agentStatus': {'name': 'Review changes', 'status': 'running'},
+    });
+    send('item/started', {
+      'id': 'spawn-tests',
+      'type': 'collabToolCall',
+      'newThreadId': 'test-thread',
+      'agentStatus': {'name': 'Check tests', 'status': 'running'},
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(
+      find.byKey(const Key('live-collaboration-activities-row')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('live-subagent-activity-open-spawn-review')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('live-subagent-activity-open-spawn-tests')),
+      findsOneWidget,
+    );
+    expect(find.text('Review changes'), findsOneWidget);
+    expect(find.text('Check tests'), findsOneWidget);
+    expect(find.text('已开始工作'), findsOneWidget);
+
+    send('item/completed', {
+      'id': 'spawn-review',
+      'type': 'collabToolCall',
+      'tool': 'spawnAgent',
+      'newThreadId': 'review-thread',
+      'agentStatus': {'name': 'Review changes', 'status': 'running'},
+    });
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey('live-subagent-activity-open-spawn-review')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey('live-subagent-activity-open-spawn-tests')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('conversation-activity-review-thread')),
+      findsOneWidget,
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets(
     'opens a real subagent thread in the inspector across window breakpoints',

@@ -881,7 +881,7 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
                 ),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 0),
             SidebarMenuAction(
               key: const Key('sidebar-new-chat-button'),
               icon: Icons.edit_outlined,
@@ -913,7 +913,14 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
               selected: widget.destination == WorkspaceDestination.plugins,
               onTap: () => unawaited(widget.onShowPlugins()),
             ),
-            const SizedBox(height: 9),
+            SidebarMenuAction(
+              key: const Key('sidebar-agents-button'),
+              icon: Icons.hub_outlined,
+              label: '智能体',
+              selected: widget.destination == WorkspaceDestination.agents,
+              onTap: widget.onShowAgents,
+            ),
+            const SizedBox(height: 0),
             if (_batchMode) ...[
               Wrap(
                 spacing: 4,
@@ -1078,7 +1085,7 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
                 ),
               ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
             OutlinedButton.icon(
               onPressed: widget.onConfigureRuntime,
               icon: const Icon(Icons.memory_outlined, size: 16),
@@ -1092,9 +1099,9 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
               icon: const Icon(Icons.account_tree_outlined, size: 16),
               label: const Text('Git 项目'),
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 6),
             const MutedText('本地优先 · stdio JSON-RPC'),
-            const SizedBox(height: 10),
+            const SizedBox(height: 6),
             Row(
               key: const Key('sidebar-bottom-actions'),
               children: [

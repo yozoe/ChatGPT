@@ -31,6 +31,8 @@ class FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
   String? savedModel;
   String? approvalMode;
   String? savedApprovalMode;
+  bool browserEnabled = true;
+  bool? savedBrowserEnabled;
   bool clearedWorkspace = false;
   Set<String> pinnedWorkspaces = {};
   Set<String>? savedPinnedWorkspaces;
@@ -167,6 +169,15 @@ class FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
   Future<void> saveApprovalMode(String? value) async {
     savedApprovalMode = value;
     approvalMode = value;
+  }
+
+  @override
+  Future<bool> readBrowserEnabled() async => browserEnabled;
+
+  @override
+  Future<void> saveBrowserEnabled(bool enabled) async {
+    browserEnabled = enabled;
+    savedBrowserEnabled = enabled;
   }
 }
 // ignore_for_file: unused_import, unnecessary_import

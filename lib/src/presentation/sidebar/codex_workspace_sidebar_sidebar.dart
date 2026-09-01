@@ -23,6 +23,7 @@ class Sidebar extends StatefulWidget {
     required this.onImportHistory,
     required this.onShowGitProject,
     required this.onShowPlugins,
+    required this.onShowAgents,
     required this.onShowScheduledTasks,
     required this.onShowPullRequests,
     required this.onShowSettings,
@@ -47,6 +48,7 @@ class Sidebar extends StatefulWidget {
   final Future<void> Function() onImportHistory;
   final Future<void> Function() onShowGitProject;
   final Future<void> Function() onShowPlugins;
+  final VoidCallback onShowAgents;
   final Future<void> Function() onShowScheduledTasks;
   final Future<void> Function() onShowPullRequests;
   final VoidCallback onShowSettings;

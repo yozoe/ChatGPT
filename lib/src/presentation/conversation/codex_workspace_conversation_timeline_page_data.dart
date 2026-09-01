@@ -15,6 +15,7 @@ class TimelinePageData {
     required this.turnDiff,
     required this.showFileChangeSummary,
     required this.activeActivity,
+    required this.activeCollaborationActivities,
     required this.streamingAgentEntryId,
     required this.activeTurnStartedAt,
     required this.isThinking,
@@ -25,6 +26,7 @@ class TimelinePageData {
   final String? turnDiff;
   final bool showFileChangeSummary;
   final LiveTurnActivity? activeActivity;
+  final List<LiveTurnActivity> activeCollaborationActivities;
   final String? streamingAgentEntryId;
   final DateTime? activeTurnStartedAt;
   final bool isThinking;

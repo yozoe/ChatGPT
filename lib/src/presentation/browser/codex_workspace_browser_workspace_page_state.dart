@@ -17,6 +17,17 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
   bool _canGoBack = false;
   bool _canGoForward = false;
   String? _error;
+  String? _requestedInitialUrl;
+
+  @override
+  void didUpdateWidget(covariant BrowserWorkspacePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.initialUrl != oldWidget.initialUrl ||
+        widget.navigationRevision != oldWidget.navigationRevision) {
+      _requestedInitialUrl = null;
+      unawaited(_loadInitialUrlIfReady());
+    }
+  }
 
   /// 释放地址输入框；原生 WebView 由其 Widget 在移除时释放。
   /// Disposes the address field; the native WebView is released when its widget is removed.
@@ -49,12 +60,43 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
     }
   }
 
+  Future<void> _loadInitialUrlIfReady() async {
+    final value = widget.initialUrl?.trim();
+    if (value == null || value.isEmpty || value == _requestedInitialUrl) {
+      return;
+    }
+    final uri = normalizeBrowserUrl(value);
+    if (uri == null) return;
+    if (!await isBrowserWebUriSafe(uri)) {
+      if (mounted) setState(() => _error = '已阻止无法确认安全性的地址。');
+      return;
+    }
+    final controller = _webView;
+    if (controller == null) return;
+    _requestedInitialUrl = value;
+    _address.value = TextEditingValue(
+      text: uri.toString(),
+      selection: TextSelection.collapsed(offset: uri.toString().length),
+    );
+    try {
+      await controller.loadUrl(
+        urlRequest: URLRequest(url: WebUri(uri.toString())),
+      );
+    } catch (error) {
+      if (mounted) setState(() => _error = '无法加载此地址：$error');
+    }
+  }
+
   /// 在系统默认浏览器中打开当前已加载的页面。
   /// Opens the currently loaded page in the system default browser.
   Future<void> openInDefaultBrowser() async {
     final uri = normalizeBrowserUrl(_address.text);
     if (uri == null) {
       if (mounted) setState(() => _error = '请输入有效的 HTTP 或 HTTPS 地址。');
+      return;
+    }
+    if (!await isBrowserWebUriSafe(uri)) {
+      if (mounted) setState(() => _error = '已阻止无法确认安全性的地址。');
       return;
     }
     bool opened;
@@ -138,6 +180,10 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
   /// Synchronizes a browser navigation into the address field.
   void updateUrl(WebUri? url) {
     if (!mounted || url == null) return;
+    if (!isBrowserWebUri(url)) {
+      setState(() => _error = '已阻止指向本机或私有网络的地址。');
+      return;
+    }
     final value = url.toString();
     setState(() {
       _address.value = TextEditingValue(
@@ -156,8 +202,13 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
     NavigationAction action,
   ) async {
     final url = action.request.url;
-    if (url == null || isBrowserWebUri(url)) {
+    if (url == null) return NavigationActionPolicy.CANCEL;
+    if (await isBrowserWebUriSafe(url)) {
       return NavigationActionPolicy.ALLOW;
+    }
+    if (url.scheme == 'http' || url.scheme == 'https') {
+      if (mounted) setState(() => _error = '已阻止指向本机或私有网络的地址。');
+      return NavigationActionPolicy.CANCEL;
     }
     bool opened;
     try {
@@ -200,14 +251,30 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
       onWebViewCreated: (controller) {
         _webView = controller;
         unawaited(refreshNavigationState());
+        unawaited(_loadInitialUrlIfReady());
       },
       onLoadStart: (controller, url) {
         if (!mounted) return;
+        if (url != null && !isBrowserWebUri(url)) {
+          unawaited(controller.stopLoading());
+          setState(() {
+            _loading = false;
+            _error = '已阻止指向本机或私有网络的地址。';
+          });
+          return;
+        }
         setState(() => _loading = true);
         updateUrl(url);
       },
       onLoadStop: (controller, url) {
         if (!mounted) return;
+        if (url != null && !isBrowserWebUri(url)) {
+          setState(() {
+            _loading = false;
+            _error = '已阻止指向本机或私有网络的地址。';
+          });
+          return;
+        }
         setState(() => _loading = false);
         updateUrl(url);
       },

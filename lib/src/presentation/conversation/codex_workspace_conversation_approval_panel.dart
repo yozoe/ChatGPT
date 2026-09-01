@@ -31,6 +31,21 @@ class ApprovalPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
+    final isBrowser = approval.kind == ApprovalKind.browser;
+    final icon = switch (approval.kind) {
+      ApprovalKind.browser => Icons.language,
+      ApprovalKind.command => Icons.terminal,
+      ApprovalKind.fileChange => Icons.edit_note,
+      ApprovalKind.permissions => Icons.lock_outline,
+    };
+    final displayTitle = switch (approval.kind) {
+      ApprovalKind.browser => 'Browser',
+      ApprovalKind.command => 'Terminal',
+      ApprovalKind.fileChange => '文件变更',
+      ApprovalKind.permissions => '权限请求',
+    };
+    final browserUrl = _browserUrlFromParams(approval.params);
+    final reason = approval.reason;
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.escape): () {
@@ -44,9 +59,9 @@ class ApprovalPanel extends StatelessWidget {
           child: Container(
             key: const Key('approval-panel'),
             width: double.infinity,
-            constraints: const BoxConstraints(maxWidth: 720),
-            margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-            padding: const EdgeInsets.fromLTRB(16, 14, 12, 12),
+            constraints: const BoxConstraints(maxWidth: 600),
+            margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            padding: const EdgeInsets.fromLTRB(14, 12, 10, 10),
             decoration: BoxDecoration(
               color: palette.raised,
               borderRadius: BorderRadius.circular(14),
@@ -65,12 +80,10 @@ class ApprovalPanel extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    Icon(Icons.terminal, size: 15, color: palette.muted),
+                    Icon(icon, size: 15, color: palette.muted),
                     const SizedBox(width: 7),
                     Text(
-                      approval.kind == ApprovalKind.permissions
-                          ? '权限请求'
-                          : approval.title,
+                      displayTitle,
                       style: TextStyle(
                         color: palette.trace,
                         fontSize: 13,
@@ -91,7 +104,18 @@ class ApprovalPanel extends StatelessWidget {
                             style: TextStyle(color: palette.signal),
                           ),
                         ],
-                        if (approval.reason case final reason?) ...[
+                        if (isBrowser && browserUrl != null) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            '允许 ChatGPT 访问 $browserUrl？',
+                            style: TextStyle(
+                              color: palette.trace,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                        if (!isBrowser && reason != null) ...[
                           const SizedBox(height: 9),
                           SelectableText(reason),
                         ],
@@ -138,7 +162,8 @@ class ApprovalPanel extends StatelessWidget {
                             ),
                           ),
                         ],
-                        if (approval.reason == null &&
+                        if (!isBrowser &&
+                            approval.reason == null &&
                             approval.command == null &&
                             approval.params['grantRoot'] == null &&
                             approval.params['networkApprovalContext'] == null &&
@@ -151,9 +176,26 @@ class ApprovalPanel extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 12),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
+                Wrap(
+                  alignment: WrapAlignment.end,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 6,
+                  runSpacing: 6,
                   children: [
+                    if (isBrowser)
+                      TextButton(
+                        key: const Key('approval-allow-all-sites'),
+                        onPressed: enabled ? onAllowSimilar : null,
+                        style: TextButton.styleFrom(
+                          foregroundColor: palette.muted,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 10,
+                          ),
+                          minimumSize: Size.zero,
+                        ),
+                        child: const Text('允许所有网站'),
+                      ),
                     OutlinedButton(
                       key: const Key('approval-decline'),
                       onPressed: enabled ? onDecline : null,
@@ -167,7 +209,6 @@ class ApprovalPanel extends StatelessWidget {
                       ),
                       child: const Text('拒绝  Esc'),
                     ),
-                    const SizedBox(width: 6),
                     FilledButton(
                       key: const Key('approval-allow-once'),
                       onPressed: enabled ? onAccept : null,
@@ -180,9 +221,9 @@ class ApprovalPanel extends StatelessWidget {
                         ),
                         minimumSize: Size.zero,
                       ),
-                      child: const Text('允许一次'),
+                      child: Text(isBrowser ? '允许一次  ↵' : '允许一次'),
                     ),
-                    if (approval.kind != ApprovalKind.fileChange)
+                    if (approval.kind != ApprovalKind.fileChange && !isBrowser)
                       PopupMenuButton<String>(
                         key: const Key('approval-more-options'),
                         tooltip: '更多允许选项',
@@ -190,10 +231,10 @@ class ApprovalPanel extends StatelessWidget {
                         padding: EdgeInsets.zero,
                         icon: const Icon(Icons.keyboard_arrow_down, size: 17),
                         onSelected: (_) => onAllowSimilar(),
-                        itemBuilder: (context) => const [
+                        itemBuilder: (context) => [
                           PopupMenuItem<String>(
                             value: 'similar',
-                            child: Text('允许类似操作'),
+                            child: Text(isBrowser ? '允许所有网站' : '允许类似操作'),
                           ),
                         ],
                       ),
@@ -205,5 +246,38 @@ class ApprovalPanel extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// Extracts the same supported browser URL shapes accepted by the
+  /// controller, including nested App Server payloads.
+  String? _browserUrlFromParams(Object? value) {
+    if (value is String) {
+      final uri = Uri.tryParse(value.trim());
+      if (uri != null &&
+          uri.hasAuthority &&
+          (uri.scheme == 'http' || uri.scheme == 'https')) {
+        return uri.toString();
+      }
+      return null;
+    }
+    if (value is! Map) return null;
+    const directKeys = [
+      'url',
+      'uri',
+      'href',
+      'targetUrl',
+      'target_url',
+      'initialUrl',
+      'initial_url',
+    ];
+    for (final key in directKeys) {
+      final candidate = _browserUrlFromParams(value[key]);
+      if (candidate != null) return candidate;
+    }
+    for (final key in ['action', 'request', 'input', 'payload', 'item']) {
+      final candidate = _browserUrlFromParams(value[key]);
+      if (candidate != null) return candidate;
+    }
+    return null;
   }
 }

@@ -6,11 +6,16 @@ import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation.dart';
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_support.dart';
+import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_subagent_avatar.dart';
 
 class CollaborationActivityBadge extends StatelessWidget {
-  const CollaborationActivityBadge({required this.label});
+  const CollaborationActivityBadge({
+    required this.label,
+    required this.agentId,
+  });
 
   final String label;
+  final String agentId;
 
   @override
   Widget build(BuildContext context) {
@@ -25,7 +30,7 @@ class CollaborationActivityBadge extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.auto_awesome, size: 14, color: palette.ack),
+          SubagentAvatar(agentId: agentId, size: 16),
           const SizedBox(width: 6),
           Flexible(
             child: Text(

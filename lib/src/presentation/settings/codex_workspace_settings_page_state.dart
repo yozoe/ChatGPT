@@ -84,14 +84,22 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
           ),
           const SizedBox(height: 24),
           Card(
-            child: ListTile(
-              leading: const Icon(Icons.auto_awesome_outlined),
-              title: const Text('智能体浏览器调用'),
+            child: SwitchListTile(
+              key: const Key('settings-browser-enabled'),
+              secondary: const Icon(Icons.auto_awesome_outlined),
+              title: const Text('允许智能体调用内置浏览器'),
               subtitle: const Text(
-                '当前 App Server 尚未提供 browser tool 协议。接入协议后，智能体发起浏览请求时会自动打开浏览器工作区。',
+                '任务中收到受支持的 browser/computer-use 请求时，会先请求批准；批准后打开浏览器工作区。',
               ),
-              trailing: const Chip(label: Text('等待协议接入')),
+              value: widget.controller.browserEnabled,
+              onChanged: (enabled) =>
+                  unawaited(widget.controller.setBrowserEnabled(enabled)),
             ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            '当前只接收 App Server 明确声明的 HTTP/HTTPS 导航请求；不会读取或复用 Chrome、Safari 的登录状态。',
+            style: TextStyle(color: palette.muted),
           ),
         ],
       ),

@@ -155,6 +155,9 @@ class ConversationTimeline extends StatelessWidget {
   Widget build(BuildContext context) {
     final timelineItems = conversationTimelineItems(data.entries);
     final liveActivity = active ? data.activeActivity : null;
+    final liveCollaborationActivities = active
+        ? data.activeCollaborationActivities
+        : const <LiveTurnActivity>[];
     final streamingAgentEntryId = active ? data.streamingAgentEntryId : null;
     // The growing reply is already its own live indicator. Rendering a second
     // "writing" row below it makes the entire reply move when item/completed
@@ -163,9 +166,13 @@ class ConversationTimeline extends StatelessWidget {
     final visibleLiveActivity =
         liveActivity?.kind == 'agentMessage' && streamingAgentEntryId != null
         ? null
+        : liveActivity?.kind == 'collabToolCall'
+        ? null
         : liveActivity;
     final activeTurnStartedAt = active ? data.activeTurnStartedAt : null;
-    final hasLiveStatus = visibleLiveActivity != null;
+    final liveStatusCount =
+        (visibleLiveActivity == null ? 0 : 1) +
+        (liveCollaborationActivities.isEmpty ? 0 : 1);
     var liveElapsedIndex = timelineItems.length;
     if (activeTurnStartedAt != null) {
       final firstTurnOutputIndex = timelineItems.indexWhere((item) {
@@ -224,7 +231,7 @@ class ConversationTimeline extends StatelessWidget {
     final itemCount =
         timelineItems.length +
         (activeTurnStartedAt == null ? 0 : 1) +
-        (hasLiveStatus ? 1 : 0) +
+        liveStatusCount +
         (data.showFileChangeSummary ? 1 : 0);
     final userMessages = timelineItems
         .map((item) => item.entry)
@@ -277,7 +284,7 @@ class ConversationTimeline extends StatelessWidget {
                       ValueKey('file-change-summary-${pageKey.storageKey}')) {
                     return timelineItems.length +
                         (activeTurnStartedAt == null ? 0 : 1) +
-                        (hasLiveStatus ? 1 : 0);
+                        liveStatusCount;
                   }
                   return null;
                 },
@@ -329,6 +336,25 @@ class ConversationTimeline extends StatelessWidget {
                                       ),
                                     ),
                             );
+                    }
+                    if (liveCollaborationActivities.isNotEmpty &&
+                        tailIndex-- == 0) {
+                      return LiveCollaborationActivitiesRow(
+                        activities: liveCollaborationActivities,
+                        onOpenSubagent: (activity) => onOpenSubagent(
+                          TimelineEntry(
+                            kind: TimelineKind.activity,
+                            title: activity.label,
+                            detail: activity.detail,
+                            createdAt: DateTime.now(),
+                            sourceItemId: activity.itemId,
+                            activityKind: 'collaboration',
+                            activityStatus: activity.status,
+                            linkedThreadId: activity.linkedThreadId,
+                            activityPrompt: activity.prompt,
+                          ),
+                        ),
+                      );
                     }
                     if (!data.showFileChangeSummary || tailIndex != 0) {
                       throw StateError(

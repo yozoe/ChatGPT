@@ -16,6 +16,7 @@ enum WorkspaceDestination {
   pullRequests,
   scheduledTasks,
   plugins,
+  agents,
   browser,
   settings,
 }

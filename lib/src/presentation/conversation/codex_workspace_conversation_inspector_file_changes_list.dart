@@ -31,25 +31,23 @@ class InspectorFileChangesList extends StatelessWidget {
         ),
       );
     }
-    return Scrollbar(
-      child: ListView(
-        padding: EdgeInsets.zero,
-        children: [
-          if (turnDiff case final diff?)
-            InspectorDiffExpansionTile(
-              title: '本次任务完整 Diff',
-              subtitle: '来自 Codex App Server',
-              diff: diff,
-            ),
-          ...changes.map(
-            (change) => InspectorDiffExpansionTile(
-              title: change.path,
-              subtitle: change.kind,
-              diff: change.diff,
-            ),
+    return ListView(
+      padding: EdgeInsets.zero,
+      children: [
+        if (turnDiff case final diff?)
+          InspectorDiffExpansionTile(
+            title: '本次任务完整 Diff',
+            subtitle: '来自 Codex App Server',
+            diff: diff,
           ),
-        ],
-      ),
+        ...changes.map(
+          (change) => InspectorDiffExpansionTile(
+            title: change.path,
+            subtitle: change.kind,
+            diff: change.diff,
+          ),
+        ),
+      ],
     );
   }
 }

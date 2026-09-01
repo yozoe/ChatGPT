@@ -40,6 +40,7 @@ class LiveTurnActivity {
     this.linkedThreadId,
     this.prompt = '',
     this.status,
+    this.isExternalBridge = false,
   });
 
   final String itemId;
@@ -49,4 +50,8 @@ class LiveTurnActivity {
   final String? linkedThreadId;
   final String prompt;
   final String? status;
+
+  /// Whether the activity originated from the workspace bridge instead of an
+  /// App Server child thread.
+  final bool isExternalBridge;
 }

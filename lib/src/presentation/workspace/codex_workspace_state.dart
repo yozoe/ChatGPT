@@ -7,6 +7,7 @@ import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.d
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
 import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_page.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_workspace_page.dart';
+import 'package:chatgpt/src/presentation/agents/codex_workspace_agents_page.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
 import 'package:flutter/scheduler.dart';
 
@@ -54,6 +55,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   // after its first use, but do not construct it during the initial frame.
   // 原生 WebView 在 macOS 上初始化成本较高；首次使用后保活，但首帧不创建。
   bool _browserPageMounted = false;
+  String? _browserInitialUrl;
+  int _browserNavigationRevision = 0;
   String? _selectedSubagentThreadId;
   String? _selectedSubagentParentThreadId;
   String _selectedSubagentTitle = '子智能体';
@@ -86,6 +89,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     _captureActiveTimelinePage();
     _controller.addListener(_handleControllerUpdate);
     _controller.setDockActivationHandler(_handleDockActivation);
+    _controller.setBrowserInvocationHandler(_handleBrowserInvocation);
     WidgetsBinding.instance.addObserver(this);
   }
 
@@ -100,9 +104,11 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     final previousController = _controller;
     previousController.removeListener(_handleControllerUpdate);
     previousController.setDockActivationHandler(null);
+    previousController.setBrowserInvocationHandler(null);
     _controller = nextController;
     _controller.addListener(_handleControllerUpdate);
     _controller.setDockActivationHandler(_handleDockActivation);
+    _controller.setBrowserInvocationHandler(_handleBrowserInvocation);
     _selectedSubagentThreadId = null;
     _selectedSubagentParentThreadId = null;
     _timelineScrollGeneration++;
@@ -129,6 +135,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _controller.setDockActivationHandler(null);
+    _controller.setBrowserInvocationHandler(null);
     _controller.removeListener(_handleControllerUpdate);
     _composer.dispose();
     _recordSkillRequest.dispose();
@@ -177,6 +184,17 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       return;
     }
     unawaited(_controller.acknowledgeCompletedThread(threadId));
+  }
+
+  /// Opens the embedded browser when the agent emits a supported browser request.
+  void _handleBrowserInvocation(String url) {
+    if (!mounted || !_controller.browserEnabled) return;
+    setState(() {
+      _browserInitialUrl = url;
+      _browserNavigationRevision++;
+      _browserPageMounted = true;
+      _destination = WorkspaceDestination.browser;
+    });
   }
 
   /// 响应控制器更新；显式注入时由工作区重建，Provider 场景仍由 ref.watch 重建。
@@ -259,17 +277,32 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   void _openSubagentInspector(TimelineEntry entry) {
     final threadId = entry.linkedThreadId;
     if (threadId == null || threadId.isEmpty) return;
+    _openSubagentThread(
+      threadId: threadId,
+      title: entry.title,
+      prompt: entry.activityPrompt ?? '',
+      status: entry.activityStatus ?? 'working',
+    );
+  }
+
+  void _openSubagentThread({
+    required String threadId,
+    required String title,
+    required String prompt,
+    required String status,
+  }) {
     setState(() {
       _selectedSubagentThreadId = threadId;
       _selectedSubagentParentThreadId = _controller.activeThreadId;
-      _selectedSubagentTitle = entry.title;
+      _selectedSubagentTitle = title;
+      _destination = WorkspaceDestination.conversation;
     });
     unawaited(
       _controller.loadSubagentThread(
         threadId: threadId,
-        title: entry.title,
-        prompt: entry.activityPrompt ?? '',
-        status: entry.activityStatus ?? 'working',
+        title: title,
+        prompt: prompt,
+        status: status,
       ),
     );
   }
@@ -530,6 +563,9 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
           _controller.status != RuntimeStatus.running &&
           _controller.fileChanges.isNotEmpty,
       activeActivity: _controller.activeLiveActivity,
+      activeCollaborationActivities: List.unmodifiable(
+        _controller.activeCollaborationActivities,
+      ),
       streamingAgentEntryId: _controller.activeStreamingAgentEntryId,
       activeTurnStartedAt: _controller.status == RuntimeStatus.running
           ? _controller.activeTurnStartedAt
@@ -2130,6 +2166,11 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     unawaited(_controller.refreshPlugins());
   }
 
+  void _showAgents() {
+    if (!mounted) return;
+    setState(() => _destination = WorkspaceDestination.agents);
+  }
+
   /// Opens the pull-request workspace without starting an unrequested Git
   /// process; the page exposes an explicit refresh control.
   Future<void> _showPullRequests() async {
@@ -2411,6 +2452,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                           onImportHistory: _importConversationHistory,
                           onShowGitProject: _showGitProject,
                           onShowPlugins: _showPluginsPage,
+                          onShowAgents: _showAgents,
                           onShowScheduledTasks: _showScheduledTasks,
                           onShowPullRequests: _showPullRequests,
                           onShowSettings: _showSettings,
@@ -2440,6 +2482,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                               _destination != WorkspaceDestination.browser,
                           child: BrowserWorkspacePage(
                             onOpenConversation: _showConversation,
+                            initialUrl: _browserInitialUrl,
+                            navigationRevision: _browserNavigationRevision,
                           ),
                         ),
                       if (_destination != WorkspaceDestination.browser)
@@ -2455,6 +2499,11 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                 onOpenSettings: _showPlugins,
                                 onCreatePlugin: _createPluginWithCodex,
                                 onRecordSkill: _recordSkillWithCodex,
+                              )
+                            : _destination == WorkspaceDestination.agents
+                            ? AgentsPage(
+                                controller: controller,
+                                onOpenSubagent: _openSubagentThread,
                               )
                             : _destination == WorkspaceDestination.pullRequests
                             ? PullRequestsPage(
@@ -2666,6 +2715,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                                     CodeReviewSource
                                                         .gitWorkspace,
                                                   ),
+                                              onShowAgents: _showAgents,
                                             ),
                                         ],
                                       ],

@@ -2,7 +2,7 @@ import 'package:chatgpt/src/services/codex_app_server.dart';
 
 /// App Server 可能向客户端请求确认的高风险操作类别。
 /// High-impact operation categories App Server may ask the client to approve.
-enum ApprovalKind { command, fileChange, permissions }
+enum ApprovalKind { command, fileChange, permissions, browser }
 
 /// 尚未得到用户或自动审批策略答复的 App Server 请求。
 /// An App Server request awaiting user or automatic-policy resolution.
@@ -34,6 +34,7 @@ class PendingApproval {
     ApprovalKind.command => '命令执行请求',
     ApprovalKind.fileChange => '文件变更请求',
     ApprovalKind.permissions => '额外权限请求',
+    ApprovalKind.browser => 'Browser',
   };
 
   /// 汇总服务器请求中的原因、命令及权限范围。
@@ -68,6 +69,7 @@ class PendingApproval {
       'item/commandExecution/requestApproval' => ApprovalKind.command,
       'item/fileChange/requestApproval' => ApprovalKind.fileChange,
       'item/permissions/requestApproval' => ApprovalKind.permissions,
+      'browser/open' || 'browser/navigate' => ApprovalKind.browser,
       _ => null,
     };
     if (kind == null) return null;

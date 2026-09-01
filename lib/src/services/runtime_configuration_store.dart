@@ -19,6 +19,7 @@ class RuntimeConfigurationStore {
   static const _reasoningEffortKey = 'codex_desk.reasoning_effort.v1';
   static const _modelKey = 'codex_desk.model.selected.v1';
   static const _approvalModeKey = 'codex_desk.approval_mode.v1';
+  static const _browserEnabledKey = 'codex_desk.browser.enabled.v1';
   static const _scheduledTasksKey = 'codex_desk.scheduled_tasks.v1';
 
   final CodexKeychainStorage _storage;
@@ -173,6 +174,18 @@ class RuntimeConfigurationStore {
   Future<void> saveApprovalMode(String? mode) {
     if (mode == null) return _storage.delete(key: _approvalModeKey);
     return _storage.write(key: _approvalModeKey, value: mode);
+  }
+
+  /// Reads whether agent-triggered in-app browser navigation is enabled.
+  Future<bool> readBrowserEnabled() async {
+    final stored = await _storage.read(key: _browserEnabledKey);
+    if (stored == null) return true;
+    return stored.trim().toLowerCase() != 'false';
+  }
+
+  /// Saves the local policy for agent-triggered in-app browser navigation.
+  Future<void> saveBrowserEnabled(bool enabled) {
+    return _storage.write(key: _browserEnabledKey, value: enabled.toString());
   }
 
   /// Reads locally scheduled prompts. Invalid entries are ignored so a damaged

@@ -74,6 +74,7 @@ flutter:
     - icon.png
     - assets/branding/codex-desk-icon-traced-light.svg
     - assets/branding/codex-desk-icon-traced-leaves.png
+    - assets/subagents/
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

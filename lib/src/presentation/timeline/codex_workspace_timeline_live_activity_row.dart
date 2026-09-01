@@ -38,7 +38,10 @@ class LiveActivityRow extends StatelessWidget {
             child: Row(
               children: [
                 Flexible(
-                  child: CollaborationActivityBadge(label: activity.label),
+                  child: CollaborationActivityBadge(
+                    label: activity.label,
+                    agentId: activity.linkedThreadId ?? activity.itemId,
+                  ),
                 ),
                 if (detail.isNotEmpty) ...[
                   const SizedBox(width: 7),

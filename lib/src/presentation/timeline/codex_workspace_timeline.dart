@@ -12,6 +12,7 @@ export 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_colla
 export 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_user_message_bubble.dart';
 export 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_user_message_bubble_state.dart';
 export 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_live_activity_row.dart';
+export 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_live_collaboration_activities_row.dart';
 export 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_live_command_row.dart';
 export 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_live_activity_shimmer.dart';
 export 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_live_activity_shimmer_state.dart';

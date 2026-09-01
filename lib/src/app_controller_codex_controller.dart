@@ -26,10 +26,12 @@ import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/services/clipboard_file_reader.dart';
 import 'package:chatgpt/src/services/codex_plugin_store.dart';
 import 'package:chatgpt/src/services/conversation_history_store.dart';
+import 'package:chatgpt/src/services/conversation_attachment_store.dart';
 import 'package:chatgpt/src/services/git_project_service.dart';
 import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'package:chatgpt/src/services/task_completion_notifier.dart';
+import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_url_normalizer.dart';
 import 'app_controller_support.dart';
 import 'app_controller_thread_archive_result.dart';
 import 'app_controller_live_turn_activity.dart';
@@ -53,6 +55,7 @@ class CodexController extends ChangeNotifier {
     CodexAppServer? server,
     RuntimeConfigurationStore? runtimeConfigurationStore,
     ConversationHistoryStore? conversationHistoryStore,
+    ConversationAttachmentStore? conversationAttachmentStore,
     LocalSessionThreadStore? localSessionThreadStore,
     CodexPluginStore? pluginStore,
     GitProjectService? gitProjectService,
@@ -66,6 +69,8 @@ class CodexController extends ChangeNotifier {
            conversationHistoryStore ??
            testingConversationHistoryStore ??
            ConversationHistoryStore(),
+       _conversationAttachmentStore =
+           conversationAttachmentStore ?? ConversationAttachmentStore(),
        _localSessionThreadStore =
            localSessionThreadStore ?? LocalSessionThreadStore(),
        _gitProjectService = gitProjectService ?? GitProjectService(),
@@ -90,6 +95,7 @@ class CodexController extends ChangeNotifier {
   static RuntimeConfigurationStore? testingRuntimeConfigurationStore;
   final RuntimeConfigurationStore _runtimeConfigurationStore;
   final ConversationHistoryStore _conversationHistoryStore;
+  final ConversationAttachmentStore _conversationAttachmentStore;
   final LocalSessionThreadStore _localSessionThreadStore;
   final GitProjectService _gitProjectService;
   final TaskCompletionNotifier _taskCompletionNotifier;
@@ -120,6 +126,7 @@ class CodexController extends ChangeNotifier {
   final Map<String, Timer> _subagentRefreshTimers = {};
   int _subagentViewRequestSequence = 0;
   final Set<String> _completedCommandItemIds = {};
+  final Set<String> _handledBrowserInvocationIds = {};
   Timer? _deltaNotificationTimer;
   Timer? _historySaveTimer;
   Future<void> _historySave = Future.value();
@@ -205,6 +212,9 @@ class CodexController extends ChangeNotifier {
   // is currently open in the workbench.
   final Set<String> _runningThreadIds = {};
   bool _preparingTurnStart = false;
+  // Prevent two submissions from both persisting attachments and racing to
+  // create/attach a thread while the first request is awaiting disk I/O.
+  bool _sendPromptInFlight = false;
   // Owning workspace for every thread that is still executing on the shared
   // App Server. This lets the foreground project change without losing the
   // background task's routing or completion reminder.
@@ -286,6 +296,13 @@ class CodexController extends ChangeNotifier {
     _taskCompletionNotifier.setDockActivationHandler(handler);
   }
 
+  /// Registers the workspace callback used when the agent requests a browser navigation.
+  void setBrowserInvocationHandler(void Function(String url)? handler) {
+    _browserInvocationHandler = handler;
+  }
+
+  void Function(String url)? _browserInvocationHandler;
+
   /// Persists that a completed thread was viewed, optionally clearing its Dock
   /// badge when the view was an explicit task open.
   Future<void> acknowledgeCompletedThread(
@@ -320,6 +337,13 @@ class CodexController extends ChangeNotifier {
   String? _activeCommand;
   String? _activeCommandItemId;
   LiveTurnActivity? _activeLiveActivity;
+  final LinkedHashMap<String, LiveTurnActivity> _liveCollaborationActivities =
+      LinkedHashMap();
+  final LinkedHashMap<String, LiveTurnActivity>
+  _bridgedCollaborationActivities = LinkedHashMap();
+  Timer? _collaborationBridgeTimer;
+  String? _collaborationBridgeWorkspace;
+  int _collaborationBridgeRequestSequence = 0;
   final Map<String, Map<int, String>> _reasoningSummaryParts = {};
   TaskPlan? activeTaskPlan;
   String? lastError;
@@ -514,6 +538,8 @@ class CodexController extends ChangeNotifier {
   bool get canRespondToElicitation =>
       pendingElicitation != null && !elicitationResponding;
   ApprovalMode approvalMode = ApprovalMode.manual;
+  bool browserEnabled = true;
+  bool _browserEnabledChangedBeforeLoad = false;
   bool _approvalModeChangedBeforeLoad = false;
   ReasoningEffort reasoningEffort = ReasoningEffort.defaultValue;
   List<ReasoningEffort> reasoningEffortOptions = const [
@@ -716,6 +742,90 @@ class CodexController extends ChangeNotifier {
   /// 返回不可修改的当前时间线副本视图。
   /// Returns an unmodifiable view of the current timeline.
   List<TimelineEntry> get entries => List.unmodifiable(_entries);
+
+  /// Replaces clipboard-owned image paths with durable local copies before a
+  /// user message becomes part of the persisted conversation history.
+  Future<
+    ({
+      List<String> imagePaths,
+      List<JsonMap> additionalInput,
+      List<String> createdImagePaths,
+    })
+  >
+  _persistTemporaryImageAttachments({
+    required List<String> imagePaths,
+    required List<JsonMap> additionalInput,
+  }) async {
+    final temporaryPaths = imagePaths
+        .where(_temporaryAttachmentPaths.contains)
+        .toSet();
+    if (temporaryPaths.isEmpty) {
+      return (
+        imagePaths: imagePaths,
+        additionalInput: additionalInput,
+        createdImagePaths: const <String>[],
+      );
+    }
+    final persisted = await _conversationAttachmentStore.persist(
+      temporaryPaths,
+    );
+    final persistedPaths = persisted.paths;
+    final durableImagePaths = imagePaths
+        .map((path) => persistedPaths[path] ?? path)
+        .toList(growable: false);
+    final durableAdditionalInput = additionalInput
+        .map((input) {
+          final path = input['path'];
+          if (input['type'] != 'localImage' || path is! String) return input;
+          final persistedPath = persistedPaths[path];
+          return persistedPath == null
+              ? input
+              : <String, dynamic>{...input, 'path': persistedPath};
+        })
+        .toList(growable: false);
+    return (
+      imagePaths: durableImagePaths,
+      additionalInput: durableAdditionalInput,
+      createdImagePaths: persisted.createdPaths,
+    );
+  }
+
+  /// Removes just-created durable copies after a rejected request, but only
+  /// once no timeline, retry, queue, or cached conversation references them.
+  Future<void> _discardUnreferencedPersistedImageAttachments(
+    Iterable<String> paths,
+  ) => _conversationAttachmentStore.delete(
+    paths.where((path) => !isAttachmentPathReferenced(path)),
+  );
+
+  /// Returns durable image paths owned by a thread before its local view is
+  /// removed. A cached view is used for inactive tasks; the foreground
+  /// timeline is used for the selected task.
+  Set<String> _attachmentPathsForThread(String threadId) {
+    final paths = <String>{};
+    if (activeThreadId == threadId) {
+      for (final entry in _entries) {
+        paths.addAll(entry.imagePaths);
+      }
+    }
+    final cached = _threadViewCache[threadId];
+    if (cached != null) {
+      for (final entry in cached.entries) {
+        paths.addAll(entry.imagePaths);
+      }
+    }
+    return paths;
+  }
+
+  Future<void> _reclaimUnreferencedThreadAttachments(
+    Iterable<String> paths,
+  ) async {
+    final candidates = paths
+        .where((path) => path.isNotEmpty && !isAttachmentPathReferenced(path))
+        .toList(growable: false);
+    if (candidates.isEmpty) return;
+    await _conversationAttachmentStore.deleteManaged(candidates);
+  }
 
   /// Transfers ownership of a clipboard-created file from a short-lived
   /// composer to the conversation controller.
@@ -1266,6 +1376,188 @@ class CodexController extends ChangeNotifier {
   /// "thinking" fallback instead of inventing a more specific explanation.
   LiveTurnActivity? get activeLiveActivity => _activeLiveActivity;
 
+  /// All concurrently running child agents reported by App Server or the
+  /// workspace collaboration bridge.
+  List<LiveTurnActivity> get activeCollaborationActivities =>
+      List.unmodifiable([
+        ..._liveCollaborationActivities.values,
+        ..._bridgedCollaborationActivities.values.where(
+          (bridged) => !_liveCollaborationActivities.values.any(
+            (live) => _sameCollaborationActivity(live, bridged),
+          ),
+        ),
+      ]);
+
+  bool _sameCollaborationActivity(
+    LiveTurnActivity left,
+    LiveTurnActivity right,
+  ) {
+    if (left.itemId == right.itemId) return true;
+    final leftThread = left.linkedThreadId;
+    final rightThread = right.linkedThreadId;
+    return leftThread != null &&
+        rightThread != null &&
+        leftThread.isNotEmpty &&
+        leftThread == rightThread;
+  }
+
+  /// Watches the optional project-local feed written by an outer collaboration
+  /// host. This bridges child agents that are not surfaced through the local
+  /// App Server protocol.
+  void _startCollaborationBridge(String workspace) {
+    _collaborationBridgeTimer?.cancel();
+    _collaborationBridgeTimer = null;
+    _collaborationBridgeWorkspace = workspace;
+    _bridgedCollaborationActivities.clear();
+    _collaborationBridgeRequestSequence++;
+    unawaited(_refreshCollaborationBridge());
+    _collaborationBridgeTimer = Timer.periodic(
+      const Duration(milliseconds: 500),
+      (_) => unawaited(_refreshCollaborationBridge()),
+    );
+  }
+
+  void _stopCollaborationBridge() {
+    _collaborationBridgeTimer?.cancel();
+    _collaborationBridgeTimer = null;
+    _collaborationBridgeWorkspace = null;
+    _bridgedCollaborationActivities.clear();
+    _collaborationBridgeRequestSequence++;
+  }
+
+  Future<void> _refreshCollaborationBridge() async {
+    final workspace = _collaborationBridgeWorkspace;
+    if (_disposed || workspace == null || workspace != workspacePath) return;
+    final request = ++_collaborationBridgeRequestSequence;
+    bool isCurrent() =>
+        !_disposed &&
+        request == _collaborationBridgeRequestSequence &&
+        workspace == _collaborationBridgeWorkspace &&
+        workspace == workspacePath;
+    try {
+      final file = File(
+        '$workspace${Platform.pathSeparator}.codex${Platform.pathSeparator}codex-desk-collaboration.json',
+      );
+      if (!await file.exists()) {
+        if (!isCurrent()) return;
+        if (_bridgedCollaborationActivities.isNotEmpty) {
+          _bridgedCollaborationActivities.clear();
+          notifyListeners();
+        }
+        return;
+      }
+      final decoded = jsonDecode(await file.readAsString());
+      final values = decoded is Map ? decoded['activities'] : null;
+      if (values is! Iterable || !isCurrent()) return;
+      final next = <String, LiveTurnActivity>{};
+      var timelineChanged = false;
+      for (final value in values) {
+        if (value is! Map) continue;
+        final id = _label(value['id']);
+        if (id.isEmpty) continue;
+        final statusResult = _collaborationStatus(
+          JsonMap.from(value),
+          live: true,
+        );
+        final title = _label(value['title']);
+        final linkedThreadId = _firstNonEmptyLabel([
+          value['newThreadId'],
+          value['new_thread_id'],
+          value['receiverThreadId'],
+          value['receiver_thread_id'],
+          value['threadId'],
+          value['thread_id'],
+        ]);
+        final stableThreadId = linkedThreadId.isEmpty
+            ? 'external-bridge-$id'
+            : linkedThreadId;
+        final bridgeItem = <String, dynamic>{
+          'id': 'external-bridge-$id',
+          'type': 'collabToolCall',
+          'status': statusResult.$1,
+          'title': title,
+          'prompt': _label(value['prompt']),
+          'newThreadId': stableThreadId,
+          'agentStatus': {'status': statusResult.$1, 'name': title},
+        };
+        final sourceItemId = 'external-bridge-$id';
+        final beforeIndex = _conversationActivityIndexForSourceOrThread(
+          sourceItemId,
+          stableThreadId,
+          activityKind: 'collaboration',
+        );
+        final before = beforeIndex >= 0 ? _entries[beforeIndex] : null;
+        // Promote bridge lifecycle events to the same durable timeline used by
+        // App Server events. This makes "已开始工作" visible immediately and
+        // preserves completed/failed rows across hot restart.
+        _appendConversationActivityItem(JsonMap.from(bridgeItem));
+        final afterIndex = _conversationActivityIndexForSourceOrThread(
+          sourceItemId,
+          stableThreadId,
+          activityKind: 'collaboration',
+        );
+        final after = afterIndex >= 0 ? _entries[afterIndex] : null;
+        if (before == null ||
+            after == null ||
+            before.title != after.title ||
+            before.detail != after.detail ||
+            before.activityStatus != after.activityStatus ||
+            before.activityPrompt != after.activityPrompt ||
+            before.linkedThreadId != after.linkedThreadId) {
+          timelineChanged = true;
+        }
+        if (statusResult.$1 == 'working') {
+          next[id] = LiveTurnActivity(
+            itemId: 'external-bridge-$id',
+            kind: 'collabToolCall',
+            label: title.isEmpty ? '外部子智能体' : title,
+            detail: statusResult.$2,
+            linkedThreadId: stableThreadId,
+            prompt: _label(value['prompt']),
+            status: 'working',
+            isExternalBridge: true,
+          );
+        }
+      }
+      if (!isCurrent()) return;
+      final changed =
+          next.length != _bridgedCollaborationActivities.length ||
+          next.entries.any(
+            (entry) =>
+                _bridgedCollaborationActivities[entry.key]?.label !=
+                    entry.value.label ||
+                _bridgedCollaborationActivities[entry.key]?.detail !=
+                    entry.value.detail ||
+                _bridgedCollaborationActivities[entry.key]?.status !=
+                    entry.value.status ||
+                _bridgedCollaborationActivities[entry.key]?.linkedThreadId !=
+                    entry.value.linkedThreadId ||
+                _bridgedCollaborationActivities[entry.key]?.prompt !=
+                    entry.value.prompt,
+          );
+      if (!changed && !timelineChanged) return;
+      _bridgedCollaborationActivities
+        ..clear()
+        ..addAll(next);
+      notifyListeners();
+    } catch (_) {
+      // A partially written bridge feed is retried on the next poll.
+    }
+  }
+
+  String _firstNonEmptyLabel(Iterable<Object?> values) {
+    for (final value in values) {
+      final label = _label(value);
+      if (label.isNotEmpty) return label;
+    }
+    return '';
+  }
+
+  @visibleForTesting
+  Future<void> refreshCollaborationBridgeForTesting() {
+    return _refreshCollaborationBridge();
+  }
+
   /// 当前仍接收增量的 Agent 时间线条目 ID；item 完成后立即清除。
   /// Timeline-entry ID for the agent message still receiving deltas. It is
   /// cleared as soon as App Server completes that item.
@@ -1601,6 +1893,7 @@ class CodexController extends ChangeNotifier {
     _workspaceProjectId = existingIndex < 0
         ? _workspaceConfigurations.last.id
         : _workspaceConfigurations[existingIndex].id;
+    _startCollaborationBridge(canonicalPath);
     _additionalWorkspacePaths
       ..clear()
       ..addAll(nextAdditionalPaths.where((path) => path != canonicalPath));
@@ -1991,6 +2284,7 @@ class CodexController extends ChangeNotifier {
     _clearThreadWriterConflict();
     _clearArchivedThreadRestore();
     workspacePath = null;
+    _stopCollaborationBridge();
     _resetMcpServersForWorkspaceChange();
     _gitProjectRefreshRequest++;
     _gitDiffRefreshRequest++;
@@ -2352,15 +2646,75 @@ class CodexController extends ChangeNotifier {
     List<String> imagePaths = const [],
     bool rollbackUserEntryOnFailure = false,
   }) async {
+    if (_sendPromptInFlight) return false;
+    _sendPromptInFlight = true;
+    try {
+      return await _sendPromptInternal(
+        prompt,
+        additionalInput: additionalInput,
+        goal: goal,
+        planMode: planMode,
+        imagePaths: imagePaths,
+        rollbackUserEntryOnFailure: rollbackUserEntryOnFailure,
+      );
+    } finally {
+      _sendPromptInFlight = false;
+    }
+  }
+
+  Future<bool> _sendPromptInternal(
+    String prompt, {
+    List<JsonMap> additionalInput = const [],
+    String? goal,
+    bool planMode = false,
+    List<String> imagePaths = const [],
+    bool rollbackUserEntryOnFailure = false,
+  }) async {
     final text = prompt.trim();
-    if (text.isEmpty || !canSend) return false;
+    final requestWorkspace = workspacePath;
+    final requestThread = activeThreadId;
+    final requestRevision = _conversationViewRevision;
+    if (text.isEmpty || !canSend || requestWorkspace == null) return false;
     if (activeThreadId != null && !_activeThreadAttached) {
       lastError = '当前历史任务尚未恢复，请先点击左侧任务后再发送。';
       _add(TimelineKind.error, '无法继续历史任务', lastError!);
       notifyListeners();
       return false;
     }
-    final workspace = workspacePath!;
+    late ({
+      List<String> imagePaths,
+      List<JsonMap> additionalInput,
+      List<String> createdImagePaths,
+    })
+    persistedAttachments;
+    try {
+      persistedAttachments = await _persistTemporaryImageAttachments(
+        imagePaths: imagePaths,
+        additionalInput: additionalInput,
+      );
+    } catch (error) {
+      lastError = '无法保存已发送图片：${_messageOf(error)}';
+      _add(TimelineKind.error, '无法发送任务', lastError!);
+      notifyListeners();
+      return false;
+    }
+    // Persistence is asynchronous. If the user switched project/task while
+    // it was running, discard the newly-created copies and leave the current
+    // conversation untouched rather than sending to the wrong workspace.
+    if (_disposed ||
+        workspacePath != requestWorkspace ||
+        activeThreadId != requestThread ||
+        _conversationViewRevision != requestRevision ||
+        !canSend) {
+      await _conversationAttachmentStore.delete(
+        persistedAttachments.createdImagePaths,
+      );
+      return false;
+    }
+    final persistedImagePaths = persistedAttachments.imagePaths;
+    final persistedAdditionalInput = persistedAttachments.additionalInput;
+    final createdImagePaths = persistedAttachments.createdImagePaths;
+    final workspace = requestWorkspace;
     final previousFileChanges = List<CodexFileChange>.of(fileChanges);
     final previousTurnDiff = turnDiff;
     if (activeThreadId == null) {
@@ -2375,7 +2729,7 @@ class CodexController extends ChangeNotifier {
       TimelineKind.user,
       '你',
       text,
-      imagePaths: imagePaths,
+      imagePaths: persistedImagePaths,
     );
     notifyListeners();
 
@@ -2407,10 +2761,10 @@ class CodexController extends ChangeNotifier {
         workspace: workspace,
         threadId: threadId,
         prompt: text,
-        additionalInput: additionalInput,
+        additionalInput: persistedAdditionalInput,
         goal: objective == null || objective.isEmpty ? null : objective,
         collaborationMode: collaborationMode,
-        imagePaths: imagePaths,
+        imagePaths: persistedImagePaths,
       );
       _failedTurnRetries.remove(threadId);
       _runningTurnSubmissions[threadId] = submission;
@@ -2451,7 +2805,7 @@ class CodexController extends ChangeNotifier {
         threadId: threadId,
         prompt: text,
         workingDirectory: workspace,
-        additionalInput: additionalInput,
+        additionalInput: persistedAdditionalInput,
         collaborationMode: collaborationMode,
       );
       notifyListeners();
@@ -2486,6 +2840,7 @@ class CodexController extends ChangeNotifier {
         lastError = failureMessage;
         _add(TimelineKind.error, '任务未能启动', lastError!);
       }
+      await _discardUnreferencedPersistedImageAttachments(createdImagePaths);
     }
     if (status == RuntimeStatus.failed) _scheduleRuntimeReconnect();
     notifyListeners();
@@ -2668,6 +3023,39 @@ class CodexController extends ChangeNotifier {
     if (text.isEmpty || !canSteer || threadId == null || turnId == null) {
       return false;
     }
+    late ({
+      List<String> imagePaths,
+      List<JsonMap> additionalInput,
+      List<String> createdImagePaths,
+    })
+    persistedAttachments;
+    try {
+      persistedAttachments = await _persistTemporaryImageAttachments(
+        imagePaths: imagePaths,
+        additionalInput: additionalInput,
+      );
+    } catch (error) {
+      lastError = '无法保存已发送图片：${_messageOf(error)}';
+      _add(TimelineKind.error, '调整方向失败', lastError!);
+      notifyListeners();
+      return false;
+    }
+    // Attachment persistence can yield after the active turn completed or
+    // the user switched workspaces. Never steer a different turn in that
+    // case; remove only the copies created by this attempt.
+    if (_disposed ||
+        workspacePath != workspace ||
+        activeThreadId != threadId ||
+        activeTurnId != turnId ||
+        !canSteer) {
+      await _conversationAttachmentStore.delete(
+        persistedAttachments.createdImagePaths,
+      );
+      return false;
+    }
+    final persistedImagePaths = persistedAttachments.imagePaths;
+    final persistedAdditionalInput = persistedAttachments.additionalInput;
+    final createdImagePaths = persistedAttachments.createdImagePaths;
     lastError = null;
     // Preserve the position at which the user sent this direction. App Server
     // can acknowledge `turn/steer` after the same turn's completion event, but
@@ -2679,7 +3067,7 @@ class CodexController extends ChangeNotifier {
       TimelineKind.user,
       '你',
       text,
-      imagePaths: imagePaths,
+      imagePaths: persistedImagePaths,
     );
     final equivalentDirectionCount = _equivalentUserEntryCount(directionEntry);
     try {
@@ -2687,7 +3075,7 @@ class CodexController extends ChangeNotifier {
         threadId: threadId,
         expectedTurnId: turnId,
         prompt: text,
-        additionalInput: additionalInput,
+        additionalInput: persistedAdditionalInput,
       );
       final stillSameConversation =
           !_disposed &&
@@ -2714,6 +3102,7 @@ class CodexController extends ChangeNotifier {
       }
       return true;
     } catch (error) {
+      await _discardUnreferencedPersistedImageAttachments(createdImagePaths);
       if (!_disposed &&
           workspacePath == workspace &&
           status == RuntimeStatus.running &&
@@ -3397,6 +3786,10 @@ class CodexController extends ChangeNotifier {
     final previousActiveCommand = _activeCommand;
     final previousActiveCommandItemId = _activeCommandItemId;
     final previousActiveLiveActivity = _activeLiveActivity;
+    final previousLiveCollaborationActivities =
+        LinkedHashMap<String, LiveTurnActivity>.of(
+          _liveCollaborationActivities,
+        );
     final previousActiveStreamingAgentItemId = _activeStreamingAgentItemId;
     final previousTaskPlan = activeTaskPlan;
     final previousAgentEntryIndices = Map<String, int>.of(
@@ -3512,6 +3905,9 @@ class CodexController extends ChangeNotifier {
         _activeCommand = previousActiveCommand;
         _activeCommandItemId = previousActiveCommandItemId;
         _activeLiveActivity = previousActiveLiveActivity;
+        _liveCollaborationActivities
+          ..clear()
+          ..addAll(previousLiveCollaborationActivities);
         _activeStreamingAgentItemId = previousActiveStreamingAgentItemId;
         activeTaskPlan = previousTaskPlan;
         _agentEntryIndexByItem
@@ -3627,6 +4023,10 @@ class CodexController extends ChangeNotifier {
     final candidates = <String, CodexThread>{
       for (final thread in selected) thread.id: thread,
     }.values.toList(growable: false);
+    final attachmentPathsByThread = <String, Set<String>>{
+      for (final thread in candidates)
+        thread.id: _attachmentPathsForThread(thread.id),
+    };
     final runningThreadIds = candidates
         .where(isThreadExecutionActive)
         .map((thread) => thread.id)
@@ -3719,6 +4119,9 @@ class CodexController extends ChangeNotifier {
           _resetConversationTimeline();
           _clearStreamingState();
         }
+        await _reclaimUnreferencedThreadAttachments(
+          attachmentPathsByThread[thread.id] ?? const <String>{},
+        );
       }
       if (archivedIds.isNotEmpty) {
         _scheduleConversationHistorySave();
@@ -3763,6 +4166,7 @@ class CodexController extends ChangeNotifier {
       return;
     }
     if (!_disposed) notifyListeners();
+    final attachmentPaths = _attachmentPathsForThread(thread.id);
     try {
       await _server.deleteThread(threadId: thread.id);
       threads = threads
@@ -3788,6 +4192,7 @@ class CodexController extends ChangeNotifier {
         _resetConversationTimeline();
         _clearStreamingState();
       }
+      await _reclaimUnreferencedThreadAttachments(attachmentPaths);
       _scheduleConversationHistorySave();
       _add(TimelineKind.system, '任务已永久删除', thread.title);
       await Future.wait([
@@ -4052,6 +4457,10 @@ class CodexController extends ChangeNotifier {
         approval.requestId,
         _approvalResult(approval, accepted, allowSimilar: allowSimilar),
       );
+      if (accepted && approval.kind == ApprovalKind.browser) {
+        final url = _browserUrlFromParams(approval.params);
+        if (url != null) _emitBrowserInvocationForApproval(approval, url);
+      }
       if (approval.threadId == null || approval.threadId == activeThreadId) {
         _add(
           TimelineKind.system,
@@ -4071,6 +4480,13 @@ class CodexController extends ChangeNotifier {
       approvalResponding = false;
       notifyListeners();
     }
+  }
+
+  void _emitBrowserInvocationForApproval(PendingApproval approval, String url) {
+    if (!browserEnabled) return;
+    final key = 'approval:${approval.requestId}:$url';
+    if (!_handledBrowserInvocationIds.add(key)) return;
+    _browserInvocationHandler?.call(url);
   }
 
   /// Responds to a structured input or URL confirmation requested by an MCP
@@ -4143,11 +4559,55 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// Enables or disables agent-triggered in-app browser navigation.
+  Future<void> setBrowserEnabled(bool enabled) async {
+    _browserEnabledChangedBeforeLoad = true;
+    browserEnabled = enabled;
+    if (!enabled) {
+      _handledBrowserInvocationIds.clear();
+      _rejectPendingBrowserApprovals();
+    }
+    notifyListeners();
+    try {
+      await _runtimeConfigurationStore.saveBrowserEnabled(enabled);
+    } catch (error) {
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '无法保存浏览器设置', lastError!);
+      if (!_disposed) notifyListeners();
+    }
+  }
+
   /// 路由 App Server 事件，并更新时间线、审批和运行时状态。
   /// Routes an App Server event and updates timeline, approval, and runtime state.
   void _handleServerEvent(ServerEvent event) {
     if (_disposed) return;
     if (event.isServerRequest) {
+      if (event.method == 'browser/open' ||
+          event.method == 'browser/navigate') {
+        final browserApproval = PendingApproval.fromEvent(event);
+        if (!browserEnabled) {
+          _server.respondError(event.requestId!, '内置浏览器调用已在设置中关闭。');
+        } else if (browserApproval == null ||
+            _browserUrlFromParams(event.params) == null) {
+          _server.respondError(
+            event.requestId!,
+            '此浏览器请求缺少有效的 HTTP 或 HTTPS 地址。',
+          );
+        } else {
+          _pendingApprovals[browserApproval.requestId] = browserApproval;
+          approvalResponding = false;
+          if (browserApproval.threadId == null ||
+              browserApproval.threadId == activeThreadId) {
+            _add(
+              TimelineKind.approval,
+              browserApproval.title,
+              browserApproval.detail,
+            );
+          }
+        }
+        notifyListeners();
+        return;
+      }
       if (event.method == 'mcpServer/elicitation/request') {
         final elicitation = PendingElicitation.fromEvent(event);
         if (elicitation == null) {
@@ -4328,6 +4788,9 @@ class CodexController extends ChangeNotifier {
         // 只有进程退出才会使连接失败；单个 turn 失败仍可继续复用当前连接。
         // Only process exit fails the connection; an individual failed turn remains recoverable in-place.
         _runtimeConnectionEpoch++;
+        // A restarted runtime may legitimately reuse request IDs. Do not let
+        // stale de-duplication state suppress the first navigation after reconnect.
+        _handledBrowserInvocationIds.clear();
         _invalidateSubagentViewsForRuntimeChange();
         for (final turn in _runningTurnIdsByThread.entries.toList()) {
           _markNetworkRetryActivitiesHistorical(
@@ -4365,6 +4828,50 @@ class CodexController extends ChangeNotifier {
         break;
     }
     notifyListeners();
+  }
+
+  String? _browserUrlFromParams(Object? value) {
+    if (value is String) {
+      final uri = normalizeBrowserUrl(value);
+      if (uri != null) return uri.toString();
+      return null;
+    }
+    if (value is! Map) return null;
+    const directKeys = [
+      'url',
+      'uri',
+      'href',
+      'targetUrl',
+      'target_url',
+      'initialUrl',
+      'initial_url',
+    ];
+    for (final key in directKeys) {
+      final candidate = _browserUrlFromParams(value[key]);
+      if (candidate != null) return candidate;
+    }
+    for (final key in ['action', 'request', 'input', 'payload', 'item']) {
+      final candidate = _browserUrlFromParams(value[key]);
+      if (candidate != null) return candidate;
+    }
+    return null;
+  }
+
+  /// Declines browser requests that were awaiting a user decision when the
+  /// capability is disabled, so the App Server never waits for an orphaned
+  /// approval card.
+  void _rejectPendingBrowserApprovals() {
+    final pendingBrowserApprovals = _pendingApprovals.values
+        .where((approval) => approval.kind == ApprovalKind.browser)
+        .toList(growable: false);
+    for (final approval in pendingBrowserApprovals) {
+      _server.respond(approval.requestId, _approvalResult(approval, false));
+      _pendingApprovals.remove(approval.requestId);
+      if (approval.threadId == null || approval.threadId == activeThreadId) {
+        _add(TimelineKind.system, '已拒绝浏览器访问', '内置浏览器调用已在设置中关闭。');
+      }
+    }
+    approvalResponding = false;
   }
 
   /// Keeps an already-open subagent inspector synchronized with its thread
@@ -4517,7 +5024,8 @@ class CodexController extends ChangeNotifier {
   }) {
     final persistentApproval =
         approval.kind == ApprovalKind.command ||
-        approval.kind == ApprovalKind.permissions;
+        approval.kind == ApprovalKind.permissions ||
+        approval.kind == ApprovalKind.browser;
     final persist = accepted && allowSimilar && persistentApproval;
     return switch (approval.kind) {
       ApprovalKind.command || ApprovalKind.fileChange => {
@@ -4530,6 +5038,10 @@ class CodexController extends ChangeNotifier {
             ? JsonMap.from(approval.params['permissions'] as Map)
             : <String, dynamic>{},
         if (accepted) 'scope': persist ? 'session' : 'turn',
+      },
+      ApprovalKind.browser => {
+        'accepted': accepted,
+        'scope': persist ? 'session' : 'turn',
       },
     };
   }
@@ -5207,6 +5719,12 @@ class CodexController extends ChangeNotifier {
       _reasoningSummaryParts.remove(activity.itemId);
     }
     _activeLiveActivity = activity;
+    if (activity.kind == 'collabToolCall') {
+      final collaborationId = _collaborationActivityId(item);
+      if (collaborationId.isNotEmpty) {
+        _liveCollaborationActivities[collaborationId] = activity;
+      }
+    }
     if (activity.kind == 'commandExecution') {
       _activeCommand = activity.detail;
       _activeCommandItemId = activity.itemId;
@@ -5222,6 +5740,12 @@ class CodexController extends ChangeNotifier {
     if (rawItem is! Map) return;
     final item = JsonMap.from(rawItem);
     final itemId = _label(item['id']);
+    if (item['type']?.toString() == 'collabToolCall') {
+      final collaborationId = _collaborationActivityId(item);
+      if (collaborationId.isNotEmpty) {
+        _liveCollaborationActivities.remove(collaborationId);
+      }
+    }
     if (item['type']?.toString() == 'agentMessage' && itemId.isNotEmpty) {
       final phase = _label(item['phase']);
       if (phase.isNotEmpty) {
@@ -5747,7 +6271,11 @@ class CodexController extends ChangeNotifier {
     String? linkedThreadId,
     String? activityPrompt,
   }) {
-    final index = _conversationActivityIndex(sourceItemId);
+    final index = _conversationActivityIndexForSourceOrThread(
+      sourceItemId,
+      linkedThreadId,
+      activityKind: activityKind,
+    );
     if (index >= 0) {
       _entries[index] = _entries[index].copyWith(
         title: title,
@@ -5778,6 +6306,23 @@ class CodexController extends ChangeNotifier {
       (entry) =>
           entry.kind == TimelineKind.activity &&
           entry.sourceItemId == sourceItemId,
+    );
+  }
+
+  int _conversationActivityIndexForSourceOrThread(
+    String sourceItemId,
+    String? linkedThreadId, {
+    String? activityKind,
+  }) {
+    final sourceIndex = _conversationActivityIndex(sourceItemId);
+    if (sourceIndex >= 0 || linkedThreadId == null || linkedThreadId.isEmpty) {
+      return sourceIndex;
+    }
+    return _entries.lastIndexWhere(
+      (entry) =>
+          entry.kind == TimelineKind.activity &&
+          (activityKind == null || entry.activityKind == activityKind) &&
+          entry.linkedThreadId == linkedThreadId,
     );
   }
 
@@ -5856,6 +6401,8 @@ class CodexController extends ChangeNotifier {
     final normalized = switch (rawStatus) {
       'pending' ||
       'starting' ||
+      'started' ||
+      'active' ||
       'inprogress' ||
       'running' ||
       'working' => 'working',
@@ -6574,6 +7121,7 @@ class CodexController extends ChangeNotifier {
         _runtimeConfigurationStore.readModel(),
         _runtimeConfigurationStore.readPinnedWorkspaces(),
         _runtimeConfigurationStore.readApprovalMode(),
+        _runtimeConfigurationStore.readBrowserEnabled(),
         _runtimeConfigurationStore.readScheduledTasks(),
       ]);
       final executable = values[0] as String?;
@@ -6594,9 +7142,12 @@ class CodexController extends ChangeNotifier {
       if (!_approvalModeChangedBeforeLoad) {
         approvalMode = approvalModeFromStorageValue(values[4] as String?);
       }
+      if (!_browserEnabledChangedBeforeLoad) {
+        browserEnabled = values[5] as bool? ?? true;
+      }
       _scheduledTasks
         ..clear()
-        ..addAll(values[5] as List<ScheduledTask>);
+        ..addAll(values[6] as List<ScheduledTask>);
       _scheduledTasks.sort((left, right) => left.runAt.compareTo(right.runAt));
       for (final task in _scheduledTasks) {
         _armScheduledTask(task);
@@ -7159,7 +7710,10 @@ class CodexController extends ChangeNotifier {
   Future<void> _loadConversationHistory() async {
     await _workspaceLoad;
     final workspace = workspacePath;
-    if (workspace != null) await _restoreConversationHistory(workspace);
+    if (workspace != null) {
+      _startCollaborationBridge(workspace);
+      await _restoreConversationHistory(workspace);
+    }
   }
 
   /// 将指定项目的已缓存线程、时间线和 Diff 恢复到界面状态。
@@ -7370,6 +7924,7 @@ class CodexController extends ChangeNotifier {
     _activeCommand = null;
     _activeCommandItemId = null;
     _activeLiveActivity = null;
+    _liveCollaborationActivities.clear();
     _reasoningSummaryParts.clear();
     activeTaskPlan = null;
     _deltaNotificationTimer?.cancel();
@@ -7702,6 +8257,7 @@ class CodexController extends ChangeNotifier {
       timer.cancel();
     }
     _subagentRefreshTimers.clear();
+    _stopCollaborationBridge();
     _runtimeConnectionEpoch++;
     unawaited(_saveConversationHistory());
     _disposed = true;

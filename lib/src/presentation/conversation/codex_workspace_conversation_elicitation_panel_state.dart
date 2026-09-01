@@ -70,6 +70,9 @@ class ElicitationPanelState extends State<ElicitationPanel> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.elicitation.mode == ElicitationMode.url) {
+      return _buildUrlPermissionCard(context);
+    }
     final palette = YeknomPalette.of(context);
     final elicitation = widget.elicitation;
     return Container(
@@ -154,6 +157,117 @@ class ElicitationPanelState extends State<ElicitationPanel> {
                       child: Text(
                         elicitation.mode == ElicitationMode.url ? '继续' : '提交',
                       ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildUrlPermissionCard(BuildContext context) {
+    final palette = YeknomPalette.of(context);
+    final elicitation = widget.elicitation;
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): () {
+          if (widget.enabled) {
+            unawaited(widget.onRespond(action: 'decline'));
+          }
+        },
+      },
+      child: Focus(
+        autofocus: true,
+        child: Align(
+          alignment: Alignment.bottomCenter,
+          child: Container(
+            key: const Key('mcp-elicitation-panel'),
+            width: double.infinity,
+            constraints: const BoxConstraints(maxWidth: 600),
+            margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            padding: const EdgeInsets.fromLTRB(14, 12, 10, 10),
+            decoration: BoxDecoration(
+              color: palette.raised,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: palette.controlBorder),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x55000000),
+                  blurRadius: 18,
+                  offset: Offset(0, 8),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.language, size: 15, color: palette.muted),
+                    const SizedBox(width: 7),
+                    Text(
+                      'Browser',
+                      style: TextStyle(
+                        color: palette.trace,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                SelectableText(
+                  elicitation.message,
+                  style: TextStyle(
+                    color: palette.trace,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                SelectableText(
+                  elicitation.url!,
+                  style: TextStyle(color: palette.signal, fontSize: 12),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    OutlinedButton(
+                      key: const Key('mcp-elicitation-decline'),
+                      onPressed: widget.enabled
+                          ? () => widget.onRespond(action: 'decline')
+                          : null,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: palette.muted,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
+                        minimumSize: Size.zero,
+                      ),
+                      child: const Text('拒绝  Esc'),
+                    ),
+                    const SizedBox(width: 6),
+                    FilledButton(
+                      key: const Key('mcp-elicitation-accept'),
+                      onPressed: widget.enabled
+                          ? () => widget.onRespond(action: 'accept')
+                          : null,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: palette.field,
+                        foregroundColor: palette.trace,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
+                        minimumSize: Size.zero,
+                      ),
+                      child: const Text('允许一次  ↵'),
                     ),
                   ],
                 ),

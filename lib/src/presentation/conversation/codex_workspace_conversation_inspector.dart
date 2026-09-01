@@ -11,17 +11,20 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_inspector_action_row.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_inspector_thread_row.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_inspector_file_changes_list.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_inspector_subagents_summary.dart';
 
 class Inspector extends StatelessWidget {
   const Inspector({
     required this.width,
     required this.controller,
     required this.onShowGitProject,
+    required this.onShowAgents,
   });
 
   final double width;
   final CodexController controller;
   final Future<void> Function() onShowGitProject;
+  final VoidCallback onShowAgents;
 
   /// 构建采用 Codex 信息卡层级的审批与文件变更检查器。
   /// Builds the approval and file-change inspector with Codex information-card hierarchy.
@@ -101,6 +104,13 @@ class Inspector extends StatelessWidget {
                       color: palette.muted,
                     ),
                     onTap: onShowGitProject,
+                  ),
+                  const SizedBox(height: 16),
+                  Divider(height: 1, color: palette.border),
+                  const SizedBox(height: 16),
+                  InspectorSubagentsSummary(
+                    controller: controller,
+                    onShowAll: onShowAgents,
                   ),
                   const SizedBox(height: 16),
                   Divider(height: 1, color: palette.border),
