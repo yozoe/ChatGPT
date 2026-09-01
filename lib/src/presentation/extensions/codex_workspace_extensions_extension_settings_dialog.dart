@@ -12,11 +12,16 @@ class ExtensionSettingsDialog extends StatefulWidget {
     required this.controller,
     required this.onAddMarketplace,
     required this.onManageMarketplaces,
+    this.embedded = false,
   });
 
   final CodexController controller;
   final Future<void> Function() onAddMarketplace;
   final Future<void> Function() onManageMarketplaces;
+
+  /// Renders the same management controls in a settings content pane instead
+  /// of wrapping them in a dialog.
+  final bool embedded;
 
   @override
   State<ExtensionSettingsDialog> createState() =>

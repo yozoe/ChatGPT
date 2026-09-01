@@ -12,7 +12,8 @@ import 'package:flutter/scheduler.dart';
 /// 拥有短生命周期界面状态，并把可共享业务状态交由 [CodexController] 管理。
 /// Owns short-lived UI state while delegating shared business state to [CodexController].
 
-class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
+class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
+    with WidgetsBindingObserver {
   final TextEditingController _composer = TextEditingController();
   final ValueNotifier<int> _recordSkillRequest = ValueNotifier(0);
   final Map<ThreadViewportKey, ScrollController> _timelineScrollControllers =
@@ -53,6 +54,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   String _selectedSubagentTitle = '子智能体';
   late CodexController _controller;
   double? _settingsReturnTimelineOffset;
+  bool _appWasInactive = false;
 
   bool get _threadHistoryLoading =>
       _threadHistoryLoadingKey == _displayedThreadKey;
@@ -78,6 +80,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     _timelineScrollController = _timelineControllerFor(_displayedThreadKey);
     _captureActiveTimelinePage();
     _controller.addListener(_handleControllerUpdate);
+    WidgetsBinding.instance.addObserver(this);
   }
 
   /// 将嵌入或测试场景替换的控制器同步到监听、动作和时间线缓存。
@@ -116,6 +119,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
   /// Removes listeners and releases composer, scrolling, and controller resources.
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _controller.removeListener(_handleControllerUpdate);
     _composer.dispose();
     _recordSkillRequest.dispose();
@@ -129,6 +133,30 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
     // Provider-created controllers are disposed by ProviderScope.
     if (widget.controller != null) _controller.dispose();
     super.dispose();
+  }
+
+  /// Clears only the current conversation's Dock reminder after the user
+  /// returns to the app. Other completed conversations remain badged.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    switch (state) {
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+        _appWasInactive = true;
+        return;
+      case AppLifecycleState.resumed:
+        if (!_appWasInactive) return;
+        _appWasInactive = false;
+        if (_destination != WorkspaceDestination.conversation) return;
+        final threadId = _controller.activeThreadId;
+        if (threadId == null ||
+            !_controller.hasUnacknowledgedCompletion(threadId)) {
+          return;
+        }
+        unawaited(_controller.acknowledgeCompletedThread(threadId));
+    }
   }
 
   /// 响应控制器更新；显式注入时由工作区重建，Provider 场景仍由 ref.watch 重建。
@@ -2288,7 +2316,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace> {
               onChooseWorkspace: _showWorkspaceDirectories,
               onShowCodexConfiguration: _showCodexConfiguration,
               onConfigureRuntime: _showRuntime,
-              onShowPlugins: _showPlugins,
+              onAddMarketplace: _showAddMarketplace,
+              onManageMarketplaces: _showMarketplaces,
               onShowAccount: _showAccount,
               onOpenConversation: _showConversation,
             ),

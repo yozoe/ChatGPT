@@ -12,7 +12,8 @@ class SettingsPage extends ConsumerStatefulWidget {
     required this.onChooseWorkspace,
     required this.onShowCodexConfiguration,
     required this.onConfigureRuntime,
-    required this.onShowPlugins,
+    required this.onAddMarketplace,
+    required this.onManageMarketplaces,
     required this.onShowAccount,
     required this.onOpenConversation,
     super.key,
@@ -27,7 +28,8 @@ class SettingsPage extends ConsumerStatefulWidget {
   final VoidCallback onChooseWorkspace;
   final Future<void> Function() onShowCodexConfiguration;
   final Future<void> Function() onConfigureRuntime;
-  final Future<void> Function() onShowPlugins;
+  final Future<void> Function() onAddMarketplace;
+  final Future<void> Function() onManageMarketplaces;
   final Future<void> Function() onShowAccount;
   final VoidCallback onOpenConversation;
 

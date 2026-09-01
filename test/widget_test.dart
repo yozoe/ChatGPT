@@ -1358,6 +1358,46 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('opens plugin management inside the settings content pane', (
+    tester,
+  ) async {
+    final controller = CodexController(
+      server: _FakeCodexAppServer(),
+      pluginStore: _MemoryCodexPluginStore(),
+    );
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(home: CodexWorkspace(controller: controller)),
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('sidebar-settings-button')));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('settings-nav-插件')),
+      240,
+      scrollable: find.descendant(
+        of: find.byKey(const Key('settings-navigation-scroll')),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    await tester.tap(find.byKey(const Key('settings-nav-插件')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('settings-plugins-page')), findsOneWidget);
+    expect(find.byKey(const Key('settings-navigation-pane')), findsOneWidget);
+    expect(find.byKey(const Key('plugin-manager-dialog')), findsNothing);
+    expect(find.text('管理已安装插件、MCP 服务器和可用技能。'), findsOneWidget);
+
+    await tester.binding.setSurfaceSize(const Size(700, 560));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pump();
+    expect(find.byKey(const Key('extension-settings-search')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'keeps the active reply on stable text metrics until Markdown completes',
     (tester) async {
@@ -13705,6 +13745,84 @@ void main() {
         hasLength(1),
       );
       await controller.acknowledgeCompletedThread('current-thread');
+      expect(
+        completionCalls
+            .where((call) => call.method == 'setDockBadge')
+            .map((call) => call.arguments),
+        [
+          <String, Object>{'visible': true, 'count': 1},
+          <String, Object>{'visible': false, 'count': 0},
+        ],
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'clears a completed task Dock badge only when the app resumes to its conversation',
+    (tester) async {
+      const completionChannel = MethodChannel('codex_desk/task_completion');
+      final completionCalls = <MethodCall>[];
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(completionChannel, (call) async {
+        completionCalls.add(call);
+        return null;
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(completionChannel, null),
+      );
+      final controller =
+          CodexController(
+              server: CodexAppServer(),
+              taskCompletionNotifier: TaskCompletionNotifier(
+                channel: completionChannel,
+              ),
+            )
+            ..workspacePath = '/workspace'
+            ..status = RuntimeStatus.running
+            ..activeThreadId = 'current-thread'
+            ..threads = [_thread(id: 'current-thread', status: 'active')];
+
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'turn': {'status': 'completed'},
+          },
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(controller.hasUnacknowledgedCompletion('current-thread'), isTrue);
+      await tester.tap(find.byKey(const Key('sidebar-settings-button')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('settings-page')), findsOneWidget);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+
+      expect(controller.hasUnacknowledgedCompletion('current-thread'), isTrue);
+      expect(
+        completionCalls
+            .where((call) => call.method == 'setDockBadge')
+            .map((call) => call.arguments),
+        [
+          <String, Object>{'visible': true, 'count': 1},
+        ],
+      );
+
+      await tester.tap(find.byKey(const Key('settings-back-button')));
+      await tester.pumpAndSettle();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+
+      expect(controller.hasUnacknowledgedCompletion('current-thread'), isFalse);
       expect(
         completionCalls
             .where((call) => call.method == 'setDockBadge')

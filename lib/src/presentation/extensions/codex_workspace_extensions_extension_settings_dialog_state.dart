@@ -135,6 +135,130 @@ class ExtensionSettingsDialogState extends State<ExtensionSettingsDialog> {
     final actionError = widget.controller.pluginActionError;
     final warning = widget.controller.pluginActionWarning;
 
+    final content = Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(26, 18, 18, 16),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final compact = constraints.maxWidth < 620;
+              final tabs = Wrap(
+                spacing: 4,
+                runSpacing: 4,
+                children: [
+                  ExtensionSettingsTabButton(
+                    key: const Key('settings-plugins-tab'),
+                    label: '插件',
+                    count: installed.length,
+                    selected: _tab == ExtensionSettingsTab.plugins,
+                    onTap: () => _select(ExtensionSettingsTab.plugins),
+                  ),
+                  ExtensionSettingsTabButton(
+                    key: const Key('settings-mcp-tab'),
+                    label: 'MCP',
+                    count: widget.controller.mcpServers.length,
+                    selected: _tab == ExtensionSettingsTab.mcp,
+                    onTap: () => _select(ExtensionSettingsTab.mcp),
+                  ),
+                  ExtensionSettingsTabButton(
+                    key: const Key('settings-skills-tab'),
+                    label: '技能',
+                    count: widget.controller.skills.length,
+                    selected: _tab == ExtensionSettingsTab.skills,
+                    onTap: () => _select(ExtensionSettingsTab.skills),
+                  ),
+                ],
+              );
+              final search = SizedBox(
+                width: compact ? constraints.maxWidth : 225,
+                height: 38,
+                child: TextField(
+                  key: const Key('extension-settings-search'),
+                  controller: _search,
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    hintText: _hint,
+                    prefixIcon: const Icon(Icons.search, size: 18),
+                    filled: true,
+                    fillColor: palette.field,
+                    contentPadding: EdgeInsets.zero,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(20),
+                      borderSide: BorderSide(color: palette.border),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(20),
+                      borderSide: BorderSide(color: palette.border),
+                    ),
+                  ),
+                ),
+              );
+              return compact
+                  ? Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [tabs, const SizedBox(height: 12), search],
+                    )
+                  : Row(
+                      children: [
+                        Expanded(child: tabs),
+                        const SizedBox(width: 16),
+                        search,
+                      ],
+                    );
+            },
+          ),
+        ),
+        if (widget.controller.pluginSaving || loading)
+          const LinearProgressIndicator(minHeight: 2),
+        if (widget.controller.pluginActionProgress case final progress?)
+          ExtensionSettingsNotice(
+            key: const Key('plugin-action-progress'),
+            icon: Icons.sync,
+            message: progress,
+          )
+        else if (actionError != null)
+          ExtensionSettingsNotice(
+            key: const Key('plugin-action-error'),
+            icon: Icons.error_outline,
+            message: actionError,
+            color: palette.fault,
+          )
+        else if (warning != null)
+          ExtensionSettingsNotice(
+            key: const Key('plugin-action-warning'),
+            icon: Icons.warning_amber_rounded,
+            message: warning,
+            color: palette.warning,
+          )
+        else if (tabError != null)
+          ExtensionSettingsNotice(
+            key: const Key('plugin-action-error'),
+            icon: Icons.error_outline,
+            message: tabError,
+            color: palette.fault,
+          )
+        else if (widget.controller.pluginActionResult case final result?)
+          ExtensionSettingsNotice(
+            key: const Key('plugin-action-result'),
+            icon: Icons.restart_alt,
+            message: result,
+            color: palette.ack,
+          ),
+        Expanded(
+          child: switch (_tab) {
+            ExtensionSettingsTab.plugins => _buildPlugins(installed, query),
+            ExtensionSettingsTab.mcp => _buildMcp(query),
+            ExtensionSettingsTab.skills => _buildSkills(query),
+          },
+        ),
+      ],
+    );
+    if (widget.embedded) {
+      return KeyedSubtree(
+        key: const Key('settings-plugins-page'),
+        child: content,
+      );
+    }
     return Dialog(
       key: const Key('plugin-manager-dialog'),
       insetPadding: const EdgeInsets.all(24),
@@ -146,124 +270,7 @@ class ExtensionSettingsDialogState extends State<ExtensionSettingsDialog> {
       child: SizedBox(
         width: math.min(760, media.width - 48),
         height: math.min(620, media.height - 48),
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(26, 18, 18, 16),
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final compact = constraints.maxWidth < 620;
-                  final tabs = Wrap(
-                    spacing: 4,
-                    runSpacing: 4,
-                    children: [
-                      ExtensionSettingsTabButton(
-                        key: const Key('settings-plugins-tab'),
-                        label: '插件',
-                        count: installed.length,
-                        selected: _tab == ExtensionSettingsTab.plugins,
-                        onTap: () => _select(ExtensionSettingsTab.plugins),
-                      ),
-                      ExtensionSettingsTabButton(
-                        key: const Key('settings-mcp-tab'),
-                        label: 'MCP',
-                        count: widget.controller.mcpServers.length,
-                        selected: _tab == ExtensionSettingsTab.mcp,
-                        onTap: () => _select(ExtensionSettingsTab.mcp),
-                      ),
-                      ExtensionSettingsTabButton(
-                        key: const Key('settings-skills-tab'),
-                        label: '技能',
-                        count: widget.controller.skills.length,
-                        selected: _tab == ExtensionSettingsTab.skills,
-                        onTap: () => _select(ExtensionSettingsTab.skills),
-                      ),
-                    ],
-                  );
-                  final search = SizedBox(
-                    width: compact ? constraints.maxWidth : 225,
-                    height: 38,
-                    child: TextField(
-                      key: const Key('extension-settings-search'),
-                      controller: _search,
-                      onChanged: (_) => setState(() {}),
-                      decoration: InputDecoration(
-                        hintText: _hint,
-                        prefixIcon: const Icon(Icons.search, size: 18),
-                        filled: true,
-                        fillColor: palette.field,
-                        contentPadding: EdgeInsets.zero,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(20),
-                          borderSide: BorderSide(color: palette.border),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(20),
-                          borderSide: BorderSide(color: palette.border),
-                        ),
-                      ),
-                    ),
-                  );
-                  return compact
-                      ? Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [tabs, const SizedBox(height: 12), search],
-                        )
-                      : Row(
-                          children: [
-                            Expanded(child: tabs),
-                            const SizedBox(width: 16),
-                            search,
-                          ],
-                        );
-                },
-              ),
-            ),
-            if (widget.controller.pluginSaving || loading)
-              const LinearProgressIndicator(minHeight: 2),
-            if (widget.controller.pluginActionProgress case final progress?)
-              ExtensionSettingsNotice(
-                key: const Key('plugin-action-progress'),
-                icon: Icons.sync,
-                message: progress,
-              )
-            else if (actionError != null)
-              ExtensionSettingsNotice(
-                key: const Key('plugin-action-error'),
-                icon: Icons.error_outline,
-                message: actionError,
-                color: palette.fault,
-              )
-            else if (warning != null)
-              ExtensionSettingsNotice(
-                key: const Key('plugin-action-warning'),
-                icon: Icons.warning_amber_rounded,
-                message: warning,
-                color: palette.warning,
-              )
-            else if (tabError != null)
-              ExtensionSettingsNotice(
-                key: const Key('plugin-action-error'),
-                icon: Icons.error_outline,
-                message: tabError,
-                color: palette.fault,
-              )
-            else if (widget.controller.pluginActionResult case final result?)
-              ExtensionSettingsNotice(
-                key: const Key('plugin-action-result'),
-                icon: Icons.restart_alt,
-                message: result,
-                color: palette.ack,
-              ),
-            Expanded(
-              child: switch (_tab) {
-                ExtensionSettingsTab.plugins => _buildPlugins(installed, query),
-                ExtensionSettingsTab.mcp => _buildMcp(query),
-                ExtensionSettingsTab.skills => _buildSkills(query),
-              },
-            ),
-          ],
-        ),
+        child: content,
       ),
     );
   }

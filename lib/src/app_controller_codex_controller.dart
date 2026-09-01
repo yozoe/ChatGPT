@@ -277,6 +277,10 @@ class CodexController extends ChangeNotifier {
   bool isCompletedThreadAcknowledged(String threadId) =>
       _acknowledgedCompletedThreadIds.contains(threadId);
 
+  /// Whether this app session still has a Dock completion badge for a thread.
+  bool hasUnacknowledgedCompletion(String threadId) =>
+      _unacknowledgedCompletionThreadIds.contains(threadId);
+
   /// Persists that a completed thread was viewed, optionally clearing its Dock
   /// badge when the view was an explicit task open.
   Future<void> acknowledgeCompletedThread(

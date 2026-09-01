@@ -1,5 +1,6 @@
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
 import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_page.dart';
+import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_extension_settings_dialog.dart';
 import 'package:chatgpt/src/services/dock_icon_service.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
@@ -55,6 +56,57 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
     });
     unawaited(widget.controller.refreshArchivedThreads());
   }
+
+  void _selectPlugins() {
+    setState(() => _section = '插件');
+    unawaited(
+      Future.wait([
+        widget.controller.refreshPlugins(),
+        widget.controller.refreshMcpServers(),
+        widget.controller.refreshSkills(forceReload: true),
+      ]),
+    );
+  }
+
+  Widget _pluginsContent() => LayoutBuilder(
+    builder: (context, constraints) {
+      final horizontalPadding = constraints.maxWidth < 620 ? 24.0 : 72.0;
+      return Padding(
+        padding: EdgeInsets.fromLTRB(
+          horizontalPadding,
+          46,
+          horizontalPadding,
+          0,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '插件',
+              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                fontSize: 38,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '管理已安装插件、MCP 服务器和可用技能。',
+              style: TextStyle(color: YeknomPalette.of(context).muted),
+            ),
+            const SizedBox(height: 24),
+            Expanded(
+              child: ExtensionSettingsDialog(
+                embedded: true,
+                controller: widget.controller,
+                onAddMarketplace: widget.onAddMarketplace,
+                onManageMarketplaces: widget.onManageMarketplaces,
+              ),
+            ),
+          ],
+        ),
+      );
+    },
+  );
 
   void _refreshHooks() => ref.invalidate(codexHooksProvider(widget.controller));
 
@@ -1528,7 +1580,8 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                         _navItem(
                           label: '插件',
                           icon: Icons.extension_outlined,
-                          onTap: widget.onShowPlugins,
+                          selected: _section == '插件',
+                          onTap: _selectPlugins,
                         ),
                         _navItem(label: '浏览器（待开发）', icon: Icons.web_outlined),
                         _sectionLabel('编码'),
@@ -1578,6 +1631,8 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
               ? _configurationContent()
               : _section == '钩子'
               ? _hooksContent()
+              : _section == '插件'
+              ? _pluginsContent()
               : _section == '已归档的聊天'
               ? _archivedContent()
               : Center(child: Text('“$_section”设置即将推出')),
