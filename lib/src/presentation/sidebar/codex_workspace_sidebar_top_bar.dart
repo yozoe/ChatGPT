@@ -72,8 +72,11 @@ class TopBar extends StatelessWidget {
             // task title and actions. Keep them available at ordinary desktop
             // widths; the compact layout already hides lower-priority text
             // and controls as space becomes tight.
-            final showProvider = showTaskContext && constraints.maxWidth >= 560;
-            final showSandbox = showTaskContext && constraints.maxWidth >= 560;
+            // Keep the compact icon controls reachable in a narrow review
+            // column. Provider/sandbox badges are lower priority and can be
+            // omitted until the task header has enough room for them.
+            final showProvider = showTaskContext && constraints.maxWidth >= 900;
+            final showSandbox = showTaskContext && constraints.maxWidth >= 900;
             return Row(
               children: [
                 if (showIdentity) ...[

@@ -290,7 +290,21 @@ void main() {
       tester
           .getSize(find.byKey(const Key('conversation-viewport-stack')))
           .width,
-      closeTo(820, 0.1),
+      closeTo(720, 0.1),
+    );
+    final expandedConversation = tester.getRect(
+      find.byKey(const Key('conversation-viewport-stack')),
+    );
+    final expandedInspectorHandle = tester.getRect(
+      find.byKey(const Key('inspector-resize-handle')),
+    );
+    expect(
+      expandedConversation.right,
+      lessThanOrEqualTo(expandedInspectorHandle.left),
+    );
+    expect(
+      expandedInspectorHandle.right,
+      lessThanOrEqualTo(fullHeightPanel.left),
     );
     expect(
       2048 - tester.getRect(find.byKey(const Key('side-panel-collapse'))).right,
@@ -301,6 +315,23 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('code-review-panel')), findsNothing);
     expect(find.byKey(const Key('side-panel-expand')), findsOneWidget);
+    final collapsedConversation = tester.getRect(
+      find.byKey(const Key('conversation-viewport-stack')),
+    );
+    final collapsedWorkbench = tester.getRect(
+      find.byKey(const Key('workbench-column-topbar')),
+    );
+    final collapsedInspectorHandle = tester.getRect(
+      find.byKey(const Key('inspector-resize-handle')),
+    );
+    expect(
+      collapsedConversation.center.dx,
+      closeTo(collapsedWorkbench.center.dx, 0.1),
+    );
+    expect(
+      collapsedInspectorHandle.right,
+      greaterThan(collapsedConversation.right),
+    );
 
     await tester.tap(find.byKey(const Key('side-panel-expand')));
     await tester.pump();
@@ -12433,7 +12464,7 @@ void main() {
           .width;
       await tester.drag(
         find.byKey(const Key('review-resize-handle')),
-        const Offset(-80, 0),
+        const Offset(80, 0),
       );
       await tester.pump();
       expect(
