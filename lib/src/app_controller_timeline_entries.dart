@@ -13,6 +13,7 @@ class CodexTimelineEntryFactory {
     String? agentPhase,
     String? linkedThreadId,
     String? activityPrompt,
+    String? activityParentThreadId,
   }) {
     return TimelineEntry(
       kind: kind,
@@ -26,6 +27,7 @@ class CodexTimelineEntryFactory {
       agentPhase: agentPhase,
       linkedThreadId: linkedThreadId,
       activityPrompt: activityPrompt,
+      activityParentThreadId: activityParentThreadId,
     );
   }
 }

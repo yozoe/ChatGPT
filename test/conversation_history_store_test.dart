@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:chatgpt/src/domain/codex_thread.dart';
+import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/services/codex_keychain_storage.dart';
 import 'package:chatgpt/src/services/conversation_history_store.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -79,5 +80,69 @@ void main() {
     expect((await store.read('project-a'))!.acknowledgedCompletedThreadIds, {
       'completed-thread',
     });
+  });
+
+  test('persists per-thread local image metadata', () async {
+    final store = createStore();
+    final entry = TimelineEntry(
+      kind: TimelineKind.user,
+      title: '你',
+      detail: '请检查截图',
+      createdAt: DateTime(2026),
+      imagePaths: const ['/application-support/conversation-images/image.png'],
+    );
+    final value = ConversationHistorySnapshot(
+      threads: const [],
+      archivedThreads: const [],
+      entries: const [],
+      fileChanges: const [],
+      userMessageEntriesByThreadId: {
+        'inactive-thread': [entry],
+      },
+    );
+
+    await store.save(workspace: 'project-a', snapshot: value);
+
+    expect(
+      (await store.read(
+        'project-a',
+      ))!.userMessageEntriesByThreadId['inactive-thread']!.single.imagePaths,
+      entry.imagePaths,
+    );
+  });
+
+  test('restored local message metadata remains appendable', () async {
+    final store = createStore();
+    final entry = TimelineEntry(
+      kind: TimelineKind.user,
+      title: '你',
+      detail: '第一条消息',
+      createdAt: DateTime(2026),
+    );
+    await store.save(
+      workspace: 'project-a',
+      snapshot: ConversationHistorySnapshot(
+        threads: const [],
+        archivedThreads: const [],
+        entries: const [],
+        fileChanges: const [],
+        userMessageEntriesByThreadId: {
+          'thread-a': [entry],
+        },
+      ),
+    );
+
+    final restored = await store.read('project-a');
+    final messages = restored!.userMessageEntriesByThreadId['thread-a']!;
+    messages.add(
+      TimelineEntry(
+        kind: TimelineKind.user,
+        title: '你',
+        detail: '第二条消息',
+        createdAt: DateTime(2026),
+      ),
+    );
+
+    expect(messages, hasLength(2));
   });
 }

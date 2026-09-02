@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:chatgpt/src/app_controller.dart';
+import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -129,7 +130,8 @@ void main() {
         controller.entries.any(
           (entry) =>
               entry.sourceItemId == 'external-bridge-external-finished' &&
-              entry.activityStatus == 'completed',
+              entry.activityStatus == 'completed' &&
+              entry.activityParentThreadId == 'parent-thread',
         ),
         isTrue,
       );
@@ -188,4 +190,111 @@ void main() {
     );
     controller.dispose();
   });
+
+  test(
+    'removes unscoped legacy bridge rows even with a real child thread',
+    () async {
+      final workspace = await Directory.systemTemp.createTemp(
+        'codex-desk-legacy-bridge-rows-',
+      );
+      addTearDown(() => workspace.delete(recursive: true));
+      final runtime = FakeRuntimeConfigurationStore()
+        ..workspace = workspace.path;
+      final history = MemoryConversationHistoryStore();
+      final firstController = CodexController(
+        server: CodexAppServer(),
+        runtimeConfigurationStore: runtime,
+        conversationHistoryStore: history,
+      );
+      await firstController.waitForInitialConfiguration();
+      firstController.activeThreadId = 'current-parent';
+      firstController.replaceTimelineEntriesForTesting([
+        TimelineEntry(
+          kind: TimelineKind.activity,
+          title: '旧会话中的子智能体',
+          detail: '正在工作',
+          createdAt: DateTime.now(),
+          sourceItemId: 'external-bridge-old-activity',
+          activityKind: 'collaboration',
+          linkedThreadId: 'real-child-thread',
+        ),
+      ]);
+      await firstController.saveConversationHistoryForTesting();
+      firstController.dispose();
+
+      final restoredController = CodexController(
+        server: CodexAppServer(),
+        runtimeConfigurationStore: runtime,
+        conversationHistoryStore: history,
+      );
+      await restoredController.waitForInitialConfiguration();
+
+      expect(
+        restoredController.entries.where(
+          (entry) => entry.sourceItemId == 'external-bridge-old-activity',
+        ),
+        isEmpty,
+      );
+      restoredController.dispose();
+    },
+  );
+
+  test(
+    'retains a scoped bridge completion without a child thread after restart',
+    () async {
+      final workspace = await Directory.systemTemp.createTemp(
+        'codex-desk-scoped-bridge-history-',
+      );
+      addTearDown(() => workspace.delete(recursive: true));
+      final bridgeDirectory = await Directory(
+        '${workspace.path}${Platform.pathSeparator}.codex',
+      ).create();
+      final bridge = File(
+        '${bridgeDirectory.path}${Platform.pathSeparator}codex-desk-collaboration.json',
+      );
+      await bridge.writeAsString(
+        jsonEncode({
+          'activities': [
+            {
+              'id': 'completed-without-child',
+              'title': '外层审查',
+              'status': 'completed',
+              'parentThreadId': 'parent-thread',
+            },
+          ],
+        }),
+      );
+      final runtime = FakeRuntimeConfigurationStore()
+        ..workspace = workspace.path;
+      final history = MemoryConversationHistoryStore();
+      final firstController = CodexController(
+        server: CodexAppServer(),
+        runtimeConfigurationStore: runtime,
+        conversationHistoryStore: history,
+      );
+      await firstController.waitForInitialConfiguration();
+      firstController.activeThreadId = 'parent-thread';
+      await firstController.refreshCollaborationBridgeForTesting();
+      await firstController.saveConversationHistoryForTesting();
+      firstController.dispose();
+      await bridge.writeAsString(jsonEncode({'activities': []}));
+
+      final restoredController = CodexController(
+        server: CodexAppServer(),
+        runtimeConfigurationStore: runtime,
+        conversationHistoryStore: history,
+      );
+      await restoredController.waitForInitialConfiguration();
+
+      expect(
+        restoredController.entries.any(
+          (entry) =>
+              entry.sourceItemId == 'external-bridge-completed-without-child' &&
+              entry.activityParentThreadId == 'parent-thread',
+        ),
+        isTrue,
+      );
+      restoredController.dispose();
+    },
+  );
 }

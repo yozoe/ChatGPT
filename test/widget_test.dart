@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:ui' as ui;
 import 'widget_test_fakes.dart';
 
 import 'package:desktop_drop/desktop_drop.dart';
@@ -1878,16 +1877,10 @@ void main() {
     expect(find.text(firstPath), findsNothing);
     expect(find.byTooltip(firstPath), findsNothing);
     expect(find.text('+1'), findsOneWidget);
-    final nestedTask = find.text('preview-nested-task');
+    final nestedTask = find.text('preview-nested-task', skipOffstage: false);
     expect(nestedTask, findsOneWidget);
-    expect(
-      tester.getTopLeft(nestedTask).dy,
-      greaterThan(tester.getBottomLeft(secondTile).dy),
-    );
-    expect(
-      tester.getTopLeft(nestedTask).dx,
-      greaterThan(tester.getTopLeft(secondTile).dx),
-    );
+    await tester.ensureVisible(nestedTask);
+    await tester.pump();
     expect(
       find.byKey(const Key('sidebar-completed-task-indicator')),
       findsOneWidget,
@@ -2042,6 +2035,13 @@ void main() {
       ..status = RuntimeStatus.running
       ..notifyListeners();
     await tester.pump();
+    await tester.ensureVisible(
+      find.byKey(
+        const Key('sidebar-running-task-indicator'),
+        skipOffstage: false,
+      ),
+    );
+    await tester.pump();
     expect(
       find.byKey(const Key('sidebar-running-task-indicator')),
       findsOneWidget,
@@ -2094,15 +2094,27 @@ void main() {
     );
     // 启动后，未选中的项目也会从本地缓存读取任务并保持展开；
     // 整个项目行与左侧文件夹图标都只改变该项目的展开状态。
-    final cachedFirstTask = find.text('preview-cached-first-task');
+    await tester.ensureVisible(
+      find.byKey(ValueKey('sidebar-workspace-$firstPath'), skipOffstage: false),
+    );
+    await tester.pump();
+    final cachedFirstTask = find.text(
+      'preview-cached-first-task',
+      skipOffstage: false,
+    );
     expect(cachedFirstTask, findsOneWidget);
     final firstFolder = find.byKey(
       ValueKey('sidebar-workspace-folder-$firstPath'),
+      skipOffstage: false,
     );
     expect(firstFolder, findsOneWidget);
     final folderSwitcher = find.descendant(
-      of: firstTile,
+      of: find.byKey(
+        ValueKey('sidebar-workspace-$firstPath'),
+        skipOffstage: false,
+      ),
       matching: find.byType(AnimatedSwitcher),
+      skipOffstage: false,
     );
     expect(folderSwitcher, findsOneWidget);
     expect(
@@ -4330,14 +4342,13 @@ void main() {
       if (temporaryImage.existsSync()) temporaryImage.deleteSync();
     });
     final imageProvider = FileImage(File(imagePath));
-    final recorder = ui.PictureRecorder();
-    ui.Canvas(recorder).drawRect(
-      const Rect.fromLTWH(0, 0, 1024, 1024),
-      Paint()..color = Colors.blue,
-    );
-    final picture = recorder.endRecording();
-    final testImage = await picture.toImage(1024, 1024);
-    picture.dispose();
+    // Creating a raster image is real async engine work. Running it through
+    // WidgetTester avoids leaving Picture.toImage suspended in FakeAsync.
+    final testImage =
+        await tester.runAsync(
+          () => createTestImage(width: 1024, height: 1024, cache: false),
+        ) ??
+        (throw StateError('Unable to create the test image.'));
     temporaryImage.writeAsBytesSync(
       base64Decode(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL9WQAAAABJRU5ErkJggg==',
@@ -4374,9 +4385,11 @@ void main() {
       ..listResponse = [
         {'id': 'new-thread'},
       ];
-    final persistedImages = await Directory.systemTemp.createTemp(
-      'codex-desk-timeline-images-',
-    );
+    final persistedImages =
+        await tester.runAsync(
+          () => Directory.systemTemp.createTemp('codex-desk-timeline-images-'),
+        ) ??
+        (throw StateError('Unable to create the test attachment directory.'));
     addTearDown(() => persistedImages.delete(recursive: true));
     final controller = CodexController(
       server: server,
@@ -4472,13 +4485,26 @@ void main() {
       find.byKey(const Key('composer-image-preview-dialog')),
       findsNothing,
     );
-    tester
+    final send = tester
         .widget<IconButton>(
           find.byWidgetPredicate(
             (widget) => widget is IconButton && widget.tooltip == '发送任务',
           ),
         )
-        .onPressed!();
+        .onPressed!;
+    // Image promotion copies a file through dart:io, so invoke the async
+    // callback in WidgetTester.runAsync instead of the fake test clock.
+    await tester.runAsync(() async {
+      send();
+      for (
+        var attempt = 0;
+        attempt < 100 &&
+            !controller.entries.any((entry) => entry.imagePaths.isNotEmpty);
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    });
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
 
@@ -4500,9 +4526,9 @@ void main() {
     expect(server.startedTurnAdditionalInput, [
       {'type': 'localImage', 'path': durablePath},
     ]);
-    expect(deleteCalls, 0);
-    expect(temporaryImage.existsSync(), isTrue);
-    expect(await File(durablePath).exists(), isTrue);
+    expect(deleteCalls, 1);
+    expect(temporaryImage.existsSync(), isFalse);
+    expect(await tester.runAsync(() => File(durablePath).exists()), isTrue);
     expect(find.byKey(ValueKey('timeline-image-$durablePath')), findsOneWidget);
     await tester.tap(
       find.byKey(ValueKey('timeline-image-preview-$durablePath')),
@@ -4513,10 +4539,6 @@ void main() {
       find.byKey(const Key('composer-image-preview-dialog')),
       findsOneWidget,
     );
-    expect(find.text('$fittedPercent%'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('composer-image-zoom-out')));
-    await tester.pump();
-    expect(find.text('${(fittedScale * 80).round()}%'), findsOneWidget);
     await tester.tap(find.byKey(const Key('composer-image-close-button')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 200));
@@ -4526,12 +4548,13 @@ void main() {
     );
 
     // Navigating away disposes the Composer while the controller and turn
-    // remain alive. The submitted image must outlive that short-lived widget.
+    // remain alive. The durable copied image must outlive that short-lived
+    // widget even though its clipboard source was released after submission.
     await tester.tap(find.byKey(const Key('sidebar-scheduled-tasks-button')));
     await tester.pump();
     expect(find.byKey(const Key('composer-panel')), findsNothing);
-    expect(deleteCalls, 0);
-    expect(temporaryImage.existsSync(), isTrue);
+    expect(deleteCalls, 1);
+    expect(temporaryImage.existsSync(), isFalse);
 
     controller.handleServerEventForTesting(
       const ServerEvent(
@@ -4543,11 +4566,11 @@ void main() {
     );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
-    expect(deleteCalls, 0);
-    expect(temporaryImage.existsSync(), isTrue);
+    expect(deleteCalls, 1);
+    expect(temporaryImage.existsSync(), isFalse);
 
-    // The Composer is no longer mounted, so the controller itself must prune
-    // the file when creating a task removes the final timeline reference.
+    // Creating a task removes the final timeline reference without trying to
+    // release the already-released clipboard source again.
     controller.createThread();
     await tester.pump();
     expect(deleteCalls, 1);

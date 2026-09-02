@@ -60,13 +60,19 @@ class ConversationStatusActivityRow extends StatelessWidget {
       );
     }
     if (entry.activityKind == 'collaboration') {
+      final isExternalBridge =
+          entry.sourceItemId?.startsWith('external-bridge-') == true;
+      final canOpenSubagent =
+          !isExternalBridge &&
+          onOpenSubagent != null &&
+          entry.linkedThreadId != null;
       return Semantics(
         key: ValueKey('conversation-activity-${entry.sourceItemId ?? ''}'),
         label: semantics,
-        button: onOpenSubagent != null && entry.linkedThreadId != null,
+        button: canOpenSubagent,
         child: InkWell(
           key: const Key('subagent-activity-open'),
-          onTap: entry.linkedThreadId == null ? null : onOpenSubagent,
+          onTap: canOpenSubagent ? onOpenSubagent : null,
           borderRadius: BorderRadius.circular(14),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(2, 2, 6, 2),
@@ -88,7 +94,7 @@ class ConversationStatusActivityRow extends StatelessWidget {
                     ).textTheme.bodyMedium?.copyWith(color: statusColor),
                   ),
                 ],
-                if (entry.linkedThreadId != null) ...[
+                if (canOpenSubagent) ...[
                   const SizedBox(width: 4),
                   Icon(Icons.chevron_right, size: 16, color: palette.muted),
                 ],

@@ -96,7 +96,8 @@ class AgentsPage extends StatelessWidget {
             title: entry.title,
             status: entry.activityStatus ?? 'working',
             prompt: entry.activityPrompt ?? '',
-            external: entry.linkedThreadId!.startsWith('external-bridge-'),
+            external:
+                entry.sourceItemId?.startsWith('external-bridge-') == true,
             createdAt: entry.createdAt,
           ),
         )

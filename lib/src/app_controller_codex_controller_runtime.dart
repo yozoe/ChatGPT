@@ -284,6 +284,7 @@ class CodexController extends ChangeNotifier {
   final Set<String> _legacyWorkspaceHistoryPaths = {};
   final LinkedHashMap<String, ThreadViewSnapshot> _threadViewCache =
       LinkedHashMap();
+  final Map<String, List<TimelineEntry>> _userMessageEntriesByThreadId = {};
   // A task can continue on App Server after the user opens another task. This
   // is intentionally independent of [status], which describes the task that
   // is currently open in the workbench.
@@ -859,6 +860,9 @@ class CodexController extends ChangeNotifier {
         paths.addAll(entry.imagePaths);
       }
     }
+    for (final entry in _userMessageEntriesByThreadId[threadId] ?? const []) {
+      paths.addAll(entry.imagePaths);
+    }
     return paths;
   }
 
@@ -1227,7 +1231,11 @@ class CodexController extends ChangeNotifier {
       final previousEntryCount = _entries.length;
       // Remove records imported by an older bridge format before rebuilding
       // the scoped set, so a refresh cannot retain stale rows.
-      _entries.removeWhere(_isUnscopedBridgeEntry);
+      _entries.removeWhere(
+        (entry) =>
+            _isUnscopedBridgeEntry(entry) ||
+            _isBridgeEntryForAnotherThread(entry, activeThread),
+      );
       var timelineChanged = _entries.length != previousEntryCount;
       for (final value in values) {
         if (value is! Map) continue;
@@ -1259,6 +1267,7 @@ class CodexController extends ChangeNotifier {
           'status': statusResult.$1,
           'title': title,
           'prompt': _label(value['prompt']),
+          'parentThreadId': parentThreadId,
           'newThreadId': stableThreadId,
           'agentStatus': {'status': statusResult.$1, 'name': title},
         };
@@ -1355,8 +1364,13 @@ class CodexController extends ChangeNotifier {
   }
 
   @visibleForTesting
-  Future<void> refreshCollaborationBridgeForTesting() {
-    return _refreshCollaborationBridge();
+  Future<void> refreshCollaborationBridgeForTesting() async {
+    // The production poll deliberately runs independently from a manual
+    // refresh. Stop it here so a test can await one deterministic snapshot
+    // rather than an older poll invalidating the request it just awaited.
+    _collaborationBridgeTimer?.cancel();
+    _collaborationBridgeTimer = null;
+    await _refreshCollaborationBridge();
   }
 
   /// 当前仍接收增量的 Agent 时间线条目 ID；item 完成后立即清除。
@@ -2574,6 +2588,7 @@ class CodexController extends ChangeNotifier {
         activeThreadId = threadId;
         _activeThreadAttached = true;
       }
+      _recordLocalUserMessage(threadId, submittedEntry);
       if (activeThreadId == threadId) {
         // Establish the local lifecycle boundary before any further awaits.
         // App Server notifications are handled reentrantly while refreshing
@@ -2900,6 +2915,7 @@ class CodexController extends ChangeNotifier {
           // direction, so never insert again at the stale pre-reload index.
           _insertTimelineEntry(_entries.length, directionEntry);
         }
+        _recordLocalUserMessage(threadId, directionEntry);
         notifyListeners();
       }
       return true;
@@ -3271,6 +3287,12 @@ class CodexController extends ChangeNotifier {
     final snapshot = imported.snapshot;
     _invalidateThreadRefreshes();
     _threadViewCache.clear();
+    _userMessageEntriesByThreadId
+      ..clear()
+      ..addAll({
+        for (final entry in snapshot.userMessageEntriesByThreadId.entries)
+          entry.key: List<TimelineEntry>.of(entry.value),
+      });
     _runningThreadIds.clear();
     _threadWorkspaceById.clear();
     activeThreadId = null;
@@ -3980,6 +4002,7 @@ class CodexController extends ChangeNotifier {
       _localThreadStatuses.remove(thread.id);
       _acknowledgedCompletedThreadIds.remove(thread.id);
       _threadViewCache.remove(thread.id);
+      _userMessageEntriesByThreadId.remove(thread.id);
       _runningTurnIdsByThread.remove(thread.id);
       _pendingNetworkRetryEntriesByThread.remove(thread.id);
       _runningTurnSubmissions.remove(thread.id);
@@ -5439,7 +5462,14 @@ class CodexController extends ChangeNotifier {
         switch (item['type']) {
           case 'userMessage':
             final text = _findText(item['content']);
-            if (text.isNotEmpty) _add(TimelineKind.user, '你', text);
+            if (text.isNotEmpty) {
+              _add(
+                TimelineKind.user,
+                '你',
+                text,
+                imagePaths: _imagePathsForRestoredUserMessage(text),
+              );
+            }
           case 'agentMessage':
             final text = item['text']?.toString() ?? _findText(item);
             if (text.isNotEmpty) {
@@ -6026,6 +6056,7 @@ class CodexController extends ChangeNotifier {
       activityStatus: status.$1,
       linkedThreadId: _collaborationThreadId(item),
       activityPrompt: _label(item['prompt']),
+      activityParentThreadId: _collaborationParentThreadId(item),
     );
     final childThreadId = _collaborationThreadId(item);
     final childView = childThreadId == null
@@ -6055,6 +6086,7 @@ class CodexController extends ChangeNotifier {
     required String activityStatus,
     String? linkedThreadId,
     String? activityPrompt,
+    String? activityParentThreadId,
   }) {
     final index = _conversationActivityIndexForSourceOrThread(
       sourceItemId,
@@ -6069,6 +6101,7 @@ class CodexController extends ChangeNotifier {
         activityStatus: activityStatus,
         linkedThreadId: linkedThreadId,
         activityPrompt: activityPrompt,
+        activityParentThreadId: activityParentThreadId,
       );
       _scheduleConversationHistorySave();
       return;
@@ -6082,6 +6115,7 @@ class CodexController extends ChangeNotifier {
       activityStatus: activityStatus,
       linkedThreadId: linkedThreadId,
       activityPrompt: activityPrompt,
+      activityParentThreadId: activityParentThreadId,
     );
   }
 
@@ -7465,9 +7499,20 @@ class CodexController extends ChangeNotifier {
       _acknowledgedCompletedThreadIds
         ..clear()
         ..addAll(snapshot.acknowledgedCompletedThreadIds);
+      activeThreadId = snapshot.activeThreadId;
+      _userMessageEntriesByThreadId
+        ..clear()
+        ..addAll({
+          for (final entry in snapshot.userMessageEntriesByThreadId.entries)
+            entry.key: List<TimelineEntry>.of(entry.value),
+        });
       if (snapshot.entries.isNotEmpty) {
         final restoredEntries = snapshot.entries
-            .where((entry) => !_isUnscopedBridgeEntry(entry))
+            .where(
+              (entry) =>
+                  !_isUnscopedBridgeEntry(entry) &&
+                  !_isBridgeEntryForAnotherThread(entry, activeThreadId),
+            )
             .toList(growable: false);
         _entries
           ..clear()
@@ -7484,7 +7529,7 @@ class CodexController extends ChangeNotifier {
           snapshot.fileChanges.map((change) => MapEntry(change.path, change)),
         );
       turnDiff = snapshot.turnDiff;
-      activeThreadId = snapshot.activeThreadId;
+      _recordRestoredUserMessages(activeThreadId, _entries);
       _ownedThreadIds
         ..clear()
         ..addAll(snapshot.ownedThreadIds);
@@ -7712,6 +7757,7 @@ class CodexController extends ChangeNotifier {
   /// 捕获当前项目的线程、置顶状态、时间线和文件变更，用于持久化或导出。
   /// Captures current workspace tasks, pins, timeline, and file changes for persistence or export.
   ConversationHistorySnapshot _conversationHistorySnapshot() {
+    _recordRestoredUserMessages(activeThreadId, _entries);
     return ConversationHistorySnapshot(
       threads: List.of(threads),
       archivedThreads: List.of(archivedThreads),
@@ -7723,6 +7769,10 @@ class CodexController extends ChangeNotifier {
       activeThreadId: activeThreadId,
       ownedThreadIds: Set.of(_ownedThreadIds),
       historyInitialized: _threadHistoryInitialized,
+      userMessageEntriesByThreadId: {
+        for (final entry in _userMessageEntriesByThreadId.entries)
+          entry.key: List<TimelineEntry>.of(entry.value),
+      },
     );
   }
 
@@ -7881,10 +7931,63 @@ class CodexController extends ChangeNotifier {
   /// therefore must not be restored into any conversation.
   bool _isUnscopedBridgeEntry(TimelineEntry entry) {
     final source = entry.sourceItemId ?? '';
-    final linked = entry.linkedThreadId ?? '';
     return entry.activityKind == 'collaboration' &&
         source.startsWith('external-bridge-') &&
-        linked.startsWith('external-bridge-');
+        entry.activityParentThreadId == null;
+  }
+
+  bool _isBridgeEntryForAnotherThread(
+    TimelineEntry entry,
+    String? parentThreadId,
+  ) {
+    final source = entry.sourceItemId ?? '';
+    return entry.activityKind == 'collaboration' &&
+        source.startsWith('external-bridge-') &&
+        entry.activityParentThreadId != null &&
+        entry.activityParentThreadId != parentThreadId;
+  }
+
+  void _recordLocalUserMessage(String threadId, TimelineEntry entry) {
+    if (threadId.trim().isEmpty || entry.kind != TimelineKind.user) return;
+    // Always take a growable copy before mutating. This also protects callers
+    // that construct snapshots directly with fixed-length list literals.
+    final entries = List<TimelineEntry>.of(
+      _userMessageEntriesByThreadId[threadId] ?? const [],
+    );
+    _userMessageEntriesByThreadId[threadId] = entries;
+    final existingIndex = entries.indexWhere((value) => value.id == entry.id);
+    if (existingIndex >= 0) {
+      entries[existingIndex] = entry;
+    } else {
+      entries.add(entry);
+    }
+  }
+
+  void _recordRestoredUserMessages(
+    String? threadId,
+    Iterable<TimelineEntry> entries,
+  ) {
+    if (threadId == null || threadId.isEmpty) return;
+    final messages = entries
+        .where((entry) => entry.kind == TimelineKind.user)
+        .toList(growable: true);
+    if (messages.isEmpty) return;
+    final saved = _userMessageEntriesByThreadId[threadId];
+    if (saved == null || messages.length > saved.length) {
+      _userMessageEntriesByThreadId[threadId] = messages;
+    }
+  }
+
+  List<String> _imagePathsForRestoredUserMessage(String text) {
+    final threadId = activeThreadId;
+    if (threadId == null) return const [];
+    final saved = _userMessageEntriesByThreadId[threadId];
+    if (saved == null) return const [];
+    final index = _entries
+        .where((entry) => entry.kind == TimelineKind.user)
+        .length;
+    if (index >= saved.length || saved[index].detail != text) return const [];
+    return saved[index].imagePaths;
   }
 
   /// 系统临时目录根会被系统随时清理，不能作为稳定的 Codex 项目。
@@ -7916,6 +8019,7 @@ class CodexController extends ChangeNotifier {
     String? agentPhase,
     String? linkedThreadId,
     String? activityPrompt,
+    String? activityParentThreadId,
   }) => _timelineEntries.create(
     kind,
     title,
@@ -7927,6 +8031,7 @@ class CodexController extends ChangeNotifier {
     agentPhase: agentPhase,
     linkedThreadId: linkedThreadId,
     activityPrompt: activityPrompt,
+    activityParentThreadId: activityParentThreadId,
   );
 
   /// 追加时间线条目并安排本地历史保存。
@@ -7942,6 +8047,7 @@ class CodexController extends ChangeNotifier {
     String? agentPhase,
     String? linkedThreadId,
     String? activityPrompt,
+    String? activityParentThreadId,
   }) {
     final entry = _entry(
       kind,
@@ -7954,6 +8060,7 @@ class CodexController extends ChangeNotifier {
       agentPhase: agentPhase,
       linkedThreadId: linkedThreadId,
       activityPrompt: activityPrompt,
+      activityParentThreadId: activityParentThreadId,
     );
     _entries.add(entry);
     _scheduleConversationHistorySave();

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:chatgpt/src/app_controller.dart';
+import 'package:chatgpt/src/domain/codex_thread.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/services/conversation_attachment_store.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -252,6 +253,112 @@ void main() {
       [durablePath],
     );
     expect(await File(durablePath).exists(), isTrue);
+    restoredController.dispose();
+  });
+
+  test('restores a sent image after reopening an inactive thread', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'codex-desk-inactive-image-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final workspace = await Directory('${root.path}/workspace').create();
+    final clipboardDirectory = await Directory(
+      '${root.path}/CodexDeskClipboard',
+    ).create();
+    final source = File('${clipboardDirectory.path}/clipboard-image-2.png');
+    await source.writeAsBytes(const [137, 80, 78, 71]);
+    final attachments = Directory('${root.path}/conversation-images');
+    final history = MemoryConversationHistoryStore();
+    final runtime = FakeRuntimeConfigurationStore()..workspace = workspace.path;
+    final firstServer = FakeCodexAppServer()
+      ..startThreadResponseIds.add('thread-a');
+    final firstController = CodexController(
+      server: firstServer,
+      runtimeConfigurationStore: runtime,
+      conversationHistoryStore: history,
+      conversationAttachmentStore: ConversationAttachmentStore(
+        directory: attachments,
+      ),
+    );
+    await firstController.waitForInitialConfiguration();
+    firstController.status = RuntimeStatus.ready;
+    firstController.retainTemporaryAttachment(source.path);
+
+    expect(
+      await firstController.sendPrompt(
+        '线程 A 的截图',
+        imagePaths: [source.path],
+        additionalInput: [
+          {'type': 'localImage', 'path': source.path},
+        ],
+      ),
+      isTrue,
+    );
+    final durablePath = firstController.entries
+        .singleWhere((entry) => entry.imagePaths.isNotEmpty)
+        .imagePaths
+        .single;
+    firstController
+      ..threads = const [
+        CodexThread(
+          id: 'thread-a',
+          preview: '线程 A 的截图',
+          createdAt: 1,
+          updatedAt: 1,
+        ),
+        CodexThread(
+          id: 'thread-b',
+          preview: '另一个任务',
+          createdAt: 2,
+          updatedAt: 2,
+        ),
+      ]
+      ..activeThreadId = 'thread-b';
+    firstController.replaceTimelineEntriesForTesting(const []);
+    await firstController.saveConversationHistoryForTesting();
+    firstController.dispose();
+
+    final secondServer = FakeCodexAppServer()
+      ..resumeResult = {
+        'thread': {
+          'turns': [
+            {
+              'id': 'turn-a',
+              'items': [
+                {
+                  'type': 'userMessage',
+                  'content': [
+                    {'type': 'text', 'text': '线程 A 的截图'},
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      };
+    final restoredController = CodexController(
+      server: secondServer,
+      runtimeConfigurationStore: runtime,
+      conversationHistoryStore: history,
+      conversationAttachmentStore: ConversationAttachmentStore(
+        directory: attachments,
+      ),
+    );
+    await restoredController.waitForInitialConfiguration();
+    restoredController.status = RuntimeStatus.ready;
+
+    await restoredController.resumeThread(
+      restoredController.threads.firstWhere(
+        (thread) => thread.id == 'thread-a',
+      ),
+    );
+
+    expect(
+      restoredController.entries
+          .singleWhere((entry) => entry.detail == '线程 A 的截图')
+          .imagePaths,
+      [durablePath],
+    );
     restoredController.dispose();
   });
 }

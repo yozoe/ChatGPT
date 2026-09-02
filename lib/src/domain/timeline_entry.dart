@@ -28,6 +28,7 @@ class TimelineEntry {
     this.agentPhase,
     this.linkedThreadId,
     this.activityPrompt,
+    this.activityParentThreadId,
   }) : id = id == null || id.trim().isEmpty ? _newId() : id.trim();
 
   static int _idSequence = 0;
@@ -65,6 +66,11 @@ class TimelineEntry {
   /// Original task prompt supplied by App Server for a subagent.
   final String? activityPrompt;
 
+  /// Parent thread that owns an externally bridged collaboration activity.
+  /// This is null for App Server activities and legacy bridge records that
+  /// cannot be safely assigned to a conversation.
+  final String? activityParentThreadId;
+
   /// 返回替换可选详情后的时间线条目副本。
   /// Returns a timeline entry copy with an optional replacement detail.
   TimelineEntry copyWith({
@@ -77,6 +83,7 @@ class TimelineEntry {
     String? agentPhase,
     String? linkedThreadId,
     String? activityPrompt,
+    String? activityParentThreadId,
   }) {
     return TimelineEntry(
       id: id,
@@ -91,6 +98,8 @@ class TimelineEntry {
       agentPhase: agentPhase ?? this.agentPhase,
       linkedThreadId: linkedThreadId ?? this.linkedThreadId,
       activityPrompt: activityPrompt ?? this.activityPrompt,
+      activityParentThreadId:
+          activityParentThreadId ?? this.activityParentThreadId,
     );
   }
 
@@ -109,6 +118,7 @@ class TimelineEntry {
     'agentPhase': ?agentPhase,
     'linkedThreadId': ?linkedThreadId,
     'activityPrompt': ?activityPrompt,
+    'activityParentThreadId': ?activityParentThreadId,
   };
 
   /// 从本地历史缓存 JSON 恢复时间线条目。
@@ -136,6 +146,7 @@ class TimelineEntry {
       agentPhase: value['agentPhase']?.toString(),
       linkedThreadId: value['linkedThreadId']?.toString(),
       activityPrompt: value['activityPrompt']?.toString(),
+      activityParentThreadId: value['activityParentThreadId']?.toString(),
     );
   }
 }

@@ -96,17 +96,13 @@ class CompletedTurnDisclosureState extends State<CompletedTurnDisclosure> {
               ),
             ),
           ),
-          AnimatedCrossFade(
+          AnimatedSize(
             duration: _animationDuration,
-            firstCurve: Curves.easeOutCubic,
-            secondCurve: Curves.easeOutCubic,
-            sizeCurve: Curves.easeOutCubic,
+            curve: Curves.easeOutCubic,
             alignment: Alignment.topLeft,
-            firstChild: const SizedBox(width: double.infinity),
-            secondChild: _completedTurnDetails(processItems),
-            crossFadeState: _expanded
-                ? CrossFadeState.showSecond
-                : CrossFadeState.showFirst,
+            child: _expanded
+                ? _completedTurnDetails(processItems)
+                : const SizedBox(width: double.infinity),
           ),
           _completedTurnDetails(collapsedItems),
           if (allItems.isNotEmpty)

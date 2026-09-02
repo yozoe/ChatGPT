@@ -24,6 +24,7 @@ class ConversationHistorySnapshot {
     this.activeThreadId,
     this.ownedThreadIds = const {},
     this.historyInitialized = false,
+    this.userMessageEntriesByThreadId = const {},
   });
 
   final List<CodexThread> threads;
@@ -46,6 +47,11 @@ class ConversationHistorySnapshot {
   /// Whether the project has established its thread boundary.
   final bool historyInitialized;
 
+  /// Local user-message metadata for each thread. App Server history does not
+  /// retain local preview paths, so this preserves durable image attachments
+  /// when an inactive thread is reopened after a restart.
+  final Map<String, List<TimelineEntry>> userMessageEntriesByThreadId;
+
   /// 将当前工作区快照转换为可持久化的 JSON。
   /// Converts the current workspace snapshot to persistable JSON.
   Map<String, dynamic> toJson() => {
@@ -63,6 +69,10 @@ class ConversationHistorySnapshot {
     'activeThreadId': ?activeThreadId,
     'ownedThreadIds': ownedThreadIds.toList(growable: false),
     'historyInitialized': historyInitialized,
+    'userMessageEntriesByThreadId': {
+      for (final entry in userMessageEntriesByThreadId.entries)
+        entry.key: entry.value.map((item) => item.toJson()).toList(),
+    },
   };
 
   /// 从持久化 JSON 恢复当前工作区快照。
@@ -93,6 +103,21 @@ class ConversationHistorySnapshot {
               .where((id) => id.isNotEmpty)
               .toSet()
         : <String>{};
+    final rawUserMessageEntries = value['userMessageEntriesByThreadId'];
+    final userMessageEntriesByThreadId = <String, List<TimelineEntry>>{};
+    if (rawUserMessageEntries is Map) {
+      for (final entry in rawUserMessageEntries.entries) {
+        final threadId = entry.key.toString().trim();
+        if (threadId.isEmpty || entry.value is! Iterable) continue;
+        userMessageEntriesByThreadId[threadId] = (entry.value as Iterable)
+            .whereType<Map>()
+            .map(TimelineEntry.fromJson)
+            .where((item) => item.kind == TimelineKind.user)
+            // The controller appends newly submitted messages after restoring
+            // this cache, so the decoded list must remain growable.
+            .toList(growable: true);
+      }
+    }
     // Older snapshots did not have an ownership field; their visible threads
     // are the safest migration source.
     final owned = <String>{
@@ -127,6 +152,7 @@ class ConversationHistorySnapshot {
       ownedThreadIds: owned,
       historyInitialized:
           value['historyInitialized'] == true || owned.isNotEmpty,
+      userMessageEntriesByThreadId: userMessageEntriesByThreadId,
     );
   }
 }
