@@ -1018,26 +1018,32 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
       ),
       const SizedBox(height: 18),
       for (final hook in hooks) ...[
-        InkWell(
+        _hookTile(
+          hook,
           key: Key('settings-hook-${hook.key}'),
           onTap: () => _showHooks(hooks),
-          borderRadius: BorderRadius.circular(16),
-          child: _hookTile(hook),
         ),
         const SizedBox(height: 12),
       ],
     ],
   );
 
-  Widget _hookTile(CodexHook hook) {
+  Widget _hookTile(
+    CodexHook hook, {
+    required Key key,
+    required VoidCallback onTap,
+  }) {
     final palette = YeknomPalette.of(context);
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: palette.raised,
+    return Material(
+      key: key,
+      color: palette.raised,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: palette.border),
+        side: BorderSide(color: palette.border),
       ),
       child: ListTile(
+        onTap: onTap,
         leading: Icon(
           hook.source == 'plugin'
               ? Icons.extension_outlined

@@ -36,4 +36,5 @@ export 'package:chatgpt/src/services/clipboard_file_reader.dart';
 export 'package:chatgpt/src/services/codex_app_server.dart';
 export 'package:chatgpt/src/theme/yeknom_workbench.dart';
 export 'package:chatgpt/src/presentation/code_review/code_review_panel.dart';
+export 'package:chatgpt/src/presentation/workspace/codex_workspace_side_panel_tabs.dart';
 export 'package:chatgpt/src/presentation/markdown_preview/workspace_markdown_preview.dart';

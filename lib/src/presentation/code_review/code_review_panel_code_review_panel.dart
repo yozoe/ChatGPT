@@ -16,7 +16,7 @@ class CodeReviewPanel extends StatefulWidget {
     required this.source,
     required this.compact,
     required this.onSourceChanged,
-    required this.onClose,
+    required this.onCollapse,
     super.key,
   });
 
@@ -24,7 +24,7 @@ class CodeReviewPanel extends StatefulWidget {
   final CodeReviewSource source;
   final bool compact;
   final ValueChanged<CodeReviewSource> onSourceChanged;
-  final VoidCallback onClose;
+  final VoidCallback onCollapse;
 
   @override
   State<CodeReviewPanel> createState() => CodeReviewPanelState();

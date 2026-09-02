@@ -116,6 +116,7 @@ class ConversationTimeline extends StatelessWidget {
     required this.data,
     required this.scrollController,
     required this.bottomPadding,
+    required this.userMessageRailLeft,
     required this.active,
     required this.fileChangeSummaryExpanded,
     required this.onFileChangeSummaryExpandedChanged,
@@ -136,6 +137,7 @@ class ConversationTimeline extends StatelessWidget {
   final TimelinePageData data;
   final ScrollController scrollController;
   final double bottomPadding;
+  final double userMessageRailLeft;
   final bool active;
   final bool fileChangeSummaryExpanded;
   final ValueChanged<bool> onFileChangeSummaryExpandedChanged;
@@ -412,7 +414,7 @@ class ConversationTimeline extends StatelessWidget {
               ),
               if (userMessages.isNotEmpty)
                 Positioned(
-                  left: 16,
+                  left: userMessageRailLeft,
                   top: 12,
                   bottom: bottomPadding,
                   child: ConversationUserMessageRail(

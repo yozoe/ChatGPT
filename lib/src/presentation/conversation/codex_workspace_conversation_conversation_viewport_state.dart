@@ -149,6 +149,7 @@ class ConversationViewportState extends State<ConversationViewport> {
                         scrollController:
                             widget.timelineScrollControllers[page.key]!,
                         bottomPadding: timelineBottomPadding,
+                        userMessageRailLeft: widget.userMessageRailLeft,
                         active: page.key == widget.activeTimelinePageKey,
                         fileChangeSummaryExpanded: widget
                             .fileChangeSummaryExpanded(page.key),
@@ -235,15 +236,6 @@ class ConversationViewportState extends State<ConversationViewport> {
                   child: ConversationScrollToBottomButton(
                     onPressed: widget.onScrollToBottom,
                   ),
-                ),
-              ),
-            if (widget.threadHistoryLoading)
-              Positioned.fill(
-                bottom: _bottomOverlayHeight,
-                child: ColoredBox(
-                  key: const Key('thread-history-loading'),
-                  color: palette.module,
-                  child: const Center(child: CodexLoadingMark()),
                 ),
               ),
             Align(

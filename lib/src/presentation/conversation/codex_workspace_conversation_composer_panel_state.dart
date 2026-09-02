@@ -584,6 +584,33 @@ class ComposerPanelState extends State<ComposerPanel> {
   }
 
   Future<bool> _submit() async {
+    final missingTemporaryAttachments = <ComposerAttachment>[];
+    for (final attachment in _attachments) {
+      final isClipboardTemporary =
+          attachment.isTemporary ||
+          attachment.path
+              .replaceAll('\\', '/')
+              .contains('/CodexDeskClipboard/');
+      if (isClipboardTemporary && !await File(attachment.path).exists()) {
+        missingTemporaryAttachments.add(attachment);
+      }
+    }
+    if (missingTemporaryAttachments.isNotEmpty) {
+      for (final attachment in missingTemporaryAttachments) {
+        _releaseAttachmentResources(attachment.path);
+      }
+      if (mounted) {
+        setState(() {
+          _attachments.removeWhere(
+            (attachment) => missingTemporaryAttachments.contains(attachment),
+          );
+        });
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('剪贴板图片已失效，请重新粘贴后再发送。')));
+      }
+      return false;
+    }
     final submission = ComposerSubmission(
       prompt: composer.text.trim(),
       attachments: List.unmodifiable(_attachments),

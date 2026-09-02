@@ -5493,7 +5493,7 @@ class CodexController extends ChangeNotifier {
             }
           case 'fileChange':
             _recordFileChanges(item['changes']);
-          case 'dynamicToolCall' || 'collabToolCall':
+          case 'dynamicToolCall' || 'collabToolCall' || 'subAgentActivity':
             if (!_appendConversationActivityItem(item)) {
               _appendToolHistoryItem(item);
             }
@@ -5530,7 +5530,7 @@ class CodexController extends ChangeNotifier {
       _reasoningSummaryParts.remove(activity.itemId);
     }
     _activeLiveActivity = activity;
-    if (activity.kind == 'collabToolCall') {
+    if (_isCollaborationActivityKind(activity.kind)) {
       final collaborationId = _collaborationActivityId(item);
       if (collaborationId.isNotEmpty) {
         _liveCollaborationActivities[collaborationId] = activity;
@@ -5551,7 +5551,7 @@ class CodexController extends ChangeNotifier {
     if (rawItem is! Map) return;
     final item = JsonMap.from(rawItem);
     final itemId = _label(item['id']);
-    if (item['type']?.toString() == 'collabToolCall') {
+    if (_isCollaborationItem(item)) {
       final collaborationId = _collaborationActivityId(item);
       if (collaborationId.isNotEmpty) {
         _liveCollaborationActivities.remove(collaborationId);
@@ -5624,7 +5624,7 @@ class CodexController extends ChangeNotifier {
         );
       }
     }
-    if (type == 'collabToolCall') {
+    if (_isCollaborationActivityKind(type)) {
       final status = _collaborationStatus(item, live: true);
       return LiveTurnActivity(
         itemId: itemId,
@@ -6037,7 +6037,7 @@ class CodexController extends ChangeNotifier {
       );
       return true;
     }
-    if (type != 'collabToolCall') return false;
+    if (!_isCollaborationItem(item)) return false;
 
     final sourceItemId = _collaborationActivityId(item);
     final status = _collaborationStatus(item, live: false);
@@ -6153,7 +6153,15 @@ class CodexController extends ChangeNotifier {
   }
 
   String _collaborationActivityId(JsonMap item) {
-    for (final key in ['receiverThreadId', 'newThreadId', 'id']) {
+    for (final key in [
+      'agentThreadId',
+      'agent_thread_id',
+      'receiverThreadId',
+      'receiver_thread_id',
+      'newThreadId',
+      'new_thread_id',
+      'id',
+    ]) {
       final value = _label(item[key]);
       if (value.isNotEmpty) return value;
     }
@@ -6161,12 +6169,29 @@ class CodexController extends ChangeNotifier {
   }
 
   String? _collaborationThreadId(JsonMap item) {
-    for (final key in ['newThreadId', 'receiverThreadId']) {
+    for (final key in [
+      'agentThreadId',
+      'agent_thread_id',
+      'newThreadId',
+      'new_thread_id',
+      'receiverThreadId',
+      'receiver_thread_id',
+    ]) {
       final value = _label(item[key]);
       if (value.isNotEmpty) return value;
     }
     return null;
   }
+
+  /// App Server 0.152 reports per-agent lifecycle records as
+  /// `subAgentActivity`, whereas older runtimes use `collabToolCall`.
+  /// `collabAgentToolCall` is the parent-side transport operation (for
+  /// example, a wait) and must not be rendered as another child agent.
+  bool _isCollaborationItem(JsonMap item) =>
+      _isCollaborationActivityKind(_label(item['type']));
+
+  bool _isCollaborationActivityKind(String kind) =>
+      kind == 'collabToolCall' || kind == 'subAgentActivity';
 
   String _collaborationName(JsonMap item) {
     for (final value in [item['agentStatus'], item]) {
@@ -6176,6 +6201,17 @@ class CodexController extends ChangeNotifier {
     final prompt = _label(item['prompt']).toLowerCase();
     if (prompt.contains('review') || prompt.contains('审查')) {
       return 'Independent review';
+    }
+    final agentPath = _firstNonEmptyLabel([
+      item['agentPath'],
+      item['agent_path'],
+    ]);
+    if (agentPath.isNotEmpty) {
+      return agentPath
+              .split('/')
+              .where((segment) => segment.isNotEmpty)
+              .lastOrNull ??
+          agentPath;
     }
     return 'Independent task';
   }
@@ -6207,6 +6243,9 @@ class CodexController extends ChangeNotifier {
 
   (String, String) _collaborationStatus(JsonMap item, {required bool live}) {
     var rawStatus = _collaborationStatusFromValue(item['agentStatus']);
+    if (rawStatus.isEmpty && _label(item['type']) == 'subAgentActivity') {
+      rawStatus = _normalizedActivityValue(item['kind']);
+    }
     final tool = _normalizedActivityValue(item['tool']);
     if (rawStatus.isEmpty) {
       if (tool.contains('spawn')) {
@@ -6223,6 +6262,7 @@ class CodexController extends ChangeNotifier {
       'pending' ||
       'starting' ||
       'started' ||
+      'interacted' ||
       'active' ||
       'inprogress' ||
       'running' ||
@@ -6568,7 +6608,7 @@ class CodexController extends ChangeNotifier {
                 createdAt: createdAt,
                 sourceItemId: _label(item['id']),
               );
-            case 'collabToolCall':
+            case 'collabToolCall' || 'subAgentActivity':
               final collaborationStatus = _collaborationStatus(
                 item,
                 live: false,

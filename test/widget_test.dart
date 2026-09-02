@@ -23,6 +23,7 @@ import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_sidebar
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_thread_viewport_key.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_conversation_timeline.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_conversation_pane.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_timeline_page_data.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_user_message_rail.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_user_message_rail_mark.dart';
@@ -171,15 +172,17 @@ void main() {
     for (final item in const [
       {
         'id': 'spawn-review',
-        'type': 'collabToolCall',
-        'newThreadId': 'review-thread',
-        'agentStatus': {'name': 'Review changes', 'status': 'running'},
+        'type': 'subAgentActivity',
+        'kind': 'started',
+        'agentThreadId': 'review-thread',
+        'agentPath': '/root/review_app',
       },
       {
         'id': 'spawn-tests',
-        'type': 'collabToolCall',
-        'newThreadId': 'test-thread',
-        'agentStatus': {'name': 'Check tests', 'status': 'running'},
+        'type': 'subAgentActivity',
+        'kind': 'started',
+        'agentThreadId': 'test-thread',
+        'agentPath': '/root/review_tests',
       },
     ]) {
       controller.handleServerEventForTesting(
@@ -201,18 +204,28 @@ void main() {
     );
     await tester.pump();
 
+    expect(
+      find.byKey(const Key('live-collaboration-activities-row')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('live-subagent-activity-open-spawn-review')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('live-subagent-activity-open-spawn-tests')),
+      findsOneWidget,
+    );
     expect(find.text('2 个运行中'), findsOneWidget);
     await tester.tap(find.byKey(const Key('sidebar-agents-button')));
     await tester.pump();
     expect(find.text('已开启 · 2'), findsOneWidget);
-    expect(find.text('Review changes'), findsOneWidget);
-    expect(find.text('Check tests'), findsOneWidget);
+    expect(find.text('review_app'), findsOneWidget);
+    expect(find.text('review_tests'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('opens the subagent directory from the inspector summary', (
-    tester,
-  ) async {
+  testWidgets('opens subagent tabs from the inspector summary', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1280, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final controller = CodexController(server: CodexAppServer());
@@ -242,8 +255,71 @@ void main() {
     await tester.tap(find.byKey(const Key('inspector-subagents-open-all')));
     await tester.pump();
 
-    expect(find.byKey(const Key('agents-page')), findsOneWidget);
-    expect(find.text('Login entry integration'), findsOneWidget);
+    expect(find.byKey(const Key('agents-page')), findsNothing);
+    expect(
+      find.byKey(
+        const ValueKey('side-panel-tab-subagent:login-entry-integration'),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Login entry integration'), findsNWidgets(3));
+    final workbenchTopBar = tester.getRect(
+      find.byKey(const Key('workbench-column-topbar')),
+    );
+    final panelToggle = tester.getRect(
+      find.byKey(const Key('side-panel-collapse')),
+    );
+    expect(1280 - panelToggle.right, closeTo(16, 0.1));
+    expect(workbenchTopBar.right, lessThanOrEqualTo(panelToggle.left));
+    expect(
+      find.byKey(
+        const ValueKey('side-panel-tab-close-subagent:login-entry-integration'),
+      ),
+      findsNothing,
+    );
+
+    await tester.binding.setSurfaceSize(const Size(2048, 900));
+    await tester.pumpAndSettle();
+    final fullHeightPanel = tester.getRect(
+      find.byKey(const Key('full-height-side-panel')),
+    );
+    expect(fullHeightPanel.top, 0);
+    expect(fullHeightPanel.bottom, 900);
+    expect(find.byKey(const Key('codex-environment-card')), findsOneWidget);
+    expect(
+      tester
+          .getSize(find.byKey(const Key('conversation-viewport-stack')))
+          .width,
+      closeTo(820, 0.1),
+    );
+    expect(
+      2048 - tester.getRect(find.byKey(const Key('side-panel-collapse'))).right,
+      closeTo(16, 0.1),
+    );
+
+    await tester.tap(find.byKey(const Key('side-panel-collapse')));
+    await tester.pump();
+    expect(find.byKey(const Key('code-review-panel')), findsNothing);
+    expect(find.byKey(const Key('side-panel-expand')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('side-panel-expand')));
+    await tester.pump();
+    expect(find.byKey(const Key('subagent-thread-panel')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('side-panel-collapse')));
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('workbench-file-changes-button')));
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('side-panel-tab-review')), findsOneWidget);
+    expect(
+      find.byKey(
+        const ValueKey('side-panel-tab-subagent:login-entry-integration'),
+      ),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('code-review-panel')), findsOneWidget);
+    expect(find.byKey(const Key('code-review-close')), findsNothing);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -364,6 +440,7 @@ void main() {
           width: 700,
           height: 240,
           child: ConversationTimeline(
+            userMessageRailLeft: 16,
             pageKey: const ThreadViewportKey(
               workspace: null,
               threadId: 'rail-test',
@@ -856,6 +933,12 @@ void main() {
     expect(
       tester.getTopLeft(find.byKey(const Key('composer-panel'))).dy,
       greaterThan(tester.getBottomLeft(workbenchTopBar).dy),
+    );
+    final environmentPane = find.byKey(const Key('environment-inspector-pane'));
+    expect(tester.getTopLeft(environmentPane).dy, 0);
+    expect(
+      tester.getTopRight(workbenchTopBar).dx,
+      lessThanOrEqualTo(tester.getTopLeft(environmentPane).dx),
     );
     await tester.pumpWidget(const SizedBox());
   });
@@ -1411,6 +1494,11 @@ void main() {
       expect(controller.activeThreadId, 'settling-history');
       expect(controller.isResumingThread, isFalse);
       expect(find.byKey(const Key('thread-history-loading')), findsOneWidget);
+      final loadingSurface = find.byKey(const Key('thread-history-loading'));
+      expect(
+        tester.getSize(loadingSurface),
+        tester.getSize(find.byType(ConversationPane)),
+      );
 
       await tester.tap(find.text('preview-cached-reading'));
       await tester.pumpAndSettle();
@@ -6622,7 +6710,7 @@ void main() {
       find.byKey(const Key('completed-turn-disclosure-divider')),
       findsOneWidget,
     );
-    expect(find.byType(AnimatedCrossFade), findsOneWidget);
+    expect(find.byType(AnimatedSize), findsOneWidget);
 
     await tester.tap(find.text('已运行了命令'));
     await tester.pump();
@@ -7160,7 +7248,7 @@ void main() {
       expect(find.byKey(const Key('subagent-thread-panel')), findsOneWidget);
       expect(find.byKey(const Key('inspector-resize-handle')), findsNothing);
 
-      await tester.tap(find.byKey(const Key('subagent-thread-close')));
+      await tester.tap(find.byKey(const Key('side-panel-collapse')));
       await tester.pump();
       expect(find.byKey(const Key('subagent-thread-panel')), findsNothing);
       expect(find.text('Locate mobile styles'), findsOneWidget);
@@ -12292,7 +12380,7 @@ void main() {
 
     expect(find.byKey(const Key('code-review-panel')), findsOneWidget);
     expect(find.byKey(const Key('code-review-dialog')), findsNothing);
-    expect(find.text('审查'), findsOneWidget);
+    expect(find.text('审查'), findsNWidgets(2));
     expect(find.text('lib/main.dart'), findsWidgets);
     expect(find.text('+new'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
@@ -12301,7 +12389,7 @@ void main() {
   testWidgets(
     'keeps review beside the conversation and preserves state across breakpoints',
     (tester) async {
-      await tester.binding.setSurfaceSize(const Size(1800, 900));
+      await tester.binding.setSurfaceSize(const Size(2048, 900));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       final controller = CodexController(server: CodexAppServer())
         ..status = RuntimeStatus.ready;
@@ -12350,7 +12438,7 @@ void main() {
       await tester.pump();
       expect(
         tester.getSize(find.byKey(const Key('code-review-panel'))).width,
-        greaterThan(initialReviewWidth),
+        lessThanOrEqualTo(initialReviewWidth),
       );
       await tester.enterText(
         find.byKey(const Key('code-review-file-filter')),
@@ -12372,7 +12460,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byKey(const Key('code-review-panel')), findsOneWidget);
-      expect(find.byKey(const Key('code-review-back')), findsOneWidget);
+      expect(find.byKey(const Key('side-panel-collapse')), findsOneWidget);
       await tester.tap(find.byKey(const Key('code-review-navigation-toggle')));
       await tester.pump();
       expect(
@@ -12387,7 +12475,7 @@ void main() {
         'review.dart',
       );
 
-      await tester.binding.setSurfaceSize(const Size(1800, 900));
+      await tester.binding.setSurfaceSize(const Size(2048, 900));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('review-resize-handle')), findsOneWidget);
       expect(
@@ -12437,9 +12525,9 @@ void main() {
     await tester.tap(find.byKey(const Key('review-file-changes-button')));
     await tester.pump();
 
-    expect(find.byKey(const Key('code-review-back')), findsOneWidget);
+    expect(find.byKey(const Key('side-panel-collapse')), findsOneWidget);
     expect(find.byKey(const Key('composer-field')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('code-review-close')));
+    await tester.tap(find.byKey(const Key('side-panel-collapse')));
     await tester.pump();
 
     expect(find.byKey(const Key('code-review-panel')), findsNothing);
@@ -12453,7 +12541,7 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('closes an inline review with Escape immediately after opening', (
+  testWidgets('collapses an inline review with Escape after opening', (
     tester,
   ) async {
     await tester.binding.setSurfaceSize(const Size(1800, 900));
@@ -12645,7 +12733,10 @@ void main() {
       expect(git.reversedDiff, taskDiff);
       expect(git.reversedExpectedPaths, ['lib/main.dart']);
       expect(tester.widget<TextButton>(undo).onPressed, isNull);
-      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+      expect(
+        find.byKey(const Key('code-review-file-operation')),
+        findsOneWidget,
+      );
       expect(controller.canSend, isFalse);
 
       await tester.tap(undo);
@@ -13016,6 +13107,16 @@ void main() {
     expect(changeLabel.style?.fontSize, 13);
     expect(taskFilesLabel.style?.fontSize, 13);
     expect(decoration.borderRadius, BorderRadius.circular(28));
+    expect(find.byKey(const Key('side-panel-collapse')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('side-panel-collapse')));
+    await tester.pump();
+    expect(find.byKey(const Key('codex-environment-card')), findsNothing);
+    expect(find.byKey(const Key('side-panel-expand')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('side-panel-expand')));
+    await tester.pump();
+    expect(find.byKey(const Key('codex-environment-card')), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -13094,7 +13195,7 @@ void main() {
                 source: CodeReviewSource.gitWorkspace,
                 compact: true,
                 onSourceChanged: (_) {},
-                onClose: () {},
+                onCollapse: () {},
               ),
             ),
           ),
@@ -13146,7 +13247,7 @@ void main() {
             source: CodeReviewSource.latestTurn,
             compact: true,
             onSourceChanged: (_) {},
-            onClose: () {},
+            onCollapse: () {},
           ),
         ),
       ),
@@ -16969,8 +17070,7 @@ void main() {
     await tester.tap(
       find.byKey(const ValueKey('sidebar-thread-archive-archive-me')),
     );
-    await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(FilledButton, '归档'));
+    await tester.pump();
     await tester.pump();
 
     expect(server.archiveCalls, 1);
@@ -17016,45 +17116,6 @@ void main() {
     },
   );
 
-  testWidgets(
-    'reports a task that starts running while archive confirmation is open',
-    (tester) async {
-      final server = _FakeCodexAppServer()
-        ..listResponse = [
-          {'id': 'archive-me', 'preview': 'archive-me', 'status': 'idle'},
-        ];
-      final controller = CodexController(server: server)
-        ..workspacePath = '/workspace'
-        ..status = RuntimeStatus.ready;
-      await controller.refreshThreads();
-      await tester.pumpWidget(
-        MaterialApp(home: CodexWorkspace(controller: controller)),
-      );
-
-      final taskTile = find.byKey(
-        const ValueKey('sidebar-thread-tile-archive-me'),
-      );
-      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
-      await mouse.moveTo(tester.getCenter(taskTile));
-      await tester.pump();
-      await tester.tap(
-        find.byKey(const ValueKey('sidebar-thread-archive-archive-me')),
-      );
-      await tester.pumpAndSettle();
-
-      controller
-        ..threads = [controller.threads.single.copyWith(status: 'active')]
-        ..notifyListeners();
-      await tester.pump();
-      await tester.tap(find.widgetWithText(FilledButton, '归档'));
-      await tester.pump();
-
-      expect(server.archiveCalls, 0);
-      expect(find.text('运行中的任务不能归档，请先停止任务。'), findsOneWidget);
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
-
   test(
     'rechecks each task status while a batch archive is in progress',
     () async {
@@ -17091,7 +17152,7 @@ void main() {
   );
 
   testWidgets(
-    'enters batch archive from the project menu and preserves selection on cancel',
+    'enters batch archive from the project menu and archives selected tasks',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(1100, 900));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -17150,25 +17211,6 @@ void main() {
       expect(find.text('已选 2 个任务'), findsOneWidget);
 
       await tester.tap(find.widgetWithText(FilledButton, '归档已选'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
-      expect(find.text('归档 2 个任务？'), findsOneWidget);
-      expect(find.text('将归档空闲任务；其中 1 个任务正在运行，会保留在当前列表中。'), findsOneWidget);
-      await tester.tap(
-        find.descendant(
-          of: find.byType(AlertDialog),
-          matching: find.widgetWithText(TextButton, '取消'),
-        ),
-      );
-      await tester.pump();
-      expect(server.archiveCalls, 0);
-      expect(find.text('已选 2 个任务'), findsOneWidget);
-      expect(find.byType(SnackBar), findsNothing);
-
-      await tester.tap(find.widgetWithText(FilledButton, '归档已选'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
-      await tester.tap(find.widgetWithText(FilledButton, '归档'));
       await tester.pump();
 
       expect(server.archivedThreadIds, ['idle']);

@@ -14,18 +14,17 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 /// Shows a read-only selected-subagent timeline without disturbing the main conversation draft.
 class SubagentThreadPanel extends StatelessWidget {
   const SubagentThreadPanel({
+    super.key,
     required this.controller,
     required this.threadId,
     required this.fallbackTitle,
     required this.onOpenSubagent,
-    required this.onClose,
   });
 
   final CodexController controller;
   final String threadId;
   final String fallbackTitle;
   final ValueChanged<TimelineEntry> onOpenSubagent;
-  final VoidCallback onClose;
 
   @override
   Widget build(BuildContext context) {
@@ -47,12 +46,7 @@ class SubagentThreadPanel extends StatelessWidget {
             height: 47,
             child: Row(
               children: [
-                IconButton(
-                  key: const Key('subagent-thread-close'),
-                  tooltip: '返回主任务',
-                  onPressed: onClose,
-                  icon: const Icon(Icons.arrow_back, size: 18),
-                ),
+                const SizedBox(width: 16),
                 SubagentAvatar(agentId: threadId, size: 18),
                 const SizedBox(width: 8),
                 Expanded(
@@ -66,11 +60,7 @@ class SubagentThreadPanel extends StatelessWidget {
                     ),
                   ),
                 ),
-                IconButton(
-                  tooltip: '关闭子智能体',
-                  onPressed: onClose,
-                  icon: const Icon(Icons.close, size: 17),
-                ),
+                const SizedBox(width: 16),
               ],
             ),
           ),

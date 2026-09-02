@@ -34,6 +34,7 @@ class Inspector extends StatelessWidget {
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
     return SizedBox(
+      key: const Key('environment-inspector-pane'),
       width: width,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 14, 14, 16),
@@ -52,14 +53,21 @@ class Inspector extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    '环境信息',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: palette.muted,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: -0.35,
-                    ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '环境信息',
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(
+                                color: palette.muted,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: -0.35,
+                              ),
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 22),
                   InspectorActionRow(

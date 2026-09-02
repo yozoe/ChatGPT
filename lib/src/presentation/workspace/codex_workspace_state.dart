@@ -42,12 +42,14 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   static const _maximumSidebarWidth = 420.0;
   static const _minimumInspectorWidth = 280.0;
   static const _maximumInspectorWidth = 460.0;
-  static const _minimumReviewWidth = 740.0;
+  static const _minimumReviewWidth = 600.0;
   static const _maximumReviewWidth = 960.0;
-  static const _minimumConversationWithReview = 520.0;
+  static const _minimumAuxiliaryWidth = 360.0;
+  static const _conversationColumnWidth = 820.0;
+  static const _auxiliaryPaneAllowance = 24.0;
   double _sidebarWidth = 250;
   double _inspectorWidth = 352;
-  double _reviewWidth = _minimumReviewWidth;
+  double _reviewWidth = _maximumReviewWidth;
   bool _reviewOpen = false;
   CodeReviewSource _reviewSource = CodeReviewSource.latestTurn;
   final GlobalKey _reviewPanelKey = GlobalKey();
@@ -59,7 +61,10 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   int _browserNavigationRevision = 0;
   String? _selectedSubagentThreadId;
   String? _selectedSubagentParentThreadId;
-  String _selectedSubagentTitle = '子智能体';
+  final Set<String> _openedSubagentThreadIds = <String>{};
+  final Map<String, String> _subagentTitles = <String, String>{};
+  String _activeSidePanelTab = 'review';
+  bool _sidePanelCollapsed = false;
   late CodexController _controller;
   double? _settingsReturnTimelineOffset;
   bool _appWasInactive = false;
@@ -207,6 +212,9 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
         _selectedSubagentParentThreadId != _controller.activeThreadId) {
       _selectedSubagentThreadId = null;
       _selectedSubagentParentThreadId = null;
+      _openedSubagentThreadIds.clear();
+      _subagentTitles.clear();
+      _activeSidePanelTab = _reviewOpen ? 'review' : '';
     }
     if (_controller.isResumingThread) {
       _timelineScrollGeneration++;
@@ -297,8 +305,11 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     setState(() {
       _selectedSubagentThreadId = threadId;
       _selectedSubagentParentThreadId = _controller.activeThreadId;
-      _selectedSubagentTitle = title;
+      _openedSubagentThreadIds.add(threadId);
+      _subagentTitles[threadId] = title;
       _destination = WorkspaceDestination.conversation;
+      _activeSidePanelTab = 'subagent:$threadId';
+      _sidePanelCollapsed = false;
     });
     unawaited(
       _controller.loadSubagentThread(
@@ -310,12 +321,19 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     );
   }
 
-  void _closeSubagentInspector() {
-    if (_selectedSubagentThreadId == null) return;
-    setState(() {
-      _selectedSubagentThreadId = null;
-      _selectedSubagentParentThreadId = null;
-    });
+  void _returnToMainTask() {
+    if (!mounted) return;
+    setState(() => _sidePanelCollapsed = true);
+  }
+
+  void _toggleSidePanel() {
+    if (!mounted) return;
+    setState(() => _sidePanelCollapsed = !_sidePanelCollapsed);
+  }
+
+  void _selectSidePanelTab(String tab) {
+    if (!mounted) return;
+    setState(() => _activeSidePanelTab = tab);
   }
 
   /// Creates a retained controller and remembers when the user deliberately
@@ -1891,8 +1909,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     }
   }
 
-  /// 确认后归档指定历史线程。
-  /// Archives a specified history thread after confirmation.
+  /// Archives a specified history thread immediately.
   Future<void> _archiveThread(CodexThread thread) async {
     await _archiveThreads([thread]);
   }
@@ -1928,40 +1945,11 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       ..showSnackBar(SnackBar(content: Text('$prefix${reasons.join('；')}。')));
   }
 
-  /// 二次确认后批量归档历史线程，并返回成功与未提交任务的分类结果。
-  /// Archives threads after confirmation and returns success and skip details.
+  /// Archives threads immediately and returns success and skip details.
   Future<ThreadArchiveResult?> _archiveThreads(
     List<CodexThread> threads,
   ) async {
     if (threads.isEmpty) return ThreadArchiveResult();
-    final count = threads.length;
-    final runningCount = threads
-        .where(_controller.isThreadExecutionActive)
-        .length;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(count == 1 ? '归档任务？' : '归档 $count 个任务？'),
-        content: Text(
-          count == 1
-              ? '“${threads.single.title}”将从当前列表隐藏，但可以在后续归档视图中恢复。'
-              : runningCount > 0
-              ? '将归档空闲任务；其中 $runningCount 个任务正在运行，会保留在当前列表中。'
-              : '所选任务将从当前列表隐藏，但可以在后续归档视图中恢复。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton.tonal(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('归档'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return null;
     final result = await _controller.archiveThreads(threads);
     if (mounted) _showArchiveResultFeedback(result);
     return result;
@@ -2062,16 +2050,14 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       _destination = WorkspaceDestination.conversation;
       _reviewSource = source;
       _reviewOpen = true;
+      _activeSidePanelTab = 'review';
+      _sidePanelCollapsed = false;
     });
     if (source == CodeReviewSource.latestTurn) {
       await _controller.ensureFileChangeDiffs();
     } else {
       await _controller.refreshGitReview();
     }
-  }
-
-  void _closeCodeReview() {
-    if (mounted) setState(() => _reviewOpen = false);
   }
 
   void _changeCodeReviewSource(CodeReviewSource source) {
@@ -2170,6 +2156,67 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   }
 
   void _showAgents() {
+    if (!mounted) return;
+    // The inspector's compact "查看全部" action belongs to the current
+    // conversation workbench. Keep the full directory available from the
+    // sidebar, but expand the existing subagent tabs here instead of
+    // replacing the whole work area with AgentsPage.
+    final agents = <String, ({String title, String prompt, String status})>{};
+    for (final entry in _controller.entries) {
+      final threadId = entry.linkedThreadId;
+      if (entry.activityKind != 'collaboration' ||
+          threadId == null ||
+          threadId.isEmpty ||
+          entry.sourceItemId?.startsWith('external-bridge-') == true) {
+        continue;
+      }
+      agents[threadId] = (
+        title: entry.title,
+        prompt: entry.activityPrompt ?? '',
+        status: entry.activityStatus ?? 'working',
+      );
+    }
+    for (final activity in _controller.activeCollaborationActivities) {
+      final threadId = activity.linkedThreadId;
+      if (threadId == null || threadId.isEmpty || activity.isExternalBridge) {
+        continue;
+      }
+      agents.putIfAbsent(
+        threadId,
+        () => (
+          title: activity.label,
+          prompt: activity.prompt,
+          status: activity.status ?? 'working',
+        ),
+      );
+    }
+    if (agents.isEmpty) return;
+
+    setState(() {
+      _destination = WorkspaceDestination.conversation;
+      _selectedSubagentParentThreadId = _controller.activeThreadId;
+      for (final entry in agents.entries) {
+        _openedSubagentThreadIds.add(entry.key);
+        _subagentTitles[entry.key] = entry.value.title;
+      }
+      _selectedSubagentThreadId ??= agents.keys.first;
+      _activeSidePanelTab = 'subagent:$_selectedSubagentThreadId';
+      _sidePanelCollapsed = false;
+    });
+    for (final entry in agents.entries) {
+      unawaited(
+        _controller.loadSubagentThread(
+          threadId: entry.key,
+          title: entry.value.title,
+          prompt: entry.value.prompt,
+          status: entry.value.status,
+        ),
+      );
+    }
+  }
+
+  /// Opens the full directory from the sidebar navigation.
+  void _showAgentsDirectory() {
     if (!mounted) return;
     setState(() => _destination = WorkspaceDestination.agents);
   }
@@ -2404,331 +2451,453 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                 .clamp(_minimumInspectorWidth, inspectorMaximum)
                 .toDouble();
             final workbenchWidth = constraints.maxWidth - sidebarWidth;
-            final reviewInline =
-                _reviewOpen &&
+            final sidePanelExpanded = !_sidePanelCollapsed;
+            final sidePanelOpen =
+                sidePanelExpanded &&
+                (_reviewOpen || _openedSubagentThreadIds.isNotEmpty);
+            final auxiliaryFullHeight = sidePanelOpen && !compact;
+            final preserveInspectorWithAuxiliary =
+                auxiliaryFullHeight &&
                 workbenchWidth >=
-                    _minimumConversationWithReview + _minimumReviewWidth;
-            final reviewMaximum = reviewInline
-                ? (workbenchWidth - _minimumConversationWithReview)
-                      .clamp(_minimumReviewWidth, _maximumReviewWidth)
+                    _conversationColumnWidth +
+                        _minimumInspectorWidth +
+                        _minimumAuxiliaryWidth;
+            final showFullHeightInspector =
+                !compact &&
+                (!auxiliaryFullHeight || preserveInspectorWithAuxiliary);
+            final auxiliaryInspectorWidth = preserveInspectorWithAuxiliary
+                ? inspectorWidth
+                      .clamp(
+                        _minimumInspectorWidth,
+                        workbenchWidth -
+                            _conversationColumnWidth -
+                            _minimumAuxiliaryWidth,
+                      )
+                      .toDouble()
+                : inspectorWidth;
+            final reviewMaximum = auxiliaryFullHeight
+                ? (workbenchWidth -
+                          _conversationColumnWidth -
+                          _auxiliaryPaneAllowance -
+                          (preserveInspectorWithAuxiliary
+                              ? auxiliaryInspectorWidth
+                              : 0))
+                      .clamp(_minimumAuxiliaryWidth, _maximumReviewWidth)
                       .toDouble()
                 : _minimumReviewWidth;
             final reviewWidth = _reviewWidth
-                .clamp(_minimumReviewWidth, reviewMaximum)
+                .clamp(_minimumAuxiliaryWidth, reviewMaximum)
                 .toDouble();
-            return Row(
+            final sidePanelContents = <String, Widget>{
+              if (_reviewOpen)
+                'review': CodeReviewPanel(
+                  key: _reviewPanelKey,
+                  controller: controller,
+                  source: _reviewSource,
+                  compact: compact || reviewWidth < _minimumReviewWidth,
+                  onSourceChanged: _changeCodeReviewSource,
+                  onCollapse: _returnToMainTask,
+                ),
+              for (final id in _openedSubagentThreadIds)
+                'subagent:$id': SubagentThreadPanel(
+                  key: ValueKey('subagent-panel-$id'),
+                  controller: controller,
+                  threadId: id,
+                  fallbackTitle: _subagentTitles[id] ?? '子智能体',
+                  onOpenSubagent: _openSubagentInspector,
+                ),
+            };
+            final sidePanelLabels = <String, String>{
+              if (_reviewOpen) 'review': '审查',
+              for (final id in _openedSubagentThreadIds)
+                'subagent:$id': _subagentTitles[id] ?? '子智能体',
+            };
+            return Stack(
+              fit: StackFit.expand,
               children: [
-                SizedBox(
-                  width: sidebarWidth,
-                  child: Column(
-                    children: [
-                      TopBar(
-                        key: const Key('workspace-column-topbar'),
-                        controller: controller,
-                        themeMode: widget.themeMode,
-                        themePreset: widget.themePreset,
-                        onThemeModeChanged: widget.onThemeModeChanged,
-                        onThemePresetChanged: widget.onThemePresetChanged,
-                        onChooseWorkspace: _showWorkspaceDirectories,
-                        onAccount: _showAccount,
-                        onCodexConfiguration: _showCodexConfiguration,
-                        onPlugins: _showPlugins,
-                        showIdentity: true,
-                        showControls: false,
-                      ),
-                      const Divider(height: 1),
-                      Expanded(
-                        child: Sidebar(
-                          width: sidebarWidth,
-                          controller: controller,
-                          onChooseWorkspace: _showWorkspaceDirectories,
-                          onEditWorkspace: _showEditWorkspaceDialog,
-                          onCreateWorkspace: () =>
-                              unawaited(_createWorkspace()),
-                          onConfigureRuntime: _showRuntime,
-                          onRenameThread: _renameThread,
-                          onArchiveThread: _archiveThread,
-                          onArchiveThreads: _archiveThreads,
-                          onDeleteThread: _deleteThread,
-                          onShowArchivedThreads: _showArchivedThreads,
-                          onExportHistory: _exportConversationHistory,
-                          onImportHistory: _importConversationHistory,
-                          onShowGitProject: _showGitProject,
-                          onShowPlugins: _showPluginsPage,
-                          onShowAgents: _showAgents,
-                          onShowScheduledTasks: _showScheduledTasks,
-                          onShowPullRequests: _showPullRequests,
-                          onShowSettings: _showSettings,
-                          onOpenConversation: _showConversation,
-                          onNewConversation: _startNewConversation,
-                          destination: _destination,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                PaneResizeHandle(
-                  key: const Key('sidebar-resize-handle'),
-                  onDragDelta: (delta) => setState(() {
-                    _sidebarWidth = (_sidebarWidth + delta)
-                        .clamp(_minimumSidebarWidth, sidebarMaximum)
-                        .toDouble();
-                  }),
-                ),
-                Expanded(
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      if (_browserPageMounted)
-                        Offstage(
-                          offstage:
-                              _destination != WorkspaceDestination.browser,
-                          child: BrowserWorkspacePage(
-                            onOpenConversation: _showConversation,
-                            initialUrl: _browserInitialUrl,
-                            navigationRevision: _browserNavigationRevision,
+                Row(
+                  children: [
+                    SizedBox(
+                      width: sidebarWidth,
+                      child: Column(
+                        children: [
+                          TopBar(
+                            key: const Key('workspace-column-topbar'),
+                            controller: controller,
+                            themeMode: widget.themeMode,
+                            themePreset: widget.themePreset,
+                            onThemeModeChanged: widget.onThemeModeChanged,
+                            onThemePresetChanged: widget.onThemePresetChanged,
+                            onChooseWorkspace: _showWorkspaceDirectories,
+                            onAccount: _showAccount,
+                            onCodexConfiguration: _showCodexConfiguration,
+                            onPlugins: _showPlugins,
+                            showIdentity: true,
+                            showControls: false,
                           ),
-                        ),
-                      if (_destination != WorkspaceDestination.browser)
-                        _destination == WorkspaceDestination.scheduledTasks
-                            ? ScheduledTasksPage(
-                                controller: controller,
-                                onCreate: _showScheduledTaskComposer,
-                              )
-                            : _destination == WorkspaceDestination.plugins
-                            ? PluginsPage(
-                                controller: controller,
-                                onAddMarketplace: _showAddMarketplace,
-                                onOpenSettings: _showPlugins,
-                                onCreatePlugin: _createPluginWithCodex,
-                                onRecordSkill: _recordSkillWithCodex,
-                              )
-                            : _destination == WorkspaceDestination.agents
-                            ? AgentsPage(
-                                controller: controller,
-                                onOpenSubagent: _openSubagentThread,
-                              )
-                            : _destination == WorkspaceDestination.pullRequests
-                            ? PullRequestsPage(
-                                controller: controller,
-                                onOpenGitProject: _showGitProject,
-                                onAskCodex: _askCodexAboutGitHubCli,
-                              )
-                            : Column(
-                                children: [
-                                  TopBar(
-                                    key: const Key('workbench-column-topbar'),
+                          const Divider(height: 1),
+                          Expanded(
+                            child: Sidebar(
+                              width: sidebarWidth,
+                              controller: controller,
+                              onChooseWorkspace: _showWorkspaceDirectories,
+                              onEditWorkspace: _showEditWorkspaceDialog,
+                              onCreateWorkspace: () =>
+                                  unawaited(_createWorkspace()),
+                              onConfigureRuntime: _showRuntime,
+                              onRenameThread: _renameThread,
+                              onArchiveThread: _archiveThread,
+                              onArchiveThreads: _archiveThreads,
+                              onDeleteThread: _deleteThread,
+                              onShowArchivedThreads: _showArchivedThreads,
+                              onExportHistory: _exportConversationHistory,
+                              onImportHistory: _importConversationHistory,
+                              onShowGitProject: _showGitProject,
+                              onShowPlugins: _showPluginsPage,
+                              onShowAgents: _showAgentsDirectory,
+                              onShowScheduledTasks: _showScheduledTasks,
+                              onShowPullRequests: _showPullRequests,
+                              onShowSettings: _showSettings,
+                              onOpenConversation: _showConversation,
+                              onNewConversation: _startNewConversation,
+                              destination: _destination,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    PaneResizeHandle(
+                      key: const Key('sidebar-resize-handle'),
+                      onDragDelta: (delta) => setState(() {
+                        _sidebarWidth = (_sidebarWidth + delta)
+                            .clamp(_minimumSidebarWidth, sidebarMaximum)
+                            .toDouble();
+                      }),
+                    ),
+                    Expanded(
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          if (_browserPageMounted)
+                            Offstage(
+                              offstage:
+                                  _destination != WorkspaceDestination.browser,
+                              child: BrowserWorkspacePage(
+                                onOpenConversation: _showConversation,
+                                initialUrl: _browserInitialUrl,
+                                navigationRevision: _browserNavigationRevision,
+                              ),
+                            ),
+                          if (_destination != WorkspaceDestination.browser)
+                            _destination == WorkspaceDestination.scheduledTasks
+                                ? ScheduledTasksPage(
                                     controller: controller,
-                                    themeMode: widget.themeMode,
-                                    themePreset: widget.themePreset,
-                                    onThemeModeChanged:
-                                        widget.onThemeModeChanged,
-                                    onThemePresetChanged:
-                                        widget.onThemePresetChanged,
-                                    onChooseWorkspace:
-                                        _showWorkspaceDirectories,
-                                    onAccount: _showAccount,
-                                    onCodexConfiguration:
-                                        _showCodexConfiguration,
-                                    onPlugins: _showPlugins,
-                                    showIdentity: false,
-                                    showControls: true,
-                                    showTaskContext: true,
-                                    onShowFileChanges: () => _showCodeReview(
-                                      CodeReviewSource.latestTurn,
-                                    ),
-                                  ),
-                                  const Divider(height: 1),
-                                  Expanded(
-                                    child: Row(
-                                      children: [
-                                        Expanded(
-                                          child: Stack(
-                                            fit: StackFit.expand,
-                                            children: [
-                                              ConversationPane(
-                                                controller: controller,
-                                                composer: _composer,
-                                                recordSkillRequest:
-                                                    _recordSkillRequest,
-                                                timelinePages: _timelinePages,
-                                                timelineScrollControllers:
-                                                    _timelineScrollControllers,
-                                                activeTimelinePageKey:
-                                                    _displayedThreadKey,
-                                                threadHistoryLoading:
-                                                    _threadHistoryLoading,
-                                                fileChangeSummaryExpanded:
-                                                    (pageKey) =>
-                                                        _fileChangeSummaryExpanded[pageKey] ??
-                                                        false,
-                                                onFileChangeSummaryExpandedChanged:
-                                                    (pageKey, expanded) {
-                                                      setState(() {
-                                                        _fileChangeSummaryExpanded[pageKey] =
-                                                            expanded;
-                                                      });
-                                                    },
-                                                activityExpanded:
-                                                    (pageKey, activityId) =>
-                                                        _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
-                                                        false,
-                                                onTimelineMetricsChanged:
-                                                    _handleTimelineMetricsChanged,
-                                                onTimelineUserScrollDirection:
-                                                    _handleTimelineUserScrollDirection,
-                                                showScrollToBottom:
-                                                    _timelineIsAboveLatest[_displayedThreadKey] ??
-                                                    false,
-                                                onScrollToBottom:
-                                                    _scrollTimelineToBottom,
-                                                onActivityExpandedChanged:
-                                                    (
-                                                      pageKey,
-                                                      activityId,
-                                                      expanded,
-                                                    ) {
-                                                      setState(() {
-                                                        _activityListExpanded['${pageKey.storageKey}/$activityId'] =
-                                                            expanded;
-                                                      });
-                                                    },
-                                                onSend: _send,
-                                                onQueueSteer: _queueDirection,
-                                                onReview: () => _showCodeReview(
-                                                  CodeReviewSource.latestTurn,
-                                                ),
-                                                onUndo: _undoFileChanges,
-                                                onOpenSubagent:
-                                                    _openSubagentInspector,
-                                                onSubmitUserMessageEdit:
-                                                    _submitEditedUserMessage,
+                                    onCreate: _showScheduledTaskComposer,
+                                  )
+                                : _destination == WorkspaceDestination.plugins
+                                ? PluginsPage(
+                                    controller: controller,
+                                    onAddMarketplace: _showAddMarketplace,
+                                    onOpenSettings: _showPlugins,
+                                    onCreatePlugin: _createPluginWithCodex,
+                                    onRecordSkill: _recordSkillWithCodex,
+                                  )
+                                : _destination == WorkspaceDestination.agents
+                                ? AgentsPage(
+                                    controller: controller,
+                                    onOpenSubagent: _openSubagentThread,
+                                  )
+                                : _destination ==
+                                      WorkspaceDestination.pullRequests
+                                ? PullRequestsPage(
+                                    controller: controller,
+                                    onOpenGitProject: _showGitProject,
+                                    onAskCodex: _askCodexAboutGitHubCli,
+                                  )
+                                : Row(
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          children: [
+                                            TopBar(
+                                              key: const Key(
+                                                'workbench-column-topbar',
                                               ),
-                                              if (_reviewOpen && !reviewInline)
-                                                CodeReviewPanel(
-                                                  key: _reviewPanelKey,
-                                                  controller: controller,
-                                                  source: _reviewSource,
-                                                  compact: true,
-                                                  onSourceChanged:
-                                                      _changeCodeReviewSource,
-                                                  onClose: _closeCodeReview,
+                                              controller: controller,
+                                              themeMode: widget.themeMode,
+                                              themePreset: widget.themePreset,
+                                              onThemeModeChanged:
+                                                  widget.onThemeModeChanged,
+                                              onThemePresetChanged:
+                                                  widget.onThemePresetChanged,
+                                              onChooseWorkspace:
+                                                  _showWorkspaceDirectories,
+                                              onAccount: _showAccount,
+                                              onCodexConfiguration:
+                                                  _showCodexConfiguration,
+                                              onPlugins: _showPlugins,
+                                              showIdentity: false,
+                                              showControls: true,
+                                              showTaskContext: true,
+                                              onShowFileChanges: () =>
+                                                  _showCodeReview(
+                                                    CodeReviewSource.latestTurn,
+                                                  ),
+                                              sidePanelExpanded:
+                                                  sidePanelExpanded,
+                                              onToggleSidePanel:
+                                                  showFullHeightInspector ||
+                                                      sidePanelOpen
+                                                  ? null
+                                                  : _toggleSidePanel,
+                                            ),
+                                            const Divider(height: 1),
+                                            Expanded(
+                                              child: Row(
+                                                children: [
+                                                  Expanded(
+                                                    child: Stack(
+                                                      fit: StackFit.expand,
+                                                      children: [
+                                                        LayoutBuilder(
+                                                          builder: (context, constraints) {
+                                                            final width =
+                                                                constraints
+                                                                    .maxWidth
+                                                                    .clamp(
+                                                                      0.0,
+                                                                      _conversationColumnWidth,
+                                                                    )
+                                                                    .toDouble();
+                                                            return Align(
+                                                              alignment:
+                                                                  Alignment
+                                                                      .topCenter,
+                                                              child: SizedBox(
+                                                                width: width,
+                                                                height: constraints
+                                                                    .maxHeight,
+                                                                child: ConversationPane(
+                                                                  controller:
+                                                                      controller,
+                                                                  composer:
+                                                                      _composer,
+                                                                  recordSkillRequest:
+                                                                      _recordSkillRequest,
+                                                                  timelinePages:
+                                                                      _timelinePages,
+                                                                  timelineScrollControllers:
+                                                                      _timelineScrollControllers,
+                                                                  activeTimelinePageKey:
+                                                                      _displayedThreadKey,
+                                                                  userMessageRailLeft:
+                                                                      16 -
+                                                                      ((constraints.maxWidth -
+                                                                              width) /
+                                                                          2),
+                                                                  threadHistoryLoading:
+                                                                      _threadHistoryLoading,
+                                                                  fileChangeSummaryExpanded:
+                                                                      (
+                                                                        pageKey,
+                                                                      ) =>
+                                                                          _fileChangeSummaryExpanded[pageKey] ??
+                                                                          false,
+                                                                  onFileChangeSummaryExpandedChanged:
+                                                                      (
+                                                                        pageKey,
+                                                                        expanded,
+                                                                      ) {
+                                                                        setState(() {
+                                                                          _fileChangeSummaryExpanded[pageKey] =
+                                                                              expanded;
+                                                                        });
+                                                                      },
+                                                                  activityExpanded:
+                                                                      (
+                                                                        pageKey,
+                                                                        activityId,
+                                                                      ) =>
+                                                                          _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
+                                                                          false,
+                                                                  onTimelineMetricsChanged:
+                                                                      _handleTimelineMetricsChanged,
+                                                                  onTimelineUserScrollDirection:
+                                                                      _handleTimelineUserScrollDirection,
+                                                                  showScrollToBottom:
+                                                                      _timelineIsAboveLatest[_displayedThreadKey] ??
+                                                                      false,
+                                                                  onScrollToBottom:
+                                                                      _scrollTimelineToBottom,
+                                                                  onActivityExpandedChanged:
+                                                                      (
+                                                                        pageKey,
+                                                                        activityId,
+                                                                        expanded,
+                                                                      ) {
+                                                                        setState(() {
+                                                                          _activityListExpanded['${pageKey.storageKey}/$activityId'] =
+                                                                              expanded;
+                                                                        });
+                                                                      },
+                                                                  onSend: _send,
+                                                                  onQueueSteer:
+                                                                      _queueDirection,
+                                                                  onReview: () =>
+                                                                      _showCodeReview(
+                                                                        CodeReviewSource
+                                                                            .latestTurn,
+                                                                      ),
+                                                                  onUndo:
+                                                                      _undoFileChanges,
+                                                                  onOpenSubagent:
+                                                                      _openSubagentInspector,
+                                                                  onSubmitUserMessageEdit:
+                                                                      _submitEditedUserMessage,
+                                                                ),
+                                                              ),
+                                                            );
+                                                          },
+                                                        ),
+                                                        if (_threadHistoryLoading)
+                                                          Positioned.fill(
+                                                            child: IgnorePointer(
+                                                              child: ColoredBox(
+                                                                key: const Key(
+                                                                  'thread-history-loading',
+                                                                ),
+                                                                color:
+                                                                    YeknomPalette.of(
+                                                                      context,
+                                                                    ).module,
+                                                                child: const Center(
+                                                                  child:
+                                                                      CodexLoadingMark(),
+                                                                ),
+                                                              ),
+                                                            ),
+                                                          ),
+                                                        if (compact &&
+                                                            sidePanelOpen)
+                                                          WorkspaceSidePanelTabs(
+                                                            contents:
+                                                                sidePanelContents,
+                                                            labels:
+                                                                sidePanelLabels,
+                                                            activeTab:
+                                                                _activeSidePanelTab,
+                                                            onSelect:
+                                                                _selectSidePanelTab,
+                                                            onCollapse:
+                                                                _returnToMainTask,
+                                                          ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      if (showFullHeightInspector) ...[
+                                        PaneResizeHandle(
+                                          key: const Key(
+                                            'inspector-resize-handle',
+                                          ),
+                                          onDragDelta: (delta) => setState(() {
+                                            _inspectorWidth =
+                                                (_inspectorWidth - delta)
+                                                    .clamp(
+                                                      _minimumInspectorWidth,
+                                                      inspectorMaximum,
+                                                    )
+                                                    .toDouble();
+                                          }),
+                                        ),
+                                        SizedBox(
+                                          width: auxiliaryInspectorWidth,
+                                          child: Inspector(
+                                            width: auxiliaryInspectorWidth,
+                                            controller: controller,
+                                            onShowGitProject: () =>
+                                                _showCodeReview(
+                                                  CodeReviewSource.gitWorkspace,
                                                 ),
-                                              if (_selectedSubagentThreadId !=
-                                                      null &&
-                                                  (compact ||
-                                                      (_reviewOpen &&
-                                                          !reviewInline)))
-                                                SubagentThreadPanel(
-                                                  controller: controller,
-                                                  threadId:
-                                                      _selectedSubagentThreadId!,
-                                                  fallbackTitle:
-                                                      _selectedSubagentTitle,
-                                                  onOpenSubagent:
-                                                      _openSubagentInspector,
-                                                  onClose:
-                                                      _closeSubagentInspector,
-                                                ),
-                                            ],
+                                            onShowAgents: _showAgents,
                                           ),
                                         ),
-                                        if (reviewInline) ...[
-                                          PaneResizeHandle(
-                                            key: const Key(
-                                              'review-resize-handle',
-                                            ),
-                                            onDragDelta: (delta) =>
-                                                setState(() {
-                                                  _reviewWidth =
-                                                      (_reviewWidth - delta)
-                                                          .clamp(
-                                                            _minimumReviewWidth,
-                                                            reviewMaximum,
-                                                          )
-                                                          .toDouble();
-                                                }),
-                                          ),
-                                          SizedBox(
-                                            width: reviewWidth,
-                                            child: Stack(
-                                              fit: StackFit.expand,
-                                              children: [
-                                                CodeReviewPanel(
-                                                  key: _reviewPanelKey,
-                                                  controller: controller,
-                                                  source: _reviewSource,
-                                                  compact: false,
-                                                  onSourceChanged:
-                                                      _changeCodeReviewSource,
-                                                  onClose: _closeCodeReview,
-                                                ),
-                                                if (_selectedSubagentThreadId
-                                                    case final id?)
-                                                  SubagentThreadPanel(
-                                                    controller: controller,
-                                                    threadId: id,
-                                                    fallbackTitle:
-                                                        _selectedSubagentTitle,
-                                                    onOpenSubagent:
-                                                        _openSubagentInspector,
-                                                    onClose:
-                                                        _closeSubagentInspector,
-                                                  ),
-                                              ],
-                                            ),
-                                          ),
-                                        ] else if (!compact &&
-                                            !_reviewOpen) ...[
-                                          PaneResizeHandle(
-                                            key: const Key(
-                                              'inspector-resize-handle',
-                                            ),
-                                            onDragDelta: (delta) => setState(() {
-                                              _inspectorWidth =
-                                                  (_inspectorWidth - delta)
-                                                      .clamp(
-                                                        _minimumInspectorWidth,
-                                                        inspectorMaximum,
-                                                      )
-                                                      .toDouble();
-                                            }),
-                                          ),
-                                          if (_selectedSubagentThreadId
-                                              case final id?)
-                                            SizedBox(
-                                              width: inspectorWidth,
-                                              child: SubagentThreadPanel(
-                                                controller: controller,
-                                                threadId: id,
-                                                fallbackTitle:
-                                                    _selectedSubagentTitle,
-                                                onOpenSubagent:
-                                                    _openSubagentInspector,
-                                                onClose:
-                                                    _closeSubagentInspector,
-                                              ),
-                                            )
-                                          else
-                                            Inspector(
-                                              width: inspectorWidth,
-                                              controller: controller,
-                                              onShowGitProject: () =>
-                                                  _showCodeReview(
-                                                    CodeReviewSource
-                                                        .gitWorkspace,
-                                                  ),
-                                              onShowAgents: _showAgents,
-                                            ),
-                                        ],
                                       ],
-                                    ),
+                                      if (auxiliaryFullHeight) ...[
+                                        PaneResizeHandle(
+                                          key: const Key(
+                                            'review-resize-handle',
+                                          ),
+                                          onDragDelta: (delta) => setState(() {
+                                            _reviewWidth =
+                                                (_reviewWidth - delta)
+                                                    .clamp(
+                                                      _minimumAuxiliaryWidth,
+                                                      reviewMaximum,
+                                                    )
+                                                    .toDouble();
+                                          }),
+                                        ),
+                                        SizedBox(
+                                          width: reviewWidth,
+                                          child: WorkspaceSidePanelTabs(
+                                            key: const Key(
+                                              'full-height-side-panel',
+                                            ),
+                                            contents: sidePanelContents,
+                                            labels: sidePanelLabels,
+                                            activeTab: _activeSidePanelTab,
+                                            onSelect: _selectSidePanelTab,
+                                            onCollapse: _returnToMainTask,
+                                          ),
+                                        ),
+                                      ],
+                                    ],
                                   ),
-                                ],
-                              ),
-                    ],
-                  ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
+                if (_destination == WorkspaceDestination.conversation &&
+                    !sidePanelOpen)
+                  Positioned(
+                    top: 16,
+                    right: 16,
+                    child: Builder(
+                      builder: (context) {
+                        final palette = YeknomPalette.of(context);
+                        return IconButton(
+                          key: Key(
+                            sidePanelExpanded
+                                ? 'side-panel-collapse'
+                                : 'side-panel-expand',
+                          ),
+                          tooltip: sidePanelExpanded ? '收起右侧工作区' : '展开右侧工作区',
+                          onPressed: _toggleSidePanel,
+                          style: IconButton.styleFrom(
+                            backgroundColor: palette.selected,
+                            minimumSize: const Size.square(30),
+                            maximumSize: const Size.square(30),
+                            padding: EdgeInsets.zero,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(9),
+                            ),
+                          ),
+                          icon: Icon(
+                            Icons.view_sidebar_outlined,
+                            size: 16,
+                            color: palette.trace,
+                          ),
+                        );
+                      },
+                    ),
+                  ),
               ],
             );
           },

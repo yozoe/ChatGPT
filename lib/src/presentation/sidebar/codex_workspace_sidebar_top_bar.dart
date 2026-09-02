@@ -21,6 +21,8 @@ class TopBar extends StatelessWidget {
     required this.showControls,
     this.showTaskContext = false,
     this.onShowFileChanges,
+    this.sidePanelExpanded = false,
+    this.onToggleSidePanel,
     super.key,
   });
 
@@ -37,6 +39,8 @@ class TopBar extends StatelessWidget {
   final bool showControls;
   final bool showTaskContext;
   final Future<void> Function()? onShowFileChanges;
+  final bool sidePanelExpanded;
+  final VoidCallback? onToggleSidePanel;
 
   /// 构建归属左侧项目列或右侧工作台列的独立顶部栏。
   /// Builds an independent top bar for either the project or workbench column.
@@ -64,8 +68,12 @@ class TopBar extends StatelessWidget {
         child: LayoutBuilder(
           builder: (context, constraints) {
             final compact = constraints.maxWidth < 1180;
-            final showProvider = showTaskContext && constraints.maxWidth >= 740;
-            final showSandbox = showTaskContext && constraints.maxWidth >= 880;
+            // These badges share the constrained workbench header with the
+            // task title and actions. Keep them available at ordinary desktop
+            // widths; the compact layout already hides lower-priority text
+            // and controls as space becomes tight.
+            final showProvider = showTaskContext && constraints.maxWidth >= 560;
+            final showSandbox = showTaskContext && constraints.maxWidth >= 560;
             return Row(
               children: [
                 if (showIdentity) ...[
@@ -95,13 +103,15 @@ class TopBar extends StatelessWidget {
                     const SizedBox(width: 8),
                     const ProviderChip(label: 'workspace-write'),
                   ],
-                  const SizedBox(width: 4),
-                  IconButton(
-                    key: const Key('workbench-file-changes-button'),
-                    tooltip: '查看文件变更',
-                    onPressed: onShowFileChanges,
-                    icon: const Icon(Icons.difference_outlined, size: 16),
-                  ),
+                  if (constraints.maxWidth >= 720) ...[
+                    const SizedBox(width: 4),
+                    IconButton(
+                      key: const Key('workbench-file-changes-button'),
+                      tooltip: '查看文件变更',
+                      onPressed: onShowFileChanges,
+                      icon: const Icon(Icons.difference_outlined, size: 16),
+                    ),
+                  ],
                 ],
                 if (showControls) ...[
                   PopupMenuButton<ThemeAction>(
@@ -202,7 +212,7 @@ class TopBar extends StatelessWidget {
                       icon: const Icon(Icons.person_outline),
                       label: Text(controller.authLabel),
                     ),
-                  const SizedBox(width: 8),
+                  SizedBox(width: compact ? 4 : 8),
                   if (compact)
                     IconButton(
                       key: const Key('codex-configuration-button'),

@@ -154,7 +154,7 @@ class CodeReviewPanelState extends State<CodeReviewPanel> {
     } else if (_navigationOverlayOpen) {
       setState(() => _navigationOverlayOpen = false);
     } else {
-      widget.onClose();
+      widget.onCollapse();
     }
     return KeyEventResult.handled;
   }
@@ -446,7 +446,7 @@ class CodeReviewPanelState extends State<CodeReviewPanel> {
         ? renderObject.size.width
         : 0.0;
     setState(() {
-      if (!widget.compact && panelWidth >= 740) {
+      if (!widget.compact) {
         _navigationVisible = !_navigationVisible;
         _navigationOverlayOpen = false;
       } else {
@@ -508,7 +508,7 @@ class CodeReviewPanelState extends State<CodeReviewPanel> {
                 builder: (context, constraints) {
                   final inlineNavigation =
                       !widget.compact &&
-                      constraints.maxWidth >= 740 &&
+                      constraints.maxWidth >= 600 &&
                       _navigationVisible;
                   return Stack(
                     children: [
@@ -577,17 +577,7 @@ class CodeReviewPanelState extends State<CodeReviewPanel> {
       child: Row(
         children: [
           const SizedBox(width: 8),
-          if (widget.compact)
-            IconButton(
-              key: const Key('code-review-back'),
-              tooltip: '返回会话',
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints.tightFor(width: 28, height: 28),
-              onPressed: widget.onClose,
-              icon: const Icon(Icons.arrow_back, size: 17),
-            )
-          else
-            Icon(Icons.edit_note_outlined, size: 17, color: palette.muted),
+          Icon(Icons.edit_note_outlined, size: 17, color: palette.muted),
           const SizedBox(width: 7),
           Text(
             '审查',
@@ -597,15 +587,6 @@ class CodeReviewPanelState extends State<CodeReviewPanel> {
             ),
           ),
           const Spacer(),
-          IconButton(
-            key: const Key('code-review-close'),
-            tooltip: '关闭审查',
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints.tightFor(width: 28, height: 28),
-            onPressed: widget.onClose,
-            icon: const Icon(Icons.close, size: 17),
-          ),
-          const SizedBox(width: 6),
         ],
       ),
     );

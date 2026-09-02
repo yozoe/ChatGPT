@@ -66,6 +66,63 @@ void main() {
     controller.dispose();
   });
 
+  test('renders App Server subAgentActivity lifecycle records', () {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'parent-thread'
+      ..activeTurnId = 'parent-turn';
+
+    void complete(JsonMap item) {
+      controller.handleServerEventForTesting(
+        ServerEvent(
+          method: 'item/completed',
+          params: {
+            'threadId': 'parent-thread',
+            'turnId': 'parent-turn',
+            'item': item,
+          },
+        ),
+      );
+    }
+
+    complete({
+      'id': 'spawn-review',
+      'type': 'subAgentActivity',
+      'kind': 'started',
+      'agentThreadId': 'review-thread',
+      'agentPath': '/root/review_app',
+    });
+
+    var activity = controller.entries.singleWhere(
+      (entry) => entry.activityKind == 'collaboration',
+    );
+    expect(activity.title, 'review_app');
+    expect(activity.detail, '已开始工作');
+    expect(activity.activityStatus, 'working');
+    expect(activity.linkedThreadId, 'review-thread');
+
+    complete({
+      'id': 'subagent-completed-review',
+      'type': 'subAgentActivity',
+      'kind': 'completed',
+      'agentThreadId': 'review-thread',
+      'agentPath': '/root/review_app',
+    });
+
+    expect(
+      controller.entries.where(
+        (entry) => entry.activityKind == 'collaboration',
+      ),
+      hasLength(1),
+    );
+    activity = controller.entries.singleWhere(
+      (entry) => entry.activityKind == 'collaboration',
+    );
+    expect(activity.detail, '已完成');
+    expect(activity.activityStatus, 'completed');
+    controller.dispose();
+  });
+
   test(
     'shows outer collaboration activities from the workspace bridge',
     () async {

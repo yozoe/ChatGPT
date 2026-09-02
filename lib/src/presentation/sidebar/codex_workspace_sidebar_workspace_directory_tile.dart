@@ -25,11 +25,12 @@ class WorkspaceDirectoryTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
     final visiblePath = path ?? label;
-    return Container(
-      decoration: BoxDecoration(
-        color: palette.raised,
+    return Material(
+      color: palette.raised,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: palette.border),
+        side: BorderSide(color: palette.border),
       ),
       child: ListTile(
         leading: Icon(
