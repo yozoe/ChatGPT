@@ -8,6 +8,7 @@ import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
 import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_page.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_workspace_page.dart';
 import 'package:chatgpt/src/presentation/agents/codex_workspace_agents_page.dart';
+import 'package:chatgpt/src/presentation/workspace/codex_workspace_side_panel_launcher.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:chatgpt/src/services/theme_preferences_store.dart';
@@ -67,7 +68,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   final Set<String> _openedSubagentThreadIds = <String>{};
   final Map<String, String> _subagentTitles = <String, String>{};
   String _activeSidePanelTab = 'review';
-  bool _sidePanelCollapsed = false;
+  bool _sidePanelCollapsed = true;
   late CodexController _controller;
   double? _settingsReturnTimelineOffset;
   bool _appWasInactive = false;
@@ -2820,6 +2821,39 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                                                 _selectSidePanelTab,
                                                             onCollapse:
                                                                 _returnToMainTask,
+                                                          ),
+                                                        if (!compact &&
+                                                            sidePanelExpanded &&
+                                                            !sidePanelOpen)
+                                                          Positioned.fill(
+                                                            child: WorkspaceSidePanelLauncher(
+                                                              onSelect: (item) {
+                                                                switch (item) {
+                                                                  case 'review':
+                                                                    _showCodeReview(
+                                                                      CodeReviewSource
+                                                                          .latestTurn,
+                                                                    );
+                                                                  case 'browser':
+                                                                    _destination =
+                                                                        WorkspaceDestination
+                                                                            .browser;
+                                                                    _sidePanelCollapsed =
+                                                                        true;
+                                                                    setState(
+                                                                      () {},
+                                                                    );
+                                                                  case 'terminal':
+                                                                    unawaited(
+                                                                      _showRuntime(),
+                                                                    );
+                                                                  case 'files':
+                                                                    unawaited(
+                                                                      _showGitProject(),
+                                                                    );
+                                                                }
+                                                              },
+                                                            ),
                                                           ),
                                                         if (!compact &&
                                                             !auxiliaryFullHeight &&
