@@ -2459,9 +2459,11 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                 .toDouble();
             final workbenchWidth = constraints.maxWidth - sidebarWidth;
             final sidePanelExpanded = !_sidePanelCollapsed;
-            final sidePanelOpen =
-                sidePanelExpanded &&
-                (_reviewOpen || _openedSubagentThreadIds.isNotEmpty);
+            final hasSidePanelContents =
+                _reviewOpen || _openedSubagentThreadIds.isNotEmpty;
+            final sidePanelOpen = sidePanelExpanded && hasSidePanelContents;
+            final showSidePanelLauncher =
+                sidePanelExpanded && !hasSidePanelContents;
             final auxiliaryFullHeight = sidePanelOpen && !compact;
             final preserveInspectorWithAuxiliary =
                 auxiliaryFullHeight &&
@@ -2823,39 +2825,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                                                 _returnToMainTask,
                                                           ),
                                                         if (!compact &&
-                                                            sidePanelExpanded &&
-                                                            !sidePanelOpen)
-                                                          Positioned.fill(
-                                                            child: WorkspaceSidePanelLauncher(
-                                                              onSelect: (item) {
-                                                                switch (item) {
-                                                                  case 'review':
-                                                                    _showCodeReview(
-                                                                      CodeReviewSource
-                                                                          .latestTurn,
-                                                                    );
-                                                                  case 'browser':
-                                                                    _destination =
-                                                                        WorkspaceDestination
-                                                                            .browser;
-                                                                    _sidePanelCollapsed =
-                                                                        true;
-                                                                    setState(
-                                                                      () {},
-                                                                    );
-                                                                  case 'terminal':
-                                                                    unawaited(
-                                                                      _showRuntime(),
-                                                                    );
-                                                                  case 'files':
-                                                                    unawaited(
-                                                                      _showGitProject(),
-                                                                    );
-                                                                }
-                                                              },
-                                                            ),
-                                                          ),
-                                                        if (!compact &&
                                                             !auxiliaryFullHeight &&
                                                             _destination ==
                                                                 WorkspaceDestination
@@ -2964,6 +2933,43 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                             activeTab: _activeSidePanelTab,
                                             onSelect: _selectSidePanelTab,
                                             onCollapse: _returnToMainTask,
+                                          ),
+                                        ),
+                                      ],
+                                      if (!compact && showSidePanelLauncher) ...[
+                                        PaneResizeHandle(
+                                          key: const Key('review-resize-handle'),
+                                          onDragDelta: (delta) => setState(() {
+                                            _reviewWidth = (_reviewWidth - delta)
+                                                .clamp(
+                                                  _minimumAuxiliaryWidth,
+                                                  _maximumReviewWidth,
+                                                )
+                                                .toDouble();
+                                          }),
+                                        ),
+                                        SizedBox(
+                                          width: reviewWidth,
+                                          child: WorkspaceSidePanelLauncher(
+                                            onSelect: (item) {
+                                              switch (item) {
+                                                case 'review':
+                                                  _showCodeReview(
+                                                    CodeReviewSource.latestTurn,
+                                                  );
+                                                case 'browser':
+                                                  setState(() {
+                                                    _destination =
+                                                        WorkspaceDestination
+                                                            .browser;
+                                                    _sidePanelCollapsed = true;
+                                                  });
+                                                case 'terminal':
+                                                  unawaited(_showRuntime());
+                                                case 'files':
+                                                  unawaited(_showGitProject());
+                                              }
+                                            },
                                           ),
                                         ),
                                       ],
