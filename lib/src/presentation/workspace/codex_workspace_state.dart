@@ -2825,7 +2825,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                                                 _returnToMainTask,
                                                           ),
                                                         if (!compact &&
-                                                            !auxiliaryFullHeight &&
+                                                            !sidePanelExpanded &&
                                                             _destination ==
                                                                 WorkspaceDestination
                                                                     .conversation)
@@ -2924,52 +2924,88 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                         ),
                                         SizedBox(
                                           width: reviewWidth,
-                                          child: WorkspaceSidePanelTabs(
-                                            key: const Key(
-                                              'full-height-side-panel',
+                                          child: AnimatedSwitcher(
+                                            duration: const Duration(
+                                              milliseconds: 220,
                                             ),
-                                            contents: sidePanelContents,
-                                            labels: sidePanelLabels,
-                                            activeTab: _activeSidePanelTab,
-                                            onSelect: _selectSidePanelTab,
-                                            onCollapse: _returnToMainTask,
+                                            transitionBuilder:
+                                                (child, animation) =>
+                                                    FadeTransition(
+                                                      opacity: animation,
+                                                      child: SlideTransition(
+                                                        position: Tween<Offset>(
+                                                          begin: const Offset(
+                                                            0.04,
+                                                            0,
+                                                          ),
+                                                          end: Offset.zero,
+                                                        ).animate(animation),
+                                                        child: child,
+                                                      ),
+                                                    ),
+                                            child: WorkspaceSidePanelTabs(
+                                              key: const Key(
+                                                'full-height-side-panel',
+                                              ),
+                                              contents: sidePanelContents,
+                                              labels: sidePanelLabels,
+                                              activeTab: _activeSidePanelTab,
+                                              onSelect: _selectSidePanelTab,
+                                              onCollapse: _returnToMainTask,
+                                            ),
                                           ),
                                         ),
                                       ],
-                                      if (!compact && showSidePanelLauncher) ...[
+                                      if (!compact &&
+                                          showSidePanelLauncher) ...[
                                         PaneResizeHandle(
-                                          key: const Key('review-resize-handle'),
+                                          key: const Key(
+                                            'review-resize-handle',
+                                          ),
                                           onDragDelta: (delta) => setState(() {
-                                            _reviewWidth = (_reviewWidth - delta)
-                                                .clamp(
-                                                  _minimumAuxiliaryWidth,
-                                                  _maximumReviewWidth,
-                                                )
-                                                .toDouble();
+                                            _reviewWidth =
+                                                (_reviewWidth - delta)
+                                                    .clamp(
+                                                      _minimumAuxiliaryWidth,
+                                                      _maximumReviewWidth,
+                                                    )
+                                                    .toDouble();
                                           }),
                                         ),
                                         SizedBox(
                                           width: reviewWidth,
-                                          child: WorkspaceSidePanelLauncher(
-                                            onSelect: (item) {
-                                              switch (item) {
-                                                case 'review':
-                                                  _showCodeReview(
-                                                    CodeReviewSource.latestTurn,
-                                                  );
-                                                case 'browser':
-                                                  setState(() {
-                                                    _destination =
-                                                        WorkspaceDestination
-                                                            .browser;
-                                                    _sidePanelCollapsed = true;
-                                                  });
-                                                case 'terminal':
-                                                  unawaited(_showRuntime());
-                                                case 'files':
-                                                  unawaited(_showGitProject());
-                                              }
-                                            },
+                                          child: AnimatedSwitcher(
+                                            duration: const Duration(
+                                              milliseconds: 220,
+                                            ),
+                                            child: WorkspaceSidePanelLauncher(
+                                              key: const ValueKey(
+                                                'side-panel-launcher',
+                                              ),
+                                              onSelect: (item) {
+                                                switch (item) {
+                                                  case 'review':
+                                                    _showCodeReview(
+                                                      CodeReviewSource
+                                                          .latestTurn,
+                                                    );
+                                                  case 'browser':
+                                                    setState(() {
+                                                      _destination =
+                                                          WorkspaceDestination
+                                                              .browser;
+                                                      _sidePanelCollapsed =
+                                                          true;
+                                                    });
+                                                  case 'terminal':
+                                                    unawaited(_showRuntime());
+                                                  case 'files':
+                                                    unawaited(
+                                                      _showGitProject(),
+                                                    );
+                                                }
+                                              },
+                                            ),
                                           ),
                                         ),
                                       ],
