@@ -21,6 +21,7 @@ class YeknomPalette extends ThemeExtension<YeknomPalette> {
     required this.dark,
     required this.bench,
     required this.module,
+    required this.sidebar,
     required this.trace,
     required this.signal,
     required this.active,
@@ -66,6 +67,7 @@ class YeknomPalette extends ThemeExtension<YeknomPalette> {
     };
     final bench = dark ? const Color(0xFF171717) : const Color(0xFFF5F5F5);
     final module = dark ? const Color(0xFF242424) : Colors.white;
+    final sidebar = dark ? const Color(0xFF282A2B) : const Color(0xFFF7F7F7);
     // Codex keeps text deliberately quiet against the graphite surfaces:
     // primary copy is light gray rather than pure white, while secondary and
     // tertiary labels step down without becoming low-contrast.
@@ -83,6 +85,7 @@ class YeknomPalette extends ThemeExtension<YeknomPalette> {
       dark: dark,
       bench: bench,
       module: module,
+      sidebar: sidebar,
       trace: trace,
       signal: signal,
       active: accent,
@@ -108,6 +111,7 @@ class YeknomPalette extends ThemeExtension<YeknomPalette> {
   final bool dark;
   final Color bench;
   final Color module;
+  final Color sidebar;
   final Color trace;
   final Color signal;
   final Color active;
@@ -129,6 +133,7 @@ class YeknomPalette extends ThemeExtension<YeknomPalette> {
     bool? dark,
     Color? bench,
     Color? module,
+    Color? sidebar,
     Color? trace,
     Color? signal,
     Color? active,
@@ -148,6 +153,7 @@ class YeknomPalette extends ThemeExtension<YeknomPalette> {
     dark: dark ?? this.dark,
     bench: bench ?? this.bench,
     module: module ?? this.module,
+    sidebar: sidebar ?? this.sidebar,
     trace: trace ?? this.trace,
     signal: signal ?? this.signal,
     active: active ?? this.active,
@@ -173,6 +179,7 @@ class YeknomPalette extends ThemeExtension<YeknomPalette> {
       dark: t < 0.5 ? dark : other.dark,
       bench: mix(bench, other.bench),
       module: mix(module, other.module),
+      sidebar: mix(sidebar, other.sidebar),
       trace: mix(trace, other.trace),
       signal: mix(signal, other.signal),
       active: mix(active, other.active),

@@ -8,27 +8,38 @@ import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 import 'theme_preferences_store_support.dart';
 
 final class CodexThemePreferences {
-  const CodexThemePreferences({required this.mode, required this.preset});
+  const CodexThemePreferences({
+    required this.mode,
+    required this.preset,
+    this.sidebarWidth = defaultSidebarWidth,
+  });
+
+  static const defaultSidebarWidth = 250.0;
 
   static const defaults = CodexThemePreferences(
     mode: ThemeMode.dark,
     preset: YeknomColorPreset.midnight,
+    sidebarWidth: defaultSidebarWidth,
   );
 
   final ThemeMode mode;
   final YeknomColorPreset preset;
+  final double sidebarWidth;
 
   CodexThemePreferences copyWith({
     ThemeMode? mode,
     YeknomColorPreset? preset,
+    double? sidebarWidth,
   }) => CodexThemePreferences(
     mode: mode ?? this.mode,
     preset: preset ?? this.preset,
+    sidebarWidth: sidebarWidth ?? this.sidebarWidth,
   );
 
   Map<String, Object> toJson() => <String, Object>{
     'themeMode': mode.name,
     'colorPreset': preset.name,
+    'sidebarWidth': sidebarWidth,
   };
 
   factory CodexThemePreferences.fromJson(Object? value) {
@@ -42,6 +53,10 @@ final class CodexThemePreferences {
         (candidate) => candidate.name == value['colorPreset'],
         orElse: () => defaults.preset,
       ),
+      sidebarWidth:
+          ((value['sidebarWidth'] as num?)?.toDouble() ?? defaults.sidebarWidth)
+              .clamp(210.0, 420.0)
+              .toDouble(),
     );
   }
 
@@ -49,8 +64,9 @@ final class CodexThemePreferences {
   bool operator ==(Object other) =>
       other is CodexThemePreferences &&
       other.mode == mode &&
-      other.preset == preset;
+      other.preset == preset &&
+      other.sidebarWidth == sidebarWidth;
 
   @override
-  int get hashCode => Object.hash(mode, preset);
+  int get hashCode => Object.hash(mode, preset, sidebarWidth);
 }

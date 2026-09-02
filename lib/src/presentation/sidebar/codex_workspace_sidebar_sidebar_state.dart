@@ -846,292 +846,299 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
     return SizedBox(
       key: const Key('sidebar-pane'),
       width: widget.width,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(10, 12, 10, 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Text(
-                  '项目',
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: -0.15,
-                  ),
-                ),
-                const Spacer(),
-                IconButton(
-                  key: const Key('task-search-button'),
-                  tooltip: '搜索聊天',
-                  onPressed: _showTaskSearch,
-                  icon: const Icon(Icons.search, size: 17),
-                ),
-                IconButton(
-                  key: const Key('sidebar-create-workspace-button'),
-                  tooltip: controller.canCreateWorkspace
-                      ? '新建工作区'
-                      : '正在保存项目，请稍候。',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: controller.canCreateWorkspace
-                      ? widget.onCreateWorkspace
-                      : null,
-                  icon: const Icon(Icons.add, size: 17),
-                ),
-                IconButton(
-                  key: const Key('sidebar-manage-workspaces-button'),
-                  tooltip: '管理工作区',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: widget.onChooseWorkspace,
-                  icon: const Icon(Icons.tune, size: 16),
-                ),
-              ],
-            ),
-            const SizedBox(height: 0),
-            SidebarMenuAction(
-              key: const Key('sidebar-new-chat-button'),
-              icon: Icons.edit_outlined,
-              label: '新对话',
-              enabled: controller.canCreateThread,
-              onTap: widget.onNewConversation,
-            ),
-            SidebarMenuAction(
-              key: const Key('sidebar-pull-requests-button'),
-              icon: Icons.call_merge_outlined,
-              label: '拉取请求',
-              enabled: controller.workspacePath != null,
-              selected: widget.destination == WorkspaceDestination.pullRequests,
-              onTap: () => unawaited(widget.onShowPullRequests()),
-            ),
-            SidebarMenuAction(
-              key: const Key('sidebar-scheduled-tasks-button'),
-              icon: Icons.schedule_outlined,
-              label: '已安排',
-              enabled: controller.workspacePath != null,
-              selected:
-                  widget.destination == WorkspaceDestination.scheduledTasks,
-              onTap: () => unawaited(widget.onShowScheduledTasks()),
-            ),
-            SidebarMenuAction(
-              key: const Key('sidebar-plugins-button'),
-              leading: buildCodexPluginMark(color: palette.trace, size: 16),
-              label: '插件',
-              selected: widget.destination == WorkspaceDestination.plugins,
-              onTap: () => unawaited(widget.onShowPlugins()),
-            ),
-            SidebarMenuAction(
-              key: const Key('sidebar-agents-button'),
-              icon: Icons.hub_outlined,
-              label: '智能体',
-              selected: widget.destination == WorkspaceDestination.agents,
-              onTap: widget.onShowAgents,
-            ),
-            const SizedBox(height: 0),
-            if (_batchMode) ...[
-              Wrap(
-                spacing: 4,
-                runSpacing: 4,
-                crossAxisAlignment: WrapCrossAlignment.center,
+      child: ColoredBox(
+        color: palette.sidebar,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 12, 10, 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
                 children: [
-                  Text('已选 ${_selectedThreadIds.length} 个任务'),
-                  TextButton(
-                    onPressed: () => _setBatchMode(false),
-                    child: const Text('取消'),
+                  Text(
+                    '项目',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.15,
+                    ),
                   ),
-                  FilledButton.tonal(
-                    onPressed:
-                        _selectedThreadIds.isEmpty ||
-                            (controller.status != RuntimeStatus.ready &&
-                                controller.status != RuntimeStatus.running)
-                        ? null
-                        : () => _archiveSelectedThreads(controller),
-                    child: const Text('归档已选'),
+                  const Spacer(),
+                  IconButton(
+                    key: const Key('task-search-button'),
+                    tooltip: '搜索聊天',
+                    onPressed: _showTaskSearch,
+                    icon: const Icon(Icons.search, size: 17),
+                  ),
+                  IconButton(
+                    key: const Key('sidebar-create-workspace-button'),
+                    tooltip: controller.canCreateWorkspace
+                        ? '新建工作区'
+                        : '正在保存项目，请稍候。',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: controller.canCreateWorkspace
+                        ? widget.onCreateWorkspace
+                        : null,
+                    icon: const Icon(Icons.add, size: 17),
+                  ),
+                  IconButton(
+                    key: const Key('sidebar-manage-workspaces-button'),
+                    tooltip: '管理工作区',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: widget.onChooseWorkspace,
+                    icon: const Icon(Icons.tune, size: 16),
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
-            ],
-            if (controller.threadsLoading && controller.threads.isEmpty)
-              const LinearProgressIndicator(minHeight: 2),
-            if (controller.threadsLoading && controller.threads.isEmpty)
-              const SizedBox(height: 6),
-            Expanded(
-              child: Ink(
-                key: const Key('workspace-picker-surface'),
-                decoration: BoxDecoration(color: Colors.transparent),
-                child: ClipRRect(
-                  child: workspaces.isEmpty
-                      ? InkWell(
-                          key: const Key('sidebar-workspace-empty'),
-                          onTap: controller.canCreateWorkspace
-                              ? widget.onCreateWorkspace
-                              : null,
-                          borderRadius: BorderRadius.circular(14),
-                          child: LayoutBuilder(
-                            builder: (context, constraints) {
-                              final minHeight = constraints.hasBoundedHeight
-                                  ? constraints.maxHeight
-                                  : 0.0;
-                              return SingleChildScrollView(
-                                child: ConstrainedBox(
-                                  constraints: BoxConstraints(
-                                    minHeight: minHeight,
-                                  ),
-                                  child: Center(
-                                    child: Container(
-                                      margin: const EdgeInsets.symmetric(
-                                        horizontal: 8,
-                                      ),
-                                      padding: const EdgeInsets.fromLTRB(
-                                        18,
-                                        24,
-                                        18,
-                                        20,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: palette.module,
-                                        borderRadius: BorderRadius.circular(14),
-                                        border: Border.all(
-                                          color: palette.border,
+              const SizedBox(height: 0),
+              SidebarMenuAction(
+                key: const Key('sidebar-new-chat-button'),
+                icon: Icons.edit_outlined,
+                label: '新对话',
+                enabled: controller.canCreateThread,
+                onTap: widget.onNewConversation,
+              ),
+              SidebarMenuAction(
+                key: const Key('sidebar-pull-requests-button'),
+                icon: Icons.call_merge_outlined,
+                label: '拉取请求',
+                enabled: controller.workspacePath != null,
+                selected:
+                    widget.destination == WorkspaceDestination.pullRequests,
+                onTap: () => unawaited(widget.onShowPullRequests()),
+              ),
+              SidebarMenuAction(
+                key: const Key('sidebar-scheduled-tasks-button'),
+                icon: Icons.schedule_outlined,
+                label: '已安排',
+                enabled: controller.workspacePath != null,
+                selected:
+                    widget.destination == WorkspaceDestination.scheduledTasks,
+                onTap: () => unawaited(widget.onShowScheduledTasks()),
+              ),
+              SidebarMenuAction(
+                key: const Key('sidebar-plugins-button'),
+                leading: buildCodexPluginMark(color: palette.trace, size: 16),
+                label: '插件',
+                selected: widget.destination == WorkspaceDestination.plugins,
+                onTap: () => unawaited(widget.onShowPlugins()),
+              ),
+              SidebarMenuAction(
+                key: const Key('sidebar-agents-button'),
+                icon: Icons.hub_outlined,
+                label: '智能体',
+                selected: widget.destination == WorkspaceDestination.agents,
+                onTap: widget.onShowAgents,
+              ),
+              const SizedBox(height: 0),
+              if (_batchMode) ...[
+                Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text('已选 ${_selectedThreadIds.length} 个任务'),
+                    TextButton(
+                      onPressed: () => _setBatchMode(false),
+                      child: const Text('取消'),
+                    ),
+                    FilledButton.tonal(
+                      onPressed:
+                          _selectedThreadIds.isEmpty ||
+                              (controller.status != RuntimeStatus.ready &&
+                                  controller.status != RuntimeStatus.running)
+                          ? null
+                          : () => _archiveSelectedThreads(controller),
+                      child: const Text('归档已选'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+              ],
+              if (controller.threadsLoading && controller.threads.isEmpty)
+                const LinearProgressIndicator(minHeight: 2),
+              if (controller.threadsLoading && controller.threads.isEmpty)
+                const SizedBox(height: 6),
+              Expanded(
+                child: Ink(
+                  key: const Key('workspace-picker-surface'),
+                  decoration: BoxDecoration(color: Colors.transparent),
+                  child: ClipRRect(
+                    child: workspaces.isEmpty
+                        ? InkWell(
+                            key: const Key('sidebar-workspace-empty'),
+                            onTap: controller.canCreateWorkspace
+                                ? widget.onCreateWorkspace
+                                : null,
+                            borderRadius: BorderRadius.circular(14),
+                            child: LayoutBuilder(
+                              builder: (context, constraints) {
+                                final minHeight = constraints.hasBoundedHeight
+                                    ? constraints.maxHeight
+                                    : 0.0;
+                                return SingleChildScrollView(
+                                  child: ConstrainedBox(
+                                    constraints: BoxConstraints(
+                                      minHeight: minHeight,
+                                    ),
+                                    child: Center(
+                                      child: Container(
+                                        margin: const EdgeInsets.symmetric(
+                                          horizontal: 8,
                                         ),
-                                      ),
-                                      child: Column(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Container(
-                                            width: 48,
-                                            height: 48,
-                                            decoration: BoxDecoration(
-                                              color: palette.signalSelected,
-                                              shape: BoxShape.circle,
-                                            ),
-                                            child: Icon(
-                                              Icons.folder_open_outlined,
-                                              size: 24,
-                                              color: palette.signal,
-                                            ),
+                                        padding: const EdgeInsets.fromLTRB(
+                                          18,
+                                          24,
+                                          18,
+                                          20,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: palette.module,
+                                          borderRadius: BorderRadius.circular(
+                                            14,
                                           ),
-                                          const SizedBox(height: 16),
-                                          Text(
-                                            '从一个工作区开始',
-                                            textAlign: TextAlign.center,
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .titleSmall
-                                                ?.copyWith(
-                                                  color: palette.trace,
-                                                  fontWeight: FontWeight.w700,
+                                          border: Border.all(
+                                            color: palette.border,
+                                          ),
+                                        ),
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Container(
+                                              width: 48,
+                                              height: 48,
+                                              decoration: BoxDecoration(
+                                                color: palette.signalSelected,
+                                                shape: BoxShape.circle,
+                                              ),
+                                              child: Icon(
+                                                Icons.folder_open_outlined,
+                                                size: 24,
+                                                color: palette.signal,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 16),
+                                            Text(
+                                              '从一个工作区开始',
+                                              textAlign: TextAlign.center,
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .titleSmall
+                                                  ?.copyWith(
+                                                    color: palette.trace,
+                                                    fontWeight: FontWeight.w700,
+                                                  ),
+                                            ),
+                                            const SizedBox(height: 7),
+                                            Text(
+                                              '选择一个项目文件夹，开始运行 Codex 任务。',
+                                              textAlign: TextAlign.center,
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .bodySmall
+                                                  ?.copyWith(
+                                                    color: palette.muted,
+                                                    height: 1.35,
+                                                  ),
+                                            ),
+                                            const SizedBox(height: 18),
+                                            SizedBox(
+                                              width: double.infinity,
+                                              child: FilledButton.icon(
+                                                key: const Key(
+                                                  'sidebar-first-workspace-create-button',
                                                 ),
-                                          ),
-                                          const SizedBox(height: 7),
-                                          Text(
-                                            '选择一个项目文件夹，开始运行 Codex 任务。',
-                                            textAlign: TextAlign.center,
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodySmall
-                                                ?.copyWith(
-                                                  color: palette.muted,
-                                                  height: 1.35,
+                                                onPressed:
+                                                    controller
+                                                        .canCreateWorkspace
+                                                    ? widget.onCreateWorkspace
+                                                    : null,
+                                                icon: const Icon(
+                                                  Icons.add,
+                                                  size: 16,
                                                 ),
-                                          ),
-                                          const SizedBox(height: 18),
-                                          SizedBox(
-                                            width: double.infinity,
-                                            child: FilledButton.icon(
-                                              key: const Key(
-                                                'sidebar-first-workspace-create-button',
-                                              ),
-                                              onPressed:
-                                                  controller.canCreateWorkspace
-                                                  ? widget.onCreateWorkspace
-                                                  : null,
-                                              icon: const Icon(
-                                                Icons.add,
-                                                size: 16,
-                                              ),
-                                              label: const Text('新建第一个工作区'),
-                                              style: FilledButton.styleFrom(
-                                                minimumSize:
-                                                    const Size.fromHeight(36),
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                      horizontal: 12,
-                                                    ),
+                                                label: const Text('新建第一个工作区'),
+                                                style: FilledButton.styleFrom(
+                                                  minimumSize:
+                                                      const Size.fromHeight(36),
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                        horizontal: 12,
+                                                      ),
+                                                ),
                                               ),
                                             ),
-                                          ),
-                                        ],
+                                          ],
+                                        ),
                                       ),
                                     ),
                                   ),
-                                ),
-                              );
-                            },
+                                );
+                              },
+                            ),
+                          )
+                        : ListView.builder(
+                            key: const Key('sidebar-task-list'),
+                            controller: _taskListScrollController,
+                            primary: false,
+                            padding: const EdgeInsets.only(top: 2, bottom: 4),
+                            // Keep the next project node and its first task
+                            // mounted even when the footer actions reduce the
+                            // visible list height; this preserves immediate
+                            // project switching and completion indicators.
+                            scrollCacheExtent: const ScrollCacheExtent.pixels(
+                              800,
+                            ),
+                            itemCount: taskListItems.length,
+                            itemExtentBuilder: (index, _) =>
+                                taskListItems[index].extent,
+                            itemBuilder: (context, index) =>
+                                taskListItems[index].builder(context),
                           ),
-                        )
-                      : ListView.builder(
-                          key: const Key('sidebar-task-list'),
-                          controller: _taskListScrollController,
-                          primary: false,
-                          padding: const EdgeInsets.only(top: 2, bottom: 4),
-                          // Keep the next project node and its first task
-                          // mounted even when the footer actions reduce the
-                          // visible list height; this preserves immediate
-                          // project switching and completion indicators.
-                          scrollCacheExtent: const ScrollCacheExtent.pixels(
-                            800,
-                          ),
-                          itemCount: taskListItems.length,
-                          itemExtentBuilder: (index, _) =>
-                              taskListItems[index].extent,
-                          itemBuilder: (context, index) =>
-                              taskListItems[index].builder(context),
-                        ),
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: widget.onConfigureRuntime,
-              icon: const Icon(Icons.memory_outlined, size: 16),
-              label: const Text('Codex CLI'),
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: controller.workspacePath == null
-                  ? null
-                  : widget.onShowGitProject,
-              icon: const Icon(Icons.account_tree_outlined, size: 16),
-              label: const Text('Git 项目'),
-            ),
-            const SizedBox(height: 6),
-            const MutedText('本地优先 · stdio JSON-RPC'),
-            const SizedBox(height: 6),
-            Row(
-              key: const Key('sidebar-bottom-actions'),
-              children: [
-                Expanded(
-                  child: SidebarMenuAction(
-                    key: const Key('sidebar-settings-button'),
-                    icon: Icons.settings_outlined,
-                    label: 'custom',
-                    selected:
-                        widget.destination == WorkspaceDestination.settings,
-                    onTap: widget.onShowSettings,
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: widget.onConfigureRuntime,
+                icon: const Icon(Icons.memory_outlined, size: 16),
+                label: const Text('Codex CLI'),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: controller.workspacePath == null
+                    ? null
+                    : widget.onShowGitProject,
+                icon: const Icon(Icons.account_tree_outlined, size: 16),
+                label: const Text('Git 项目'),
+              ),
+              const SizedBox(height: 6),
+              const MutedText('本地优先 · stdio JSON-RPC'),
+              const SizedBox(height: 6),
+              Row(
+                key: const Key('sidebar-bottom-actions'),
+                children: [
+                  Expanded(
+                    child: SidebarMenuAction(
+                      key: const Key('sidebar-settings-button'),
+                      icon: Icons.settings_outlined,
+                      label: 'custom',
+                      selected:
+                          widget.destination == WorkspaceDestination.settings,
+                      onTap: widget.onShowSettings,
+                    ),
                   ),
-                ),
-                Builder(
-                  builder: (buttonContext) => IconButton(
-                    key: const Key('sidebar-help-button'),
-                    tooltip: '帮助',
-                    onPressed: () => _showHelpMenu(buttonContext),
-                    icon: const Icon(Icons.help_outline, size: 21),
+                  Builder(
+                    builder: (buttonContext) => IconButton(
+                      key: const Key('sidebar-help-button'),
+                      tooltip: '帮助',
+                      onPressed: () => _showHelpMenu(buttonContext),
+                      icon: const Icon(Icons.help_outline, size: 21),
+                    ),
                   ),
-                ),
-              ],
-            ),
-          ],
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

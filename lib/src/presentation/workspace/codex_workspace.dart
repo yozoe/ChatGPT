@@ -3,6 +3,7 @@
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_state.dart';
+import 'package:chatgpt/src/services/theme_preferences_store.dart';
 
 /// 仅根据常见扩展名决定附件是否应按图片预览；不读取文件内容。
 /// Determines whether an attachment should use image preview from its extension without reading file contents.
@@ -32,6 +33,8 @@ class CodexWorkspace extends ConsumerStatefulWidget {
     this.controller,
     this.themeMode = ThemeMode.dark,
     this.themePreset = YeknomColorPreset.midnight,
+    this.initialSidebarWidth = CodexThemePreferences.defaultSidebarWidth,
+    this.onSidebarWidthChanged,
     this.onThemeModeChanged,
     this.onThemePresetChanged,
     super.key,
@@ -42,6 +45,8 @@ class CodexWorkspace extends ConsumerStatefulWidget {
   final CodexController? controller;
   final ThemeMode themeMode;
   final YeknomColorPreset themePreset;
+  final double initialSidebarWidth;
+  final ValueChanged<double>? onSidebarWidthChanged;
   final ValueChanged<ThemeMode>? onThemeModeChanged;
   final ValueChanged<YeknomColorPreset>? onThemePresetChanged;
 

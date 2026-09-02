@@ -30,8 +30,16 @@ class ThemePreferencesNotifier extends Notifier<CodexThemePreferences> {
 
   /// 更新主题模式和配色预设，并将结果排队写入本地偏好。
   /// Updates the theme mode and color preset, queueing the result for local persistence.
-  Future<void> update({ThemeMode? mode, YeknomColorPreset? preset}) {
-    final next = state.copyWith(mode: mode, preset: preset);
+  Future<void> update({
+    ThemeMode? mode,
+    YeknomColorPreset? preset,
+    double? sidebarWidth,
+  }) {
+    final next = state.copyWith(
+      mode: mode,
+      preset: preset,
+      sidebarWidth: sidebarWidth,
+    );
     if (next == state) return Future<void>.value();
     state = next;
     final store = _store;

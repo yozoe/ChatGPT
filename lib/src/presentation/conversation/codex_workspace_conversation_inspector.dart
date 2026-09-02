@@ -122,28 +122,6 @@ class Inspector extends StatelessWidget {
                     controller: controller,
                     onShowAll: onShowAgents,
                   ),
-                  const SizedBox(height: 16),
-                  Divider(height: 1, color: palette.border),
-                  const SizedBox(height: 16),
-                  InspectorSectionHeader(
-                    icon: Icons.description_outlined,
-                    label: '任务文件',
-                    trailing: Text(
-                      fileChangeCountLabel(controller.fileChanges.length),
-                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                        color: palette.muted,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Expanded(
-                    child: InspectorFileChangesList(
-                      changes: controller.fileChanges,
-                      turnDiff: controller.turnDiff,
-                    ),
-                  ),
                   const SizedBox(height: 12),
                   Divider(height: 1, color: palette.border),
                   const SizedBox(height: 12),

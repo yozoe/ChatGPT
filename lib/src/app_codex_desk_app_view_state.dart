@@ -26,14 +26,19 @@ class CodexDeskAppViewState extends ConsumerState<CodexDeskAppView> {
     unawaited(_updateThemePreferences(preset: value));
   }
 
+  void _setSidebarWidth(double value) {
+    unawaited(_updateThemePreferences(sidebarWidth: value));
+  }
+
   Future<void> _updateThemePreferences({
     ThemeMode? mode,
     YeknomColorPreset? preset,
+    double? sidebarWidth,
   }) async {
     try {
       await ref
           .read(themePreferencesProvider.notifier)
-          .update(mode: mode, preset: preset);
+          .update(mode: mode, preset: preset, sidebarWidth: sidebarWidth);
     } on Object {
       _messengerKey.currentState
         ?..hideCurrentSnackBar()
@@ -64,8 +69,10 @@ class CodexDeskAppViewState extends ConsumerState<CodexDeskAppView> {
       home: CodexWorkspace(
         themeMode: preferences.mode,
         themePreset: preferences.preset,
+        initialSidebarWidth: preferences.sidebarWidth,
         onThemeModeChanged: _setThemeMode,
         onThemePresetChanged: _setThemePreset,
+        onSidebarWidthChanged: _setSidebarWidth,
       ),
     );
   }

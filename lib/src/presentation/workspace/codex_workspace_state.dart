@@ -10,6 +10,7 @@ import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_workspa
 import 'package:chatgpt/src/presentation/agents/codex_workspace_agents_page.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:chatgpt/src/services/theme_preferences_store.dart';
 
 /// 拥有短生命周期界面状态，并把可共享业务状态交由 [CodexController] 管理。
 /// Owns short-lived UI state while delegating shared business state to [CodexController].
@@ -49,7 +50,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   // its desktop toolbar when the review and Inspector columns are open.
   static const _conversationColumnWidth = 720.0;
   static const _auxiliaryPaneAllowance = 24.0;
-  double _sidebarWidth = 250;
+  double _sidebarWidth = CodexThemePreferences.defaultSidebarWidth;
   double _inspectorWidth = 240;
   double _reviewWidth = _maximumReviewWidth;
   bool _reviewOpen = false;
@@ -90,6 +91,9 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   @override
   void initState() {
     super.initState();
+    _sidebarWidth = widget.initialSidebarWidth
+        .clamp(_minimumSidebarWidth, _maximumSidebarWidth)
+        .toDouble();
     _controller = widget.controller ?? ref.read(codexControllerProvider)!;
     _displayedThreadKey = _viewportKey(_controller.activeThreadId);
     _timelineScrollController = _timelineControllerFor(_displayedThreadKey);
@@ -2467,7 +2471,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
             final showInlineInspector =
                 !compact &&
                 auxiliaryFullHeight &&
-                preserveInspectorWithAuxiliary;
+                preserveInspectorWithAuxiliary &&
+                !sidePanelOpen;
             final auxiliaryInspectorWidth = preserveInspectorWithAuxiliary
                 ? inspectorWidth
                       .clamp(
@@ -2522,60 +2527,66 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                   children: [
                     SizedBox(
                       width: sidebarWidth,
-                      child: Column(
-                        children: [
-                          TopBar(
-                            key: const Key('workspace-column-topbar'),
-                            controller: controller,
-                            themeMode: widget.themeMode,
-                            themePreset: widget.themePreset,
-                            onThemeModeChanged: widget.onThemeModeChanged,
-                            onThemePresetChanged: widget.onThemePresetChanged,
-                            onChooseWorkspace: _showWorkspaceDirectories,
-                            onAccount: _showAccount,
-                            onCodexConfiguration: _showCodexConfiguration,
-                            onPlugins: _showPlugins,
-                            showIdentity: true,
-                            showControls: false,
-                          ),
-                          const Divider(height: 1),
-                          Expanded(
-                            child: Sidebar(
-                              width: sidebarWidth,
+                      child: ColoredBox(
+                        color: YeknomPalette.of(context).sidebar,
+                        child: Column(
+                          children: [
+                            TopBar(
+                              key: const Key('workspace-column-topbar'),
                               controller: controller,
+                              themeMode: widget.themeMode,
+                              themePreset: widget.themePreset,
+                              onThemeModeChanged: widget.onThemeModeChanged,
+                              onThemePresetChanged: widget.onThemePresetChanged,
                               onChooseWorkspace: _showWorkspaceDirectories,
-                              onEditWorkspace: _showEditWorkspaceDialog,
-                              onCreateWorkspace: () =>
-                                  unawaited(_createWorkspace()),
-                              onConfigureRuntime: _showRuntime,
-                              onRenameThread: _renameThread,
-                              onArchiveThread: _archiveThread,
-                              onArchiveThreads: _archiveThreads,
-                              onDeleteThread: _deleteThread,
-                              onShowArchivedThreads: _showArchivedThreads,
-                              onExportHistory: _exportConversationHistory,
-                              onImportHistory: _importConversationHistory,
-                              onShowGitProject: _showGitProject,
-                              onShowPlugins: _showPluginsPage,
-                              onShowAgents: _showAgentsDirectory,
-                              onShowScheduledTasks: _showScheduledTasks,
-                              onShowPullRequests: _showPullRequests,
-                              onShowSettings: _showSettings,
-                              onOpenConversation: _showConversation,
-                              onNewConversation: _startNewConversation,
-                              destination: _destination,
+                              onAccount: _showAccount,
+                              onCodexConfiguration: _showCodexConfiguration,
+                              onPlugins: _showPlugins,
+                              showIdentity: true,
+                              showControls: false,
                             ),
-                          ),
-                        ],
+                            const Divider(height: 1),
+                            Expanded(
+                              child: Sidebar(
+                                width: sidebarWidth,
+                                controller: controller,
+                                onChooseWorkspace: _showWorkspaceDirectories,
+                                onEditWorkspace: _showEditWorkspaceDialog,
+                                onCreateWorkspace: () =>
+                                    unawaited(_createWorkspace()),
+                                onConfigureRuntime: _showRuntime,
+                                onRenameThread: _renameThread,
+                                onArchiveThread: _archiveThread,
+                                onArchiveThreads: _archiveThreads,
+                                onDeleteThread: _deleteThread,
+                                onShowArchivedThreads: _showArchivedThreads,
+                                onExportHistory: _exportConversationHistory,
+                                onImportHistory: _importConversationHistory,
+                                onShowGitProject: _showGitProject,
+                                onShowPlugins: _showPluginsPage,
+                                onShowAgents: _showAgentsDirectory,
+                                onShowScheduledTasks: _showScheduledTasks,
+                                onShowPullRequests: _showPullRequests,
+                                onShowSettings: _showSettings,
+                                onOpenConversation: _showConversation,
+                                onNewConversation: _startNewConversation,
+                                destination: _destination,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                     PaneResizeHandle(
                       key: const Key('sidebar-resize-handle'),
-                      onDragDelta: (delta) => setState(() {
-                        _sidebarWidth = (_sidebarWidth + delta)
+                      onDragDelta: (delta) {
+                        final nextWidth = (_sidebarWidth + delta)
                             .clamp(_minimumSidebarWidth, sidebarMaximum)
                             .toDouble();
-                      }),
+                        if (nextWidth == _sidebarWidth) return;
+                        setState(() => _sidebarWidth = nextWidth);
+                        widget.onSidebarWidthChanged?.call(nextWidth);
+                      },
                     ),
                     Expanded(
                       child: Stack(
@@ -2810,6 +2821,52 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                                             onCollapse:
                                                                 _returnToMainTask,
                                                           ),
+                                                        if (!compact &&
+                                                            !auxiliaryFullHeight &&
+                                                            _destination ==
+                                                                WorkspaceDestination
+                                                                    .conversation)
+                                                          Positioned(
+                                                            top: 0,
+                                                            right: 0,
+                                                            child: Row(
+                                                              children: [
+                                                                PaneResizeHandle(
+                                                                  key: const Key(
+                                                                    'inspector-resize-handle',
+                                                                  ),
+                                                                  onDragDelta: (delta) => setState(() {
+                                                                    _inspectorWidth =
+                                                                        (_inspectorWidth -
+                                                                                delta)
+                                                                            .clamp(
+                                                                              _minimumInspectorWidth,
+                                                                              inspectorMaximum,
+                                                                            )
+                                                                            .toDouble();
+                                                                  }),
+                                                                ),
+                                                                SizedBox(
+                                                                  width:
+                                                                      inspectorWidth,
+                                                                  height: 500,
+                                                                  child: Inspector(
+                                                                    width:
+                                                                        inspectorWidth,
+                                                                    controller:
+                                                                        controller,
+                                                                    onShowGitProject: () =>
+                                                                        _showCodeReview(
+                                                                          CodeReviewSource
+                                                                              .gitWorkspace,
+                                                                        ),
+                                                                    onShowAgents:
+                                                                        _showAgents,
+                                                                  ),
+                                                                ),
+                                                              ],
+                                                            ),
+                                                          ),
                                                       ],
                                                     ),
                                                   ),
@@ -2883,36 +2940,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                     ),
                   ],
                 ),
-                if (_destination == WorkspaceDestination.conversation &&
-                    !compact &&
-                    !auxiliaryFullHeight)
-                  Positioned(
-                    top: 0,
-                    right: 0,
-                    bottom: 0,
-                    child: Row(
-                      children: [
-                        PaneResizeHandle(
-                          key: const Key('inspector-resize-handle'),
-                          onDragDelta: (delta) => setState(() {
-                            _inspectorWidth = (_inspectorWidth - delta)
-                                .clamp(_minimumInspectorWidth, inspectorMaximum)
-                                .toDouble();
-                          }),
-                        ),
-                        SizedBox(
-                          width: inspectorWidth,
-                          child: Inspector(
-                            width: inspectorWidth,
-                            controller: controller,
-                            onShowGitProject: () =>
-                                _showCodeReview(CodeReviewSource.gitWorkspace),
-                            onShowAgents: _showAgents,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
                 if (_destination == WorkspaceDestination.conversation &&
                     !sidePanelOpen)
                   Positioned(
