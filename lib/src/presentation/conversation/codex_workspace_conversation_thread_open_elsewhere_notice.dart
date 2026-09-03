@@ -12,10 +12,12 @@ class ThreadOpenElsewhereNotice extends StatelessWidget {
   const ThreadOpenElsewhereNotice({
     required this.retrying,
     required this.onRetry,
+    this.feedback,
   });
 
   final bool retrying;
   final Future<void> Function() onRetry;
+  final String? feedback;
 
   @override
   Widget build(BuildContext context) {
@@ -51,7 +53,7 @@ class ThreadOpenElsewhereNotice extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '请先在那边关闭会话，然后重试此操作。',
+                    feedback ?? '请先在那边关闭会话，然后重试此操作。',
                     style: Theme.of(
                       context,
                     ).textTheme.bodySmall?.copyWith(color: palette.muted),

@@ -150,6 +150,7 @@ class ConversationPane extends StatelessWidget {
                 if (controller.hasThreadWriterConflict)
                   ThreadOpenElsewhereNotice(
                     retrying: controller.isRetryingThreadWriterConflict,
+                    feedback: controller.threadWriterConflictFeedback,
                     onRetry: controller.retryThreadWriterConflict,
                   ),
                 if (controller.hasFailedTurnRetry)

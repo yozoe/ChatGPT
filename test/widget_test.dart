@@ -16602,6 +16602,7 @@ void main() {
 
       expect(controller.hasResumeConflict, isTrue);
       expect(controller.isRetryingThreadWriterConflict, isFalse);
+      expect(controller.threadWriterConflictFeedback, '运行时尚未连接，请稍后重试。');
       controller.dispose();
     },
   );
@@ -16682,6 +16683,33 @@ void main() {
     expect(server.resumeCalls, 1);
     controller.dispose();
   });
+
+  test(
+    'clears a writer-conflict retry when creating a new conversation',
+    () async {
+      final server = _ManagedRuntimeFakeServer()
+        ..resumeError = StateError('thread already has an active writer')
+        ..running = true;
+      final controller =
+          CodexController(
+              server: server,
+              runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+              conversationHistoryStore: _MemoryConversationHistoryStore(),
+            )
+            ..workspacePath = '/workspace'
+            ..status = RuntimeStatus.ready;
+
+      await controller.resumeThread(_thread(id: 'shared-thread'));
+      expect(controller.hasThreadWriterConflict, isTrue);
+
+      controller.createThread();
+
+      expect(controller.activeThreadId, isNull);
+      expect(controller.hasThreadWriterConflict, isFalse);
+      expect(controller.threadWriterConflictFeedback, isNull);
+      controller.dispose();
+    },
+  );
 
   test(
     'hydrates older turns when resume returns a pagination cursor',

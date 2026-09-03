@@ -427,6 +427,7 @@ class CodexController extends ChangeNotifier {
   String? lastError;
   ThreadWriterConflict? _threadWriterConflict;
   bool _retryingThreadWriterConflict = false;
+  String? _threadWriterConflictFeedback;
   ArchivedThreadRestore? _archivedThreadRestore;
   bool _restoringArchivedThread = false;
 
@@ -441,6 +442,8 @@ class CodexController extends ChangeNotifier {
       _threadWriterConflict?.operation == ThreadWriterConflictOperation.resume;
 
   bool get isRetryingThreadWriterConflict => _retryingThreadWriterConflict;
+
+  String? get threadWriterConflictFeedback => _threadWriterConflictFeedback;
 
   FailedTurnRetry? get _activeFailedTurnRetry {
     final threadId = activeThreadId;
@@ -485,9 +488,12 @@ class CodexController extends ChangeNotifier {
     if (!_server.isRunning ||
         (conflict.operation == ThreadWriterConflictOperation.resume &&
             !canSwitchThreads)) {
+      _threadWriterConflictFeedback = '运行时尚未连接，请稍后重试。';
+      if (!_disposed) notifyListeners();
       return;
     }
     _clearThreadWriterConflict();
+    _threadWriterConflictFeedback = null;
     _retryingThreadWriterConflict = true;
     lastError = null;
     notifyListeners();
@@ -500,6 +506,9 @@ class CodexController extends ChangeNotifier {
       }
     } finally {
       _retryingThreadWriterConflict = false;
+      if (hasThreadWriterConflict) {
+        _threadWriterConflictFeedback = '另一应用仍在使用此会话，请先关闭后重试。';
+      }
       if (!_disposed) notifyListeners();
     }
   }
@@ -520,6 +529,7 @@ class CodexController extends ChangeNotifier {
 
   void _clearThreadWriterConflict() {
     _threadWriterConflict = null;
+    _threadWriterConflictFeedback = null;
   }
 
   void _setArchivedThreadRestore(CodexThread thread) {
@@ -2296,6 +2306,10 @@ class CodexController extends ChangeNotifier {
       if (workspace != null) _threadWorkspaceById[previousThreadId] = workspace;
       _threadViewCache.remove(previousThreadId);
     }
+    // A writer conflict belongs to the previously selected thread. Starting
+    // a fresh conversation must not carry that recovery notice into the new
+    // thread, even when it remains in the same workspace.
+    _clearThreadWriterConflict();
     activeThreadId = null;
     _activeThreadAttached = false;
     status = RuntimeStatus.ready;
