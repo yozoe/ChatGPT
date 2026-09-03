@@ -13,6 +13,10 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 /// Keeps the scrolling transcript and floating Composer on one centered rail.
 const double conversationContentHorizontalInset = 24;
 
+/// Bounds the reading column while the conversation viewport remains full-width
+/// so fixed viewport controls can stay reachable at its edges.
+const double conversationContentMaxWidth = 790;
+
 /// Lets the timeline occupy the full conversation viewport while the composer
 /// floats above it. The measured bottom inset keeps the final message fully
 /// reachable even though intermediate content can pass behind the composer.

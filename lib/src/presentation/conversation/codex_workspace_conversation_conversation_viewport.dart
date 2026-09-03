@@ -16,7 +16,6 @@ class ConversationViewport extends StatefulWidget {
     required this.timelinePages,
     required this.timelineScrollControllers,
     required this.activeTimelinePageKey,
-    required this.userMessageRailLeft,
     required this.threadHistoryLoading,
     required this.fileChangeSummaryExpanded,
     required this.onFileChangeSummaryExpandedChanged,
@@ -37,7 +36,6 @@ class ConversationViewport extends StatefulWidget {
   final Map<ThreadViewportKey, TimelinePageData> timelinePages;
   final Map<ThreadViewportKey, ScrollController> timelineScrollControllers;
   final ThreadViewportKey activeTimelinePageKey;
-  final double userMessageRailLeft;
   final bool threadHistoryLoading;
   final bool Function(ThreadViewportKey pageKey) fileChangeSummaryExpanded;
   final void Function(ThreadViewportKey pageKey, bool expanded)

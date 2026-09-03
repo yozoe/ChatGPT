@@ -481,7 +481,6 @@ void main() {
           width: 700,
           height: 240,
           child: ConversationTimeline(
-            userMessageRailLeft: 16,
             pageKey: const ThreadViewportKey(
               workspace: null,
               threadId: 'rail-test',
@@ -1108,18 +1107,44 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('uses the widened shared conversation rail', (tester) async {
+  testWidgets('keeps the message rail visible at the conversation edge', (
+    tester,
+  ) async {
     await tester.binding.setSurfaceSize(const Size(1280, 900));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final controller = CodexController(server: CodexAppServer())
       ..status = RuntimeStatus.ready;
+    controller.replaceTimelineEntriesForTesting([
+      TimelineEntry(
+        id: 'wide-workspace-user-message',
+        kind: TimelineKind.user,
+        title: 'You',
+        detail: '宽窗口中的用户消息',
+        createdAt: DateTime(2026),
+      ),
+    ]);
     await tester.pumpWidget(
       MaterialApp(home: CodexWorkspace(controller: controller)),
     );
     await tester.pump();
 
-    final viewport = find.byKey(const Key('conversation-viewport-stack'));
-    expect(tester.getSize(viewport).width, closeTo(790, 0.1));
+    for (final size in const [Size(1280, 900), Size(1980, 900)]) {
+      await tester.binding.setSurfaceSize(size);
+      await tester.pump();
+
+      final viewport = find.byKey(const Key('conversation-viewport-stack'));
+      final rail = find.byKey(const Key('conversation-user-message-rail'));
+      final timeline = find.descendant(
+        of: viewport,
+        matching: find.byType(ListView),
+      );
+      final viewportRect = tester.getRect(viewport);
+      final railRect = tester.getRect(rail);
+
+      expect(tester.getSize(timeline).width, closeTo(790, 0.1));
+      expect(railRect.left, closeTo(viewportRect.left + 16, 0.1));
+      expect(railRect.right, lessThan(viewportRect.right));
+    }
     await tester.pumpWidget(const SizedBox());
   });
 

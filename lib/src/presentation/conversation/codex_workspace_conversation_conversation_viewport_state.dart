@@ -157,7 +157,6 @@ class ConversationViewportState extends State<ConversationViewport> {
                         scrollController:
                             widget.timelineScrollControllers[page.key]!,
                         bottomPadding: timelineBottomPadding,
-                        userMessageRailLeft: widget.userMessageRailLeft,
                         active: page.key == widget.activeTimelinePageKey,
                         fileChangeSummaryExpanded: widget
                             .fileChangeSummaryExpanded(page.key),
@@ -252,11 +251,16 @@ class ConversationViewportState extends State<ConversationViewport> {
               ),
             Align(
               alignment: Alignment.bottomCenter,
-              child: NotificationListener<SizeChangedLayoutNotification>(
-                onNotification: _handleBottomOverlaySizeChanged,
-                child: SizeChangedLayoutNotifier(
-                  key: _bottomOverlayKey,
-                  child: widget.bottomOverlay,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(
+                  maxWidth: conversationContentMaxWidth,
+                ),
+                child: NotificationListener<SizeChangedLayoutNotification>(
+                  onNotification: _handleBottomOverlaySizeChanged,
+                  child: SizeChangedLayoutNotifier(
+                    key: _bottomOverlayKey,
+                    child: widget.bottomOverlay,
+                  ),
                 ),
               ),
             ),

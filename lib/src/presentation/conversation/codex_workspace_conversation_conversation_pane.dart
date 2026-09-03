@@ -25,7 +25,6 @@ class ConversationPane extends StatelessWidget {
     required this.timelinePages,
     required this.timelineScrollControllers,
     required this.activeTimelinePageKey,
-    required this.userMessageRailLeft,
     required this.threadHistoryLoading,
     required this.fileChangeSummaryExpanded,
     required this.onFileChangeSummaryExpandedChanged,
@@ -49,7 +48,6 @@ class ConversationPane extends StatelessWidget {
   final Map<ThreadViewportKey, TimelinePageData> timelinePages;
   final Map<ThreadViewportKey, ScrollController> timelineScrollControllers;
   final ThreadViewportKey activeTimelinePageKey;
-  final double userMessageRailLeft;
   final bool threadHistoryLoading;
   final bool Function(ThreadViewportKey pageKey) fileChangeSummaryExpanded;
   final void Function(ThreadViewportKey pageKey, bool expanded)
@@ -111,7 +109,6 @@ class ConversationPane extends StatelessWidget {
             timelinePages: timelinePages,
             timelineScrollControllers: timelineScrollControllers,
             activeTimelinePageKey: activeTimelinePageKey,
-            userMessageRailLeft: userMessageRailLeft,
             threadHistoryLoading: threadHistoryLoading,
             fileChangeSummaryExpanded: fileChangeSummaryExpanded,
             onFileChangeSummaryExpandedChanged:

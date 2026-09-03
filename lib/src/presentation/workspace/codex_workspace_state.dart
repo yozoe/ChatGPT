@@ -47,10 +47,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   static const _minimumReviewWidth = 600.0;
   static const _maximumReviewWidth = 960.0;
   static const _minimumAuxiliaryWidth = 360.0;
-  // The conversation keeps a readable canvas while leaving enough room for
-  // its desktop toolbar when the review and Inspector columns are open.
-  // Keep the transcript and Composer on a wider shared reading rail.
-  static const _conversationColumnWidth = 790.0;
   static const _auxiliaryPaneAllowance = 24.0;
   double _sidebarWidth = CodexThemePreferences.defaultSidebarWidth;
   double _inspectorWidth = 240;
@@ -2469,7 +2465,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
             final preserveInspectorWithAuxiliary =
                 auxiliaryFullHeight &&
                 workbenchWidth >=
-                    _conversationColumnWidth +
+                    conversationContentMaxWidth +
                         _minimumInspectorWidth +
                         _minimumAuxiliaryWidth;
             final showInlineInspector =
@@ -2482,14 +2478,14 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                       .clamp(
                         _minimumInspectorWidth,
                         workbenchWidth -
-                            _conversationColumnWidth -
+                            conversationContentMaxWidth -
                             _minimumAuxiliaryWidth,
                       )
                       .toDouble()
                 : inspectorWidth;
             final reviewMaximum = auxiliaryFullHeight
                 ? (workbenchWidth -
-                          _conversationColumnWidth -
+                          conversationContentMaxWidth -
                           _auxiliaryPaneAllowance -
                           (preserveInspectorWithAuxiliary
                               ? auxiliaryInspectorWidth
@@ -2699,105 +2695,75 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                                     child: Stack(
                                                       fit: StackFit.expand,
                                                       children: [
-                                                        LayoutBuilder(
-                                                          builder: (context, constraints) {
-                                                            final width =
-                                                                constraints
-                                                                    .maxWidth
-                                                                    .clamp(
-                                                                      0.0,
-                                                                      _conversationColumnWidth,
-                                                                    )
-                                                                    .toDouble();
-                                                            return Align(
-                                                              alignment:
-                                                                  Alignment
-                                                                      .topCenter,
-                                                              child: SizedBox(
-                                                                width: width,
-                                                                height: constraints
-                                                                    .maxHeight,
-                                                                child: ConversationPane(
-                                                                  controller:
-                                                                      controller,
-                                                                  composer:
-                                                                      _composer,
-                                                                  recordSkillRequest:
-                                                                      _recordSkillRequest,
-                                                                  timelinePages:
-                                                                      _timelinePages,
-                                                                  timelineScrollControllers:
-                                                                      _timelineScrollControllers,
-                                                                  activeTimelinePageKey:
-                                                                      _displayedThreadKey,
-                                                                  userMessageRailLeft:
-                                                                      16 -
-                                                                      ((constraints.maxWidth -
-                                                                              width) /
-                                                                          2),
-                                                                  threadHistoryLoading:
-                                                                      _threadHistoryLoading,
-                                                                  fileChangeSummaryExpanded:
-                                                                      (
-                                                                        pageKey,
-                                                                      ) =>
-                                                                          _fileChangeSummaryExpanded[pageKey] ??
-                                                                          false,
-                                                                  onFileChangeSummaryExpandedChanged:
-                                                                      (
-                                                                        pageKey,
-                                                                        expanded,
-                                                                      ) {
-                                                                        setState(() {
-                                                                          _fileChangeSummaryExpanded[pageKey] =
-                                                                              expanded;
-                                                                        });
-                                                                      },
-                                                                  activityExpanded:
-                                                                      (
-                                                                        pageKey,
-                                                                        activityId,
-                                                                      ) =>
-                                                                          _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
-                                                                          false,
-                                                                  onTimelineMetricsChanged:
-                                                                      _handleTimelineMetricsChanged,
-                                                                  onTimelineUserScrollDirection:
-                                                                      _handleTimelineUserScrollDirection,
-                                                                  showScrollToBottom:
-                                                                      _timelineIsAboveLatest[_displayedThreadKey] ??
-                                                                      false,
-                                                                  onScrollToBottom:
-                                                                      _scrollTimelineToBottom,
-                                                                  onActivityExpandedChanged:
-                                                                      (
-                                                                        pageKey,
-                                                                        activityId,
-                                                                        expanded,
-                                                                      ) {
-                                                                        setState(() {
-                                                                          _activityListExpanded['${pageKey.storageKey}/$activityId'] =
-                                                                              expanded;
-                                                                        });
-                                                                      },
-                                                                  onSend: _send,
-                                                                  onQueueSteer:
-                                                                      _queueDirection,
-                                                                  onReview: () =>
-                                                                      _showCodeReview(
-                                                                        CodeReviewSource
-                                                                            .latestTurn,
-                                                                      ),
-                                                                  onUndo:
-                                                                      _undoFileChanges,
-                                                                  onOpenSubagent:
-                                                                      _openSubagentInspector,
-                                                                  onSubmitUserMessageEdit:
-                                                                      _submitEditedUserMessage,
-                                                                ),
+                                                        ConversationPane(
+                                                          controller:
+                                                              controller,
+                                                          composer: _composer,
+                                                          recordSkillRequest:
+                                                              _recordSkillRequest,
+                                                          timelinePages:
+                                                              _timelinePages,
+                                                          timelineScrollControllers:
+                                                              _timelineScrollControllers,
+                                                          activeTimelinePageKey:
+                                                              _displayedThreadKey,
+                                                          threadHistoryLoading:
+                                                              _threadHistoryLoading,
+                                                          fileChangeSummaryExpanded:
+                                                              (pageKey) =>
+                                                                  _fileChangeSummaryExpanded[pageKey] ??
+                                                                  false,
+                                                          onFileChangeSummaryExpandedChanged:
+                                                              (
+                                                                pageKey,
+                                                                expanded,
+                                                              ) {
+                                                                setState(() {
+                                                                  _fileChangeSummaryExpanded[pageKey] =
+                                                                      expanded;
+                                                                });
+                                                              },
+                                                          activityExpanded:
+                                                              (
+                                                                pageKey,
+                                                                activityId,
+                                                              ) =>
+                                                                  _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
+                                                                  false,
+                                                          onTimelineMetricsChanged:
+                                                              _handleTimelineMetricsChanged,
+                                                          onTimelineUserScrollDirection:
+                                                              _handleTimelineUserScrollDirection,
+                                                          showScrollToBottom:
+                                                              _timelineIsAboveLatest[_displayedThreadKey] ??
+                                                              false,
+                                                          onScrollToBottom:
+                                                              _scrollTimelineToBottom,
+                                                          onActivityExpandedChanged:
+                                                              (
+                                                                pageKey,
+                                                                activityId,
+                                                                expanded,
+                                                              ) {
+                                                                setState(() {
+                                                                  _activityListExpanded['${pageKey.storageKey}/$activityId'] =
+                                                                      expanded;
+                                                                });
+                                                              },
+                                                          onSend: _send,
+                                                          onQueueSteer:
+                                                              _queueDirection,
+                                                          onReview: () =>
+                                                              _showCodeReview(
+                                                                CodeReviewSource
+                                                                    .latestTurn,
                                                               ),
-                                                            );
-                                                          },
+                                                          onUndo:
+                                                              _undoFileChanges,
+                                                          onOpenSubagent:
+                                                              _openSubagentInspector,
+                                                          onSubmitUserMessageEdit:
+                                                              _submitEditedUserMessage,
                                                         ),
                                                         if (_threadHistoryLoading)
                                                           Positioned.fill(
