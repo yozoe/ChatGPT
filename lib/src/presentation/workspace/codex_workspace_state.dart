@@ -2828,6 +2828,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                                           ),
                                                         if (!compact &&
                                                             !sidePanelExpanded &&
+                                                            !showSidePanelLauncher &&
                                                             _destination ==
                                                                 WorkspaceDestination
                                                                     .conversation)
