@@ -2057,6 +2057,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       _reviewSource = source;
       _reviewOpen = true;
       _activeSidePanelTab = 'review';
+      _sidePanelCollapsed = false;
     });
     if (source == CodeReviewSource.latestTurn) {
       await _controller.ensureFileChangeDiffs();
