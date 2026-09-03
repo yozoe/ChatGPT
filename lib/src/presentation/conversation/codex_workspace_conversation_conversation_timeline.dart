@@ -279,7 +279,12 @@ class ConversationTimeline extends StatelessWidget {
                 scrollCacheExtent: ScrollCacheExtent.pixels(
                   timelineCacheExtent,
                 ),
-                padding: EdgeInsets.fromLTRB(56, 12, 24, bottomPadding),
+                padding: EdgeInsets.fromLTRB(
+                  conversationContentHorizontalInset,
+                  12,
+                  conversationContentHorizontalInset,
+                  bottomPadding,
+                ),
                 itemCount: itemCount,
                 findItemIndexCallback: (key) {
                   final timelineIndex = timelineItemIndexes[key];

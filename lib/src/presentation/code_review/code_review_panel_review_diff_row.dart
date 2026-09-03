@@ -44,49 +44,61 @@ class ReviewDiffRow extends StatelessWidget {
     return Container(
       height: row.kind == ReviewRowKind.collapsed ? 28 : 20,
       color: background,
-      child: Row(
-        children: [
-          ReviewLineNumber(value: row.oldLine),
-          ReviewLineNumber(value: row.newLine),
-          Expanded(
-            child: ClipRect(
-              child: AnimatedBuilder(
-                animation: horizontalController,
-                builder: (context, child) {
-                  final offset = horizontalController.hasClients
-                      ? horizontalController.offset
-                      : 0.0;
-                  return Transform.translate(
-                    offset: Offset(-offset, 0),
-                    child: child,
-                  );
-                },
-                child: SizedBox(
-                  width: contentWidth,
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      child: Text(
-                        row.text,
-                        maxLines: 1,
-                        softWrap: false,
-                        style: TextStyle(
-                          color: color,
-                          fontFamily: 'monospace',
-                          fontSize: row.kind == ReviewRowKind.collapsed
-                              ? 11
-                              : 12,
-                          height: 1,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          // During the review pane's width animation the canvas can briefly be
+          // narrower than its fixed 44 px gutters. Shed gutters progressively
+          // so the row remains valid at every intermediate width.
+          final gutterCount = constraints.maxWidth >= 88
+              ? 2
+              : constraints.maxWidth >= 44
+              ? 1
+              : 0;
+          return Row(
+            children: [
+              if (gutterCount == 2) ReviewLineNumber(value: row.oldLine),
+              if (gutterCount >= 1) ReviewLineNumber(value: row.newLine),
+              Expanded(
+                child: ClipRect(
+                  child: AnimatedBuilder(
+                    animation: horizontalController,
+                    builder: (context, child) {
+                      final offset = horizontalController.hasClients
+                          ? horizontalController.offset
+                          : 0.0;
+                      return Transform.translate(
+                        offset: Offset(-offset, 0),
+                        child: child,
+                      );
+                    },
+                    child: SizedBox(
+                      width: contentWidth,
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          child: Text(
+                            row.text,
+                            maxLines: 1,
+                            softWrap: false,
+                            style: TextStyle(
+                              color: color,
+                              fontFamily: 'monospace',
+                              fontSize: row.kind == ReviewRowKind.collapsed
+                                  ? 11
+                                  : 12,
+                              height: 1,
+                            ),
+                          ),
                         ),
                       ),
                     ),
                   ),
                 ),
               ),
-            ),
-          ),
-        ],
+            ],
+          );
+        },
       ),
     );
   }

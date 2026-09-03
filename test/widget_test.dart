@@ -27,6 +27,7 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_timeline_page_data.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_user_message_rail.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_user_message_rail_mark.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_support.dart';
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_plugin_glyph.dart';
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_support.dart';
 import 'package:chatgpt/src/presentation/code_review/code_review_panel.dart';
@@ -977,6 +978,80 @@ void main() {
       tester.getTopRight(workbenchTopBar).dx,
       lessThanOrEqualTo(tester.getTopLeft(environmentPane).dx),
     );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('left aligns the workbench top bar with its column', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1980, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final topBar = find.byKey(const Key('workbench-column-topbar'));
+    final resizeHandle = find.byKey(const Key('sidebar-resize-handle'));
+    expect(
+      tester.getTopLeft(topBar).dx,
+      closeTo(tester.getTopRight(resizeHandle).dx, 0.1),
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('centers the wider timeline and composer on one rail', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.pump();
+
+    final viewport = find.byKey(const Key('conversation-viewport-stack'));
+    final timeline = find.descendant(
+      of: viewport,
+      matching: find.byType(ListView),
+    );
+    final composerSurface = find.byKey(const Key('composer-surface-stack'));
+    final timelineWidget = tester.widget<ListView>(timeline);
+    final timelinePadding = timelineWidget.padding! as EdgeInsets;
+
+    expect(timelinePadding.left, conversationContentHorizontalInset);
+    expect(timelinePadding.right, conversationContentHorizontalInset);
+    expect(
+      tester.getCenter(composerSurface).dx,
+      closeTo(tester.getCenter(timeline).dx, 0.1),
+    );
+    expect(
+      tester.getSize(composerSurface).width,
+      closeTo(
+        tester.getSize(timeline).width -
+            (conversationContentHorizontalInset * 2),
+        0.1,
+      ),
+    );
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('uses the widened shared conversation rail', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.pump();
+
+    final viewport = find.byKey(const Key('conversation-viewport-stack'));
+    expect(tester.getSize(viewport).width, closeTo(790, 0.1));
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -13210,6 +13285,60 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('keeps diff canvas valid through extremely narrow widths', (
+    tester,
+  ) async {
+    final horizontalController = ScrollController();
+    addTearDown(horizontalController.dispose);
+
+    for (final width in <double>[15.2, 44, 88]) {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              width: width,
+              height: 80,
+              child: CustomScrollView(
+                primary: false,
+                slivers: [
+                  SliverPersistentHeader(
+                    pinned: true,
+                    delegate: ReviewFileHeaderDelegate(
+                      key: GlobalKey(),
+                      file: const ReviewFile(
+                        path: 'lib/a_very_long_file_name.dart',
+                        kind: 'modified',
+                        diff: '+a long diff line',
+                        truncated: true,
+                      ),
+                    ),
+                  ),
+                  SliverToBoxAdapter(
+                    child: ReviewDiffRow(
+                      row: const ReviewRow(
+                        ReviewRowKind.addition,
+                        '+a long diff line',
+                        oldLine: 1,
+                        newLine: 2,
+                      ),
+                      horizontalController: horizontalController,
+                      contentWidth: 520,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(tester.takeException(), isNull, reason: 'width: $width');
+    }
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('keeps Git review actions accessible in a narrow toolbar', (
     tester,
   ) async {
@@ -13257,6 +13386,58 @@ void main() {
 
     expect(find.text('提交或推送'), findsOneWidget);
     expect(find.text('创建拉取请求'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('keeps Git dialog fields alive through their exit animations', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(600, 520));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..gitProjectStatus = const GitProjectStatus(
+        isRepository: true,
+        branch: 'main',
+      );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: CodeReviewPanel(
+            controller: controller,
+            source: CodeReviewSource.gitWorkspace,
+            compact: true,
+            onSourceChanged: (_) {},
+            onCollapse: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('code-review-more-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('提交或推送'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'test commit');
+    await tester.tap(find.text('取消'));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.byKey(const Key('code-review-more-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('创建拉取请求'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'Test pull request');
+    await tester.tap(find.text('取消'));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
     await tester.pumpWidget(const SizedBox());
   });
 

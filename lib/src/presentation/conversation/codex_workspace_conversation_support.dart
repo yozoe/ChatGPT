@@ -10,6 +10,9 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_diff_preview_line.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_local_image_preview.dart';
 
+/// Keeps the scrolling transcript and floating Composer on one centered rail.
+const double conversationContentHorizontalInset = 24;
+
 /// Lets the timeline occupy the full conversation viewport while the composer
 /// floats above it. The measured bottom inset keeps the final message fully
 /// reachable even though intermediate content can pass behind the composer.

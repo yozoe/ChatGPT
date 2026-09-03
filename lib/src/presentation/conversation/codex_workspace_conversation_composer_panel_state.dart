@@ -1027,7 +1027,12 @@ class ComposerPanelState extends State<ComposerPanel> {
     final palette = YeknomPalette.of(context);
     final scheme = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 8, 24, 18),
+      padding: const EdgeInsets.fromLTRB(
+        conversationContentHorizontalInset,
+        8,
+        conversationContentHorizontalInset,
+        18,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -1091,6 +1096,7 @@ class ComposerPanelState extends State<ComposerPanel> {
             const SizedBox(height: 8),
           ],
           Stack(
+            key: const Key('composer-surface-stack'),
             clipBehavior: Clip.none,
             children: [
               DropTarget(

@@ -49,7 +49,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   static const _minimumAuxiliaryWidth = 360.0;
   // The conversation keeps a readable canvas while leaving enough room for
   // its desktop toolbar when the review and Inspector columns are open.
-  static const _conversationColumnWidth = 720.0;
+  // Keep the transcript and Composer on a wider shared reading rail.
+  static const _conversationColumnWidth = 790.0;
   static const _auxiliaryPaneAllowance = 24.0;
   double _sidebarWidth = CodexThemePreferences.defaultSidebarWidth;
   double _inspectorWidth = 240;
@@ -2636,52 +2637,56 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                       Expanded(
                                         child: Column(
                                           children: [
-                                            SizedBox(
-                                              width:
-                                                  !compact &&
-                                                      !auxiliaryFullHeight
-                                                  ? (workbenchWidth -
-                                                            (inspectorWidth *
-                                                                2) -
-                                                            8)
-                                                        .clamp(
-                                                          0.0,
-                                                          double.infinity,
-                                                        )
-                                                        .toDouble()
-                                                  : null,
-                                              child: TopBar(
-                                                key: const Key(
-                                                  'workbench-column-topbar',
+                                            Align(
+                                              alignment: Alignment.centerLeft,
+                                              child: SizedBox(
+                                                width:
+                                                    !compact &&
+                                                        !auxiliaryFullHeight
+                                                    ? (workbenchWidth -
+                                                              (inspectorWidth *
+                                                                  2) -
+                                                              8)
+                                                          .clamp(
+                                                            0.0,
+                                                            double.infinity,
+                                                          )
+                                                          .toDouble()
+                                                    : null,
+                                                child: TopBar(
+                                                  key: const Key(
+                                                    'workbench-column-topbar',
+                                                  ),
+                                                  controller: controller,
+                                                  themeMode: widget.themeMode,
+                                                  themePreset:
+                                                      widget.themePreset,
+                                                  onThemeModeChanged:
+                                                      widget.onThemeModeChanged,
+                                                  onThemePresetChanged: widget
+                                                      .onThemePresetChanged,
+                                                  onChooseWorkspace:
+                                                      _showWorkspaceDirectories,
+                                                  onAccount: _showAccount,
+                                                  onCodexConfiguration:
+                                                      _showCodexConfiguration,
+                                                  onPlugins: _showPlugins,
+                                                  showIdentity: false,
+                                                  showControls: true,
+                                                  showTaskContext: true,
+                                                  onShowFileChanges: () =>
+                                                      _showCodeReview(
+                                                        CodeReviewSource
+                                                            .latestTurn,
+                                                      ),
+                                                  sidePanelExpanded:
+                                                      sidePanelExpanded,
+                                                  onToggleSidePanel:
+                                                      showInlineInspector ||
+                                                          sidePanelOpen
+                                                      ? null
+                                                      : _toggleSidePanel,
                                                 ),
-                                                controller: controller,
-                                                themeMode: widget.themeMode,
-                                                themePreset: widget.themePreset,
-                                                onThemeModeChanged:
-                                                    widget.onThemeModeChanged,
-                                                onThemePresetChanged:
-                                                    widget.onThemePresetChanged,
-                                                onChooseWorkspace:
-                                                    _showWorkspaceDirectories,
-                                                onAccount: _showAccount,
-                                                onCodexConfiguration:
-                                                    _showCodexConfiguration,
-                                                onPlugins: _showPlugins,
-                                                showIdentity: false,
-                                                showControls: true,
-                                                showTaskContext: true,
-                                                onShowFileChanges: () =>
-                                                    _showCodeReview(
-                                                      CodeReviewSource
-                                                          .latestTurn,
-                                                    ),
-                                                sidePanelExpanded:
-                                                    sidePanelExpanded,
-                                                onToggleSidePanel:
-                                                    showInlineInspector ||
-                                                        sidePanelOpen
-                                                    ? null
-                                                    : _toggleSidePanel,
                                               ),
                                             ),
                                             const Divider(height: 1),

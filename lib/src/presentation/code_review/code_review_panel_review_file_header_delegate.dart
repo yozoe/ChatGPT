@@ -41,43 +41,77 @@ class ReviewFileHeaderDelegate extends SliverPersistentHeaderDelegate {
           bottom: BorderSide(color: palette.border),
         ),
       ),
-      child: Row(
-        children: [
-          Icon(reviewFileIcon(file.kind), size: 16, color: palette.muted),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Tooltip(
-              message: file.path,
-              child: Text(
-                file.path,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          if (constraints.maxWidth <= 0) return const SizedBox.shrink();
+          final showLeading = constraints.maxWidth >= 48;
+          final showStats = constraints.maxWidth >= 112;
+          final showTruncation = file.truncated && constraints.maxWidth >= 148;
+          final trailingMaximum = math.min(
+            80.0,
+            constraints.maxWidth -
+                (showLeading ? 24 : 0) -
+                (showTruncation ? 23 : 0) -
+                24,
+          );
+          return Row(
+            children: [
+              if (showLeading) ...[
+                Icon(reviewFileIcon(file.kind), size: 16, color: palette.muted),
+                const SizedBox(width: 8),
+              ],
+              Expanded(
+                child: Tooltip(
+                  message: file.path,
+                  child: Text(
+                    file.path,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               ),
-            ),
-          ),
-          if (file.truncated)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: Icon(
-                Icons.warning_amber_rounded,
-                size: 15,
-                color: palette.warning,
-              ),
-            ),
-          Text(
-            file.diff.trim().isEmpty ? '+?' : '+${stats.additions}',
-            style: TextStyle(color: palette.ack, fontSize: 11),
-          ),
-          const SizedBox(width: 6),
-          Text(
-            file.diff.trim().isEmpty ? '-?' : '-${stats.deletions}',
-            style: TextStyle(color: palette.fault, fontSize: 11),
-          ),
-        ],
+              if (showTruncation)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Icon(
+                    Icons.warning_amber_rounded,
+                    size: 15,
+                    color: palette.warning,
+                  ),
+                ),
+              if (showStats)
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: trailingMaximum),
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerRight,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          file.diff.trim().isEmpty
+                              ? '+?'
+                              : '+${stats.additions}',
+                          style: TextStyle(color: palette.ack, fontSize: 11),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          file.diff.trim().isEmpty
+                              ? '-?'
+                              : '-${stats.deletions}',
+                          style: TextStyle(color: palette.fault, fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
       ),
     );
   }

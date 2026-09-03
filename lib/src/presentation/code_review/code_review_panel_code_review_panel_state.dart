@@ -356,15 +356,15 @@ class CodeReviewPanelState extends State<CodeReviewPanel> {
   }
 
   Future<void> _commitOrPush() async {
-    final message = TextEditingController();
+    var message = '';
     final action = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('提交或推送'),
         content: TextField(
-          controller: message,
           autofocus: true,
           maxLength: 240,
+          onChanged: (value) => message = value,
           decoration: const InputDecoration(labelText: '提交消息'),
         ),
         actions: [
@@ -383,8 +383,7 @@ class CodeReviewPanelState extends State<CodeReviewPanel> {
         ],
       ),
     );
-    final text = message.text.trim();
-    message.dispose();
+    final text = message.trim();
     if (action == null || text.isEmpty) return;
     final committed = await widget.controller.commitGitChanges(text);
     if (!committed) {
@@ -400,15 +399,15 @@ class CodeReviewPanelState extends State<CodeReviewPanel> {
   }
 
   Future<void> _createPullRequest() async {
-    final title = TextEditingController();
+    var title = '';
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('创建拉取请求'),
         content: TextField(
-          controller: title,
           autofocus: true,
           maxLength: 240,
+          onChanged: (value) => title = value,
           decoration: const InputDecoration(labelText: '拉取请求标题'),
         ),
         actions: [
@@ -423,8 +422,7 @@ class CodeReviewPanelState extends State<CodeReviewPanel> {
         ],
       ),
     );
-    final value = title.text.trim();
-    title.dispose();
+    final value = title.trim();
     if (confirmed == true && value.isNotEmpty) {
       final created = await widget.controller.createGitPullRequest(value);
       if (!created) _showGitOperationError('无法创建拉取请求。');
@@ -441,10 +439,6 @@ class CodeReviewPanelState extends State<CodeReviewPanel> {
   }
 
   void _toggleNavigation() {
-    final renderObject = context.findRenderObject();
-    final panelWidth = renderObject is RenderBox && renderObject.hasSize
-        ? renderObject.size.width
-        : 0.0;
     setState(() {
       if (!widget.compact) {
         _navigationVisible = !_navigationVisible;
