@@ -2837,7 +2837,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                                             right: 0,
                                                             child: Offstage(
                                                               offstage:
-                                                                  sidePanelExpanded,
+                                                                  !_sidePanelCollapsed,
                                                               child: Row(
                                                                 children: [
                                                                   PaneResizeHandle(
