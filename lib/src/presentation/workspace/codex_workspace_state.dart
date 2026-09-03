@@ -316,7 +316,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       _subagentTitles[threadId] = title;
       _destination = WorkspaceDestination.conversation;
       _activeSidePanelTab = 'subagent:$threadId';
-      _sidePanelCollapsed = false;
     });
     unawaited(
       _controller.loadSubagentThread(
@@ -2058,7 +2057,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       _reviewSource = source;
       _reviewOpen = true;
       _activeSidePanelTab = 'review';
-      _sidePanelCollapsed = false;
     });
     if (source == CodeReviewSource.latestTurn) {
       await _controller.ensureFileChangeDiffs();
@@ -2208,7 +2206,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       }
       _selectedSubagentThreadId ??= agents.keys.first;
       _activeSidePanelTab = 'subagent:$_selectedSubagentThreadId';
-      _sidePanelCollapsed = false;
     });
     for (final entry in agents.entries) {
       unawaited(
