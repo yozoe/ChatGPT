@@ -3046,11 +3046,11 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                           onPressed: _toggleSidePanel,
                           style: IconButton.styleFrom(
                             backgroundColor: palette.selected,
-                            minimumSize: const Size.square(30),
-                            maximumSize: const Size.square(30),
+                            minimumSize: const Size.square(40),
+                            maximumSize: const Size.square(40),
                             padding: EdgeInsets.zero,
                             shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(9),
+                              borderRadius: BorderRadius.circular(10),
                             ),
                           ),
                           icon: Icon(

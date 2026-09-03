@@ -609,135 +609,147 @@ class CodeReviewPanelState extends State<CodeReviewPanel> {
       child: LayoutBuilder(
         builder: (context, constraints) {
           final compactToolbar = constraints.maxWidth < 620;
+          // During the workspace expansion animation the panel can briefly
+          // become narrower than the fixed-size action buttons. Keep that
+          // intermediate state usable by allowing the toolbar to scroll.
+          final narrowToolbar = constraints.maxWidth < 340;
           final hideStats = constraints.maxWidth < 340;
           final hideFileCount = constraints.maxWidth < 430;
           const iconConstraints = BoxConstraints.tightFor(
             width: 36,
             height: 36,
           );
-          return Padding(
-            padding: EdgeInsets.symmetric(horizontal: compactToolbar ? 6 : 10),
-            child: Row(
-              children: [
-                if (!compactToolbar) ...[
-                  Flexible(
-                    child: Text(
-                      repository,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+          final toolbar = Row(
+            mainAxisSize: narrowToolbar ? MainAxisSize.min : MainAxisSize.max,
+            children: [
+              if (!compactToolbar) ...[
+                Flexible(
+                  child: Text(
+                    repository,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: palette.trace, fontSize: 12),
+                  ),
+                ),
+                const SizedBox(width: 12),
+              ],
+              PopupMenuButton<CodeReviewSource>(
+                key: const Key('code-review-source-menu'),
+                tooltip: '变更来源',
+                initialValue: widget.source,
+                onSelected: _selectSource,
+                itemBuilder: (context) => [
+                  for (final source in CodeReviewSource.values)
+                    PopupMenuItem(value: source, child: Text(source.label)),
+                ],
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      widget.source.label,
                       style: TextStyle(color: palette.trace, fontSize: 12),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                ],
-                PopupMenuButton<CodeReviewSource>(
-                  key: const Key('code-review-source-menu'),
-                  tooltip: '变更来源',
-                  initialValue: widget.source,
-                  onSelected: _selectSource,
-                  itemBuilder: (context) => [
-                    for (final source in CodeReviewSource.values)
-                      PopupMenuItem(value: source, child: Text(source.label)),
+                    const SizedBox(width: 3),
+                    Icon(Icons.expand_more, size: 16, color: palette.muted),
                   ],
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        widget.source.label,
-                        style: TextStyle(color: palette.trace, fontSize: 12),
-                      ),
-                      const SizedBox(width: 3),
-                      Icon(Icons.expand_more, size: 16, color: palette.muted),
-                    ],
-                  ),
                 ),
-                if (!hideStats) ...[
-                  SizedBox(width: compactToolbar ? 8 : 12),
-                  Text(
-                    unknown ? '+?' : '+${stats.additions}',
-                    key: const Key('code-review-additions'),
-                    style: TextStyle(color: palette.ack, fontSize: 12),
-                  ),
-                  SizedBox(width: compactToolbar ? 5 : 7),
-                  Text(
-                    unknown ? '-?' : '-${stats.deletions}',
-                    key: const Key('code-review-deletions'),
-                    style: TextStyle(color: palette.fault, fontSize: 12),
-                  ),
-                ],
-                if (!hideFileCount) ...[
-                  const SizedBox(width: 10),
-                  Text(
-                    '$fileCount 个文件',
-                    key: const Key('code-review-file-count'),
-                    style: TextStyle(color: palette.muted, fontSize: 11),
-                  ),
-                ],
-                const Spacer(),
-                if (widget.source == CodeReviewSource.gitWorkspace &&
-                    !compactToolbar)
-                  IconButton(
-                    key: const Key('code-review-commit'),
-                    tooltip: '提交或推送',
-                    padding: EdgeInsets.zero,
-                    constraints: iconConstraints,
-                    onPressed: widget.controller.gitOperationRunning
-                        ? null
-                        : _commitOrPush,
-                    icon: const Icon(Icons.upload_outlined, size: 17),
-                  ),
-                if (widget.source == CodeReviewSource.gitWorkspace)
-                  SizedBox(
-                    width: 36,
-                    height: 36,
-                    child: PopupMenuButton<String>(
-                      key: const Key('code-review-more-menu'),
-                      tooltip: '更多 Git 操作',
-                      padding: EdgeInsets.zero,
-                      enabled: !widget.controller.gitOperationRunning,
-                      onSelected: (value) {
-                        if (value == 'commit') {
-                          unawaited(_commitOrPush());
-                        } else if (value == 'pull-request') {
-                          unawaited(_createPullRequest());
-                        }
-                      },
-                      itemBuilder: (context) => [
-                        if (compactToolbar)
-                          const PopupMenuItem(
-                            value: 'commit',
-                            child: Text('提交或推送'),
-                          ),
-                        const PopupMenuItem(
-                          value: 'pull-request',
-                          child: Text('创建拉取请求'),
-                        ),
-                      ],
-                      icon: const Icon(Icons.more_horiz, size: 17),
-                    ),
-                  ),
-                IconButton(
-                  key: const Key('code-review-refresh'),
-                  tooltip: '刷新审查',
-                  padding: EdgeInsets.zero,
-                  constraints: iconConstraints,
-                  onPressed:
-                      widget.controller.gitReviewLoading ||
-                          widget.controller.gitOperationRunning
-                      ? null
-                      : _refresh,
-                  icon: const Icon(Icons.refresh, size: 17),
+              ),
+              if (!hideStats) ...[
+                SizedBox(width: compactToolbar ? 8 : 12),
+                Text(
+                  unknown ? '+?' : '+${stats.additions}',
+                  key: const Key('code-review-additions'),
+                  style: TextStyle(color: palette.ack, fontSize: 12),
                 ),
-                IconButton(
-                  key: const Key('code-review-navigation-toggle'),
-                  tooltip: '文件导航',
-                  padding: EdgeInsets.zero,
-                  constraints: iconConstraints,
-                  onPressed: _toggleNavigation,
-                  icon: const Icon(Icons.account_tree_outlined, size: 17),
+                SizedBox(width: compactToolbar ? 5 : 7),
+                Text(
+                  unknown ? '-?' : '-${stats.deletions}',
+                  key: const Key('code-review-deletions'),
+                  style: TextStyle(color: palette.fault, fontSize: 12),
                 ),
               ],
-            ),
+              if (!hideFileCount) ...[
+                const SizedBox(width: 10),
+                Text(
+                  '$fileCount 个文件',
+                  key: const Key('code-review-file-count'),
+                  style: TextStyle(color: palette.muted, fontSize: 11),
+                ),
+              ],
+              if (narrowToolbar) const SizedBox(width: 8) else const Spacer(),
+              if (widget.source == CodeReviewSource.gitWorkspace &&
+                  !compactToolbar)
+                IconButton(
+                  key: const Key('code-review-commit'),
+                  tooltip: '提交或推送',
+                  padding: EdgeInsets.zero,
+                  constraints: iconConstraints,
+                  onPressed: widget.controller.gitOperationRunning
+                      ? null
+                      : _commitOrPush,
+                  icon: const Icon(Icons.upload_outlined, size: 17),
+                ),
+              if (widget.source == CodeReviewSource.gitWorkspace)
+                SizedBox(
+                  width: 36,
+                  height: 36,
+                  child: PopupMenuButton<String>(
+                    key: const Key('code-review-more-menu'),
+                    tooltip: '更多 Git 操作',
+                    padding: EdgeInsets.zero,
+                    enabled: !widget.controller.gitOperationRunning,
+                    onSelected: (value) {
+                      if (value == 'commit') {
+                        unawaited(_commitOrPush());
+                      } else if (value == 'pull-request') {
+                        unawaited(_createPullRequest());
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      if (compactToolbar)
+                        const PopupMenuItem(
+                          value: 'commit',
+                          child: Text('提交或推送'),
+                        ),
+                      const PopupMenuItem(
+                        value: 'pull-request',
+                        child: Text('创建拉取请求'),
+                      ),
+                    ],
+                    icon: const Icon(Icons.more_horiz, size: 17),
+                  ),
+                ),
+              IconButton(
+                key: const Key('code-review-refresh'),
+                tooltip: '刷新审查',
+                padding: EdgeInsets.zero,
+                constraints: iconConstraints,
+                onPressed:
+                    widget.controller.gitReviewLoading ||
+                        widget.controller.gitOperationRunning
+                    ? null
+                    : _refresh,
+                icon: const Icon(Icons.refresh, size: 17),
+              ),
+              IconButton(
+                key: const Key('code-review-navigation-toggle'),
+                tooltip: '文件导航',
+                padding: EdgeInsets.zero,
+                constraints: iconConstraints,
+                onPressed: _toggleNavigation,
+                icon: const Icon(Icons.account_tree_outlined, size: 17),
+              ),
+            ],
+          );
+          return Padding(
+            padding: EdgeInsets.symmetric(horizontal: compactToolbar ? 6 : 10),
+            child: narrowToolbar
+                ? SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    physics: const ClampingScrollPhysics(),
+                    child: toolbar,
+                  )
+                : toolbar,
           );
         },
       ),

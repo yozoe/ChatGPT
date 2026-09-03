@@ -42,29 +42,40 @@ class LiveThinkingRowState extends State<LiveThinkingRow>
     return Semantics(
       key: const Key('live-thinking-row'),
       liveRegion: true,
-      label: '正在思考',
+      label: widget.label,
       child: Center(
-        child: ExcludeSemantics(
-          child: DecoratedBox(
-            key: const Key('live-thinking-loader'),
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: palette.module.withValues(alpha: 0.72),
-              border: Border.all(color: palette.controlBorder),
-            ),
-            child: SizedBox.square(
-              dimension: 32,
-              child: AnimatedBuilder(
-                animation: _animationController,
-                builder: (context, child) => Center(
-                  child: ThinkingDots(
-                    progress: _reduceMotion ? null : _animationController.value,
-                    color: palette.muted,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ExcludeSemantics(
+              child: DecoratedBox(
+                key: const Key('live-thinking-loader'),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: palette.module.withValues(alpha: 0.72),
+                  border: Border.all(color: palette.controlBorder),
+                ),
+                child: SizedBox.square(
+                  dimension: 32,
+                  child: AnimatedBuilder(
+                    animation: _animationController,
+                    builder: (context, child) => Center(
+                      child: ThinkingDots(
+                        progress: _reduceMotion
+                            ? null
+                            : _animationController.value,
+                        color: palette.muted,
+                      ),
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
+            if (widget.label != '正在思考') ...[
+              const SizedBox(width: 10),
+              Text(widget.label, style: Theme.of(context).textTheme.bodyMedium),
+            ],
+          ],
         ),
       ),
     );

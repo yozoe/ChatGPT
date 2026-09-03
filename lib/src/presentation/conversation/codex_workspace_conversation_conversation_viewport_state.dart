@@ -81,7 +81,6 @@ class ConversationViewportState extends State<ConversationViewport> {
 
   @override
   Widget build(BuildContext context) {
-    final palette = YeknomPalette.of(context);
     final plan = widget.controller.status == RuntimeStatus.running
         ? widget.controller.activeTaskPlan
         : null;
@@ -91,6 +90,15 @@ class ConversationViewportState extends State<ConversationViewport> {
         widget.controller.status == RuntimeStatus.running &&
         activePage?.isThinking == true &&
         activePage?.activeActivity == null;
+    final activeTurnStartedAt = activePage?.activeTurnStartedAt;
+    final hasRecentCommand = activePage != null && activeTurnStartedAt != null
+        ? activePage.entries.any(
+            (entry) =>
+                entry.kind == TimelineKind.command &&
+                !entry.createdAt.isBefore(activeTurnStartedAt),
+          )
+        : false;
+    final thinkingLabel = hasRecentCommand ? '正在整理命令结果' : '正在思考';
     final activePageIndex = pages.indexWhere(
       (page) => page.key == widget.activeTimelinePageKey,
     );
@@ -205,7 +213,9 @@ class ConversationViewportState extends State<ConversationViewport> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         if (showFloatingThinking) ...[
-                          const IgnorePointer(child: LiveThinkingRow()),
+                          IgnorePointer(
+                            child: LiveThinkingRow(label: thinkingLabel),
+                          ),
                           const SizedBox(height: 12),
                         ],
                         Flexible(child: TaskPlanPanel(plan: plan)),
@@ -219,7 +229,9 @@ class ConversationViewportState extends State<ConversationViewport> {
                 left: 24,
                 right: 24,
                 bottom: _bottomOverlayHeight + 20,
-                child: const IgnorePointer(child: LiveThinkingRow()),
+                child: IgnorePointer(
+                  child: LiveThinkingRow(label: thinkingLabel),
+                ),
               ),
             if (widget.showScrollToBottom && !widget.threadHistoryLoading)
               Positioned(

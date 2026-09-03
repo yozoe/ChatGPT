@@ -9,7 +9,9 @@ import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_suppo
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_live_thinking_row_state.dart';
 
 class LiveThinkingRow extends StatefulWidget {
-  const LiveThinkingRow();
+  const LiveThinkingRow({this.label = '正在思考'});
+
+  final String label;
 
   @override
   State<LiveThinkingRow> createState() => LiveThinkingRowState();

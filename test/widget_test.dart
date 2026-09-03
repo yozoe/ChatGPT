@@ -31,6 +31,7 @@ import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_p
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_support.dart';
 import 'package:chatgpt/src/presentation/code_review/code_review_panel.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_timeline_activity_list.dart';
+import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_live_thinking_row.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_subagent_avatar.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/services/agent_markdown_link.dart';
@@ -269,6 +270,7 @@ void main() {
     final panelToggle = tester.getRect(
       find.byKey(const Key('side-panel-collapse')),
     );
+    expect(panelToggle.size, const Size.square(40));
     expect(1280 - panelToggle.right, closeTo(16, 0.1));
     expect(workbenchTopBar.right, lessThanOrEqualTo(panelToggle.left));
     expect(
@@ -315,6 +317,10 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('code-review-panel')), findsNothing);
     expect(find.byKey(const Key('side-panel-expand')), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const Key('side-panel-expand'))),
+      const Size.square(40),
+    );
     final collapsedConversation = tester.getRect(
       find.byKey(const Key('conversation-viewport-stack')),
     );
@@ -6873,6 +6879,15 @@ void main() {
       semantics.dispose();
     },
   );
+
+  testWidgets('labels post-command waiting feedback', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(home: const LiveThinkingRow(label: '正在整理命令结果')),
+    );
+
+    expect(find.text('正在整理命令结果'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('animates the centered thinking dots as a wave', (tester) async {
     final controller = CodexController(server: CodexAppServer())
