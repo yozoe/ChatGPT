@@ -2835,42 +2835,45 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                                           Positioned(
                                                             top: 0,
                                                             right: 0,
-                                                            child: Row(
-                                                              children: [
-                                                                PaneResizeHandle(
-                                                                  key: const Key(
-                                                                    'inspector-resize-handle',
+                                                            child: Offstage(
+                                                              offstage:
+                                                                  sidePanelExpanded,
+                                                              child: Row(
+                                                                children: [
+                                                                  PaneResizeHandle(
+                                                                    key: const Key(
+                                                                      'inspector-resize-handle',
+                                                                    ),
+                                                                    onDragDelta: (delta) => setState(() {
+                                                                      _inspectorWidth =
+                                                                          (_inspectorWidth -
+                                                                                  delta)
+                                                                              .clamp(
+                                                                                _minimumInspectorWidth,
+                                                                                inspectorMaximum,
+                                                                              )
+                                                                              .toDouble();
+                                                                    }),
                                                                   ),
-                                                                  onDragDelta: (delta) => setState(() {
-                                                                    _inspectorWidth =
-                                                                        (_inspectorWidth -
-                                                                                delta)
-                                                                            .clamp(
-                                                                              _minimumInspectorWidth,
-                                                                              inspectorMaximum,
-                                                                            )
-                                                                            .toDouble();
-                                                                  }),
-                                                                ),
-                                                                SizedBox(
-                                                                  width:
-                                                                      inspectorWidth,
-                                                                  height: 500,
-                                                                  child: Inspector(
+                                                                  SizedBox(
                                                                     width:
                                                                         inspectorWidth,
-                                                                    controller:
-                                                                        controller,
-                                                                    onShowGitProject: () =>
-                                                                        _showCodeReview(
-                                                                          CodeReviewSource
-                                                                              .gitWorkspace,
-                                                                        ),
-                                                                    onShowAgents:
-                                                                        _showAgents,
+                                                                    height: 500,
+                                                                    child: Inspector(
+                                                                      width:
+                                                                          inspectorWidth,
+                                                                      controller:
+                                                                          controller,
+                                                                      onShowGitProject: () => _showCodeReview(
+                                                                        CodeReviewSource
+                                                                            .gitWorkspace,
+                                                                      ),
+                                                                      onShowAgents:
+                                                                          _showAgents,
+                                                                    ),
                                                                   ),
-                                                                ),
-                                                              ],
+                                                                ],
+                                                              ),
                                                             ),
                                                           ),
                                                       ],
