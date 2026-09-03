@@ -216,6 +216,11 @@ class CodexGitOperations {
     return _service.listReviewBaseBranches(path);
   }
 
+  Future<List<String>> listLocalBranches(String expectedWorkspace) async {
+    if (_workspace() != expectedWorkspace) return const [];
+    return _service.listLocalBranches(expectedWorkspace);
+  }
+
   Future<bool> run(Future<void> Function() operation) async {
     if (_workspace() == null || _isOperationRunning()) return false;
     _setOperationRunning(true);

@@ -64,7 +64,10 @@ class TopBar extends StatelessWidget {
     return SizedBox(
       height: 62,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16),
+        padding: EdgeInsets.only(
+          left: showIdentity ? 72 : 16,
+          right: showIdentity ? 8 : 16,
+        ),
         child: LayoutBuilder(
           builder: (context, constraints) {
             final compact = constraints.maxWidth < 1180;

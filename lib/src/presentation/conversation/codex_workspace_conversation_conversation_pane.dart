@@ -85,6 +85,11 @@ class ConversationPane extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
+    final showElicitation = controller.shouldShowPendingElicitation;
+    final pendingElicitation = showElicitation
+        ? controller.pendingElicitation
+        : null;
+    final pendingApproval = showElicitation ? null : controller.pendingApproval;
     return Column(
       children: [
         if (controller.lastError case final error?
@@ -99,14 +104,6 @@ class ConversationPane extends StatelessWidget {
               borderRadius: BorderRadius.circular(10),
             ),
             child: Text(error, style: TextStyle(color: palette.fault)),
-          ),
-        if (controller.pendingElicitation case final elicitation?)
-          ElicitationPanel(
-            key: ValueKey(elicitation.requestId),
-            elicitation: elicitation,
-            taskLabel: controller.pendingElicitationTaskLabel,
-            enabled: controller.canRespondToElicitation,
-            onRespond: controller.respondToElicitation,
           ),
         Expanded(
           child: ConversationViewport(
@@ -133,19 +130,31 @@ class ConversationPane extends StatelessWidget {
             bottomOverlay: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (controller.pendingApproval case final approval?)
-                  ApprovalPanel(
-                    approval: approval,
-                    taskLabel: controller.pendingApprovalTaskLabel,
-                    enabled: controller.canRespondToApproval,
-                    onAccept: () =>
-                        controller.respondToApproval(accepted: true),
-                    onAllowSimilar: () => controller.respondToApproval(
-                      accepted: true,
-                      allowSimilar: true,
+                if (pendingElicitation case final elicitation?)
+                  Flexible(
+                    child: ElicitationPanel(
+                      key: ValueKey(elicitation.requestId),
+                      elicitation: elicitation,
+                      taskLabel: controller.pendingElicitationTaskLabel,
+                      enabled: controller.canRespondToElicitation,
+                      onRespond: controller.respondToElicitation,
                     ),
-                    onDecline: () =>
-                        controller.respondToApproval(accepted: false),
+                  )
+                else if (pendingApproval case final approval?)
+                  Flexible(
+                    child: ApprovalPanel(
+                      approval: approval,
+                      taskLabel: controller.pendingApprovalTaskLabel,
+                      enabled: controller.canRespondToApproval,
+                      onAccept: () =>
+                          controller.respondToApproval(accepted: true),
+                      onAllowSimilar: () => controller.respondToApproval(
+                        accepted: true,
+                        allowSimilar: true,
+                      ),
+                      onDecline: () =>
+                          controller.respondToApproval(accepted: false),
+                    ),
                   ),
                 if (controller.hasThreadWriterConflict)
                   ThreadOpenElsewhereNotice(

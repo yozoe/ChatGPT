@@ -1546,6 +1546,7 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
               border: Border(right: BorderSide(color: palette.border)),
             ),
             child: SafeArea(
+              top: false,
               child: Column(
                 children: [
                   Padding(

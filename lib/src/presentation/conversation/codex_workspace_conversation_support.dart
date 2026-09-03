@@ -222,4 +222,53 @@ Future<void> saveLocalImageCopy(BuildContext context, String path) async {
 
 String fileChangeCountLabel(int count) => count == 0 ? '暂无' : '$count 个';
 
+String workspaceRootName(String path) {
+  final normalized = path.replaceAll('\\', '/');
+  final parts = normalized.split('/').where((part) => part.isNotEmpty);
+  return parts.isEmpty ? path : parts.last;
+}
+
+List<({String root, List<CodexFileChange> changes})> groupTaskFileChanges({
+  required String? primaryRoot,
+  required List<String> additionalRoots,
+  required List<CodexFileChange> changes,
+}) {
+  final roots = <String>{?primaryRoot, ...additionalRoots}.toList();
+  if (roots.isEmpty) roots.add('当前项目');
+  final groups = {for (final root in roots) root: <CodexFileChange>[]};
+  final normalizedPrimary = primaryRoot
+      ?.replaceAll('\\', '/')
+      .replaceAll(RegExp(r'/$'), '');
+  final additional = roots.skip(1).toList(growable: false)
+    ..sort((a, b) => b.length.compareTo(a.length));
+  for (final change in changes) {
+    final path = change.path.replaceAll('\\', '/');
+    String? matchedRoot;
+    for (final root in additional) {
+      final normalizedRoot = root
+          .replaceAll('\\', '/')
+          .replaceAll(RegExp(r'/$'), '');
+      final relativeRoot =
+          normalizedPrimary != null &&
+              normalizedRoot.startsWith('$normalizedPrimary/')
+          ? normalizedRoot.substring(normalizedPrimary.length + 1)
+          : null;
+      if (path.startsWith('$normalizedRoot/') ||
+          (relativeRoot != null && path.startsWith('$relativeRoot/')) ||
+          path.startsWith('${workspaceRootName(root)}/')) {
+        matchedRoot = root;
+        break;
+      }
+    }
+    groups[matchedRoot ?? roots.first]!.add(change);
+  }
+  final populated = [
+    for (final root in roots)
+      if (groups[root]!.isNotEmpty) (root: root, changes: groups[root]!),
+  ];
+  return populated.isEmpty
+      ? [(root: roots.first, changes: const <CodexFileChange>[])]
+      : populated;
+}
+
 /// Full-screen scheduled-task hub modeled after the Codex desktop library.

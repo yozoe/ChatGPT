@@ -575,6 +575,46 @@ class CodexController extends ChangeNotifier {
       LinkedHashMap();
   final LinkedHashMap<Object, PendingElicitation> _pendingElicitations =
       LinkedHashMap();
+  final List<({Object requestId, bool elicitation})> _pendingRequestOrder = [];
+
+  void _queuePendingRequest(Object requestId, {required bool elicitation}) {
+    _pendingRequestOrder.removeWhere(
+      (request) => request.requestId == requestId,
+    );
+    _pendingRequestOrder.add((requestId: requestId, elicitation: elicitation));
+  }
+
+  void _removePendingRequest(Object? requestId) {
+    _pendingRequestOrder.removeWhere(
+      (request) => request.requestId == requestId,
+    );
+  }
+
+  void _prunePendingRequestOrder() {
+    _pendingRequestOrder.removeWhere(
+      (request) => request.elicitation
+          ? !_pendingElicitations.containsKey(request.requestId)
+          : !_pendingApprovals.containsKey(request.requestId),
+    );
+  }
+
+  /// Whether the next prompt card is an MCP elicitation. Requests belonging
+  /// to the visible task take priority; requests within the same priority are
+  /// presented in server arrival order.
+  bool get shouldShowPendingElicitation {
+    _prunePendingRequestOrder();
+    if (_pendingRequestOrder.isEmpty) return false;
+    final activeId = activeThreadId;
+    if (activeId != null) {
+      for (final request in _pendingRequestOrder) {
+        final threadId = request.elicitation
+            ? _pendingElicitations[request.requestId]?.threadId
+            : _pendingApprovals[request.requestId]?.threadId;
+        if (threadId == activeId) return request.elicitation;
+      }
+    }
+    return _pendingRequestOrder.first.elicitation;
+  }
 
   /// Prefers an approval for the task currently shown in the workbench. A
   /// background task's approval remains available rather than being replaced
@@ -1012,6 +1052,39 @@ class CodexController extends ChangeNotifier {
   /// Lists the current workspace branches available as a review baseline.
   Future<List<String>> listGitReviewBaseBranches() =>
       _gitOperations.listBaseBranches();
+
+  /// 列出当前 Git 工作区的本地分支，供环境信息弹层搜索和切换。
+  /// Lists local branches for searching and switching from the environment popover.
+  Future<List<String>> listGitBranches({required String workspace}) {
+    return _gitOperations.listLocalBranches(workspace);
+  }
+
+  /// 检出已有本地分支，并在成功后刷新 Git 摘要。
+  /// Checks out an existing local branch and refreshes the Git summary on success.
+  Future<bool> checkoutGitBranch(String branch, {required String workspace}) {
+    if (workspacePath != workspace) return Future.value(false);
+    return _gitOperations.run(
+      () => _gitProjectService.checkoutBranch(
+        workspace: workspace,
+        branch: branch,
+      ),
+    );
+  }
+
+  /// 创建并检出新的本地分支，并在成功后刷新 Git 摘要。
+  /// Creates and checks out a new local branch and refreshes the Git summary on success.
+  Future<bool> createAndCheckoutGitBranch(
+    String branch, {
+    required String workspace,
+  }) {
+    if (workspacePath != workspace) return Future.value(false);
+    return _gitOperations.run(
+      () => _gitProjectService.createAndCheckoutBranch(
+        workspace: workspace,
+        branch: branch,
+      ),
+    );
+  }
 
   /// 暂存一个文件，然后刷新当前工作区的 Git 摘要。
   /// Stages one file and then refreshes the active workspace's Git summary.
@@ -3088,6 +3161,7 @@ class CodexController extends ChangeNotifier {
       _activeThreadAttached = false;
       _pendingApprovals.clear();
       _pendingElicitations.clear();
+      _pendingRequestOrder.clear();
       approvalResponding = false;
       elicitationResponding = false;
       _clearStreamingState();
@@ -4312,6 +4386,7 @@ class CodexController extends ChangeNotifier {
         );
       }
       _pendingApprovals.remove(approval.requestId);
+      _removePendingRequest(approval.requestId);
     } catch (error) {
       lastError = _messageOf(error);
       _add(TimelineKind.error, '审批响应失败', lastError!);
@@ -4356,6 +4431,7 @@ class CodexController extends ChangeNotifier {
         );
       }
       _pendingElicitations.remove(elicitation.requestId);
+      _removePendingRequest(elicitation.requestId);
     } catch (error) {
       lastError = _messageOf(error);
       _add(TimelineKind.error, 'MCP 输入响应失败', lastError!);
@@ -4436,6 +4512,7 @@ class CodexController extends ChangeNotifier {
           );
         } else {
           _pendingApprovals[browserApproval.requestId] = browserApproval;
+          _queuePendingRequest(browserApproval.requestId, elicitation: false);
           approvalResponding = false;
           if (browserApproval.threadId == null ||
               browserApproval.threadId == activeThreadId) {
@@ -4462,6 +4539,7 @@ class CodexController extends ChangeNotifier {
           _add(TimelineKind.error, '无法显示 MCP 输入请求', '请求格式不受支持。');
         } else {
           _pendingElicitations[elicitation.requestId] = elicitation;
+          _queuePendingRequest(elicitation.requestId, elicitation: true);
           elicitationResponding = false;
           if (elicitation.threadId == null ||
               elicitation.threadId == activeThreadId) {
@@ -4492,6 +4570,7 @@ class CodexController extends ChangeNotifier {
           }
         } else {
           _pendingApprovals[approval.requestId] = approval;
+          _queuePendingRequest(approval.requestId, elicitation: false);
           approvalResponding = false;
           if (approval.threadId == null ||
               approval.threadId == activeThreadId) {
@@ -4649,6 +4728,7 @@ class CodexController extends ChangeNotifier {
         _updateThreadStatus(activeThreadId, 'systemError');
         _pendingApprovals.clear();
         _pendingElicitations.clear();
+        _pendingRequestOrder.clear();
         approvalResponding = false;
         elicitationResponding = false;
         _clearStreamingState();
@@ -4658,6 +4738,7 @@ class CodexController extends ChangeNotifier {
       case 'serverRequest/resolved':
         _pendingApprovals.remove(event.params['requestId']);
         _pendingElicitations.remove(event.params['requestId']);
+        _removePendingRequest(event.params['requestId']);
         approvalResponding = false;
         elicitationResponding = false;
       case 'skills/changed':
@@ -4710,6 +4791,7 @@ class CodexController extends ChangeNotifier {
     for (final approval in pendingBrowserApprovals) {
       _server.respond(approval.requestId, _approvalResult(approval, false));
       _pendingApprovals.remove(approval.requestId);
+      _removePendingRequest(approval.requestId);
       if (approval.threadId == null || approval.threadId == activeThreadId) {
         _add(TimelineKind.system, '已拒绝浏览器访问', '内置浏览器调用已在设置中关闭。');
       }
@@ -5440,6 +5522,7 @@ class CodexController extends ChangeNotifier {
     _pendingElicitations.removeWhere(
       (_, elicitation) => elicitation.threadId == threadId,
     );
+    _prunePendingRequestOrder();
     approvalResponding = false;
     elicitationResponding = false;
   }

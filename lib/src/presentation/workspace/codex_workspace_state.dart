@@ -2424,6 +2424,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     if (_destination == WorkspaceDestination.settings) {
       return Scaffold(
         body: SafeArea(
+          top: false,
           child: LayoutBuilder(
             builder: (context, constraints) => SettingsPage(
               controller: controller,
@@ -2444,6 +2445,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     }
     return Scaffold(
       body: SafeArea(
+        top: false,
         child: LayoutBuilder(
           builder: (context, constraints) {
             final sidebarMaximum = _sidebarMaximumFor(constraints.maxWidth);

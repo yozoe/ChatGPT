@@ -83,6 +83,46 @@ class GitProjectService {
     return branches;
   }
 
+  /// 列出可供当前工作区检出的本地分支。
+  /// Lists local branches that can be checked out in the current workspace.
+  Future<List<String>> listLocalBranches(String workspace) async {
+    final result = await _run(workspace, const [
+      'branch',
+      '--format=%(refname:short)',
+    ]);
+    if (result.exitCode != 0) throw StateError(_errorOf(result));
+    final output = result.stdout is String ? result.stdout as String : '';
+    return output
+        .split('\n')
+        .map((branch) => branch.trim())
+        .where((branch) => branch.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  /// 检出已有本地分支；未提交改动冲突时由 Git 拒绝操作。
+  /// Checks out an existing local branch, allowing Git to reject conflicting changes.
+  Future<void> checkoutBranch({
+    required String workspace,
+    required String branch,
+  }) => _runWrite(workspace, ['switch', '--', branch]);
+
+  /// 校验名称并创建、检出新的本地分支。
+  /// Validates, creates, and checks out a new local branch.
+  Future<void> createAndCheckoutBranch({
+    required String workspace,
+    required String branch,
+  }) async {
+    final name = branch.trim();
+    if (name.isEmpty) throw StateError('请输入分支名称。');
+    final validation = await _run(workspace, [
+      'check-ref-format',
+      '--branch',
+      name,
+    ]);
+    if (validation.exitCode != 0) throw StateError('分支名称无效：$name');
+    await _runWrite(workspace, ['switch', '-c', name]);
+  }
+
   /// 读取指定改动的只读 Git Diff；未跟踪文件会以 `/dev/null` 为基准生成预览。
   /// Reads a read-only Git diff for a change; untracked files are previewed against `/dev/null`.
   Future<String> readDiff({

@@ -81,92 +81,163 @@ class ElicitationPanelState extends State<ElicitationPanel> {
     }
     final palette = YeknomPalette.of(context);
     final elicitation = widget.elicitation;
-    return Container(
-      key: const Key('mcp-elicitation-panel'),
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(24, 0, 24, 12),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: palette.signalSelected,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: palette.warning),
-      ),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxHeight: 200),
-        child: SingleChildScrollView(
-          key: const Key('mcp-elicitation-scroll'),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  elicitation.title,
-                  style: TextStyle(
-                    color: palette.signal,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '来源：${elicitation.serverName}',
-                  style: TextStyle(color: palette.signal),
-                ),
-                if (widget.taskLabel case final label?) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    '来自后台任务：$label',
-                    style: TextStyle(color: palette.signal),
-                  ),
-                ],
-                const SizedBox(height: 8),
-                SelectableText(elicitation.message),
-                if (elicitation.mode == ElicitationMode.url) ...[
-                  const SizedBox(height: 10),
-                  SelectableText(
-                    elicitation.url!,
-                    style: const TextStyle(fontFamily: 'monospace'),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    '此链接不会自动打开；确认后由 MCP 服务器继续该流程。',
-                    style: TextStyle(color: palette.muted, fontSize: 12),
-                  ),
-                ] else ...[
-                  for (final field in elicitation.fields) ...[
-                    const SizedBox(height: 10),
-                    _buildField(field),
-                  ],
-                ],
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    OutlinedButton(
-                      key: const Key('mcp-elicitation-cancel'),
-                      onPressed: widget.enabled
-                          ? () => widget.onRespond(action: 'cancel')
-                          : null,
-                      child: const Text('取消'),
-                    ),
-                    OutlinedButton(
-                      key: const Key('mcp-elicitation-decline'),
-                      onPressed: widget.enabled
-                          ? () => widget.onRespond(action: 'decline')
-                          : null,
-                      child: const Text('拒绝'),
-                    ),
-                    FilledButton(
-                      key: const Key('mcp-elicitation-accept'),
-                      onPressed: widget.enabled ? _accept : null,
-                      child: Text(
-                        elicitation.mode == ElicitationMode.url ? '继续' : '提交',
-                      ),
-                    ),
-                  ],
+    final maximumCardHeight = math.min(
+      280.0,
+      math.max(160.0, MediaQuery.sizeOf(context).height * 0.34),
+    );
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): () {
+          if (widget.enabled) {
+            unawaited(widget.onRespond(action: 'decline'));
+          }
+        },
+      },
+      child: Focus(
+        autofocus: true,
+        child: Align(
+          alignment: Alignment.bottomCenter,
+          child: Container(
+            key: const Key('mcp-elicitation-panel'),
+            width: double.infinity,
+            constraints: BoxConstraints(
+              maxWidth: 600,
+              maxHeight: maximumCardHeight,
+            ),
+            margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            padding: const EdgeInsets.fromLTRB(14, 12, 10, 10),
+            decoration: BoxDecoration(
+              color: palette.raised,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: palette.controlBorder),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x55000000),
+                  blurRadius: 18,
+                  offset: Offset(0, 8),
                 ),
               ],
+            ),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.extension_outlined,
+                        size: 15,
+                        color: palette.muted,
+                      ),
+                      const SizedBox(width: 7),
+                      Text(
+                        'MCP 输入',
+                        style: TextStyle(
+                          color: palette.trace,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                  Flexible(
+                    child: SingleChildScrollView(
+                      key: const Key('mcp-elicitation-scroll'),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const SizedBox(height: 6),
+                          Text(
+                            '来源：${elicitation.serverName}',
+                            style: TextStyle(
+                              color: palette.muted,
+                              fontSize: 12,
+                            ),
+                          ),
+                          if (widget.taskLabel case final label?) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              '来自后台任务：$label',
+                              style: TextStyle(
+                                color: palette.signal,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                          const SizedBox(height: 9),
+                          SelectableText(
+                            elicitation.message,
+                            style: TextStyle(
+                              color: palette.trace,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          for (final field in elicitation.fields) ...[
+                            const SizedBox(height: 10),
+                            _buildField(field),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    alignment: WrapAlignment.end,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      TextButton(
+                        key: const Key('mcp-elicitation-cancel'),
+                        onPressed: widget.enabled
+                            ? () => widget.onRespond(action: 'cancel')
+                            : null,
+                        style: TextButton.styleFrom(
+                          foregroundColor: palette.muted,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 10,
+                          ),
+                          minimumSize: Size.zero,
+                        ),
+                        child: const Text('取消'),
+                      ),
+                      OutlinedButton(
+                        key: const Key('mcp-elicitation-decline'),
+                        onPressed: widget.enabled
+                            ? () => widget.onRespond(action: 'decline')
+                            : null,
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: palette.muted,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
+                          minimumSize: Size.zero,
+                        ),
+                        child: const Text('拒绝  Esc'),
+                      ),
+                      FilledButton(
+                        key: const Key('mcp-elicitation-accept'),
+                        onPressed: widget.enabled ? _accept : null,
+                        style: FilledButton.styleFrom(
+                          backgroundColor: palette.field,
+                          foregroundColor: palette.trace,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
+                          minimumSize: Size.zero,
+                        ),
+                        child: const Text('提交'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
         ),

@@ -29,77 +29,93 @@ class WorkspaceSidePanelTabs extends StatelessWidget {
             color: palette.module,
             border: Border(bottom: BorderSide(color: palette.border)),
           ),
-          child: Row(
-            children: [
-              Expanded(
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      for (final entry in contents.keys)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 2),
-                          child: Material(
-                            color: entry == activeTab
-                                ? palette.selected
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(8),
-                            child: InkWell(
-                              key: ValueKey('side-panel-tab-$entry'),
-                              borderRadius: BorderRadius.circular(8),
-                              onTap: () => onSelect(entry),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 8,
-                                ),
-                                child: Text(
-                                  labels[entry] ?? entry,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    color: entry == activeTab
-                                        ? palette.trace
-                                        : palette.muted,
-                                    fontSize: 12,
-                                    fontWeight: entry == activeTab
-                                        ? FontWeight.w600
-                                        : FontWeight.w500,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final collapseButton = IconButton(
+                key: const Key('side-panel-collapse'),
+                tooltip: '收起右侧工作区',
+                onPressed: onCollapse,
+                style: IconButton.styleFrom(
+                  backgroundColor: palette.selected,
+                  minimumSize: const Size.square(40),
+                  maximumSize: const Size.square(40),
+                  padding: EdgeInsets.zero,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                icon: Icon(
+                  Icons.view_sidebar_outlined,
+                  size: 16,
+                  color: palette.trace,
+                ),
+              );
+              if (constraints.maxWidth < 72) {
+                return Center(
+                  child: SizedBox(
+                    width: constraints.maxWidth.clamp(0, 40),
+                    height: 40,
+                    child: collapseButton,
+                  ),
+                );
+              }
+              return Row(
+                children: [
+                  Expanded(
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          for (final entry in contents.keys)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 2,
+                              ),
+                              child: Material(
+                                color: entry == activeTab
+                                    ? palette.selected
+                                    : Colors.transparent,
+                                borderRadius: BorderRadius.circular(8),
+                                child: InkWell(
+                                  key: ValueKey('side-panel-tab-$entry'),
+                                  borderRadius: BorderRadius.circular(8),
+                                  onTap: () => onSelect(entry),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 8,
+                                    ),
+                                    child: Text(
+                                      labels[entry] ?? entry,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color: entry == activeTab
+                                            ? palette.trace
+                                            : palette.muted,
+                                        fontSize: 12,
+                                        fontWeight: entry == activeTab
+                                            ? FontWeight.w600
+                                            : FontWeight.w500,
+                                      ),
+                                    ),
                                   ),
                                 ),
                               ),
                             ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.only(right: 16),
-                child: IconButton(
-                  key: const Key('side-panel-collapse'),
-                  tooltip: '收起右侧工作区',
-                  onPressed: onCollapse,
-                  style: IconButton.styleFrom(
-                    backgroundColor: palette.selected,
-                    minimumSize: const Size.square(40),
-                    maximumSize: const Size.square(40),
-                    padding: EdgeInsets.zero,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
+                        ],
+                      ),
                     ),
                   ),
-                  icon: Icon(
-                    Icons.view_sidebar_outlined,
-                    size: 16,
-                    color: palette.trace,
+                  Padding(
+                    padding: const EdgeInsets.only(right: 16),
+                    child: collapseButton,
                   ),
-                ),
-              ),
-            ],
+                ],
+              );
+            },
           ),
         ),
         Expanded(

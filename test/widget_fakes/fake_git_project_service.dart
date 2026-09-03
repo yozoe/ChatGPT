@@ -21,6 +21,13 @@ import 'package:chatgpt/src/services/theme_preferences_store.dart';
 class FakeGitProjectService extends GitProjectService {
   GitProjectStatus status = const GitProjectStatus(isRepository: false);
   List<String> reviewBaseBranches = const [];
+  List<String> localBranches = const [];
+  Completer<void>? localBranchesCompleter;
+  String? requestedLocalBranchesWorkspace;
+  String? checkedOutBranch;
+  String? checkedOutBranchWorkspace;
+  String? createdBranch;
+  String? createdBranchWorkspace;
   String diff = '';
   String? reversedDiff;
   List<String>? reversedExpectedPaths;
@@ -48,6 +55,41 @@ class FakeGitProjectService extends GitProjectService {
   @override
   Future<List<String>> listReviewBaseBranches(String workspace) async =>
       List.of(reviewBaseBranches);
+
+  @override
+  Future<List<String>> listLocalBranches(String workspace) async {
+    requestedLocalBranchesWorkspace = workspace;
+    await localBranchesCompleter?.future;
+    return List.of(localBranches);
+  }
+
+  @override
+  Future<void> checkoutBranch({
+    required String workspace,
+    required String branch,
+  }) async {
+    checkedOutBranch = branch;
+    checkedOutBranchWorkspace = workspace;
+    status = GitProjectStatus(
+      isRepository: true,
+      branch: branch,
+      changes: status.changes,
+    );
+  }
+
+  @override
+  Future<void> createAndCheckoutBranch({
+    required String workspace,
+    required String branch,
+  }) async {
+    createdBranch = branch;
+    createdBranchWorkspace = workspace;
+    status = GitProjectStatus(
+      isRepository: true,
+      branch: branch,
+      changes: status.changes,
+    );
+  }
 
   /// 返回预设 Diff，并记录界面请求的文件变更。
   /// Returns the preset diff and records the change requested by the interface.

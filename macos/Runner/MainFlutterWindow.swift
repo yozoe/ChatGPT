@@ -68,6 +68,15 @@ class MainFlutterWindow: NSWindow {
   }
 
   override func awakeFromNib() {
+    // Let Flutter paint behind the window controls so the workspace reaches
+    // the top edge instead of sitting below a separate AppKit title bar.
+    titleVisibility = .hidden
+    titlebarAppearsTransparent = true
+    styleMask.insert(.fullSizeContentView)
+    if #available(macOS 11.0, *) {
+      titlebarSeparatorStyle = .none
+    }
+
     let flutterViewController = FlutterViewController()
     let windowFrame = self.frame
     self.contentViewController = flutterViewController

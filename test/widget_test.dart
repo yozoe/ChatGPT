@@ -20,8 +20,10 @@ import 'package:chatgpt/src/domain/task_plan.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/domain/workspace_configuration.dart';
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_sidebar_workspace_tile.dart';
+import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_top_bar.dart';
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_thread_viewport_key.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
+import 'package:chatgpt/src/presentation/workspace/codex_workspace_side_panel_tabs.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_conversation_timeline.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_conversation_pane.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_timeline_page_data.dart';
@@ -32,6 +34,7 @@ import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_p
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_support.dart';
 import 'package:chatgpt/src/presentation/code_review/code_review_panel.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_timeline_activity_list.dart';
+import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_status_pill.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_live_thinking_row.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_subagent_avatar.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
@@ -977,6 +980,71 @@ void main() {
     expect(
       tester.getTopRight(workbenchTopBar).dx,
       lessThanOrEqualTo(tester.getTopLeft(environmentPane).dx),
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('positions project identity below the macOS window controls', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: 332,
+            child: TopBar(
+              controller: controller,
+              themeMode: ThemeMode.dark,
+              themePreset: YeknomColorPreset.workbench,
+              onThemeModeChanged: null,
+              onThemePresetChanged: null,
+              onChooseWorkspace: () {},
+              onAccount: () async {},
+              onCodexConfiguration: () async {},
+              onPlugins: () async {},
+              showIdentity: true,
+              showControls: false,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final identityRect = tester.getRect(find.text('Xedoc'));
+    final statusRect = tester.getRect(find.byType(StatusPill));
+    expect(identityRect.left, greaterThanOrEqualTo(72));
+    expect(identityRect.top, greaterThanOrEqualTo(16));
+    expect(statusRect.right, 324);
+    expect(statusRect.center.dy, closeTo(identityRect.center.dy, 1));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('keeps settings content on the transparent title-bar surface', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer());
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MediaQuery(
+          data: const MediaQueryData(
+            size: Size(900, 700),
+            padding: EdgeInsets.only(top: 24),
+          ),
+          child: CodexWorkspace(controller: controller),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('sidebar-settings-button')));
+    await tester.pumpAndSettle();
+
+    expect(tester.getTopLeft(find.byKey(const Key('settings-page'))).dy, 0);
+    expect(
+      tester.getTopLeft(find.byKey(const Key('settings-back-button'))).dy,
+      22,
     );
     await tester.pumpWidget(const SizedBox());
   });
@@ -5629,8 +5697,21 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(home: CodexWorkspace(controller: controller)),
       );
-      expect(find.byKey(const Key('mcp-elicitation-panel')), findsOneWidget);
+      final panelFinder = find.byKey(const Key('mcp-elicitation-panel'));
+      expect(panelFinder, findsOneWidget);
+      final panel = tester.widget<Container>(panelFinder);
+      final decoration = panel.decoration! as BoxDecoration;
+      expect(decoration.borderRadius, BorderRadius.circular(14));
+      expect(panel.constraints?.maxWidth, 600);
+      expect(find.text('MCP 输入'), findsOneWidget);
+      expect(find.text('拒绝  Esc'), findsOneWidget);
       expect(find.text('来自后台任务：后台 MCP 任务'), findsOneWidget);
+      expect(
+        tester.getRect(panelFinder).bottom,
+        lessThanOrEqualTo(
+          tester.getRect(find.byKey(const Key('composer-panel'))).top,
+        ),
+      );
       await tester.enterText(
         find.byKey(const ValueKey('mcp-elicitation-field-targetPath')),
         '.env.test',
@@ -5650,6 +5731,103 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets('bounds a large MCP form and preserves prompt arrival order', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(600, 520));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final writes = <JsonMap>[];
+    final controller = CodexController(
+      server: CodexAppServer(messageSink: writes.add),
+    )..status = RuntimeStatus.ready;
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/permissions/requestApproval',
+        requestId: 'queued-approval',
+        params: {'reason': '允许访问额外目录吗？'},
+      ),
+    );
+    controller.handleServerEventForTesting(
+      ServerEvent(
+        method: 'mcpServer/elicitation/request',
+        requestId: 'large-form',
+        params: {
+          'mode': 'form',
+          'message': '填写连接配置。',
+          'requestedSchema': {
+            'type': 'object',
+            'properties': {
+              for (var index = 0; index < 12; index++)
+                'field$index': {'type': 'string'},
+            },
+          },
+        },
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    expect(find.byKey(const Key('approval-panel')), findsOneWidget);
+    expect(find.byKey(const Key('mcp-elicitation-panel')), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.byKey(const Key('approval-decline')));
+    await tester.pump();
+    final elicitation = find.byKey(const Key('mcp-elicitation-panel'));
+    expect(elicitation, findsOneWidget);
+    expect(find.byKey(const Key('approval-panel')), findsNothing);
+    expect(tester.getSize(elicitation).height, lessThanOrEqualTo(177));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('prefers an active-task prompt over an earlier background form', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..activeThreadId = 'active-thread'
+      ..status = RuntimeStatus.ready;
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'mcpServer/elicitation/request',
+        requestId: 'background-form',
+        params: {
+          'threadId': 'background-thread',
+          'mode': 'form',
+          'message': '后台表单',
+          'requestedSchema': {
+            'type': 'object',
+            'properties': <String, Object>{},
+          },
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/permissions/requestApproval',
+        requestId: 'active-approval',
+        params: {'threadId': 'active-thread', 'reason': '当前任务审批'},
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(find.byKey(const Key('approval-panel')), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('approval-panel')),
+        matching: find.text('当前任务审批'),
+      ),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('mcp-elicitation-panel')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   test(
     'automatically approves supported requests in auto approval mode',
@@ -13170,19 +13348,41 @@ void main() {
   ) async {
     await tester.binding.setSurfaceSize(const Size(1280, 900));
     addTearDown(() => tester.binding.setSurfaceSize(null));
-    final controller = CodexController(server: CodexAppServer())
-      ..status = RuntimeStatus.ready;
+    final workspaceRoot = Directory.current.path;
+    final sharedRoot = '$workspaceRoot/lib';
+    final unusedRoot = '$workspaceRoot/test';
+    final runtimeStore = _FakeRuntimeConfigurationStore()
+      ..workspace = workspaceRoot
+      ..additionalWorkspaces = [sharedRoot, unusedRoot];
+    late CodexController controller;
+    await tester.runAsync(() async {
+      controller = CodexController(
+        server: CodexAppServer(),
+        runtimeConfigurationStore: runtimeStore,
+      );
+      await controller.waitForInitialConfiguration();
+    });
+    controller.status = RuntimeStatus.ready;
     await tester.pumpWidget(
       MaterialApp(home: CodexWorkspace(controller: controller)),
     );
     controller.handleServerEventForTesting(
-      const ServerEvent(
+      ServerEvent(
         method: 'item/completed',
         params: {
           'item': {
             'type': 'fileChange',
             'changes': [
-              {'path': 'lib/main.dart', 'kind': 'modified', 'diff': '+card'},
+              {
+                'path': 'README.md',
+                'kind': 'modified',
+                'diff': 'diff --git a/README.md b/README.md',
+              },
+              {
+                'path': '$sharedRoot/src/shared.dart',
+                'kind': 'modified',
+                'diff': '+one\n+two\n-old',
+              },
             ],
           },
         },
@@ -13199,6 +13399,43 @@ void main() {
     expect(find.text('环境信息'), findsOneWidget);
     expect(
       find.descendant(of: cardFinder, matching: find.text('变更')),
+      findsNWidgets(2),
+    );
+    expect(
+      find.descendant(
+        of: cardFinder,
+        matching: find.text(workspaceRootName(workspaceRoot)),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: cardFinder,
+        matching: find.text(workspaceRootName(sharedRoot)),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: cardFinder,
+        matching: find.text(workspaceRootName(unusedRoot)),
+      ),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: cardFinder, matching: find.text('+?')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: cardFinder, matching: find.text('+2')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: cardFinder, matching: find.text('-1')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: cardFinder, matching: find.text('-?')),
       findsOneWidget,
     );
     expect(
@@ -13214,30 +13451,154 @@ void main() {
       findsOneWidget,
     );
     expect(
-      find.descendant(of: cardFinder, matching: find.text('1 个')),
-      findsNWidgets(2),
+      find.descendant(of: cardFinder, matching: find.text('2 个')),
+      findsOneWidget,
     );
     final environmentTitle = tester.widget<Text>(find.text('环境信息'));
-    final changeLabel = tester.widget<Text>(
+    final changeLabels = tester.widgetList<Text>(
       find.descendant(of: cardFinder, matching: find.text('变更')),
     );
     final taskFilesLabel = tester.widget<Text>(
       find.descendant(of: cardFinder, matching: find.text('任务文件')),
     );
     expect(environmentTitle.style?.fontSize, 15);
-    expect(changeLabel.style?.fontSize, 13);
+    expect(changeLabels.every((label) => label.style?.fontSize == 13), isTrue);
     expect(taskFilesLabel.style?.fontSize, 13);
     expect(decoration.borderRadius, BorderRadius.circular(28));
-    expect(find.byKey(const Key('side-panel-collapse')), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
 
-    await tester.tap(find.byKey(const Key('side-panel-collapse')));
-    await tester.pump();
-    expect(find.byKey(const Key('codex-environment-card')), findsNothing);
-    expect(find.byKey(const Key('side-panel-expand')), findsOneWidget);
+  test('groups task changes once under involved workspace roots', () {
+    const mainChange = CodexFileChange(
+      path: 'lib/main.dart',
+      kind: 'modified',
+      diff: '+main\n-old',
+    );
+    const additionalChange = CodexFileChange(
+      path: '/workspace/shared_api/lib/api.dart',
+      kind: 'modified',
+      diff: '+one\n+two\n-old',
+    );
+    const nestedChange = CodexFileChange(
+      path: 'packages/shared_ui/lib/button.dart',
+      kind: 'modified',
+      diff: '+button',
+    );
+    final groups = groupTaskFileChanges(
+      primaryRoot: '/workspace/main_app',
+      additionalRoots: const [
+        '/workspace/shared_api',
+        '/workspace/main_app/packages/shared_ui',
+        '/workspace/unused_app',
+      ],
+      changes: const [mainChange, additionalChange, nestedChange],
+    );
 
-    await tester.tap(find.byKey(const Key('side-panel-expand')));
+    expect(groups.map((group) => workspaceRootName(group.root)), [
+      'main_app',
+      'shared_api',
+      'shared_ui',
+    ]);
+    expect(groups[0].changes, [mainChange]);
+    expect(groups[1].changes, [additionalChange]);
+    expect(groups[2].changes, [nestedChange]);
+    expect(groups.expand((group) => group.changes), hasLength(3));
+  });
+
+  testWidgets('opens a searchable branch menu beside the inspector', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    const change = GitProjectChange(code: ' M', path: 'lib/editor.dart');
+    final git = _FakeGitProjectService()
+      ..status = const GitProjectStatus(
+        isRepository: true,
+        branch: 'main',
+        changes: [change],
+      )
+      ..localBranches = const [
+        'main',
+        '6.11.0',
+        'codex/token-security-squashed',
+      ];
+    final controller =
+        CodexController(server: CodexAppServer(), gitProjectService: git)
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready
+          ..gitProjectStatus = git.status;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final branchRect = tester.getRect(find.text('main'));
+    await tester.tap(find.text('main'));
+    await tester.pumpAndSettle();
+
+    final menu = find.byKey(const Key('inspector-branch-menu'));
+    expect(menu, findsOneWidget);
+    expect(tester.getRect(menu).right, lessThan(branchRect.left));
+    expect(find.text('分支'), findsOneWidget);
+    expect(find.text('未提交：1 个文件'), findsOneWidget);
+    expect(find.byIcon(Icons.check), findsOneWidget);
+    expect(find.text('创建并检出新分支...'), findsOneWidget);
+
+    await tester.enterText(
+      find.byKey(const Key('inspector-branch-search')),
+      '6.11',
+    );
     await tester.pump();
-    expect(find.byKey(const Key('codex-environment-card')), findsOneWidget);
+    expect(find.text('6.11.0'), findsOneWidget);
+    expect(find.text('codex/token-security-squashed'), findsNothing);
+
+    await tester.tap(find.text('6.11.0'));
+    await tester.pumpAndSettle();
+    expect(git.checkedOutBranch, '6.11.0');
+    expect(controller.gitProjectStatus?.branch, '6.11.0');
+
+    await tester.tap(find.text('6.11.0'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('inspector-create-branch')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('inspector-new-branch-field')),
+      'feature/inspector-menu',
+    );
+    await tester.tap(find.text('创建'));
+    await tester.pumpAndSettle();
+    expect(git.createdBranch, 'feature/inspector-menu');
+    expect(controller.gitProjectStatus?.branch, 'feature/inspector-menu');
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('discards a branch menu loaded for an inactive workspace', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final branchLoad = Completer<void>();
+    final git = _FakeGitProjectService()
+      ..status = const GitProjectStatus(isRepository: true, branch: 'main')
+      ..localBranches = const ['main', 'release']
+      ..localBranchesCompleter = branchLoad;
+    final controller =
+        CodexController(server: CodexAppServer(), gitProjectService: git)
+          ..workspacePath = '/workspace-one'
+          ..status = RuntimeStatus.ready
+          ..gitProjectStatus = git.status;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.text('main'));
+    await tester.pump();
+    expect(git.requestedLocalBranchesWorkspace, '/workspace-one');
+    controller.workspacePath = '/workspace-two';
+    branchLoad.complete();
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('inspector-branch-menu')), findsNothing);
+    expect(git.checkedOutBranch, isNull);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -13334,6 +13695,36 @@ void main() {
       );
 
       expect(tester.takeException(), isNull, reason: 'width: $width');
+    }
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('keeps side panel tabs valid through transition widths', (
+    tester,
+  ) async {
+    for (final width in <double>[15.2, 40, 52, 66, 72]) {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              width: width,
+              height: 160,
+              child: WorkspaceSidePanelTabs(
+                contents: const {'review': SizedBox()},
+                labels: const {'review': '审查'},
+                activeTab: 'review',
+                onSelect: (_) {},
+                onCollapse: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(tester.takeException(), isNull, reason: 'width: $width');
+      expect(find.byKey(const Key('side-panel-collapse')), findsOneWidget);
     }
 
     await tester.pumpWidget(const SizedBox());
