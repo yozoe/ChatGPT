@@ -2917,106 +2917,108 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                           ),
                                           curve: Curves.easeOutCubic,
                                           width: animatedSidePanelWidth,
-                                          child: OverflowBox(
-                                            alignment: Alignment.centerRight,
-                                            minWidth: 0,
-                                            maxWidth: reviewWidth + 8,
-                                            child: Row(
-                                              children: [
-                                                PaneResizeHandle(
-                                                  key: const Key(
-                                                    'review-resize-handle',
-                                                  ),
-                                                  onDragDelta: (delta) =>
-                                                      setState(() {
-                                                        _reviewWidth =
-                                                            (_reviewWidth -
-                                                                    delta)
-                                                                .clamp(
-                                                                  _minimumAuxiliaryWidth,
-                                                                  reviewMaximum,
-                                                                )
-                                                                .toDouble();
-                                                      }),
-                                                ),
-                                                Expanded(
-                                                  child: AnimatedSwitcher(
-                                                    duration: const Duration(
-                                                      milliseconds: 220,
-                                                    ),
-                                                    transitionBuilder:
-                                                        (
-                                                          child,
-                                                          animation,
-                                                        ) => FadeTransition(
-                                                          opacity: animation,
-                                                          child: SlideTransition(
-                                                            position:
-                                                                Tween<Offset>(
-                                                                  begin:
-                                                                      const Offset(
-                                                                        0.04,
-                                                                        0,
-                                                                      ),
-                                                                  end: Offset
-                                                                      .zero,
-                                                                ).animate(
-                                                                  animation,
-                                                                ),
-                                                            child: child,
-                                                          ),
+                                          child: animatedSidePanelWidth <= 8
+                                              ? const SizedBox.shrink()
+                                              : OverflowBox(
+                                                  alignment:
+                                                      Alignment.centerRight,
+                                                  minWidth: 0,
+                                                  maxWidth: reviewWidth + 8,
+                                                  child: Row(
+                                                    children: [
+                                                      PaneResizeHandle(
+                                                        key: const Key(
+                                                          'review-resize-handle',
                                                         ),
-                                                    child: sidePanelOpen
-                                                        ? WorkspaceSidePanelTabs(
-                                                            key: const ValueKey(
-                                                              'full-height-side-panel',
-                                                            ),
-                                                            contents:
-                                                                sidePanelContents,
-                                                            labels:
-                                                                sidePanelLabels,
-                                                            activeTab:
-                                                                _activeSidePanelTab,
-                                                            onSelect:
-                                                                _selectSidePanelTab,
-                                                            onCollapse:
-                                                                _returnToMainTask,
-                                                          )
-                                                        : WorkspaceSidePanelLauncher(
-                                                            key: const ValueKey(
-                                                              'side-panel-launcher',
-                                                            ),
-                                                            onSelect: (item) {
-                                                              switch (item) {
-                                                                case 'review':
-                                                                  _showCodeReview(
-                                                                    CodeReviewSource
-                                                                        .latestTurn,
-                                                                  );
-                                                                case 'browser':
-                                                                  setState(() {
-                                                                    _destination =
-                                                                        WorkspaceDestination
-                                                                            .browser;
-                                                                    _sidePanelCollapsed =
-                                                                        true;
-                                                                  });
-                                                                case 'terminal':
-                                                                  unawaited(
-                                                                    _showRuntime(),
-                                                                  );
-                                                                case 'files':
-                                                                  unawaited(
-                                                                    _showGitProject(),
-                                                                  );
-                                                              }
-                                                            },
-                                                          ),
+                                                        onDragDelta: (delta) =>
+                                                            setState(() {
+                                                              _reviewWidth =
+                                                                  (_reviewWidth -
+                                                                          delta)
+                                                                      .clamp(
+                                                                        _minimumAuxiliaryWidth,
+                                                                        reviewMaximum,
+                                                                      )
+                                                                      .toDouble();
+                                                            }),
+                                                      ),
+                                                      Expanded(
+                                                        child: AnimatedSwitcher(
+                                                          duration:
+                                                              const Duration(
+                                                                milliseconds:
+                                                                    220,
+                                                              ),
+                                                          transitionBuilder:
+                                                              (
+                                                                child,
+                                                                animation,
+                                                              ) => FadeTransition(
+                                                                opacity:
+                                                                    animation,
+                                                                child: SlideTransition(
+                                                                  position: Tween<Offset>(
+                                                                    begin:
+                                                                        const Offset(
+                                                                          0.04,
+                                                                          0,
+                                                                        ),
+                                                                    end: Offset
+                                                                        .zero,
+                                                                  ).animate(animation),
+                                                                  child: child,
+                                                                ),
+                                                              ),
+                                                          child: sidePanelOpen
+                                                              ? WorkspaceSidePanelTabs(
+                                                                  key: const ValueKey(
+                                                                    'full-height-side-panel',
+                                                                  ),
+                                                                  contents:
+                                                                      sidePanelContents,
+                                                                  labels:
+                                                                      sidePanelLabels,
+                                                                  activeTab:
+                                                                      _activeSidePanelTab,
+                                                                  onSelect:
+                                                                      _selectSidePanelTab,
+                                                                  onCollapse:
+                                                                      _returnToMainTask,
+                                                                )
+                                                              : WorkspaceSidePanelLauncher(
+                                                                  key: const ValueKey(
+                                                                    'side-panel-launcher',
+                                                                  ),
+                                                                  onSelect: (item) {
+                                                                    switch (item) {
+                                                                      case 'review':
+                                                                        _showCodeReview(
+                                                                          CodeReviewSource
+                                                                              .latestTurn,
+                                                                        );
+                                                                      case 'browser':
+                                                                        setState(() {
+                                                                          _destination =
+                                                                              WorkspaceDestination.browser;
+                                                                          _sidePanelCollapsed =
+                                                                              true;
+                                                                        });
+                                                                      case 'terminal':
+                                                                        unawaited(
+                                                                          _showRuntime(),
+                                                                        );
+                                                                      case 'files':
+                                                                        unawaited(
+                                                                          _showGitProject(),
+                                                                        );
+                                                                    }
+                                                                  },
+                                                                ),
+                                                        ),
+                                                      ),
+                                                    ],
                                                   ),
                                                 ),
-                                              ],
-                                            ),
-                                          ),
                                         ),
                                     ],
                                   ),
