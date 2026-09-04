@@ -483,6 +483,10 @@ void main() {
       ),
     );
     await tester.pump();
+    final preview = find.byKey(
+      const ValueKey('conversation-user-message-rail-preview-hover-user-3'),
+    );
+    expect(preview, findsOneWidget);
     await tester.pump(const Duration(milliseconds: 120));
 
     final hoveredWidths = markerWidths();
@@ -493,25 +497,6 @@ void main() {
     expect(hoveredWidths[4], hoveredWidths[2]);
     expect(hoveredWidths[5], hoveredWidths[1]);
     expect(hoveredWidths[6], hoveredWidths[0]);
-    expect(
-      find.byKey(
-        const ValueKey('conversation-user-message-rail-preview-hover-user-3'),
-      ),
-      findsNothing,
-    );
-
-    await tester.pump(const Duration(milliseconds: 329));
-    expect(
-      find.byKey(
-        const ValueKey('conversation-user-message-rail-preview-hover-user-3'),
-      ),
-      findsNothing,
-    );
-    await tester.pump(const Duration(milliseconds: 1));
-    final preview = find.byKey(
-      const ValueKey('conversation-user-message-rail-preview-hover-user-3'),
-    );
-    expect(preview, findsOneWidget);
     expect(find.text('第一个问题要修复，扫码逻辑单独拆出来'), findsOneWidget);
     expect(find.textContaining('新增独立的 Debug 扫码服务'), findsOneWidget);
     final previewRect = tester.getRect(preview);

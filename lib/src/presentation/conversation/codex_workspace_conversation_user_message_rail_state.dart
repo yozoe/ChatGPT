@@ -10,7 +10,6 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 
 class ConversationUserMessageRailState
     extends State<ConversationUserMessageRail> {
-  static const previewDelay = Duration(milliseconds: 450);
   static const previewWidth = 322.0;
   static const previewMaximumHeight = 132.0;
   static const previewGap = 14.0;
@@ -18,7 +17,6 @@ class ConversationUserMessageRailState
 
   int? hoveredIndex;
   String? hoveredMessageId;
-  Timer? previewTimer;
   OverlayEntry? previewOverlay;
   Rect? previewAnchor;
   bool previewOverlayRebuildScheduled = false;
@@ -44,23 +42,19 @@ class ConversationUserMessageRailState
     return Rect.fromPoints(topLeft, bottomRight);
   }
 
-  void showPreviewAfterDelay(int index) {
+  void showPreview(int index) {
     updateHoveredIndex(index);
     final messageId = widget.messages[index].id;
     hoveredMessageId = messageId;
-    previewTimer?.cancel();
     previewAnchor = currentPreviewAnchor();
     if (previewAnchor == null) return;
     if (previewOverlay != null) {
       previewOverlay!.markNeedsBuild();
       return;
     }
-    previewTimer = Timer(previewDelay, () {
-      if (!mounted || hoveredMessageId != messageId) return;
-      final overlay = Overlay.of(context);
-      previewOverlay = OverlayEntry(builder: buildPreviewOverlay);
-      overlay.insert(previewOverlay!);
-    });
+    final overlay = Overlay.of(context);
+    previewOverlay = OverlayEntry(builder: buildPreviewOverlay);
+    overlay.insert(previewOverlay!);
   }
 
   Widget buildPreviewOverlay(BuildContext overlayContext) {
@@ -89,8 +83,6 @@ class ConversationUserMessageRailState
   }
 
   void hidePreview() {
-    previewTimer?.cancel();
-    previewTimer = null;
     previewOverlay?.remove();
     previewOverlay = null;
     previewAnchor = null;
@@ -99,8 +91,6 @@ class ConversationUserMessageRailState
   }
 
   void hidePreviewAfterTargetExit(String messageId) {
-    previewTimer?.cancel();
-    previewTimer = null;
     scheduleMicrotask(() {
       if (mounted && hoveredMessageId == messageId) hidePreview();
     });
@@ -145,7 +135,6 @@ class ConversationUserMessageRailState
 
   @override
   void dispose() {
-    previewTimer?.cancel();
     previewOverlay?.remove();
     previewTargetContexts.clear();
     super.dispose();
@@ -182,7 +171,7 @@ class ConversationUserMessageRailState
                             ),
                             opaque: true,
                             cursor: SystemMouseCursors.click,
-                            onEnter: (_) => showPreviewAfterDelay(index),
+                            onEnter: (_) => showPreview(index),
                             onExit: (_) =>
                                 hidePreviewAfterTargetExit(message.id),
                             child: GestureDetector(
