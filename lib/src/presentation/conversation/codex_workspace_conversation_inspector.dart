@@ -21,12 +21,14 @@ class Inspector extends StatelessWidget {
   const Inspector({
     required this.width,
     required this.controller,
+    required this.onShowTaskChanges,
     required this.onShowGitProject,
     required this.onShowAgents,
   });
 
   final double width;
   final CodexController controller;
+  final Future<void> Function() onShowTaskChanges;
   final Future<void> Function() onShowGitProject;
   final VoidCallback onShowAgents;
 
@@ -71,7 +73,7 @@ class Inspector extends StatelessWidget {
               ),
             ],
           ),
-          onTap: onShowGitProject,
+          onTap: onShowTaskChanges,
         ),
       ],
     );
@@ -134,7 +136,7 @@ class Inspector extends StatelessWidget {
                         fileChangeCountLabel(controller.fileChanges.length),
                         style: TextStyle(color: palette.muted, fontSize: 12),
                       ),
-                      onTap: onShowGitProject,
+                      onTap: onShowTaskChanges,
                     ),
                     InspectorActionRow(
                       icon: Icons.laptop_mac_outlined,

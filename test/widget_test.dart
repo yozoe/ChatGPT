@@ -29,6 +29,7 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_timeline_page_data.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_user_message_rail.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_user_message_rail_mark.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_user_message_rail_preview_position_delegate.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_support.dart';
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_plugin_glyph.dart';
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_support.dart';
@@ -120,6 +121,43 @@ Future<dynamic> _resolveLastAgentMarkdownLinks(WidgetTester tester) async {
 }
 
 void main() {
+  test('conversation rail preview stays inside vertical viewport bounds', () {
+    const viewport = Size(900, 600);
+    const preview = Size(322, 132);
+    const topAnchor = Rect.fromLTWH(0, 0, 28, 9);
+
+    ConversationUserMessageRailPreviewPositionDelegate delegateFor(
+      Rect anchor,
+    ) => ConversationUserMessageRailPreviewPositionDelegate(
+      anchor: anchor,
+      preferredWidth: preview.width,
+      maximumHeight: preview.height,
+      gap: 14,
+      viewportInset: 12,
+    );
+
+    Offset positionFor(Rect anchor) =>
+        delegateFor(anchor).getPositionForChild(viewport, preview);
+
+    expect(positionFor(topAnchor).dy, 12);
+    expect(
+      positionFor(const Rect.fromLTWH(0, 591, 28, 9)).dy,
+      viewport.height - preview.height - 12,
+    );
+    expect(
+      delegateFor(topAnchor).getConstraintsForChild(
+        const BoxConstraints.tightFor(width: 900, height: 600),
+      ),
+      const BoxConstraints(minWidth: 322, maxWidth: 322, maxHeight: 132),
+    );
+    expect(
+      delegateFor(topAnchor).getConstraintsForChild(
+        const BoxConstraints.tightFor(width: 200, height: 100),
+      ),
+      const BoxConstraints(minWidth: 146, maxWidth: 146, maxHeight: 76),
+    );
+  });
+
   test('assigns each subagent a stable supplied avatar', () {
     final reviewAvatar = SubagentAvatar.assetFor('review-thread');
 
@@ -382,28 +420,44 @@ void main() {
   testWidgets('conversation rail tapers around the hovered user message', (
     tester,
   ) async {
+    late StateSetter rebuildHost;
+    var railOffset = 0.0;
+    const longSingleParagraph =
+        '这是一条没有手动换行的很长用户消息，用来确认预览不会只显示第一行，而是能够在紧凑卡片中继续换行并展示足够的上下文内容。';
     final messages = List.generate(
       7,
       (index) => TimelineEntry(
         id: 'hover-user-$index',
         kind: TimelineKind.user,
         title: 'You',
-        detail: '用户消息 $index',
+        detail: switch (index) {
+          2 => longSingleParagraph,
+          3 => '第一个问题要修复，扫码逻辑单独拆出来\n第一个问题已修复：\n- 新增独立的 Debug 扫码服务',
+          _ => '用户消息 $index',
+        },
         createdAt: DateTime(2026, 1, 1, 0, 0, index),
       ),
     );
     await tester.pumpWidget(
       MaterialApp(
-        home: Align(
-          alignment: Alignment.centerLeft,
-          child: SizedBox(
-            width: 28,
-            height: 180,
-            child: ConversationUserMessageRail(
-              messages: messages,
-              onMessageSelected: (_) async {},
-            ),
-          ),
+        home: StatefulBuilder(
+          builder: (context, setState) {
+            rebuildHost = setState;
+            return Transform.translate(
+              offset: Offset(0, railOffset),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: SizedBox(
+                  width: 28,
+                  height: 180,
+                  child: ConversationUserMessageRail(
+                    messages: messages,
+                    onMessageSelected: (_) async {},
+                  ),
+                ),
+              ),
+            );
+          },
         ),
       ),
     );
@@ -428,7 +482,8 @@ void main() {
         ),
       ),
     );
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
 
     final hoveredWidths = markerWidths();
     expect(hoveredWidths[3], 28);
@@ -438,10 +493,109 @@ void main() {
     expect(hoveredWidths[4], hoveredWidths[2]);
     expect(hoveredWidths[5], hoveredWidths[1]);
     expect(hoveredWidths[6], hoveredWidths[0]);
+    expect(
+      find.byKey(
+        const ValueKey('conversation-user-message-rail-preview-hover-user-3'),
+      ),
+      findsNothing,
+    );
 
-    await mouse.moveTo(const Offset(100, 10));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 329));
+    expect(
+      find.byKey(
+        const ValueKey('conversation-user-message-rail-preview-hover-user-3'),
+      ),
+      findsNothing,
+    );
+    await tester.pump(const Duration(milliseconds: 1));
+    final preview = find.byKey(
+      const ValueKey('conversation-user-message-rail-preview-hover-user-3'),
+    );
+    expect(preview, findsOneWidget);
+    expect(find.text('第一个问题要修复，扫码逻辑单独拆出来'), findsOneWidget);
+    expect(find.textContaining('新增独立的 Debug 扫码服务'), findsOneWidget);
+    final previewRect = tester.getRect(preview);
+    final overlayRect = tester.getRect(find.byType(Overlay).first);
+    final hoveredMarkerRect = tester.getRect(marker(3));
+    expect(previewRect.left, greaterThan(hoveredMarkerRect.right));
+    expect(previewRect.center.dy, closeTo(hoveredMarkerRect.center.dy, 0.1));
+    expect(previewRect.top, greaterThanOrEqualTo(overlayRect.top + 12));
+    expect(previewRect.bottom, lessThanOrEqualTo(overlayRect.bottom - 12));
+
+    rebuildHost(() => railOffset = 2);
+    await tester.pump();
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expect(preview, findsOneWidget);
+    expect(
+      tester.getRect(preview).center.dy,
+      closeTo(tester.getRect(marker(3)).center.dy, 0.1),
+    );
+
+    await mouse.moveTo(
+      tester.getCenter(
+        find.byKey(
+          const ValueKey('conversation-user-message-rail-hit-hover-user-2'),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(preview, findsNothing);
+    expect(
+      find.byKey(
+        const ValueKey('conversation-user-message-rail-preview-hover-user-2'),
+      ),
+      findsOneWidget,
+    );
+    final singleParagraphText = tester.widget<Text>(
+      find.text(longSingleParagraph),
+    );
+    expect(singleParagraphText.maxLines, 4);
+    expect(
+      tester
+          .getSize(
+            find.byKey(
+              const ValueKey(
+                'conversation-user-message-rail-preview-hover-user-2',
+              ),
+            ),
+          )
+          .height,
+      greaterThan(60),
+    );
+
+    final railRect = tester.getRect(
+      find.byKey(const Key('conversation-user-message-rail')),
+    );
+    await mouse.moveTo(Offset(railRect.center.dx, railRect.top + 2));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
     expect(markerWidths().toSet(), {8.0});
+    expect(preview, findsNothing);
+    expect(
+      find.byKey(
+        const ValueKey('conversation-user-message-rail-preview-hover-user-2'),
+      ),
+      findsNothing,
+    );
+
+    await mouse.moveTo(
+      tester.getCenter(
+        find.byKey(
+          const ValueKey('conversation-user-message-rail-hit-hover-user-1'),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(
+      find.byKey(
+        const ValueKey('conversation-user-message-rail-preview-hover-user-1'),
+      ),
+      findsNothing,
+    );
   });
 
   testWidgets('conversation rail stays fixed and locates a user message', (
@@ -1145,6 +1299,37 @@ void main() {
       expect(railRect.left, closeTo(viewportRect.left + 16, 0.1));
       expect(railRect.right, lessThan(viewportRect.right));
     }
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('keeps conversation errors on the centered content rail', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1980, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(server: CodexAppServer());
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    controller.workspacePath = '/workspace';
+    controller.createThread();
+    expect(controller.lastError, isNotNull);
+    await tester.pump();
+
+    final viewport = find.byKey(const Key('conversation-viewport-stack'));
+    final banner = find.byKey(const Key('conversation-error-banner'));
+    final timeline = find.descendant(
+      of: viewport,
+      matching: find.byType(ListView),
+    );
+
+    expect(banner, findsOneWidget);
+    expect(tester.getSize(viewport).width, greaterThan(790));
+    expect(tester.getSize(banner).width, closeTo(790, 0.1));
+    expect(
+      tester.getCenter(banner).dx,
+      closeTo(tester.getCenter(timeline).dx, 0.1),
+    );
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -12710,6 +12895,48 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('opens task changes from the matching inspector summary', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {
+                'path': 'lib/main.dart',
+                'kind': 'modified',
+                'diff': '@@ -1 +1 @@\n-old\n+new',
+              },
+            ],
+          },
+        },
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.pump();
+
+    await tester.tap(find.text('变更'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('code-review-panel')), findsOneWidget);
+    expect(find.text('最新一轮'), findsOneWidget);
+    expect(find.text('lib/main.dart'), findsWidgets);
+    expect(find.text('+new'), findsOneWidget);
+    expect(find.text('当前任务没有可审查的文件变更。'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'keeps review beside the conversation and preserves state across breakpoints',
     (tester) async {
@@ -13750,6 +13977,39 @@ void main() {
 
       expect(tester.takeException(), isNull, reason: 'width: $width');
       expect(find.byKey(const Key('side-panel-collapse')), findsOneWidget);
+    }
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('keeps the complete review panel valid at transition widths', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.ready;
+
+    for (final width in <double>[4.5, 15.2, 17, 40, 52]) {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              width: width,
+              height: 900,
+              child: CodeReviewPanel(
+                controller: controller,
+                source: CodeReviewSource.latestTurn,
+                compact: true,
+                onSourceChanged: (_) {},
+                onCollapse: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(tester.takeException(), isNull, reason: 'width: $width');
     }
 
     await tester.pumpWidget(const SizedBox());

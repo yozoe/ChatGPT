@@ -93,15 +93,24 @@ class ConversationPane extends StatelessWidget {
         if (controller.lastError case final error?
             when !controller.hasThreadWriterConflict &&
                 !controller.hasFailedTurnRetry)
-          Container(
-            width: double.infinity,
-            margin: const EdgeInsets.fromLTRB(24, 0, 24, 12),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: palette.fault.withValues(alpha: 0.14),
-              borderRadius: BorderRadius.circular(10),
+          Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(
+                maxWidth: conversationContentMaxWidth,
+              ),
+              child: Container(
+                key: const Key('conversation-error-banner'),
+                width: double.infinity,
+                margin: const EdgeInsets.fromLTRB(24, 0, 24, 12),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: palette.fault.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(error, style: TextStyle(color: palette.fault)),
+              ),
             ),
-            child: Text(error, style: TextStyle(color: palette.fault)),
           ),
         Expanded(
           child: ConversationViewport(

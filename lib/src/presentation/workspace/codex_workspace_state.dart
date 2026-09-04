@@ -2835,6 +2835,10 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                                                           inspectorWidth,
                                                                       controller:
                                                                           controller,
+                                                                      onShowTaskChanges: () => _showCodeReview(
+                                                                        CodeReviewSource
+                                                                            .latestTurn,
+                                                                      ),
                                                                       onShowGitProject: () => _showCodeReview(
                                                                         CodeReviewSource
                                                                             .gitWorkspace,
@@ -2876,6 +2880,10 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                           child: Inspector(
                                             width: auxiliaryInspectorWidth,
                                             controller: controller,
+                                            onShowTaskChanges: () =>
+                                                _showCodeReview(
+                                                  CodeReviewSource.latestTurn,
+                                                ),
                                             onShowGitProject: () =>
                                                 _showCodeReview(
                                                   CodeReviewSource.gitWorkspace,

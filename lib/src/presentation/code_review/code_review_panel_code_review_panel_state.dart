@@ -568,20 +568,34 @@ class CodeReviewPanelState extends State<CodeReviewPanel> {
   Widget _buildTitleBar(BuildContext context, YeknomPalette palette) {
     return SizedBox(
       height: 36,
-      child: Row(
-        children: [
-          const SizedBox(width: 8),
-          Icon(Icons.edit_note_outlined, size: 17, color: palette.muted),
-          const SizedBox(width: 7),
-          Text(
-            '审查',
-            style: Theme.of(context).textTheme.titleSmall?.copyWith(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const Spacer(),
-        ],
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          // The workspace width animates through single-digit values while it
+          // expands and collapses. Hide the title until its 17px icon fits;
+          // once visible, keep every remaining element flexible.
+          if (constraints.maxWidth < 17) return const SizedBox.shrink();
+          final leading = math.min(8.0, constraints.maxWidth - 17);
+          return Row(
+            children: [
+              SizedBox(width: leading),
+              Icon(Icons.edit_note_outlined, size: 17, color: palette.muted),
+              if (constraints.maxWidth >= 40) ...[
+                const SizedBox(width: 7),
+                Flexible(
+                  child: Text(
+                    '审查',
+                    maxLines: 1,
+                    overflow: TextOverflow.clip,
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          );
+        },
       ),
     );
   }
