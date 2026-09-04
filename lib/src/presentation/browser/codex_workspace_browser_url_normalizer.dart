@@ -56,6 +56,7 @@ bool isBrowserWebUri(Uri uri) {
   return !_isBlockedAddress(address);
 }
 
+/// 解析主机名，避免由公开域名隐藏回环或私网目标。
 /// Resolves a hostname before WebView navigation so DNS names cannot hide a
 /// loopback/private destination behind an otherwise public-looking URL.
 Future<bool> isBrowserWebUriSafe(Uri uri) async {

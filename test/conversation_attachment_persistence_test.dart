@@ -1,11 +1,14 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:chatgpt/src/app_controller.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/services/conversation_attachment_store.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'delayed_conversation_attachment_store.dart';
 import 'widget_test_fakes.dart';
 
 void main() {
@@ -75,6 +78,68 @@ void main() {
         ),
         isTrue,
       );
+      controller.dispose();
+    },
+  );
+
+  test(
+    'keeps a temporary image alive while persistence is in flight',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-desk-in-flight-attachment-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final source = File('${root.path}/clipboard-image.png');
+      await source.writeAsBytes(const [137, 80, 78, 71]);
+      const clipboardChannel = MethodChannel('codex_desk/clipboard');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      final sourceDeleted = Completer<void>();
+      messenger.setMockMethodCallHandler(clipboardChannel, (call) async {
+        if (call.method != 'deleteTemporaryItem') return null;
+        final path = call.arguments as String;
+        final file = File(path);
+        if (await file.exists()) await file.delete();
+        if (!sourceDeleted.isCompleted) sourceDeleted.complete();
+        return true;
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(clipboardChannel, null),
+      );
+      final store = DelayedConversationAttachmentStore(
+        directory: Directory('${root.path}/conversation-images'),
+      );
+      final server = FakeCodexAppServer();
+      final runtime = FakeRuntimeConfigurationStore()..workspace = root.path;
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: runtime,
+        conversationAttachmentStore: store,
+      );
+      await controller.waitForInitialConfiguration();
+      controller.status = RuntimeStatus.ready;
+      controller.retainTemporaryAttachment(source.path);
+
+      final send = controller.sendPrompt(
+        '请检查图片',
+        imagePaths: [source.path],
+        additionalInput: [
+          {'type': 'localImage', 'path': source.path},
+        ],
+      );
+      await store.persistStarted.future;
+
+      controller.releaseTemporaryAttachment(source.path);
+      await Future<void>.delayed(Duration.zero);
+      expect(await source.exists(), isTrue);
+
+      store.continuePersist.complete();
+      expect(await send, isTrue);
+      final durablePath = server.startedTurnAdditionalInput.single['path'];
+      expect(durablePath, isA<String>());
+      expect(await File(durablePath as String).exists(), isTrue);
+      await sourceDeleted.future;
+      expect(await source.exists(), isFalse);
       controller.dispose();
     },
   );

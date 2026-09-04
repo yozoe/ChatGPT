@@ -31,6 +31,8 @@ import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'app_controller_support.dart';
 
+/// 保存“先取消归档、再打开任务”的可重试上下文。
+/// Retry context for unarchiving a task before opening it.
 class ArchivedThreadRestore {
   const ArchivedThreadRestore({required this.workspace, required this.thread});
   final String workspace;

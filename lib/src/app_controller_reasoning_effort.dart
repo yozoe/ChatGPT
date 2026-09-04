@@ -31,6 +31,8 @@ import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'app_controller_support.dart';
 
+/// 保留 App Server 原始配置值的推理强度选择，兼容未来新增等级。
+/// Reasoning-effort selection that preserves raw App Server values for forward compatibility.
 class ReasoningEffort {
   const ReasoningEffort._(this.configValue);
 

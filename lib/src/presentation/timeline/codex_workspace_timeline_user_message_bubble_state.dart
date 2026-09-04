@@ -1,16 +1,15 @@
-// Extracted class from codex_workspace_timeline.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, use_key_in_widget_constructors
 import 'dart:async';
 import 'dart:math' as math;
-import 'package:markdown/markdown.dart' as md;
-import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
-import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation.dart';
-import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.dart';
+
+import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_timeline_image.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_support.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_user_message_bubble.dart';
-import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_timeline_image.dart';
+import 'package:chatgpt/src/theme/yeknom_workbench.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+/// 管理用户消息的悬停、编辑与折叠展示状态。
+/// Owns the hover, editing, and collapsed presentation state for a user message.
 class UserMessageBubbleState extends State<UserMessageBubble> {
   static const _collapsedLineLimit = 16;
 

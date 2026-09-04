@@ -23,6 +23,7 @@ class CodexAttachmentCoordinator {
   final ConversationAttachmentStore _store;
   final Set<String> _temporaryPaths;
   final Map<String, int> _composerRetains;
+  final Map<String, int> _persistenceRetains = {};
   final bool Function(String path) _isReferenced;
   final bool Function(String path) _isClipboardTemporaryPath;
 
@@ -50,24 +51,41 @@ class CodexAttachmentCoordinator {
         createdImagePaths: const <String>[],
       );
     }
-    final persisted = await _store.persist(temporaryPaths);
-    final persistedPaths = persisted.paths;
-    return (
-      imagePaths: imagePaths
-          .map((path) => persistedPaths[path] ?? path)
-          .toList(growable: false),
-      additionalInput: additionalInput
-          .map((input) {
-            final path = input['path'];
-            if (input['type'] != 'localImage' || path is! String) return input;
-            final persistedPath = persistedPaths[path];
-            return persistedPath == null
-                ? input
-                : <String, dynamic>{...input, 'path': persistedPath};
-          })
-          .toList(growable: false),
-      createdImagePaths: persisted.createdPaths,
-    );
+    for (final path in temporaryPaths) {
+      _persistenceRetains.update(path, (count) => count + 1, ifAbsent: () => 1);
+    }
+    try {
+      final persisted = await _store.persist(temporaryPaths);
+      final persistedPaths = persisted.paths;
+      return (
+        imagePaths: imagePaths
+            .map((path) => persistedPaths[path] ?? path)
+            .toList(growable: false),
+        additionalInput: additionalInput
+            .map((input) {
+              final path = input['path'];
+              if (input['type'] != 'localImage' || path is! String) {
+                return input;
+              }
+              final persistedPath = persistedPaths[path];
+              return persistedPath == null
+                  ? input
+                  : <String, dynamic>{...input, 'path': persistedPath};
+            })
+            .toList(growable: false),
+        createdImagePaths: persisted.createdPaths,
+      );
+    } finally {
+      for (final path in temporaryPaths) {
+        final count = _persistenceRetains[path];
+        if (count == null || count <= 1) {
+          _persistenceRetains.remove(path);
+        } else {
+          _persistenceRetains[path] = count - 1;
+        }
+      }
+      releaseDetached();
+    }
   }
 
   Future<void> discardUnreferenced(Iterable<String> paths) =>
@@ -100,7 +118,10 @@ class CodexAttachmentCoordinator {
   void releaseDetached() {
     final detached = _temporaryPaths
         .where(
-          (path) => (_composerRetains[path] ?? 0) == 0 && !_isReferenced(path),
+          (path) =>
+              (_composerRetains[path] ?? 0) == 0 &&
+              (_persistenceRetains[path] ?? 0) == 0 &&
+              !_isReferenced(path),
         )
         .toList(growable: false);
     for (final path in detached) {
@@ -109,7 +130,9 @@ class CodexAttachmentCoordinator {
   }
 
   void releaseAll() {
-    final paths = _temporaryPaths.toList(growable: false);
+    final paths = _temporaryPaths
+        .where((path) => (_persistenceRetains[path] ?? 0) == 0)
+        .toList(growable: false);
     _composerRetains.clear();
     for (final path in paths) {
       _forget(path);
@@ -134,7 +157,11 @@ class CodexAttachmentCoordinator {
   }
 
   void _releaseIfDetached(String path) {
-    if ((_composerRetains[path] ?? 0) != 0 || _isReferenced(path)) return;
+    if ((_composerRetains[path] ?? 0) != 0 ||
+        (_persistenceRetains[path] ?? 0) != 0 ||
+        _isReferenced(path)) {
+      return;
+    }
     _forget(path);
   }
 

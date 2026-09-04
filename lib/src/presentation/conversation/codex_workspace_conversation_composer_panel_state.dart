@@ -591,7 +591,12 @@ class ComposerPanelState extends State<ComposerPanel> {
           attachment.path
               .replaceAll('\\', '/')
               .contains('/CodexDeskClipboard/');
-      if (isClipboardTemporary && !await File(attachment.path).exists()) {
+      // 剪贴板图片位于本地临时卷。这里保持同步检查，避免组件销毁在校验完成
+      // 与控制器同步取得持久化引用之间排入删除请求。
+      // Clipboard images live on the local temporary volume. Keep this check
+      // synchronous so disposal cannot enqueue deletion between validation
+      // and the controller's synchronous persistence retain.
+      if (isClipboardTemporary && !File(attachment.path).existsSync()) {
         missingTemporaryAttachments.add(attachment);
       }
     }

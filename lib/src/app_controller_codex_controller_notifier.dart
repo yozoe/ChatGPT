@@ -32,6 +32,8 @@ import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'app_controller_support.dart';
 import 'app_controller_codex_controller.dart';
 
+/// 将既有控制器的状态变更桥接为 Riverpod 状态更新。
+/// Bridges existing controller changes into Riverpod state updates.
 class CodexControllerNotifier extends Notifier<CodexController> {
   late final CodexController _controller;
 

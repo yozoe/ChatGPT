@@ -9,7 +9,7 @@ import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_page.
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_workspace_page.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_workspace_page_state.dart';
 import 'package:chatgpt/src/presentation/agents/codex_workspace_agents_page.dart';
-import 'package:chatgpt/src/presentation/workspace/codex_workspace_side_panel_launcher.dart';
+import 'package:chatgpt/src/presentation/workspace/codex_workspace_desktop_side_panel.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:chatgpt/src/services/theme_preferences_store.dart';
@@ -341,6 +341,24 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   void _toggleSidePanel() {
     if (!mounted) return;
     setState(() => _sidePanelCollapsed = !_sidePanelCollapsed);
+  }
+
+  void _handleSidePanelLauncherSelection(String item) {
+    switch (item) {
+      case 'review':
+        _showCodeReview(CodeReviewSource.latestTurn);
+      case 'browser':
+        setState(() {
+          _browserPageMounted = true;
+          _destination = WorkspaceDestination.conversation;
+          _activeSidePanelTab = 'browser';
+          _sidePanelCollapsed = false;
+        });
+      case 'terminal':
+        unawaited(_showRuntime());
+      case 'files':
+        unawaited(_showGitProject());
+    }
   }
 
   void _selectSidePanelTab(String tab) {
@@ -2863,139 +2881,25 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                       ),
                                     ),
                                     if (!compact)
-                                      AnimatedContainer(
-                                        duration: sidePanelExpanded
-                                            ? Duration.zero
-                                            : const Duration(milliseconds: 240),
-                                        curve: Curves.easeOutCubic,
+                                      WorkspaceDesktopSidePanel(
+                                        expanded: sidePanelExpanded,
+                                        panelOpen: sidePanelOpen,
+                                        hasContents: hasSidePanelContents,
                                         width: animatedSidePanelWidth,
-                                        child: LayoutBuilder(
-                                          builder: (context, constraints) {
-                                            final minimumContentWidth =
-                                                _browserPageMounted
-                                                ? _minimumAuxiliaryWidth
-                                                : 8.0;
-                                            if (!sidePanelOpen &&
-                                                hasSidePanelContents) {
-                                              return ExcludeFocus(
-                                                child: Offstage(
-                                                  child: OverflowBox(
-                                                    alignment:
-                                                        Alignment.topLeft,
-                                                    minWidth:
-                                                        minimumContentWidth,
-                                                    maxWidth:
-                                                        minimumContentWidth,
-                                                    child: sidePanelTabs,
-                                                  ),
-                                                ),
-                                              );
-                                            }
-                                            if (constraints.maxWidth <=
-                                                minimumContentWidth) {
-                                              return hasSidePanelContents
-                                                  ? ExcludeFocus(
-                                                      child: Offstage(
-                                                        child: OverflowBox(
-                                                          alignment:
-                                                              Alignment.topLeft,
-                                                          minWidth:
-                                                              minimumContentWidth,
-                                                          maxWidth:
-                                                              minimumContentWidth,
-                                                          child: sidePanelTabs,
-                                                        ),
-                                                      ),
-                                                    )
-                                                  : const SizedBox.shrink();
-                                            }
-                                            return Row(
-                                              children: [
-                                                PaneResizeHandle(
-                                                  key: const Key(
-                                                    'review-resize-handle',
-                                                  ),
-                                                  onDragDelta: (delta) =>
-                                                      setState(() {
-                                                        _reviewWidth =
-                                                            (_reviewWidth -
-                                                                    delta)
-                                                                .clamp(
-                                                                  _minimumAuxiliaryWidth,
-                                                                  reviewMaximum,
-                                                                )
-                                                                .toDouble();
-                                                      }),
-                                                ),
-                                                Expanded(
-                                                  child: AnimatedSwitcher(
-                                                    duration: const Duration(
-                                                      milliseconds: 220,
-                                                    ),
-                                                    transitionBuilder:
-                                                        (
-                                                          child,
-                                                          animation,
-                                                        ) => FadeTransition(
-                                                          opacity: animation,
-                                                          child: SlideTransition(
-                                                            position:
-                                                                Tween<Offset>(
-                                                                  begin:
-                                                                      const Offset(
-                                                                        0.04,
-                                                                        0,
-                                                                      ),
-                                                                  end: Offset
-                                                                      .zero,
-                                                                ).animate(
-                                                                  animation,
-                                                                ),
-                                                            child: child,
-                                                          ),
-                                                        ),
-                                                    child: hasSidePanelContents
-                                                        ? sidePanelTabs
-                                                        : WorkspaceSidePanelLauncher(
-                                                            key: const ValueKey(
-                                                              'side-panel-launcher',
-                                                            ),
-                                                            onSelect: (item) {
-                                                              switch (item) {
-                                                                case 'review':
-                                                                  _showCodeReview(
-                                                                    CodeReviewSource
-                                                                        .latestTurn,
-                                                                  );
-                                                                case 'browser':
-                                                                  setState(() {
-                                                                    _browserPageMounted =
-                                                                        true;
-                                                                    _destination =
-                                                                        WorkspaceDestination
-                                                                            .conversation;
-                                                                    _activeSidePanelTab =
-                                                                        'browser';
-                                                                    _sidePanelCollapsed =
-                                                                        false;
-                                                                  });
-                                                                case 'terminal':
-                                                                  unawaited(
-                                                                    _showRuntime(),
-                                                                  );
-                                                                case 'files':
-                                                                  unawaited(
-                                                                    _showGitProject(),
-                                                                  );
-                                                              }
-                                                            },
-                                                          ),
-                                                  ),
-                                                ),
-                                              ],
-                                            );
-                                          },
-                                        ),
+                                        minimumContentWidth: _browserPageMounted
+                                            ? _minimumAuxiliaryWidth
+                                            : 8.0,
+                                        contents: sidePanelTabs,
+                                        onResize: (delta) => setState(() {
+                                          _reviewWidth = (_reviewWidth - delta)
+                                              .clamp(
+                                                _minimumAuxiliaryWidth,
+                                                reviewMaximum,
+                                              )
+                                              .toDouble();
+                                        }),
+                                        onLauncherSelect:
+                                            _handleSidePanelLauncherSelection,
                                       ),
                                   ],
                                 ),

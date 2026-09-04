@@ -31,6 +31,8 @@ import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'app_controller_support.dart';
 
+/// App Server 模型目录中可供新任务选择的只读条目。
+/// A read-only model-catalog entry that can be selected for new App Server threads.
 class CodexModelOption {
   const CodexModelOption({
     required this.id,

@@ -31,6 +31,9 @@ import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'app_controller_support.dart';
 
+/// 单次归档提交结果，同时保留因状态变化而未发送请求的任务及原因。
+/// Result of one archive submission, including tasks deliberately left
+/// untouched because their state changed before the request was sent.
 class ThreadArchiveResult {
   ThreadArchiveResult({
     Iterable<String> archivedIds = const [],

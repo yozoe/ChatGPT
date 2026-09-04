@@ -32,6 +32,8 @@ import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'app_controller_support.dart';
 import 'app_controller_turn_submission.dart';
 
+/// 可在任务失败后原样再次提交的 turn 输入及错误信息。
+/// Exact turn input and error retained for retry after a task failure.
 class FailedTurnRetry {
   const FailedTurnRetry({required this.submission, required this.error});
 

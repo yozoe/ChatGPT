@@ -31,6 +31,8 @@ import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'app_controller_support.dart';
 
+/// 非当前项目的只读任务清单，来自本地历史而非活动运行时。
+/// Read-only task list for an inactive workspace, sourced from local history.
 class WorkspaceTaskList {
   const WorkspaceTaskList({
     required this.threads,

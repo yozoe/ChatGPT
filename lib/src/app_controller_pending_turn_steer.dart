@@ -31,6 +31,11 @@ import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'app_controller_support.dart';
 
+/// Composer 已提交但尚未发送给 App Server 的临时方向调整；它仅存在于当前
+/// 界面，在 `turn/steer` 成功前不会写入对话历史。
+/// A composer direction change retained locally until it can be sent to App
+/// Server. It is not persisted in conversation history before `turn/steer`
+/// succeeds.
 class PendingTurnSteer {
   const PendingTurnSteer({
     required this.displayText,

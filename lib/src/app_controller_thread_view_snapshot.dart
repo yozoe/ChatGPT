@@ -31,6 +31,8 @@ import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'app_controller_support.dart';
 
+/// 已打开任务的内存视图缓存。
+/// In-memory view state for a previously opened task.
 class ThreadViewSnapshot {
   const ThreadViewSnapshot({
     required this.entries,
