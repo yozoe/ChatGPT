@@ -12,6 +12,23 @@ Uri? normalizeBrowserUrl(String value) {
   return isBrowserWebUri(uri) ? uri : null;
 }
 
+/// 将 Codex 风格地址栏输入解析为网址或 HTTPS 搜索。
+/// Resolves Codex-style omnibox input to either a web URL or an HTTPS search.
+Uri? browserLocationForInput(String value) {
+  final trimmed = value.trim();
+  if (trimmed.isEmpty) return null;
+  final hasScheme = RegExp(r'^[A-Za-z][A-Za-z0-9+.-]*:').hasMatch(trimmed);
+  if (hasScheme) return normalizeBrowserUrl(trimmed);
+  final looksLikeHost =
+      trimmed.contains('.') ||
+      trimmed.startsWith('[') ||
+      InternetAddress.tryParse(trimmed) != null;
+  if (!trimmed.contains(RegExp(r'\s')) && looksLikeHost) {
+    return normalizeBrowserUrl(trimmed);
+  }
+  return Uri.https('www.google.com', '/search', {'q': trimmed});
+}
+
 /// 判断 URL 是否可由内置 WebView 直接加载。
 /// Reports whether a URL can be loaded directly by the embedded WebView.
 bool isBrowserWebUri(Uri uri) {

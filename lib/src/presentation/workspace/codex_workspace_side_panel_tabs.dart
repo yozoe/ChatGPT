@@ -40,6 +40,7 @@ class WorkspaceSidePanelTabs extends StatelessWidget {
                   minimumSize: const Size.square(40),
                   maximumSize: const Size.square(40),
                   padding: EdgeInsets.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(10),
                   ),
@@ -124,7 +125,13 @@ class WorkspaceSidePanelTabs extends StatelessWidget {
                 .toList()
                 .indexOf(activeTab)
                 .clamp(0, contents.length - 1),
-            children: contents.values.toList(growable: false),
+            children: [
+              for (final entry in contents.entries)
+                ExcludeFocus(
+                  excluding: entry.key != activeTab,
+                  child: entry.value,
+                ),
+            ],
           ),
         ),
       ],

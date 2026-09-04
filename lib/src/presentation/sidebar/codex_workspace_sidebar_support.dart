@@ -17,7 +17,6 @@ enum WorkspaceDestination {
   scheduledTasks,
   plugins,
   agents,
-  browser,
   settings,
 }
 

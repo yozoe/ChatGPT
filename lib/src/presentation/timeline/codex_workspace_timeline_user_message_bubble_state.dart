@@ -12,10 +12,20 @@ import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_timel
 import 'package:flutter/services.dart';
 
 class UserMessageBubbleState extends State<UserMessageBubble> {
+  static const _collapsedLineLimit = 16;
+
   var _hovering = false;
   var _editing = false;
   var _submittingEdit = false;
+  var _expanded = false;
   late TextEditingController _editor;
+  String? _collapseMeasurementText;
+  double? _collapseMeasurementWidth;
+  TextStyle? _collapseMeasurementStyle;
+  TextDirection? _collapseMeasurementDirection;
+  TextScaler? _collapseMeasurementScaler;
+  Locale? _collapseMeasurementLocale;
+  bool? _collapseMeasurementResult;
 
   @override
   void initState() {
@@ -34,6 +44,7 @@ class UserMessageBubbleState extends State<UserMessageBubble> {
     if (oldWidget.entry.id != widget.entry.id) {
       _editing = false;
       _submittingEdit = false;
+      _expanded = false;
       _editor
         ..text = widget.entry.detail
         ..selection = TextSelection.collapsed(
@@ -82,36 +93,116 @@ class UserMessageBubbleState extends State<UserMessageBubble> {
     });
   }
 
-  Widget _messageBody(YeknomPalette palette) => Container(
-    key: const Key('timeline-user-message'),
-    padding: const EdgeInsets.fromLTRB(14, 8, 10, 8),
-    decoration: BoxDecoration(
-      color: palette.raised,
-      borderRadius: BorderRadius.circular(16),
-      border: Border.all(color: palette.border),
-    ),
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SelectionArea(child: Text(widget.entry.detail)),
-        if (widget.entry.imagePaths.isNotEmpty) ...[
-          const SizedBox(height: 9),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final path in widget.entry.imagePaths)
-                  TimelineImage(path: path),
-              ],
+  bool _messageExceedsCollapsedHeight(
+    BuildContext context,
+    double availableWidth,
+  ) {
+    if (availableWidth <= 24) return false;
+    final text = widget.entry.detail;
+    final style = DefaultTextStyle.of(context).style;
+    final direction = Directionality.of(context);
+    final scaler = MediaQuery.textScalerOf(context);
+    final locale = Localizations.maybeLocaleOf(context);
+    if (_collapseMeasurementText == text &&
+        _collapseMeasurementWidth == availableWidth &&
+        _collapseMeasurementStyle == style &&
+        _collapseMeasurementDirection == direction &&
+        _collapseMeasurementScaler == scaler &&
+        _collapseMeasurementLocale == locale) {
+      return _collapseMeasurementResult!;
+    }
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: style),
+      maxLines: _collapsedLineLimit,
+      textDirection: direction,
+      textScaler: scaler,
+      locale: locale,
+    )..layout(maxWidth: availableWidth - 24);
+    final exceedsLimit = painter.didExceedMaxLines;
+    painter.dispose();
+    _collapseMeasurementText = text;
+    _collapseMeasurementWidth = availableWidth;
+    _collapseMeasurementStyle = style;
+    _collapseMeasurementDirection = direction;
+    _collapseMeasurementScaler = scaler;
+    _collapseMeasurementLocale = locale;
+    _collapseMeasurementResult = exceedsLimit;
+    return exceedsLimit;
+  }
+
+  Widget _messageBody(YeknomPalette palette, {required bool collapsible}) =>
+      Container(
+        key: const Key('timeline-user-message'),
+        padding: const EdgeInsets.fromLTRB(14, 8, 10, 8),
+        decoration: BoxDecoration(
+          color: palette.raised,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: palette.border),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SelectionArea(
+              child: Text(
+                widget.entry.detail,
+                key: const Key('timeline-user-message-text'),
+                maxLines: collapsible && !_expanded
+                    ? _collapsedLineLimit
+                    : null,
+                overflow: collapsible && !_expanded
+                    ? TextOverflow.ellipsis
+                    : TextOverflow.clip,
+              ),
             ),
-          ),
-        ],
-      ],
-    ),
-  );
+            if (collapsible) ...[
+              const SizedBox(height: 3),
+              TextButton(
+                key: const Key('timeline-user-message-disclosure'),
+                onPressed: () => setState(() => _expanded = !_expanded),
+                style: TextButton.styleFrom(
+                  foregroundColor: palette.muted,
+                  minimumSize: Size.zero,
+                  padding: const EdgeInsets.fromLTRB(0, 5, 6, 2),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  alignment: Alignment.centerLeft,
+                  textStyle: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(_expanded ? '显示较少' : '显示更多'),
+                    const SizedBox(width: 2),
+                    Icon(
+                      _expanded
+                          ? Icons.keyboard_arrow_up_rounded
+                          : Icons.keyboard_arrow_down_rounded,
+                      size: 16,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            if (widget.entry.imagePaths.isNotEmpty) ...[
+              const SizedBox(height: 9),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final path in widget.entry.imagePaths)
+                      TimelineImage(path: path),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      );
 
   Widget _actionButton({
     required Key key,
@@ -224,71 +315,84 @@ class UserMessageBubbleState extends State<UserMessageBubble> {
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
-    return Align(
-      alignment: Alignment.centerRight,
-      child: MouseRegion(
-        key: const Key('timeline-user-message-hover-region'),
-        onEnter: _editing ? null : (_) => setState(() => _hovering = true),
-        onExit: _editing ? null : (_) => setState(() => _hovering = false),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 720),
-          child: _editing
-              ? _editorBody(palette)
-              : Stack(
-                  alignment: Alignment.topRight,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 23),
-                      child: _messageBody(palette),
-                    ),
-                    if (_hovering)
-                      Positioned(
-                        right: 0,
-                        bottom: 0,
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              messageTimeLabel(widget.entry.createdAt),
-                              key: const Key('timeline-user-message-time'),
-                              style: Theme.of(context).textTheme.bodySmall
-                                  ?.copyWith(
-                                    color: palette.muted,
-                                    fontSize: 12,
-                                    height: 1.2,
-                                  ),
-                            ),
-                            const SizedBox(width: 7),
-                            _actionButton(
-                              key: ValueKey(
-                                'timeline-user-message-copy-${widget.entry.id}',
-                              ),
-                              tooltip: '复制消息',
-                              icon: Icons.content_copy_outlined,
-                              onTap: () => unawaited(
-                                Clipboard.setData(
-                                  ClipboardData(text: widget.entry.detail),
-                                ),
-                              ),
-                              palette: palette,
-                            ),
-                            if (widget.onSubmitEdit != null)
-                              _actionButton(
-                                key: ValueKey(
-                                  'timeline-user-message-edit-${widget.entry.id}',
-                                ),
-                                tooltip: '修改消息',
-                                icon: Icons.edit_outlined,
-                                onTap: _startEditing,
-                                palette: palette,
-                              ),
-                          ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final availableWidth = constraints.hasBoundedWidth
+            ? math.min(720.0, constraints.maxWidth)
+            : 720.0;
+        final collapsible =
+            !_editing &&
+            _messageExceedsCollapsedHeight(context, availableWidth);
+        return Align(
+          alignment: Alignment.centerRight,
+          child: MouseRegion(
+            key: const Key('timeline-user-message-hover-region'),
+            onEnter: _editing ? null : (_) => setState(() => _hovering = true),
+            onExit: _editing ? null : (_) => setState(() => _hovering = false),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 720),
+              child: _editing
+                  ? _editorBody(palette)
+                  : Stack(
+                      alignment: Alignment.topRight,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 23),
+                          child: _messageBody(
+                            palette,
+                            collapsible: collapsible,
+                          ),
                         ),
-                      ),
-                  ],
-                ),
-        ),
-      ),
+                        if (_hovering)
+                          Positioned(
+                            right: 0,
+                            bottom: 0,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  messageTimeLabel(widget.entry.createdAt),
+                                  key: const Key('timeline-user-message-time'),
+                                  style: Theme.of(context).textTheme.bodySmall
+                                      ?.copyWith(
+                                        color: palette.muted,
+                                        fontSize: 12,
+                                        height: 1.2,
+                                      ),
+                                ),
+                                const SizedBox(width: 7),
+                                _actionButton(
+                                  key: ValueKey(
+                                    'timeline-user-message-copy-${widget.entry.id}',
+                                  ),
+                                  tooltip: '复制消息',
+                                  icon: Icons.content_copy_outlined,
+                                  onTap: () => unawaited(
+                                    Clipboard.setData(
+                                      ClipboardData(text: widget.entry.detail),
+                                    ),
+                                  ),
+                                  palette: palette,
+                                ),
+                                if (widget.onSubmitEdit != null)
+                                  _actionButton(
+                                    key: ValueKey(
+                                      'timeline-user-message-edit-${widget.entry.id}',
+                                    ),
+                                    tooltip: '修改消息',
+                                    icon: Icons.edit_outlined,
+                                    onTap: _startEditing,
+                                    palette: palette,
+                                  ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+            ),
+          ),
+        );
+      },
     );
   }
 }

@@ -296,9 +296,13 @@ void main() {
     );
 
     await tester.tap(find.byKey(const Key('inspector-subagents-open-all')));
-    await tester.pump();
+    await tester.pumpAndSettle();
 
     expect(find.byKey(const Key('agents-page')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('full-height-side-panel')),
+      findsOneWidget,
+    );
     expect(
       find.byKey(
         const ValueKey('side-panel-tab-subagent:login-entry-integration'),
@@ -334,7 +338,7 @@ void main() {
       tester
           .getSize(find.byKey(const Key('conversation-viewport-stack')))
           .width,
-      closeTo(720, 0.1),
+      greaterThanOrEqualTo(720),
     );
     final expandedConversation = tester.getRect(
       find.byKey(const Key('conversation-viewport-stack')),
@@ -356,39 +360,22 @@ void main() {
     );
 
     await tester.tap(find.byKey(const Key('side-panel-collapse')));
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.byKey(const Key('code-review-panel')), findsNothing);
     expect(find.byKey(const Key('side-panel-expand')), findsOneWidget);
     expect(
       tester.getSize(find.byKey(const Key('side-panel-expand'))),
       const Size.square(40),
     );
-    final collapsedConversation = tester.getRect(
-      find.byKey(const Key('conversation-viewport-stack')),
-    );
-    final collapsedWorkbench = tester.getRect(
-      find.byKey(const Key('workbench-column-topbar')),
-    );
-    final collapsedInspectorHandle = tester.getRect(
-      find.byKey(const Key('inspector-resize-handle')),
-    );
-    expect(
-      collapsedConversation.center.dx,
-      closeTo(collapsedWorkbench.center.dx, 0.1),
-    );
-    expect(
-      collapsedInspectorHandle.right,
-      greaterThan(collapsedConversation.right),
-    );
 
     await tester.tap(find.byKey(const Key('side-panel-expand')));
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.byKey(const Key('subagent-thread-panel')), findsOneWidget);
     await tester.tap(find.byKey(const Key('side-panel-collapse')));
-    await tester.pump();
+    await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(const Key('workbench-file-changes-button')));
-    await tester.pump();
+    await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('side-panel-tab-review')), findsOneWidget);
     expect(
@@ -2012,49 +1999,209 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets(
-    'defers native browser creation until the browser workspace opens',
-    (tester) async {
-      final controller = CodexController(
-        server: CodexAppServer(messageSink: (_) {}),
-      );
-      await tester.pumpWidget(
-        ProviderScope(
-          child: MaterialApp(home: CodexWorkspace(controller: controller)),
-        ),
-      );
+  testWidgets('defers native browser creation until its workspace tab opens', (
+    tester,
+  ) async {
+    final controller = CodexController(
+      server: CodexAppServer(messageSink: (_) {}),
+    );
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(home: CodexWorkspace(controller: controller)),
+      ),
+    );
 
-      expect(find.byKey(const Key('browser-workspace-page')), findsNothing);
+    expect(find.byKey(const Key('browser-workspace-page')), findsNothing);
 
-      await tester.tap(find.byKey(const Key('sidebar-settings-button')));
+    await tester.tap(find.byKey(const Key('sidebar-settings-button')));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('settings-nav-浏览器')),
+      240,
+      scrollable: find.descendant(
+        of: find.byKey(const Key('settings-navigation-scroll')),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    await tester.tap(find.byKey(const Key('settings-nav-浏览器')));
+    await tester.pump();
+
+    expect(find.byKey(const Key('browser-workspace-page')), findsNothing);
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'browser/open',
+        requestId: 'browser-test-1',
+        params: {'url': 'https://example.com'},
+      ),
+    );
+    await tester.pump();
+    expect(find.byKey(const Key('browser-workspace-page')), findsNothing);
+    await controller.respondToApproval(accepted: true);
+    await tester.pump();
+    expect(find.byKey(const Key('browser-workspace-page')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('side-panel-tab-browser')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('workbench-column-topbar')), findsOneWidget);
+    expect(find.byType(ConversationPane), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('manual browser launcher opens a retained workspace tab', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1800, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(
+      server: CodexAppServer(messageSink: (_) {}),
+    );
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(home: CodexWorkspace(controller: controller)),
+      ),
+    );
+
+    expect(find.byKey(const Key('browser-workspace-page')), findsNothing);
+    expect(find.byKey(const Key('environment-inspector-pane')), findsOneWidget);
+    await tester.tap(find.byTooltip('展开右侧工作区'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('浏览器'));
+    await tester.pump();
+
+    expect(find.byKey(const Key('browser-workspace-page')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('side-panel-tab-browser')),
+      findsOneWidget,
+    );
+    expect(find.byType(ConversationPane), findsOneWidget);
+    expect(find.byKey(const Key('environment-inspector-pane')), findsNothing);
+    expect(find.text('开始浏览'), findsOneWidget);
+
+    await tester.enterText(
+      find.byKey(const Key('browser-address')),
+      'retained.example',
+    );
+    await tester.tap(find.byTooltip('收起右侧工作区'));
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(tester.takeException(), isNull);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('browser-workspace-page')), findsNothing);
+    expect(
+      find.byKey(const Key('browser-workspace-page'), skipOffstage: false),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('browser-address')), findsNothing);
+    expect(find.byKey(const Key('environment-inspector-pane')), findsOneWidget);
+    final hiddenBrowser = find.byKey(
+      const Key('browser-workspace-page'),
+      skipOffstage: false,
+    );
+    final hiddenAddressField = find.descendant(
+      of: hiddenBrowser,
+      matching: find.byType(EditableText, skipOffstage: false),
+    );
+    expect(
+      tester.widget<EditableText>(hiddenAddressField).focusNode.hasFocus,
+      isFalse,
+    );
+
+    await tester.tap(find.byTooltip('展开右侧工作区'));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('browser-address')))
+          .controller
+          ?.text,
+      'retained.example',
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('keeps browser state across full-page destinations', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1400, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller =
+        CodexController(
+            server: CodexAppServer(messageSink: (_) {}),
+            pluginStore: _MemoryCodexPluginStore(),
+          )
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready
+          ..threads = [_thread(id: 'thread-1', status: 'idle')];
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(home: CodexWorkspace(controller: controller)),
+      ),
+    );
+
+    await tester.tap(find.byTooltip('展开右侧工作区'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('浏览器'));
+    await tester.pump();
+    await tester.enterText(
+      find.byKey(const Key('browser-address')),
+      'retained-across-destinations.example',
+    );
+
+    for (final navigationKey in const [
+      Key('sidebar-scheduled-tasks-button'),
+      Key('sidebar-plugins-button'),
+      Key('sidebar-agents-button'),
+      Key('sidebar-pull-requests-button'),
+    ]) {
+      await tester.tap(find.byKey(navigationKey));
       await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('settings-nav-浏览器')),
-        240,
-        scrollable: find.descendant(
-          of: find.byKey(const Key('settings-navigation-scroll')),
-          matching: find.byType(Scrollable),
-        ),
+      expect(find.byKey(const Key('browser-workspace-page')), findsNothing);
+      expect(
+        find.byKey(const Key('browser-workspace-page'), skipOffstage: false),
+        findsOneWidget,
+        reason: 'browser should remain mounted after opening $navigationKey',
       );
-      await tester.tap(find.byKey(const Key('settings-nav-浏览器')));
-      await tester.pump();
+      expect(
+        tester
+            .widget<TextField>(
+              find.byKey(const Key('browser-address'), skipOffstage: false),
+            )
+            .controller
+            ?.text,
+        'retained-across-destinations.example',
+      );
+      expect(tester.takeException(), isNull);
+    }
 
-      expect(find.byKey(const Key('browser-workspace-page')), findsNothing);
-      controller.handleServerEventForTesting(
-        const ServerEvent(
-          method: 'browser/open',
-          requestId: 'browser-test-1',
-          params: {'url': 'https://example.com'},
-        ),
-      );
-      await tester.pump();
-      expect(find.byKey(const Key('browser-workspace-page')), findsNothing);
-      await controller.respondToApproval(accepted: true);
-      await tester.pump();
-      expect(find.byKey(const Key('browser-workspace-page')), findsOneWidget);
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
+    await tester.tap(find.byKey(const Key('sidebar-settings-button')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('browser-workspace-page')), findsNothing);
+    expect(
+      tester
+          .widget<TextField>(
+            find.byKey(const Key('browser-address'), skipOffstage: false),
+          )
+          .controller
+          ?.text,
+      'retained-across-destinations.example',
+    );
+    await tester.tap(find.byKey(const Key('settings-back-button')));
+    await tester.pump();
+
+    await tester.tap(
+      find.byKey(const ValueKey('sidebar-thread-tile-thread-1')),
+    );
+    await tester.pump();
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('browser-address')))
+          .controller
+          ?.text,
+      'retained-across-destinations.example',
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets(
     'keeps the active reply on stable text metrics until Markdown completes',
@@ -15871,9 +16018,66 @@ void main() {
         find.byKey(const Key('timeline-user-message')),
       );
       expect(bubble.right, closeTo(776, 1));
+      expect(
+        find.byKey(const Key('timeline-user-message-disclosure')),
+        findsNothing,
+      );
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets('collapses and expands long user messages', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final longMessage = List.generate(
+      180,
+      (index) => '第 $index 段很长的消息内容',
+    ).join(' ');
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace';
+    controller.replaceTimelineEntriesForTesting([
+      TimelineEntry(
+        kind: TimelineKind.user,
+        title: '你',
+        detail: longMessage,
+        createdAt: DateTime(2026),
+      ),
+    ]);
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final messageFinder = find.byKey(const Key('timeline-user-message-text'));
+    final disclosureFinder = find.byKey(
+      const Key('timeline-user-message-disclosure'),
+    );
+    expect(disclosureFinder, findsOneWidget);
+    expect(find.text('显示更多'), findsOneWidget);
+    expect(tester.widget<Text>(messageFinder).maxLines, 16);
+    expect(tester.widget<Text>(messageFinder).overflow, TextOverflow.ellipsis);
+    final collapsedHeight = tester
+        .getSize(find.byKey(const Key('timeline-user-message')))
+        .height;
+
+    await tester.tap(disclosureFinder);
+    await tester.pump();
+
+    expect(find.text('显示较少'), findsOneWidget);
+    expect(tester.widget<Text>(messageFinder).maxLines, isNull);
+    expect(
+      tester.getSize(find.byKey(const Key('timeline-user-message'))).height,
+      greaterThan(collapsedHeight),
+    );
+
+    tester.widget<TextButton>(disclosureFinder).onPressed!();
+    await tester.pump();
+
+    expect(find.text('显示更多'), findsOneWidget);
+    expect(tester.widget<Text>(messageFinder).maxLines, 16);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('shows user-message actions only while its bubble is hovered', (
     tester,

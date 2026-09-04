@@ -7,6 +7,7 @@ import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.d
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
 import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_page.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_workspace_page.dart';
+import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_workspace_page_state.dart';
 import 'package:chatgpt/src/presentation/agents/codex_workspace_agents_page.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_side_panel_launcher.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
@@ -54,6 +55,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   bool _reviewOpen = false;
   CodeReviewSource _reviewSource = CodeReviewSource.latestTurn;
   final GlobalKey _reviewPanelKey = GlobalKey();
+  final GlobalKey<BrowserWorkspacePageState> _browserPanelKey = GlobalKey();
   // Native WebView creation is expensive on macOS. Keep the browser mounted
   // after its first use, but do not construct it during the initial frame.
   // 原生 WebView 在 macOS 上初始化成本较高；首次使用后保活，但首帧不创建。
@@ -197,15 +199,17 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     unawaited(_controller.acknowledgeCompletedThread(threadId));
   }
 
-  /// 智能体发出受支持的浏览器请求后切换到保活的内置浏览器工作区。
-  /// Opens the retained embedded browser workspace for a supported agent request.
+  /// 智能体发出受支持的浏览器请求后，在会话旁的工作区标签中打开保活浏览器。
+  /// Opens the retained browser in a workspace tab beside the conversation.
   void _handleBrowserInvocation(String url) {
     if (!mounted || !_controller.browserEnabled) return;
     setState(() {
       _browserInitialUrl = url;
       _browserNavigationRevision++;
       _browserPageMounted = true;
-      _destination = WorkspaceDestination.browser;
+      _destination = WorkspaceDestination.conversation;
+      _activeSidePanelTab = 'browser';
+      _sidePanelCollapsed = false;
     });
   }
 
@@ -218,7 +222,11 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       _selectedSubagentParentThreadId = null;
       _openedSubagentThreadIds.clear();
       _subagentTitles.clear();
-      _activeSidePanelTab = _reviewOpen ? 'review' : '';
+      _activeSidePanelTab = _reviewOpen
+          ? 'review'
+          : _browserPageMounted
+          ? 'browser'
+          : '';
     }
     if (_controller.isResumingThread) {
       _timelineScrollGeneration++;
@@ -313,6 +321,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       _subagentTitles[threadId] = title;
       _destination = WorkspaceDestination.conversation;
       _activeSidePanelTab = 'subagent:$threadId';
+      _sidePanelCollapsed = false;
     });
     unawaited(
       _controller.loadSubagentThread(
@@ -2204,6 +2213,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       }
       _selectedSubagentThreadId ??= agents.keys.first;
       _activeSidePanelTab = 'subagent:$_selectedSubagentThreadId';
+      _sidePanelCollapsed = false;
     });
     for (final entry in agents.entries) {
       unawaited(
@@ -2417,24 +2427,43 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller ?? ref.watch(codexControllerProvider)!;
+    final browserPage = _browserPageMounted
+        ? BrowserWorkspacePage(
+            key: _browserPanelKey,
+            onOpenConversation: _returnToMainTask,
+            initialUrl: _browserInitialUrl,
+            navigationRevision: _browserNavigationRevision,
+            isVisible:
+                _destination == WorkspaceDestination.conversation &&
+                !_sidePanelCollapsed &&
+                _activeSidePanelTab == 'browser',
+          )
+        : null;
     if (_destination == WorkspaceDestination.settings) {
       return Scaffold(
         body: SafeArea(
           top: false,
-          child: LayoutBuilder(
-            builder: (context, constraints) => SettingsPage(
-              controller: controller,
-              navigationWidth: _sidebarWidthFor(constraints.maxWidth),
-              themeMode: widget.themeMode,
-              onThemeModeChanged: widget.onThemeModeChanged,
-              onChooseWorkspace: _showWorkspaceDirectories,
-              onShowCodexConfiguration: _showCodexConfiguration,
-              onConfigureRuntime: _showRuntime,
-              onAddMarketplace: _showAddMarketplace,
-              onManageMarketplaces: _showMarketplaces,
-              onShowAccount: _showAccount,
-              onOpenConversation: _showConversation,
-            ),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              LayoutBuilder(
+                builder: (context, constraints) => SettingsPage(
+                  controller: controller,
+                  navigationWidth: _sidebarWidthFor(constraints.maxWidth),
+                  themeMode: widget.themeMode,
+                  onThemeModeChanged: widget.onThemeModeChanged,
+                  onChooseWorkspace: _showWorkspaceDirectories,
+                  onShowCodexConfiguration: _showCodexConfiguration,
+                  onConfigureRuntime: _showRuntime,
+                  onAddMarketplace: _showAddMarketplace,
+                  onManageMarketplaces: _showMarketplaces,
+                  onShowAccount: _showAccount,
+                  onOpenConversation: _showConversation,
+                ),
+              ),
+              if (browserPage != null)
+                ExcludeFocus(child: Offstage(child: browserPage)),
+            ],
           ),
         ),
       );
@@ -2457,39 +2486,17 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
             final workbenchWidth = constraints.maxWidth - sidebarWidth;
             final sidePanelExpanded = !_sidePanelCollapsed;
             final hasSidePanelContents =
-                _reviewOpen || _openedSubagentThreadIds.isNotEmpty;
+                _reviewOpen ||
+                _browserPageMounted ||
+                _openedSubagentThreadIds.isNotEmpty;
             final sidePanelOpen = sidePanelExpanded && hasSidePanelContents;
             final showSidePanelLauncher =
                 sidePanelExpanded && !hasSidePanelContents;
             final auxiliaryFullHeight = sidePanelOpen && !compact;
-            final preserveInspectorWithAuxiliary =
-                auxiliaryFullHeight &&
-                workbenchWidth >=
-                    conversationContentMaxWidth +
-                        _minimumInspectorWidth +
-                        _minimumAuxiliaryWidth;
-            final showInlineInspector =
-                !compact &&
-                auxiliaryFullHeight &&
-                preserveInspectorWithAuxiliary &&
-                !sidePanelOpen;
-            final auxiliaryInspectorWidth = preserveInspectorWithAuxiliary
-                ? inspectorWidth
-                      .clamp(
-                        _minimumInspectorWidth,
-                        workbenchWidth -
-                            conversationContentMaxWidth -
-                            _minimumAuxiliaryWidth,
-                      )
-                      .toDouble()
-                : inspectorWidth;
             final reviewMaximum = auxiliaryFullHeight
                 ? (workbenchWidth -
                           conversationContentMaxWidth -
-                          _auxiliaryPaneAllowance -
-                          (preserveInspectorWithAuxiliary
-                              ? auxiliaryInspectorWidth
-                              : 0))
+                          _auxiliaryPaneAllowance)
                       .clamp(_minimumAuxiliaryWidth, _maximumReviewWidth)
                       .toDouble()
                 : _minimumReviewWidth;
@@ -2508,6 +2515,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                   onSourceChanged: _changeCodeReviewSource,
                   onCollapse: _returnToMainTask,
                 ),
+              if (_browserPageMounted) 'browser': browserPage!,
               for (final id in _openedSubagentThreadIds)
                 'subagent:$id': SubagentThreadPanel(
                   key: ValueKey('subagent-panel-$id'),
@@ -2519,9 +2527,18 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
             };
             final sidePanelLabels = <String, String>{
               if (_reviewOpen) 'review': '审查',
+              if (_browserPageMounted) 'browser': '浏览器',
               for (final id in _openedSubagentThreadIds)
                 'subagent:$id': _subagentTitles[id] ?? '子智能体',
             };
+            final sidePanelTabs = WorkspaceSidePanelTabs(
+              key: const ValueKey('full-height-side-panel'),
+              contents: sidePanelContents,
+              labels: sidePanelLabels,
+              activeTab: _activeSidePanelTab,
+              onSelect: _selectSidePanelTab,
+              onCollapse: _returnToMainTask,
+            );
             return Stack(
               fit: StackFit.expand,
               children: [
@@ -2594,416 +2611,398 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                       child: Stack(
                         fit: StackFit.expand,
                         children: [
-                          if (_browserPageMounted)
-                            Offstage(
-                              offstage:
-                                  _destination != WorkspaceDestination.browser,
-                              child: BrowserWorkspacePage(
-                                onOpenConversation: _showConversation,
-                                initialUrl: _browserInitialUrl,
-                                navigationRevision: _browserNavigationRevision,
-                              ),
-                            ),
-                          if (_destination != WorkspaceDestination.browser)
-                            _destination == WorkspaceDestination.scheduledTasks
-                                ? ScheduledTasksPage(
-                                    controller: controller,
-                                    onCreate: _showScheduledTaskComposer,
-                                  )
-                                : _destination == WorkspaceDestination.plugins
-                                ? PluginsPage(
-                                    controller: controller,
-                                    onAddMarketplace: _showAddMarketplace,
-                                    onOpenSettings: _showPlugins,
-                                    onCreatePlugin: _createPluginWithCodex,
-                                    onRecordSkill: _recordSkillWithCodex,
-                                  )
-                                : _destination == WorkspaceDestination.agents
-                                ? AgentsPage(
-                                    controller: controller,
-                                    onOpenSubagent: _openSubagentThread,
-                                  )
-                                : _destination ==
-                                      WorkspaceDestination.pullRequests
-                                ? PullRequestsPage(
-                                    controller: controller,
-                                    onOpenGitProject: _showGitProject,
-                                    onAskCodex: _askCodexAboutGitHubCli,
-                                  )
-                                : Row(
-                                    children: [
-                                      Expanded(
-                                        child: Column(
-                                          children: [
-                                            Align(
-                                              alignment: Alignment.centerLeft,
-                                              child: SizedBox(
-                                                width:
-                                                    !compact &&
-                                                        !auxiliaryFullHeight
-                                                    ? (workbenchWidth -
-                                                              (inspectorWidth *
-                                                                  2) -
-                                                              8)
-                                                          .clamp(
-                                                            0.0,
-                                                            double.infinity,
-                                                          )
-                                                          .toDouble()
-                                                    : null,
-                                                child: TopBar(
-                                                  key: const Key(
-                                                    'workbench-column-topbar',
-                                                  ),
-                                                  controller: controller,
-                                                  themeMode: widget.themeMode,
-                                                  themePreset:
-                                                      widget.themePreset,
-                                                  onThemeModeChanged:
-                                                      widget.onThemeModeChanged,
-                                                  onThemePresetChanged: widget
-                                                      .onThemePresetChanged,
-                                                  onChooseWorkspace:
-                                                      _showWorkspaceDirectories,
-                                                  onAccount: _showAccount,
-                                                  onCodexConfiguration:
-                                                      _showCodexConfiguration,
-                                                  onPlugins: _showPlugins,
-                                                  showIdentity: false,
-                                                  showControls: true,
-                                                  showTaskContext: true,
-                                                  onShowFileChanges: () =>
-                                                      _showCodeReview(
-                                                        CodeReviewSource
-                                                            .latestTurn,
-                                                      ),
-                                                  sidePanelExpanded:
-                                                      sidePanelExpanded,
-                                                  onToggleSidePanel:
-                                                      showInlineInspector ||
-                                                          sidePanelOpen
-                                                      ? null
-                                                      : _toggleSidePanel,
+                          _destination == WorkspaceDestination.scheduledTasks
+                              ? ScheduledTasksPage(
+                                  controller: controller,
+                                  onCreate: _showScheduledTaskComposer,
+                                )
+                              : _destination == WorkspaceDestination.plugins
+                              ? PluginsPage(
+                                  controller: controller,
+                                  onAddMarketplace: _showAddMarketplace,
+                                  onOpenSettings: _showPlugins,
+                                  onCreatePlugin: _createPluginWithCodex,
+                                  onRecordSkill: _recordSkillWithCodex,
+                                )
+                              : _destination == WorkspaceDestination.agents
+                              ? AgentsPage(
+                                  controller: controller,
+                                  onOpenSubagent: _openSubagentThread,
+                                )
+                              : _destination ==
+                                    WorkspaceDestination.pullRequests
+                              ? PullRequestsPage(
+                                  controller: controller,
+                                  onOpenGitProject: _showGitProject,
+                                  onAskCodex: _askCodexAboutGitHubCli,
+                                )
+                              : Row(
+                                  children: [
+                                    Expanded(
+                                      child: Column(
+                                        children: [
+                                          Align(
+                                            alignment: Alignment.centerLeft,
+                                            child: SizedBox(
+                                              width:
+                                                  !compact &&
+                                                      !auxiliaryFullHeight
+                                                  ? (workbenchWidth -
+                                                            (inspectorWidth *
+                                                                2) -
+                                                            8)
+                                                        .clamp(
+                                                          0.0,
+                                                          double.infinity,
+                                                        )
+                                                        .toDouble()
+                                                  : null,
+                                              child: TopBar(
+                                                key: const Key(
+                                                  'workbench-column-topbar',
                                                 ),
+                                                controller: controller,
+                                                themeMode: widget.themeMode,
+                                                themePreset: widget.themePreset,
+                                                onThemeModeChanged:
+                                                    widget.onThemeModeChanged,
+                                                onThemePresetChanged:
+                                                    widget.onThemePresetChanged,
+                                                onChooseWorkspace:
+                                                    _showWorkspaceDirectories,
+                                                onAccount: _showAccount,
+                                                onCodexConfiguration:
+                                                    _showCodexConfiguration,
+                                                onPlugins: _showPlugins,
+                                                showIdentity: false,
+                                                showControls: true,
+                                                showTaskContext: true,
+                                                onShowFileChanges: () =>
+                                                    _showCodeReview(
+                                                      CodeReviewSource
+                                                          .latestTurn,
+                                                    ),
+                                                sidePanelExpanded:
+                                                    sidePanelExpanded,
+                                                onToggleSidePanel: sidePanelOpen
+                                                    ? null
+                                                    : _toggleSidePanel,
                                               ),
                                             ),
-                                            const Divider(height: 1),
-                                            Expanded(
-                                              child: Row(
-                                                children: [
-                                                  Expanded(
-                                                    child: Stack(
-                                                      fit: StackFit.expand,
-                                                      children: [
-                                                        ConversationPane(
-                                                          controller:
-                                                              controller,
-                                                          composer: _composer,
-                                                          recordSkillRequest:
-                                                              _recordSkillRequest,
-                                                          timelinePages:
-                                                              _timelinePages,
-                                                          timelineScrollControllers:
-                                                              _timelineScrollControllers,
-                                                          activeTimelinePageKey:
-                                                              _displayedThreadKey,
-                                                          threadHistoryLoading:
-                                                              _threadHistoryLoading,
-                                                          fileChangeSummaryExpanded:
-                                                              (pageKey) =>
-                                                                  _fileChangeSummaryExpanded[pageKey] ??
-                                                                  false,
-                                                          onFileChangeSummaryExpandedChanged:
-                                                              (
-                                                                pageKey,
-                                                                expanded,
-                                                              ) {
-                                                                setState(() {
-                                                                  _fileChangeSummaryExpanded[pageKey] =
-                                                                      expanded;
-                                                                });
-                                                              },
-                                                          activityExpanded:
-                                                              (
-                                                                pageKey,
-                                                                activityId,
-                                                              ) =>
-                                                                  _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
-                                                                  false,
-                                                          onTimelineMetricsChanged:
-                                                              _handleTimelineMetricsChanged,
-                                                          onTimelineUserScrollDirection:
-                                                              _handleTimelineUserScrollDirection,
-                                                          showScrollToBottom:
-                                                              _timelineIsAboveLatest[_displayedThreadKey] ??
-                                                              false,
-                                                          onScrollToBottom:
-                                                              _scrollTimelineToBottom,
-                                                          onActivityExpandedChanged:
-                                                              (
-                                                                pageKey,
-                                                                activityId,
-                                                                expanded,
-                                                              ) {
-                                                                setState(() {
-                                                                  _activityListExpanded['${pageKey.storageKey}/$activityId'] =
-                                                                      expanded;
-                                                                });
-                                                              },
-                                                          onSend: _send,
-                                                          onQueueSteer:
-                                                              _queueDirection,
-                                                          onReview: () =>
-                                                              _showCodeReview(
-                                                                CodeReviewSource
-                                                                    .latestTurn,
+                                          ),
+                                          const Divider(height: 1),
+                                          Expanded(
+                                            child: Row(
+                                              children: [
+                                                Expanded(
+                                                  child: Stack(
+                                                    fit: StackFit.expand,
+                                                    children: [
+                                                      ConversationPane(
+                                                        controller: controller,
+                                                        composer: _composer,
+                                                        recordSkillRequest:
+                                                            _recordSkillRequest,
+                                                        timelinePages:
+                                                            _timelinePages,
+                                                        timelineScrollControllers:
+                                                            _timelineScrollControllers,
+                                                        activeTimelinePageKey:
+                                                            _displayedThreadKey,
+                                                        threadHistoryLoading:
+                                                            _threadHistoryLoading,
+                                                        fileChangeSummaryExpanded:
+                                                            (pageKey) =>
+                                                                _fileChangeSummaryExpanded[pageKey] ??
+                                                                false,
+                                                        onFileChangeSummaryExpandedChanged:
+                                                            (
+                                                              pageKey,
+                                                              expanded,
+                                                            ) {
+                                                              setState(() {
+                                                                _fileChangeSummaryExpanded[pageKey] =
+                                                                    expanded;
+                                                              });
+                                                            },
+                                                        activityExpanded:
+                                                            (
+                                                              pageKey,
+                                                              activityId,
+                                                            ) =>
+                                                                _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
+                                                                false,
+                                                        onTimelineMetricsChanged:
+                                                            _handleTimelineMetricsChanged,
+                                                        onTimelineUserScrollDirection:
+                                                            _handleTimelineUserScrollDirection,
+                                                        showScrollToBottom:
+                                                            _timelineIsAboveLatest[_displayedThreadKey] ??
+                                                            false,
+                                                        onScrollToBottom:
+                                                            _scrollTimelineToBottom,
+                                                        onActivityExpandedChanged:
+                                                            (
+                                                              pageKey,
+                                                              activityId,
+                                                              expanded,
+                                                            ) {
+                                                              setState(() {
+                                                                _activityListExpanded['${pageKey.storageKey}/$activityId'] =
+                                                                    expanded;
+                                                              });
+                                                            },
+                                                        onSend: _send,
+                                                        onQueueSteer:
+                                                            _queueDirection,
+                                                        onReview: () =>
+                                                            _showCodeReview(
+                                                              CodeReviewSource
+                                                                  .latestTurn,
+                                                            ),
+                                                        onUndo:
+                                                            _undoFileChanges,
+                                                        onOpenSubagent:
+                                                            _openSubagentInspector,
+                                                        onSubmitUserMessageEdit:
+                                                            _submitEditedUserMessage,
+                                                      ),
+                                                      if (_threadHistoryLoading)
+                                                        Positioned.fill(
+                                                          child: IgnorePointer(
+                                                            child: ColoredBox(
+                                                              key: const Key(
+                                                                'thread-history-loading',
                                                               ),
-                                                          onUndo:
-                                                              _undoFileChanges,
-                                                          onOpenSubagent:
-                                                              _openSubagentInspector,
-                                                          onSubmitUserMessageEdit:
-                                                              _submitEditedUserMessage,
-                                                        ),
-                                                        if (_threadHistoryLoading)
-                                                          Positioned.fill(
-                                                            child: IgnorePointer(
-                                                              child: ColoredBox(
-                                                                key: const Key(
-                                                                  'thread-history-loading',
-                                                                ),
-                                                                color:
-                                                                    YeknomPalette.of(
-                                                                      context,
-                                                                    ).module,
-                                                                child: const Center(
-                                                                  child:
-                                                                      CodexLoadingMark(),
-                                                                ),
+                                                              color:
+                                                                  YeknomPalette.of(
+                                                                    context,
+                                                                  ).module,
+                                                              child: const Center(
+                                                                child:
+                                                                    CodexLoadingMark(),
                                                               ),
                                                             ),
                                                           ),
-                                                        if (compact &&
-                                                            sidePanelOpen)
-                                                          WorkspaceSidePanelTabs(
-                                                            contents:
-                                                                sidePanelContents,
-                                                            labels:
-                                                                sidePanelLabels,
-                                                            activeTab:
-                                                                _activeSidePanelTab,
-                                                            onSelect:
-                                                                _selectSidePanelTab,
-                                                            onCollapse:
-                                                                _returnToMainTask,
+                                                        ),
+                                                      if (compact &&
+                                                          hasSidePanelContents)
+                                                        ExcludeFocus(
+                                                          excluding:
+                                                              !sidePanelOpen,
+                                                          child: Offstage(
+                                                            offstage:
+                                                                !sidePanelOpen,
+                                                            child:
+                                                                sidePanelTabs,
                                                           ),
-                                                        if (!compact &&
-                                                            !sidePanelExpanded &&
-                                                            !showSidePanelLauncher &&
-                                                            _destination ==
-                                                                WorkspaceDestination
-                                                                    .conversation)
-                                                          Positioned(
-                                                            top: 0,
-                                                            right: 0,
-                                                            child: Offstage(
-                                                              offstage:
-                                                                  !_sidePanelCollapsed,
-                                                              child: Row(
-                                                                children: [
-                                                                  PaneResizeHandle(
-                                                                    key: const Key(
-                                                                      'inspector-resize-handle',
-                                                                    ),
-                                                                    onDragDelta: (delta) => setState(() {
-                                                                      _inspectorWidth =
-                                                                          (_inspectorWidth -
-                                                                                  delta)
-                                                                              .clamp(
-                                                                                _minimumInspectorWidth,
-                                                                                inspectorMaximum,
-                                                                              )
-                                                                              .toDouble();
-                                                                    }),
+                                                        ),
+                                                      if (!compact &&
+                                                          !sidePanelExpanded &&
+                                                          !showSidePanelLauncher &&
+                                                          _destination ==
+                                                              WorkspaceDestination
+                                                                  .conversation)
+                                                        Positioned(
+                                                          top: 0,
+                                                          right: 0,
+                                                          child: Offstage(
+                                                            offstage:
+                                                                !_sidePanelCollapsed,
+                                                            child: Row(
+                                                              children: [
+                                                                PaneResizeHandle(
+                                                                  key: const Key(
+                                                                    'inspector-resize-handle',
                                                                   ),
-                                                                  SizedBox(
+                                                                  onDragDelta: (delta) => setState(() {
+                                                                    _inspectorWidth =
+                                                                        (_inspectorWidth -
+                                                                                delta)
+                                                                            .clamp(
+                                                                              _minimumInspectorWidth,
+                                                                              inspectorMaximum,
+                                                                            )
+                                                                            .toDouble();
+                                                                  }),
+                                                                ),
+                                                                SizedBox(
+                                                                  width:
+                                                                      inspectorWidth,
+                                                                  height: 500,
+                                                                  child: Inspector(
                                                                     width:
                                                                         inspectorWidth,
-                                                                    height: 500,
-                                                                    child: Inspector(
-                                                                      width:
-                                                                          inspectorWidth,
-                                                                      controller:
-                                                                          controller,
-                                                                      onShowTaskChanges: () => _showCodeReview(
-                                                                        CodeReviewSource
-                                                                            .latestTurn,
-                                                                      ),
-                                                                      onShowGitProject: () => _showCodeReview(
-                                                                        CodeReviewSource
-                                                                            .gitWorkspace,
-                                                                      ),
-                                                                      onShowAgents:
-                                                                          _showAgents,
-                                                                    ),
+                                                                    controller:
+                                                                        controller,
+                                                                    onShowTaskChanges: () =>
+                                                                        _showCodeReview(
+                                                                          CodeReviewSource
+                                                                              .latestTurn,
+                                                                        ),
+                                                                    onShowGitProject: () =>
+                                                                        _showCodeReview(
+                                                                          CodeReviewSource
+                                                                              .gitWorkspace,
+                                                                        ),
+                                                                    onShowAgents:
+                                                                        _showAgents,
                                                                   ),
-                                                                ],
-                                                              ),
+                                                                ),
+                                                              ],
                                                             ),
                                                           ),
-                                                      ],
-                                                    ),
+                                                        ),
+                                                    ],
                                                   ),
-                                                ],
-                                              ),
+                                                ),
+                                              ],
                                             ),
-                                          ],
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    if (!compact)
+                                      AnimatedContainer(
+                                        duration: sidePanelExpanded
+                                            ? Duration.zero
+                                            : const Duration(milliseconds: 240),
+                                        curve: Curves.easeOutCubic,
+                                        width: animatedSidePanelWidth,
+                                        child: LayoutBuilder(
+                                          builder: (context, constraints) {
+                                            final minimumContentWidth =
+                                                _browserPageMounted
+                                                ? _minimumAuxiliaryWidth
+                                                : 8.0;
+                                            if (!sidePanelOpen &&
+                                                hasSidePanelContents) {
+                                              return ExcludeFocus(
+                                                child: Offstage(
+                                                  child: OverflowBox(
+                                                    alignment:
+                                                        Alignment.topLeft,
+                                                    minWidth:
+                                                        minimumContentWidth,
+                                                    maxWidth:
+                                                        minimumContentWidth,
+                                                    child: sidePanelTabs,
+                                                  ),
+                                                ),
+                                              );
+                                            }
+                                            if (constraints.maxWidth <=
+                                                minimumContentWidth) {
+                                              return hasSidePanelContents
+                                                  ? ExcludeFocus(
+                                                      child: Offstage(
+                                                        child: OverflowBox(
+                                                          alignment:
+                                                              Alignment.topLeft,
+                                                          minWidth:
+                                                              minimumContentWidth,
+                                                          maxWidth:
+                                                              minimumContentWidth,
+                                                          child: sidePanelTabs,
+                                                        ),
+                                                      ),
+                                                    )
+                                                  : const SizedBox.shrink();
+                                            }
+                                            return Row(
+                                              children: [
+                                                PaneResizeHandle(
+                                                  key: const Key(
+                                                    'review-resize-handle',
+                                                  ),
+                                                  onDragDelta: (delta) =>
+                                                      setState(() {
+                                                        _reviewWidth =
+                                                            (_reviewWidth -
+                                                                    delta)
+                                                                .clamp(
+                                                                  _minimumAuxiliaryWidth,
+                                                                  reviewMaximum,
+                                                                )
+                                                                .toDouble();
+                                                      }),
+                                                ),
+                                                Expanded(
+                                                  child: AnimatedSwitcher(
+                                                    duration: const Duration(
+                                                      milliseconds: 220,
+                                                    ),
+                                                    transitionBuilder:
+                                                        (
+                                                          child,
+                                                          animation,
+                                                        ) => FadeTransition(
+                                                          opacity: animation,
+                                                          child: SlideTransition(
+                                                            position:
+                                                                Tween<Offset>(
+                                                                  begin:
+                                                                      const Offset(
+                                                                        0.04,
+                                                                        0,
+                                                                      ),
+                                                                  end: Offset
+                                                                      .zero,
+                                                                ).animate(
+                                                                  animation,
+                                                                ),
+                                                            child: child,
+                                                          ),
+                                                        ),
+                                                    child: hasSidePanelContents
+                                                        ? sidePanelTabs
+                                                        : WorkspaceSidePanelLauncher(
+                                                            key: const ValueKey(
+                                                              'side-panel-launcher',
+                                                            ),
+                                                            onSelect: (item) {
+                                                              switch (item) {
+                                                                case 'review':
+                                                                  _showCodeReview(
+                                                                    CodeReviewSource
+                                                                        .latestTurn,
+                                                                  );
+                                                                case 'browser':
+                                                                  setState(() {
+                                                                    _browserPageMounted =
+                                                                        true;
+                                                                    _destination =
+                                                                        WorkspaceDestination
+                                                                            .conversation;
+                                                                    _activeSidePanelTab =
+                                                                        'browser';
+                                                                    _sidePanelCollapsed =
+                                                                        false;
+                                                                  });
+                                                                case 'terminal':
+                                                                  unawaited(
+                                                                    _showRuntime(),
+                                                                  );
+                                                                case 'files':
+                                                                  unawaited(
+                                                                    _showGitProject(),
+                                                                  );
+                                                              }
+                                                            },
+                                                          ),
+                                                  ),
+                                                ),
+                                              ],
+                                            );
+                                          },
                                         ),
                                       ),
-                                      if (showInlineInspector) ...[
-                                        PaneResizeHandle(
-                                          key: const Key(
-                                            'inspector-resize-handle',
-                                          ),
-                                          onDragDelta: (delta) => setState(() {
-                                            _inspectorWidth =
-                                                (_inspectorWidth - delta)
-                                                    .clamp(
-                                                      _minimumInspectorWidth,
-                                                      inspectorMaximum,
-                                                    )
-                                                    .toDouble();
-                                          }),
-                                        ),
-                                        SizedBox(
-                                          width: auxiliaryInspectorWidth,
-                                          child: Inspector(
-                                            width: auxiliaryInspectorWidth,
-                                            controller: controller,
-                                            onShowTaskChanges: () =>
-                                                _showCodeReview(
-                                                  CodeReviewSource.latestTurn,
-                                                ),
-                                            onShowGitProject: () =>
-                                                _showCodeReview(
-                                                  CodeReviewSource.gitWorkspace,
-                                                ),
-                                            onShowAgents: _showAgents,
-                                          ),
-                                        ),
-                                      ],
-                                      if (!compact)
-                                        AnimatedContainer(
-                                          duration: const Duration(
-                                            milliseconds: 240,
-                                          ),
-                                          curve: Curves.easeOutCubic,
-                                          width: animatedSidePanelWidth,
-                                          child: LayoutBuilder(
-                                            builder: (context, constraints) {
-                                              if (constraints.maxWidth <= 8) {
-                                                return const SizedBox.shrink();
-                                              }
-                                              return Row(
-                                                children: [
-                                                  PaneResizeHandle(
-                                                    key: const Key(
-                                                      'review-resize-handle',
-                                                    ),
-                                                    onDragDelta: (delta) =>
-                                                        setState(() {
-                                                          _reviewWidth =
-                                                              (_reviewWidth -
-                                                                      delta)
-                                                                  .clamp(
-                                                                    _minimumAuxiliaryWidth,
-                                                                    reviewMaximum,
-                                                                  )
-                                                                  .toDouble();
-                                                        }),
-                                                  ),
-                                                  Expanded(
-                                                    child: AnimatedSwitcher(
-                                                      duration: const Duration(
-                                                        milliseconds: 220,
-                                                      ),
-                                                      transitionBuilder:
-                                                          (
-                                                            child,
-                                                            animation,
-                                                          ) => FadeTransition(
-                                                            opacity: animation,
-                                                            child: SlideTransition(
-                                                              position:
-                                                                  Tween<Offset>(
-                                                                    begin:
-                                                                        const Offset(
-                                                                          0.04,
-                                                                          0,
-                                                                        ),
-                                                                    end: Offset
-                                                                        .zero,
-                                                                  ).animate(
-                                                                    animation,
-                                                                  ),
-                                                              child: child,
-                                                            ),
-                                                          ),
-                                                      child: sidePanelOpen
-                                                          ? WorkspaceSidePanelTabs(
-                                                              key: const ValueKey(
-                                                                'full-height-side-panel',
-                                                              ),
-                                                              contents:
-                                                                  sidePanelContents,
-                                                              labels:
-                                                                  sidePanelLabels,
-                                                              activeTab:
-                                                                  _activeSidePanelTab,
-                                                              onSelect:
-                                                                  _selectSidePanelTab,
-                                                              onCollapse:
-                                                                  _returnToMainTask,
-                                                            )
-                                                          : WorkspaceSidePanelLauncher(
-                                                              key: const ValueKey(
-                                                                'side-panel-launcher',
-                                                              ),
-                                                              onSelect: (item) {
-                                                                switch (item) {
-                                                                  case 'review':
-                                                                    _showCodeReview(
-                                                                      CodeReviewSource
-                                                                          .latestTurn,
-                                                                    );
-                                                                  case 'browser':
-                                                                    setState(() {
-                                                                      _destination =
-                                                                          WorkspaceDestination
-                                                                              .browser;
-                                                                      _sidePanelCollapsed =
-                                                                          true;
-                                                                    });
-                                                                  case 'terminal':
-                                                                    unawaited(
-                                                                      _showRuntime(),
-                                                                    );
-                                                                  case 'files':
-                                                                    unawaited(
-                                                                      _showGitProject(),
-                                                                    );
-                                                                }
-                                                              },
-                                                            ),
-                                                    ),
-                                                  ),
-                                                ],
-                                              );
-                                            },
-                                          ),
-                                        ),
-                                    ],
-                                  ),
+                                  ],
+                                ),
+                          if (_destination !=
+                                  WorkspaceDestination.conversation &&
+                              hasSidePanelContents)
+                            ExcludeFocus(child: Offstage(child: sidePanelTabs)),
                         ],
                       ),
                     ),
@@ -3030,6 +3029,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                             minimumSize: const Size.square(40),
                             maximumSize: const Size.square(40),
                             padding: EdgeInsets.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(10),
                             ),
