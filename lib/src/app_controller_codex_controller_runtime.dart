@@ -457,12 +457,24 @@ class CodexController extends ChangeNotifier {
 
   String? get failedTurnRetryError => _activeFailedTurnRetry?.error;
 
+  bool get hasUsageLimitFailure =>
+      _activeFailedTurnRetry?.kind == FailedTurnKind.usageLimit;
+
+  String? get usageLimitFailureError =>
+      hasUsageLimitFailure ? _activeFailedTurnRetry?.error : null;
+
   bool get isRetryingFailedTurn =>
       _retryingFailedTurnThreadId != null &&
       _retryingFailedTurnThreadId == activeThreadId;
 
   bool get canRetryFailedTurn =>
-      hasFailedTurnRetry && !isRetryingFailedTurn && canSend;
+      hasFailedTurnRetry &&
+      !hasUsageLimitFailure &&
+      !isRetryingFailedTurn &&
+      canSend;
+
+  bool get canRetryUsageLimitedTurn =>
+      hasUsageLimitFailure && !isRetryingFailedTurn && canSend;
 
   bool get hasArchivedThreadRestore =>
       _archivedThreadRestore?.workspace == workspacePath;
@@ -2728,6 +2740,7 @@ class CodexController extends ChangeNotifier {
         _failedTurnRetries[failedSubmission.threadId] = FailedTurnRetry(
           submission: failedSubmission,
           error: failureMessage,
+          kind: _failedTurnKindFromError(error, failureMessage),
         );
       }
       _updateThreadStatus(requestedThreadId, 'systemError');
@@ -2800,6 +2813,7 @@ class CodexController extends ChangeNotifier {
       _failedTurnRetries[threadId] = FailedTurnRetry(
         submission: submission,
         error: message,
+        kind: _failedTurnKindFromError(error, message),
       );
       _updateThreadStatus(threadId, 'systemError');
       if (activeThreadId == threadId && workspacePath == submission.workspace) {
@@ -5052,6 +5066,7 @@ class CodexController extends ChangeNotifier {
       completedThreadId,
       completionOutcome,
       failedTurnError,
+      kind: _failedTurnKindFromError(turnMap['error'], failedTurnError),
     );
     if (completedThreadId != null) {
       _runningThreadIds.remove(completedThreadId);
@@ -5120,7 +5135,12 @@ class CodexController extends ChangeNotifier {
     final failedTurnError = _findText(turnMap['error']).isNotEmpty
         ? _findText(turnMap['error'])
         : 'Codex 未能完成当前任务。';
-    _recordTurnCompletionRetry(threadId, completionOutcome, failedTurnError);
+    _recordTurnCompletionRetry(
+      threadId,
+      completionOutcome,
+      failedTurnError,
+      kind: _failedTurnKindFromError(turnMap['error'], failedTurnError),
+    );
     _threadViewCache.remove(threadId);
     final completedStatus = completionOutcome == TurnCompletionOutcome.failed
         ? 'systemError'
@@ -5269,8 +5289,9 @@ class CodexController extends ChangeNotifier {
   void _recordTurnCompletionRetry(
     String? threadId,
     TurnCompletionOutcome outcome,
-    String error,
-  ) {
+    String error, {
+    FailedTurnKind kind = FailedTurnKind.retryable,
+  }) {
     if (threadId == null) return;
     final turnId = _runningTurnIdsByThread[threadId];
     if (turnId != null) {
@@ -5282,6 +5303,7 @@ class CodexController extends ChangeNotifier {
       _failedTurnRetries[threadId] = FailedTurnRetry(
         submission: submission,
         error: error,
+        kind: kind,
       );
     } else {
       _failedTurnRetries.remove(threadId);
@@ -8054,6 +8076,44 @@ class CodexController extends ChangeNotifier {
   /// Removes the Dart state-error prefix for user-displayable error text.
   String _messageOf(Object error) =>
       error.toString().replaceFirst('Bad state: ', '');
+
+  FailedTurnKind _failedTurnKindFromError(Object? error, String message) {
+    final identifiers = <String>[];
+    void collect(Object? value) {
+      if (value is Map) {
+        for (final entry in value.entries) {
+          final key = entry.key.toString().toLowerCase();
+          if (key == 'code' ||
+              key == 'type' ||
+              key == 'ratelimitreachedtype' ||
+              key == 'error') {
+            collect(entry.value);
+          }
+        }
+      } else if (value != null) {
+        identifiers.add(value.toString());
+      }
+    }
+
+    if (error is CodexAppServerException) {
+      collect({'code': error.code, 'type': error.type});
+    } else {
+      collect(error);
+    }
+    final identifier = identifiers
+        .join(' ')
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]'), '');
+    final normalizedMessage = message.trim().toLowerCase();
+    return identifier.contains('usagelimit') ||
+            identifier.contains('quotaexceeded') ||
+            identifier.contains('insufficientquota') ||
+            normalizedMessage.contains('usage limit') ||
+            normalizedMessage.contains('exceeded your current quota') ||
+            normalizedMessage == 'quota exceeded'
+        ? FailedTurnKind.usageLimit
+        : FailedTurnKind.retryable;
+  }
 
   /// 判断路径是否指向剪贴板导入的临时图片。
   /// Identifies a clipboard-imported temporary image path, including paths

@@ -5640,6 +5640,45 @@ void main() {
     },
   );
 
+  test('preserves structured App Server errors across requests', () async {
+    late CodexAppServer server;
+    server = CodexAppServer(
+      messageSink: (message) {
+        scheduleMicrotask(
+          () => server.handleStdoutLineForTesting(
+            jsonEncode({
+              'id': message['id'],
+              'error': {
+                'code': 'usage_limit_reached',
+                'message': 'localized limit message',
+                'data': {'type': 'usage_limit'},
+              },
+            }),
+          ),
+        );
+      },
+    );
+
+    await expectLater(
+      server.startTurn(
+        threadId: 'thread-1',
+        prompt: 'retry later',
+        workingDirectory: '/workspace',
+      ),
+      throwsA(
+        isA<CodexAppServerException>()
+            .having((error) => error.code, 'code', 'usage_limit_reached')
+            .having((error) => error.type, 'type', 'usage_limit')
+            .having(
+              (error) => error.message,
+              'message',
+              'localized limit message',
+            ),
+      ),
+    );
+    await server.dispose();
+  });
+
   test('tracks structured plan updates for the active turn', () {
     final controller = CodexController(server: CodexAppServer())
       ..status = RuntimeStatus.running;
@@ -14861,6 +14900,95 @@ void main() {
       controller.dispose();
     },
   );
+
+  test('classifies usage-limit failures and keeps explicit recovery', () async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    expect(await controller.sendPrompt('额度测试'), isTrue);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'new-thread',
+          'turn': {
+            'status': 'failed',
+            'error': {
+              'code': 'usage_limit_reached',
+              'message': "You've hit your usage limit.",
+            },
+          },
+        },
+      ),
+    );
+
+    expect(controller.hasUsageLimitFailure, isTrue);
+    expect(controller.canRetryFailedTurn, isFalse);
+    expect(controller.canRetryUsageLimitedTurn, isTrue);
+    expect(await controller.retryFailedTurn(), isTrue);
+    expect(server.startedTurnPrompts, ['额度测试', '额度测试']);
+    expect(controller.hasUsageLimitFailure, isFalse);
+    controller.dispose();
+  });
+
+  test(
+    'classifies structured turn-start errors without English text',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..startTurnError = const CodexAppServerException(
+          message: '当前请求暂时不可用。',
+          code: 'usage_limit_reached',
+        );
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+
+      expect(await controller.sendPrompt('结构化额度错误'), isFalse);
+      expect(controller.hasUsageLimitFailure, isTrue);
+      expect(controller.canRetryFailedTurn, isFalse);
+      expect(controller.canRetryUsageLimitedTurn, isTrue);
+      controller.dispose();
+    },
+  );
+
+  testWidgets('renders a usage-limit notice with usage-dashboard action', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(620, 520));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    expect(await tester.runAsync(() => controller.sendPrompt('额度界面')), isTrue);
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'new-thread',
+          'turn': {
+            'status': 'failed',
+            'error': {'message': "You've hit your usage limit."},
+          },
+        },
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const Key('usage-limit-notice')), findsOneWidget);
+    expect(find.byKey(const Key('usage-limit-open-button')), findsOneWidget);
+    expect(find.byKey(const Key('usage-limit-retry-button')), findsOneWidget);
+    expect(find.text('额度恢复后重试'), findsOneWidget);
+    expect(find.byKey(const Key('failed-turn-retry-notice')), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   test('retries a failed turn with the exact original submission', () async {
     final server = _FakeCodexAppServer();

@@ -8,6 +8,7 @@ import 'package:chatgpt/src/domain/codex_hook.dart';
 import 'codex_app_server_support.dart';
 import 'codex_app_server_codex_runtime_probe.dart';
 import 'codex_app_server_server_event.dart';
+import 'codex_app_server_exception.dart';
 
 class CodexAppServer {
   CodexAppServer({
@@ -602,7 +603,9 @@ class CodexAppServer {
   /// Sends an ID-bearing JSON-RPC request and waits for its matching response before timeout.
   Future<JsonMap> request(String method, [JsonMap params = const {}]) {
     final process = _process;
-    if (process == null) throw StateError('The Codex runtime is not running.');
+    if (process == null && _messageSink == null) {
+      throw StateError('The Codex runtime is not running.');
+    }
 
     final id = _nextRequestId++;
     final completer = Completer<JsonMap>();
@@ -704,7 +707,13 @@ class CodexAppServer {
     if (error is Map) {
       final message =
           error['message']?.toString() ?? 'Unknown App Server error.';
-      throw StateError(_redact(message));
+      final data = error['data'];
+      final dataMap = data is Map ? data : const <Object?, Object?>{};
+      throw CodexAppServerException(
+        message: _redact(message),
+        code: error['code'],
+        type: error['type']?.toString() ?? dataMap['type']?.toString(),
+      );
     }
   }
 

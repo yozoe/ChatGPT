@@ -10,6 +10,7 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_conversation_viewport.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_thread_open_elsewhere_notice.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_failed_turn_retry_notice.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_usage_limit_notice.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_archived_thread_notice.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_timeline_page_data.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_panel.dart';
@@ -168,7 +169,15 @@ class ConversationPane extends StatelessWidget {
                     feedback: controller.threadWriterConflictFeedback,
                     onRetry: controller.retryThreadWriterConflict,
                   ),
-                if (controller.hasFailedTurnRetry)
+                if (controller.hasUsageLimitFailure)
+                  UsageLimitNotice(
+                    error:
+                        controller.usageLimitFailureError ?? '已达到使用额度，请稍后再试。',
+                    retrying: controller.isRetryingFailedTurn,
+                    retryEnabled: controller.canRetryUsageLimitedTurn,
+                    onRetry: controller.retryFailedTurn,
+                  )
+                else if (controller.hasFailedTurnRetry)
                   FailedTurnRetryNotice(
                     error: controller.failedTurnRetryError ?? 'Codex 未能完成当前任务。',
                     retrying: controller.isRetryingFailedTurn,
