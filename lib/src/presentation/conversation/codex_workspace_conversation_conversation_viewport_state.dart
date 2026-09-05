@@ -12,6 +12,8 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_codex_loading_mark.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_scroll_to_bottom_button.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_task_plan_panel.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_new_task_welcome.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_new_task_explore_menu.dart';
 
 class ConversationViewportState extends State<ConversationViewport> {
   static const _initialBottomOverlayHeight = 172.0;
@@ -24,11 +26,52 @@ class ConversationViewportState extends State<ConversationViewport> {
   final GlobalKey _bottomOverlayKey = GlobalKey();
   var _bottomOverlayHeight = _initialBottomOverlayHeight;
   var _overlayMeasureScheduled = false;
+  var _exploreMenuVisible = false;
+  late String _composerText;
 
   @override
   void initState() {
     super.initState();
+    _composerText = widget.composerValue.value.text;
+    widget.composerValue.addListener(_handleComposerChanged);
     _scheduleBottomOverlayMeasurement();
+  }
+
+  @override
+  void didUpdateWidget(covariant ConversationViewport oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.composerValue == widget.composerValue) return;
+    oldWidget.composerValue.removeListener(_handleComposerChanged);
+    _composerText = widget.composerValue.value.text;
+    widget.composerValue.addListener(_handleComposerChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.composerValue.removeListener(_handleComposerChanged);
+    super.dispose();
+  }
+
+  void _handleComposerChanged() {
+    final text = widget.composerValue.value.text;
+    if (text == _composerText) return;
+    _composerText = text;
+    if (_exploreMenuVisible && text != '探索' && mounted) {
+      setState(() => _exploreMenuVisible = false);
+    }
+  }
+
+  void _setComposerPrompt(String prompt) =>
+      widget.onPromptSuggestionSelected(prompt);
+
+  void _showExploreMenu() {
+    _setComposerPrompt('探索');
+    setState(() => _exploreMenuVisible = true);
+  }
+
+  void _selectExplorePrompt(String prompt) {
+    setState(() => _exploreMenuVisible = false);
+    _setComposerPrompt('$prompt。');
   }
 
   void _scheduleBottomOverlayMeasurement() {
@@ -102,6 +145,14 @@ class ConversationViewportState extends State<ConversationViewport> {
     final activePageIndex = pages.indexWhere(
       (page) => page.key == widget.activeTimelinePageKey,
     );
+    final showNewTaskWelcome =
+        widget.controller.activeThreadId == null &&
+        widget.controller.status == RuntimeStatus.ready &&
+        activePage?.entries.isEmpty == true;
+    final showExploreMenu =
+        showNewTaskWelcome &&
+        _exploreMenuVisible &&
+        widget.composerValue.value.text == '探索';
     return LayoutBuilder(
       builder: (context, constraints) {
         final availableAboveComposer = math.max(
@@ -148,50 +199,60 @@ class ConversationViewportState extends State<ConversationViewport> {
                   index: activePageIndex < 0 ? 0 : activePageIndex,
                   children: [
                     for (final page in pages)
-                      ConversationTimeline(
-                        key: ValueKey(
-                          'conversation-timeline-${page.key.storageKey}',
+                      if (showNewTaskWelcome &&
+                          page.key == widget.activeTimelinePageKey)
+                        NewTaskWelcome(
+                          bottomInset: _bottomOverlayHeight + 28,
+                          suggestionsVisible: !showExploreMenu,
+                          onExploreSelected: _showExploreMenu,
+                          onSuggestionSelected: _setComposerPrompt,
+                        )
+                      else
+                        ConversationTimeline(
+                          key: ValueKey(
+                            'conversation-timeline-${page.key.storageKey}',
+                          ),
+                          pageKey: page.key,
+                          data: page.value,
+                          scrollController:
+                              widget.timelineScrollControllers[page.key]!,
+                          bottomPadding: timelineBottomPadding,
+                          active: page.key == widget.activeTimelinePageKey,
+                          fileChangeSummaryExpanded: widget
+                              .fileChangeSummaryExpanded(page.key),
+                          onFileChangeSummaryExpandedChanged: (expanded) =>
+                              widget.onFileChangeSummaryExpandedChanged(
+                                page.key,
+                                expanded,
+                              ),
+                          activityExpanded: (activityId) =>
+                              widget.activityExpanded(page.key, activityId),
+                          onMetricsChanged: (viewportDimension) => widget
+                              .onTimelineMetricsChanged(viewportDimension),
+                          onUserScrollDirection: (metrics, direction) =>
+                              widget.onTimelineUserScrollDirection(
+                                page.key,
+                                metrics,
+                                direction,
+                              ),
+                          onActivityExpandedChanged: (activityId, expanded) =>
+                              widget.onActivityExpandedChanged(
+                                page.key,
+                                activityId,
+                                expanded,
+                              ),
+                          onReview: widget.onReview,
+                          onUndo: widget.onUndo,
+                          onOpenSubagent: widget.onOpenSubagent,
+                          onSubmitUserMessageEdit:
+                              widget.onSubmitUserMessageEdit,
+                          canUndo:
+                              page.key == widget.activeTimelinePageKey &&
+                              widget.controller.canUndoFileChanges,
+                          undoRunning:
+                              page.key == widget.activeTimelinePageKey &&
+                              widget.controller.fileChangeUndoRunning,
                         ),
-                        pageKey: page.key,
-                        data: page.value,
-                        scrollController:
-                            widget.timelineScrollControllers[page.key]!,
-                        bottomPadding: timelineBottomPadding,
-                        active: page.key == widget.activeTimelinePageKey,
-                        fileChangeSummaryExpanded: widget
-                            .fileChangeSummaryExpanded(page.key),
-                        onFileChangeSummaryExpandedChanged: (expanded) =>
-                            widget.onFileChangeSummaryExpandedChanged(
-                              page.key,
-                              expanded,
-                            ),
-                        activityExpanded: (activityId) =>
-                            widget.activityExpanded(page.key, activityId),
-                        onMetricsChanged: (viewportDimension) =>
-                            widget.onTimelineMetricsChanged(viewportDimension),
-                        onUserScrollDirection: (metrics, direction) =>
-                            widget.onTimelineUserScrollDirection(
-                              page.key,
-                              metrics,
-                              direction,
-                            ),
-                        onActivityExpandedChanged: (activityId, expanded) =>
-                            widget.onActivityExpandedChanged(
-                              page.key,
-                              activityId,
-                              expanded,
-                            ),
-                        onReview: widget.onReview,
-                        onUndo: widget.onUndo,
-                        onOpenSubagent: widget.onOpenSubagent,
-                        onSubmitUserMessageEdit: widget.onSubmitUserMessageEdit,
-                        canUndo:
-                            page.key == widget.activeTimelinePageKey &&
-                            widget.controller.canUndoFileChanges,
-                        undoRunning:
-                            page.key == widget.activeTimelinePageKey &&
-                            widget.controller.fileChangeUndoRunning,
-                      ),
                   ],
                 ),
               ),
@@ -246,6 +307,78 @@ class ConversationViewportState extends State<ConversationViewport> {
                 child: Center(
                   child: ConversationScrollToBottomButton(
                     onPressed: widget.onScrollToBottom,
+                  ),
+                ),
+              ),
+            if (showNewTaskWelcome)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: _bottomOverlayHeight + 4,
+                child: Align(
+                  alignment: Alignment.bottomCenter,
+                  child: SizedBox(
+                    width: math.min(
+                      conversationContentMaxWidth,
+                      constraints.maxWidth,
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.only(
+                        left: conversationContentHorizontalInset,
+                        right: conversationContentHorizontalInset,
+                      ),
+                      child: Align(
+                        alignment: Alignment.bottomLeft,
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: 430,
+                            maxHeight: math.max(
+                              80,
+                              math.min(
+                                180,
+                                constraints.maxHeight -
+                                    _bottomOverlayHeight -
+                                    12,
+                              ),
+                            ),
+                          ),
+                          child: AnimatedSwitcher(
+                            duration: MediaQuery.disableAnimationsOf(context)
+                                ? Duration.zero
+                                : const Duration(milliseconds: 180),
+                            reverseDuration:
+                                MediaQuery.disableAnimationsOf(context)
+                                ? Duration.zero
+                                : const Duration(milliseconds: 130),
+                            switchInCurve: Curves.easeOutCubic,
+                            switchOutCurve: Curves.easeInCubic,
+                            transitionBuilder: (child, animation) =>
+                                FadeTransition(
+                                  opacity: animation,
+                                  child: SlideTransition(
+                                    position: Tween<Offset>(
+                                      begin: const Offset(0, 0.16),
+                                      end: Offset.zero,
+                                    ).animate(animation),
+                                    child: child,
+                                  ),
+                                ),
+                            child: showExploreMenu
+                                ? NewTaskExploreMenu(
+                                    key: const ValueKey(
+                                      'new-task-explore-menu-visible',
+                                    ),
+                                    onSelected: _selectExplorePrompt,
+                                  )
+                                : const SizedBox(
+                                    key: ValueKey(
+                                      'new-task-explore-menu-hidden',
+                                    ),
+                                  ),
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ),

@@ -134,6 +134,13 @@ class ConversationPane extends StatelessWidget {
             onUndo: onUndo,
             onOpenSubagent: onOpenSubagent,
             onSubmitUserMessageEdit: onSubmitUserMessageEdit,
+            composerValue: composer,
+            onPromptSuggestionSelected: (prompt) {
+              composer.value = TextEditingValue(
+                text: prompt,
+                selection: TextSelection.collapsed(offset: prompt.length),
+              );
+            },
             bottomOverlay: Column(
               mainAxisSize: MainAxisSize.min,
               children: [

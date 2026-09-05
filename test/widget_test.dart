@@ -982,7 +982,10 @@ void main() {
 
     expect(controller.workspacePath, firstPath);
     expect(controller.activeThreadId, isNull);
-    expect(controller.entries.last.title, '已新建任务');
+    expect(
+      controller.entries.map((entry) => entry.title),
+      isNot(contains('已新建任务')),
+    );
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -5289,7 +5292,7 @@ void main() {
     await tester.tap(find.byKey(const Key('sidebar-new-chat-button')));
     await tester.pump();
     expect(firstController.entries, hasLength(firstEntryCount));
-    expect(secondController.entries.last.title, '已新建任务');
+    expect(secondController.entries, isEmpty);
 
     await tester.pumpWidget(const SizedBox());
     await tester.pump();
@@ -5586,7 +5589,93 @@ void main() {
     controller.createThread();
     await tester.pump();
 
-    expect(find.text('已新建任务'), findsOneWidget);
+    expect(find.text('你想让我们在 ChatGPT 中构建什么？'), findsOneWidget);
+    expect(find.text('探索并理解代码'), findsOneWidget);
+    expect(find.text('构建新功能、应用或工具'), findsOneWidget);
+    expect(find.text('审查代码并提出修改建议'), findsOneWidget);
+    expect(find.text('修复问题和失败'), findsOneWidget);
+
+    await tester.tap(find.text('探索并理解代码'));
+    await tester.pump();
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('composer-field')))
+          .controller
+          ?.text,
+      '探索',
+    );
+    expect(find.text('探索并了解功能的工作原理'), findsOneWidget);
+    expect(find.text('探索某项功能的实现方案'), findsOneWidget);
+    expect(find.text('探索并比较架构方案'), findsOneWidget);
+    expect(find.text('探索并编写 API 文档'), findsOneWidget);
+    expect(find.text('构建新功能、应用或工具'), findsNothing);
+    final enteringMenuTop = tester
+        .getTopLeft(find.byKey(const Key('new-task-explore-menu')))
+        .dy;
+    await tester.pump(const Duration(milliseconds: 90));
+    expect(
+      tester.getTopLeft(find.byKey(const Key('new-task-explore-menu'))).dy,
+      lessThan(enteringMenuTop),
+    );
+    await tester.pumpAndSettle();
+    final exploreMenu = tester.getRect(
+      find.byKey(const Key('new-task-explore-menu')),
+    );
+    final composerSurface = tester.getRect(
+      find.byKey(const Key('composer-surface-stack')),
+    );
+    expect(exploreMenu.left, closeTo(composerSurface.left, 0.1));
+    expect(exploreMenu.bottom, lessThan(composerSurface.top));
+    expect(composerSurface.top - exploreMenu.bottom, lessThan(20));
+    await tester.tap(find.text('探索并了解功能的工作原理'));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('composer-field')))
+          .controller
+          ?.text,
+      '探索并了解功能的工作原理。',
+    );
+    expect(find.text('探索并理解代码'), findsOneWidget);
+    expect(find.text('探索某项功能的实现方案'), findsNothing);
+
+    await tester.tap(find.text('探索并理解代码'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('composer-field')), '探索这个模块');
+    await tester.pumpAndSettle();
+    expect(find.text('探索并理解代码'), findsOneWidget);
+    expect(find.text('探索某项功能的实现方案'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('new task welcome stays usable in a narrow window', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(600, 520));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    controller.createThread();
+    await tester.pump();
+
+    expect(find.text('你想让我们在 ChatGPT 中构建什么？'), findsOneWidget);
+    expect(find.byType(Scrollable), findsWidgets);
+    await tester.ensureVisible(find.text('探索并理解代码'));
+    await tester.tap(find.text('探索并理解代码'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('new-task-explore-menu')), findsOneWidget);
+    expect(
+      tester.getBottomLeft(find.byKey(const Key('new-task-explore-menu'))).dy,
+      lessThan(
+        tester.getTopLeft(find.byKey(const Key('composer-surface-stack'))).dy,
+      ),
+    );
+    expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -5611,9 +5700,7 @@ void main() {
 
     controller.createThread();
 
-    expect(controller.entries, hasLength(1));
-    expect(controller.entries.single.kind, TimelineKind.system);
-    expect(controller.entries.single.title, '已新建任务');
+    expect(controller.entries, isEmpty);
     expect(
       controller.entries.map((entry) => entry.detail),
       isNot(contains('上一个任务的首条消息')),

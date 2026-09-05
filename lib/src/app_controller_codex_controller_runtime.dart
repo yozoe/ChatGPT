@@ -2401,7 +2401,10 @@ class CodexController extends ChangeNotifier {
     _clearStreamingState();
     _clearFileChanges();
     _resetConversationTimeline();
-    _add(TimelineKind.system, '已新建任务', '发送第一条消息后会创建新的 Thread。');
+    // A new task starts with a genuinely empty transcript. The app-level
+    // welcome item is only for the initial workspace shell and must not make
+    // the new-task surface look like an existing conversation.
+    _entries.clear();
     notifyListeners();
   }
 
