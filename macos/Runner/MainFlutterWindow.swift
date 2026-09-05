@@ -8,6 +8,10 @@ class MainFlutterWindow: NSWindow {
   private static let clipboardTemporaryDirectory = FileManager.default.temporaryDirectory
     .appendingPathComponent("CodexDeskClipboard", isDirectory: true)
 
+  func openSettings() {
+    taskCompletionChannel?.invokeMethod("openSettings", arguments: nil)
+  }
+
   private static func readClipboardItems() throws -> [[String: Any]] {
     let pasteboard = NSPasteboard.general
     let options: [NSPasteboard.ReadingOptionKey: Any] = [

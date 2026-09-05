@@ -97,19 +97,7 @@ class FileChangeHoverPreview extends StatelessWidget {
               Expanded(
                 child: ColoredBox(
                   color: Colors.white,
-                  child: Center(
-                    child: SvgPicture.file(
-                      File(path),
-                      width: width - 36,
-                      height: height - 88,
-                      fit: BoxFit.contain,
-                      semanticsLabel: path,
-                      errorBuilder: (context, error, stackTrace) => Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: MutedText('SVG 预览失败：${error.toString()}'),
-                      ),
-                    ),
-                  ),
+                  child: Center(child: _buildSvgPreview()),
                 ),
               )
             else if (diff.trim().isEmpty)
@@ -151,6 +139,31 @@ class FileChangeHoverPreview extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Widget _buildSvgPreview() {
+    try {
+      final file = File(path);
+      if (file.lengthSync() > 1024 * 1024) {
+        throw const FileSystemException('SVG 文件超过 1 MB。');
+      }
+      return SvgPicture.string(
+        file.readAsStringSync(),
+        width: width - 36,
+        height: height - 88,
+        fit: BoxFit.contain,
+        semanticsLabel: path,
+        errorBuilder: (context, error, stackTrace) => Padding(
+          padding: const EdgeInsets.all(16),
+          child: MutedText('SVG 预览失败：${error.toString()}'),
+        ),
+      );
+    } on FileSystemException catch (error) {
+      return Padding(
+        padding: const EdgeInsets.all(16),
+        child: MutedText('SVG 预览失败：${error.message}'),
+      );
+    }
   }
 
   List<TextSpan> _previewSpans(

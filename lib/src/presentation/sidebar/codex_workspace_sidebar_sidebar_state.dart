@@ -136,7 +136,7 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
 
   /// Opens the global task search surface from the project-column toolbar.
   /// 搜索面板集中展示已加载项目中的任务，并保留常用的工作区操作。
-  void _showTaskSearch() {
+  void showTaskSearch() {
     final controller = widget.controller;
     final configuredWorkspaces = controller.workspaceConfigurations;
     final workspaces = configuredWorkspaces.isNotEmpty
@@ -484,6 +484,29 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
         ),
         PopupMenuDivider(),
         PopupMenuItem(
+          value: WorkspaceAction.exportHistory,
+          child: Material(
+            color: Colors.transparent,
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.upload_file_outlined),
+              title: Text('导出本地历史'),
+            ),
+          ),
+        ),
+        PopupMenuItem(
+          value: WorkspaceAction.importHistory,
+          child: Material(
+            color: Colors.transparent,
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.download_outlined),
+              title: Text('导入到当前项目'),
+            ),
+          ),
+        ),
+        PopupMenuDivider(),
+        PopupMenuItem(
           value: WorkspaceAction.worktree,
           child: Material(
             color: Colors.transparent,
@@ -526,6 +549,22 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
         await widget.controller.toggleWorkspacePinned(workspace.primaryPath);
       case WorkspaceAction.edit:
         widget.onEditWorkspace(workspace.primaryPath);
+      case WorkspaceAction.exportHistory:
+        if (workspace.primaryPath == widget.controller.workspacePath) {
+          await widget.onExportHistory();
+        } else {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('请先切换到该项目再导出历史。')));
+        }
+      case WorkspaceAction.importHistory:
+        if (workspace.primaryPath == widget.controller.workspacePath) {
+          await widget.onImportHistory();
+        } else {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('请先切换到该项目再导入历史。')));
+        }
       case WorkspaceAction.worktree:
         ScaffoldMessenger.of(
           context,
@@ -866,7 +905,7 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
                   IconButton(
                     key: const Key('task-search-button'),
                     tooltip: '搜索聊天',
-                    onPressed: _showTaskSearch,
+                    onPressed: showTaskSearch,
                     icon: const Icon(Icons.search, size: 17),
                   ),
                   IconButton(

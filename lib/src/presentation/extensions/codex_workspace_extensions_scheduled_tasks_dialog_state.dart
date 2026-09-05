@@ -11,6 +11,7 @@ class ScheduledTasksDialogState extends State<ScheduledTasksDialog> {
   final TextEditingController _prompt = TextEditingController();
   late DateTime _runAt;
   bool _saving = false;
+  String? _validationError;
 
   @override
   void initState() {
@@ -52,8 +53,14 @@ class ScheduledTasksDialogState extends State<ScheduledTasksDialog> {
   }
 
   Future<void> _schedule() async {
-    if (_prompt.text.trim().isEmpty || !_runAt.isAfter(DateTime.now())) return;
-    setState(() => _saving = true);
+    if (_prompt.text.trim().isEmpty || !_runAt.isAfter(DateTime.now())) {
+      setState(() => _validationError = '请填写提示词，并选择未来的执行时间。');
+      return;
+    }
+    setState(() {
+      _saving = true;
+      _validationError = null;
+    });
     final saved = await widget.controller.schedulePrompt(
       prompt: _prompt.text,
       runAt: _runAt,
@@ -64,6 +71,7 @@ class ScheduledTasksDialogState extends State<ScheduledTasksDialog> {
       setState(() {
         _runAt = DateTime.now().add(const Duration(hours: 1));
         _saving = false;
+        _validationError = null;
       });
     } else {
       setState(() => _saving = false);
@@ -124,6 +132,14 @@ class ScheduledTasksDialogState extends State<ScheduledTasksDialog> {
                 ),
               ],
             ),
+            if (_validationError case final message?) ...[
+              const SizedBox(height: 8),
+              Text(
+                message,
+                key: const Key('scheduled-task-validation-error'),
+                style: TextStyle(color: palette.fault, fontSize: 12),
+              ),
+            ],
             const SizedBox(height: 14),
             Text(
               '待执行',
@@ -145,6 +161,8 @@ class ScheduledTasksDialogState extends State<ScheduledTasksDialog> {
                       separatorBuilder: (_, _) => const Divider(height: 1),
                       itemBuilder: (context, index) {
                         final task = tasks[index];
+                        final dispatching = widget.controller
+                            .isScheduledTaskDispatching(task.id);
                         return ListTile(
                           contentPadding: EdgeInsets.zero,
                           leading: const Icon(Icons.schedule_outlined),
@@ -155,10 +173,20 @@ class ScheduledTasksDialogState extends State<ScheduledTasksDialog> {
                           ),
                           subtitle: Text(_timeLabel(task.runAt)),
                           trailing: IconButton(
-                            tooltip: '取消安排',
-                            onPressed: () =>
-                                widget.controller.cancelScheduledTask(task.id),
-                            icon: const Icon(Icons.close, size: 19),
+                            tooltip: dispatching ? '正在发送' : '取消安排',
+                            onPressed: dispatching
+                                ? null
+                                : () => widget.controller.cancelScheduledTask(
+                                    task.id,
+                                  ),
+                            icon: dispatching
+                                ? const SizedBox.square(
+                                    dimension: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 1.5,
+                                    ),
+                                  )
+                                : const Icon(Icons.close, size: 19),
                           ),
                         );
                       },

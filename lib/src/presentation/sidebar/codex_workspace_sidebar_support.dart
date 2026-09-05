@@ -65,7 +65,15 @@ CodexThread? activeThreadFor(CodexController controller) {
 /// 侧栏的低对比度分组标题，保留 Codex 的信息层级而不制造额外卡片。
 /// A low-contrast sidebar section label that keeps Codex's hierarchy without extra cards.
 
-enum WorkspaceAction { pin, edit, worktree, archive, remove }
+enum WorkspaceAction {
+  pin,
+  edit,
+  exportHistory,
+  importHistory,
+  worktree,
+  archive,
+  remove,
+}
 
 /// Codex-style command surface for finding a task without permanently taking
 /// space from the project tree.

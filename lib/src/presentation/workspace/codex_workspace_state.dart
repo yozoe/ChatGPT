@@ -20,6 +20,7 @@ import 'package:chatgpt/src/services/theme_preferences_store.dart';
 
 class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     with WidgetsBindingObserver {
+  final GlobalKey<SidebarState> _sidebarKey = GlobalKey<SidebarState>();
   final TextEditingController _composer = TextEditingController();
   final ValueNotifier<int> _recordSkillRequest = ValueNotifier(0);
   final Map<ThreadViewportKey, ScrollController> _timelineScrollControllers =
@@ -102,6 +103,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     _captureActiveTimelinePage();
     _controller.addListener(_handleControllerUpdate);
     _controller.setDockActivationHandler(_handleDockActivation);
+    _controller.setOpenSettingsHandler(_showSettings);
     _controller.setBrowserInvocationHandler(_handleBrowserInvocation);
     WidgetsBinding.instance.addObserver(this);
   }
@@ -117,10 +119,12 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     final previousController = _controller;
     previousController.removeListener(_handleControllerUpdate);
     previousController.setDockActivationHandler(null);
+    previousController.setOpenSettingsHandler(null);
     previousController.setBrowserInvocationHandler(null);
     _controller = nextController;
     _controller.addListener(_handleControllerUpdate);
     _controller.setDockActivationHandler(_handleDockActivation);
+    _controller.setOpenSettingsHandler(_showSettings);
     _controller.setBrowserInvocationHandler(_handleBrowserInvocation);
     _selectedSubagentThreadId = null;
     _selectedSubagentParentThreadId = null;
@@ -148,6 +152,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _controller.setDockActivationHandler(null);
+    _controller.setOpenSettingsHandler(null);
     _controller.setBrowserInvocationHandler(null);
     _controller.removeListener(_handleControllerUpdate);
     _composer.dispose();
@@ -2294,6 +2299,37 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     _controller.createThread();
   }
 
+  void _showTaskSearchShortcut() {
+    if (_destination != WorkspaceDestination.conversation) {
+      setState(() => _destination = WorkspaceDestination.conversation);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _sidebarKey.currentState?.showTaskSearch();
+      });
+      return;
+    }
+    _sidebarKey.currentState?.showTaskSearch();
+  }
+
+  Widget _withGlobalShortcuts(CodexController controller, Widget child) {
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.comma, meta: true):
+            _showSettings,
+        const SingleActivator(LogicalKeyboardKey.keyN, meta: true):
+            _startNewConversation,
+        const SingleActivator(LogicalKeyboardKey.keyK, meta: true):
+            _showTaskSearchShortcut,
+        const SingleActivator(LogicalKeyboardKey.escape): () {
+          if (controller.status == RuntimeStatus.running &&
+              controller.activeThreadId != null) {
+            unawaited(controller.stopCurrentTurn());
+          }
+        },
+      },
+      child: child,
+    );
+  }
+
   void _askCodexAboutGitHubCli() {
     _startNewConversation();
     _composer.text = '请帮我安装并配置 GitHub CLI，以便查看和管理 Pull Request。';
@@ -2475,505 +2511,525 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
           )
         : null;
     if (_destination == WorkspaceDestination.settings) {
-      return Scaffold(
-        body: SafeArea(
-          top: false,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              LayoutBuilder(
-                builder: (context, constraints) => SettingsPage(
-                  controller: controller,
-                  navigationWidth: _sidebarWidthFor(constraints.maxWidth),
-                  themeMode: widget.themeMode,
-                  onThemeModeChanged: widget.onThemeModeChanged,
-                  onChooseWorkspace: _showWorkspaceDirectories,
-                  onShowCodexConfiguration: _showCodexConfiguration,
-                  onConfigureRuntime: _showRuntime,
-                  onAddMarketplace: _showAddMarketplace,
-                  onManageMarketplaces: _showMarketplaces,
-                  onShowAccount: _showAccount,
-                  onOpenConversation: _showConversation,
+      return _withGlobalShortcuts(
+        controller,
+        Scaffold(
+          body: SafeArea(
+            top: false,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                LayoutBuilder(
+                  builder: (context, constraints) => SettingsPage(
+                    controller: controller,
+                    navigationWidth: _sidebarWidthFor(constraints.maxWidth),
+                    themeMode: widget.themeMode,
+                    onThemeModeChanged: widget.onThemeModeChanged,
+                    onChooseWorkspace: _showWorkspaceDirectories,
+                    onShowCodexConfiguration: _showCodexConfiguration,
+                    onConfigureRuntime: _showRuntime,
+                    onAddMarketplace: _showAddMarketplace,
+                    onManageMarketplaces: _showMarketplaces,
+                    onShowAccount: _showAccount,
+                    onOpenConversation: _showConversation,
+                  ),
                 ),
-              ),
-              if (browserPage != null)
-                ExcludeFocus(child: Offstage(child: browserPage)),
-              if (filesPage != null)
-                ExcludeFocus(child: Offstage(child: filesPage)),
-            ],
+                if (browserPage != null)
+                  ExcludeFocus(child: Offstage(child: browserPage)),
+                if (filesPage != null)
+                  ExcludeFocus(child: Offstage(child: filesPage)),
+              ],
+            ),
           ),
         ),
       );
     }
-    return Scaffold(
-      body: SafeArea(
-        top: false,
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final sidebarMaximum = _sidebarMaximumFor(constraints.maxWidth);
-            final inspectorMaximum =
-                (constraints.maxWidth - _sidebarWidth - 420)
-                    .clamp(_minimumInspectorWidth, _maximumInspectorWidth)
-                    .toDouble();
-            final sidebarWidth = _sidebarWidthFor(constraints.maxWidth);
-            final compact = constraints.maxWidth < 980;
-            final inspectorWidth = _inspectorWidth
-                .clamp(_minimumInspectorWidth, inspectorMaximum)
-                .toDouble();
-            final workbenchWidth = constraints.maxWidth - sidebarWidth;
-            final sidePanelExpanded = !_sidePanelCollapsed;
-            final hasSidePanelContents =
-                _reviewOpen ||
-                _browserPageMounted ||
-                _filesPageMounted ||
-                _openedSubagentThreadIds.isNotEmpty;
-            final sidePanelOpen = sidePanelExpanded && hasSidePanelContents;
-            final showSidePanelLauncher =
-                sidePanelExpanded && !hasSidePanelContents;
-            final auxiliaryFullHeight = sidePanelOpen && !compact;
-            final reviewMaximum = auxiliaryFullHeight
-                ? (workbenchWidth -
-                          conversationContentMaxWidth -
-                          _auxiliaryPaneAllowance)
-                      .clamp(_minimumAuxiliaryWidth, _maximumReviewWidth)
-                      .toDouble()
-                : _minimumReviewWidth;
-            final reviewWidth = _reviewWidth
-                .clamp(_minimumAuxiliaryWidth, reviewMaximum)
-                .toDouble();
-            final animatedSidePanelWidth =
-                sidePanelOpen || showSidePanelLauncher ? reviewWidth + 8 : 0.0;
-            final sidePanelContents = <String, Widget>{
-              if (_reviewOpen)
-                'review': CodeReviewPanel(
-                  key: _reviewPanelKey,
-                  controller: controller,
-                  source: _reviewSource,
-                  compact: compact || reviewWidth < _minimumReviewWidth,
-                  onSourceChanged: _changeCodeReviewSource,
-                  onCollapse: _returnToMainTask,
-                ),
-              if (_browserPageMounted) 'browser': browserPage!,
-              if (_filesPageMounted) 'files': filesPage!,
-              for (final id in _openedSubagentThreadIds)
-                'subagent:$id': SubagentThreadPanel(
-                  key: ValueKey('subagent-panel-$id'),
-                  controller: controller,
-                  threadId: id,
-                  fallbackTitle: _subagentTitles[id] ?? '子智能体',
-                  onOpenSubagent: _openSubagentInspector,
-                ),
-            };
-            final sidePanelLabels = <String, String>{
-              if (_reviewOpen) 'review': '审查',
-              if (_browserPageMounted) 'browser': '浏览器',
-              if (_filesPageMounted) 'files': '文件',
-              for (final id in _openedSubagentThreadIds)
-                'subagent:$id': _subagentTitles[id] ?? '子智能体',
-            };
-            final sidePanelTabs = WorkspaceSidePanelTabs(
-              key: const ValueKey('full-height-side-panel'),
-              contents: sidePanelContents,
-              labels: sidePanelLabels,
-              activeTab: _activeSidePanelTab,
-              onSelect: _selectSidePanelTab,
-              onCollapse: _returnToMainTask,
-            );
-            return Stack(
-              fit: StackFit.expand,
-              children: [
-                Row(
-                  children: [
-                    SizedBox(
-                      width: sidebarWidth,
-                      child: ColoredBox(
-                        color: YeknomPalette.of(context).sidebar,
-                        child: Column(
-                          children: [
-                            TopBar(
-                              key: const Key('workspace-column-topbar'),
-                              controller: controller,
-                              themeMode: widget.themeMode,
-                              themePreset: widget.themePreset,
-                              onThemeModeChanged: widget.onThemeModeChanged,
-                              onThemePresetChanged: widget.onThemePresetChanged,
-                              onChooseWorkspace: _showWorkspaceDirectories,
-                              onAccount: _showAccount,
-                              onCodexConfiguration: _showCodexConfiguration,
-                              onPlugins: _showPlugins,
-                              showIdentity: true,
-                              showControls: false,
-                            ),
-                            const Divider(height: 1),
-                            Expanded(
-                              child: Sidebar(
-                                width: sidebarWidth,
+    return _withGlobalShortcuts(
+      controller,
+      Scaffold(
+        body: SafeArea(
+          top: false,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final sidebarMaximum = _sidebarMaximumFor(constraints.maxWidth);
+              final inspectorMaximum =
+                  (constraints.maxWidth - _sidebarWidth - 420)
+                      .clamp(_minimumInspectorWidth, _maximumInspectorWidth)
+                      .toDouble();
+              final sidebarWidth = _sidebarWidthFor(constraints.maxWidth);
+              final compact = constraints.maxWidth < 980;
+              final inspectorWidth = _inspectorWidth
+                  .clamp(_minimumInspectorWidth, inspectorMaximum)
+                  .toDouble();
+              final workbenchWidth = constraints.maxWidth - sidebarWidth;
+              final sidePanelExpanded = !_sidePanelCollapsed;
+              final hasSidePanelContents =
+                  _reviewOpen ||
+                  _browserPageMounted ||
+                  _filesPageMounted ||
+                  _openedSubagentThreadIds.isNotEmpty;
+              final sidePanelOpen = sidePanelExpanded && hasSidePanelContents;
+              final showSidePanelLauncher =
+                  sidePanelExpanded && !hasSidePanelContents;
+              final auxiliaryFullHeight = sidePanelOpen && !compact;
+              final reviewMaximum = auxiliaryFullHeight
+                  ? (workbenchWidth -
+                            conversationContentMaxWidth -
+                            _auxiliaryPaneAllowance)
+                        .clamp(_minimumAuxiliaryWidth, _maximumReviewWidth)
+                        .toDouble()
+                  : _minimumReviewWidth;
+              final reviewWidth = _reviewWidth
+                  .clamp(_minimumAuxiliaryWidth, reviewMaximum)
+                  .toDouble();
+              final animatedSidePanelWidth =
+                  sidePanelOpen || showSidePanelLauncher
+                  ? reviewWidth + 8
+                  : 0.0;
+              final sidePanelContents = <String, Widget>{
+                if (_reviewOpen)
+                  'review': CodeReviewPanel(
+                    key: _reviewPanelKey,
+                    controller: controller,
+                    source: _reviewSource,
+                    compact: compact || reviewWidth < _minimumReviewWidth,
+                    onSourceChanged: _changeCodeReviewSource,
+                    onCollapse: _returnToMainTask,
+                  ),
+                if (_browserPageMounted) 'browser': browserPage!,
+                if (_filesPageMounted) 'files': filesPage!,
+                for (final id in _openedSubagentThreadIds)
+                  'subagent:$id': SubagentThreadPanel(
+                    key: ValueKey('subagent-panel-$id'),
+                    controller: controller,
+                    threadId: id,
+                    fallbackTitle: _subagentTitles[id] ?? '子智能体',
+                    onOpenSubagent: _openSubagentInspector,
+                  ),
+              };
+              final sidePanelLabels = <String, String>{
+                if (_reviewOpen) 'review': '审查',
+                if (_browserPageMounted) 'browser': '浏览器',
+                if (_filesPageMounted) 'files': '文件',
+                for (final id in _openedSubagentThreadIds)
+                  'subagent:$id': _subagentTitles[id] ?? '子智能体',
+              };
+              final sidePanelTabs = WorkspaceSidePanelTabs(
+                key: const ValueKey('full-height-side-panel'),
+                contents: sidePanelContents,
+                labels: sidePanelLabels,
+                activeTab: _activeSidePanelTab,
+                onSelect: _selectSidePanelTab,
+                onCollapse: _returnToMainTask,
+              );
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  Row(
+                    children: [
+                      SizedBox(
+                        width: sidebarWidth,
+                        child: ColoredBox(
+                          color: YeknomPalette.of(context).sidebar,
+                          child: Column(
+                            children: [
+                              TopBar(
+                                key: const Key('workspace-column-topbar'),
                                 controller: controller,
+                                themeMode: widget.themeMode,
+                                themePreset: widget.themePreset,
+                                onThemeModeChanged: widget.onThemeModeChanged,
+                                onThemePresetChanged:
+                                    widget.onThemePresetChanged,
                                 onChooseWorkspace: _showWorkspaceDirectories,
-                                onEditWorkspace: _showEditWorkspaceDialog,
-                                onCreateWorkspace: () =>
-                                    unawaited(_createWorkspace()),
-                                onConfigureRuntime: _showRuntime,
-                                onRenameThread: _renameThread,
-                                onArchiveThread: _archiveThread,
-                                onArchiveThreads: _archiveThreads,
-                                onDeleteThread: _deleteThread,
-                                onShowArchivedThreads: _showArchivedThreads,
-                                onExportHistory: _exportConversationHistory,
-                                onImportHistory: _importConversationHistory,
-                                onShowGitProject: _showGitProject,
-                                onShowPlugins: _showPluginsPage,
-                                onShowAgents: _showAgentsDirectory,
-                                onShowScheduledTasks: _showScheduledTasks,
-                                onShowPullRequests: _showPullRequests,
-                                onShowSettings: _showSettings,
-                                onOpenConversation: _showConversation,
-                                onNewConversation: _startNewConversation,
-                                destination: _destination,
+                                onAccount: _showAccount,
+                                onCodexConfiguration: _showCodexConfiguration,
+                                onPlugins: _showPlugins,
+                                showIdentity: true,
+                                showControls: false,
                               ),
-                            ),
+                              const Divider(height: 1),
+                              Expanded(
+                                child: Sidebar(
+                                  key: _sidebarKey,
+                                  width: sidebarWidth,
+                                  controller: controller,
+                                  onChooseWorkspace: _showWorkspaceDirectories,
+                                  onEditWorkspace: _showEditWorkspaceDialog,
+                                  onCreateWorkspace: () =>
+                                      unawaited(_createWorkspace()),
+                                  onConfigureRuntime: _showRuntime,
+                                  onRenameThread: _renameThread,
+                                  onArchiveThread: _archiveThread,
+                                  onArchiveThreads: _archiveThreads,
+                                  onDeleteThread: _deleteThread,
+                                  onShowArchivedThreads: _showArchivedThreads,
+                                  onExportHistory: _exportConversationHistory,
+                                  onImportHistory: _importConversationHistory,
+                                  onShowGitProject: _showGitProject,
+                                  onShowPlugins: _showPluginsPage,
+                                  onShowAgents: _showAgentsDirectory,
+                                  onShowScheduledTasks: _showScheduledTasks,
+                                  onShowPullRequests: _showPullRequests,
+                                  onShowSettings: _showSettings,
+                                  onOpenConversation: _showConversation,
+                                  onNewConversation: _startNewConversation,
+                                  destination: _destination,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      PaneResizeHandle(
+                        key: const Key('sidebar-resize-handle'),
+                        onDragDelta: (delta) {
+                          final nextWidth = (_sidebarWidth + delta)
+                              .clamp(_minimumSidebarWidth, sidebarMaximum)
+                              .toDouble();
+                          if (nextWidth == _sidebarWidth) return;
+                          setState(() => _sidebarWidth = nextWidth);
+                          widget.onSidebarWidthChanged?.call(nextWidth);
+                        },
+                      ),
+                      Expanded(
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            _destination == WorkspaceDestination.scheduledTasks
+                                ? ScheduledTasksPage(
+                                    controller: controller,
+                                    onCreate: _showScheduledTaskComposer,
+                                  )
+                                : _destination == WorkspaceDestination.plugins
+                                ? PluginsPage(
+                                    controller: controller,
+                                    onAddMarketplace: _showAddMarketplace,
+                                    onOpenSettings: _showPlugins,
+                                    onCreatePlugin: _createPluginWithCodex,
+                                    onRecordSkill: _recordSkillWithCodex,
+                                  )
+                                : _destination == WorkspaceDestination.agents
+                                ? AgentsPage(
+                                    controller: controller,
+                                    onOpenSubagent: _openSubagentThread,
+                                  )
+                                : _destination ==
+                                      WorkspaceDestination.pullRequests
+                                ? PullRequestsPage(
+                                    controller: controller,
+                                    onOpenGitProject: _showGitProject,
+                                    onAskCodex: _askCodexAboutGitHubCli,
+                                  )
+                                : Row(
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          children: [
+                                            Align(
+                                              alignment: Alignment.centerLeft,
+                                              child: SizedBox(
+                                                width:
+                                                    !compact &&
+                                                        !auxiliaryFullHeight
+                                                    ? (workbenchWidth -
+                                                              (inspectorWidth *
+                                                                  2) -
+                                                              8)
+                                                          .clamp(
+                                                            0.0,
+                                                            double.infinity,
+                                                          )
+                                                          .toDouble()
+                                                    : null,
+                                                child: TopBar(
+                                                  key: const Key(
+                                                    'workbench-column-topbar',
+                                                  ),
+                                                  controller: controller,
+                                                  themeMode: widget.themeMode,
+                                                  themePreset:
+                                                      widget.themePreset,
+                                                  onThemeModeChanged:
+                                                      widget.onThemeModeChanged,
+                                                  onThemePresetChanged: widget
+                                                      .onThemePresetChanged,
+                                                  onChooseWorkspace:
+                                                      _showWorkspaceDirectories,
+                                                  onAccount: _showAccount,
+                                                  onCodexConfiguration:
+                                                      _showCodexConfiguration,
+                                                  onPlugins: _showPlugins,
+                                                  showIdentity: false,
+                                                  showControls: true,
+                                                  showTaskContext: true,
+                                                  onShowFileChanges: () =>
+                                                      _showCodeReview(
+                                                        CodeReviewSource
+                                                            .latestTurn,
+                                                      ),
+                                                  sidePanelExpanded:
+                                                      sidePanelExpanded,
+                                                  onToggleSidePanel:
+                                                      sidePanelOpen
+                                                      ? null
+                                                      : _toggleSidePanel,
+                                                ),
+                                              ),
+                                            ),
+                                            const Divider(height: 1),
+                                            Expanded(
+                                              child: Row(
+                                                children: [
+                                                  Expanded(
+                                                    child: Stack(
+                                                      fit: StackFit.expand,
+                                                      children: [
+                                                        ConversationPane(
+                                                          controller:
+                                                              controller,
+                                                          composer: _composer,
+                                                          recordSkillRequest:
+                                                              _recordSkillRequest,
+                                                          timelinePages:
+                                                              _timelinePages,
+                                                          timelineScrollControllers:
+                                                              _timelineScrollControllers,
+                                                          activeTimelinePageKey:
+                                                              _displayedThreadKey,
+                                                          threadHistoryLoading:
+                                                              _threadHistoryLoading,
+                                                          fileChangeSummaryExpanded:
+                                                              (pageKey) =>
+                                                                  _fileChangeSummaryExpanded[pageKey] ??
+                                                                  false,
+                                                          onFileChangeSummaryExpandedChanged:
+                                                              (
+                                                                pageKey,
+                                                                expanded,
+                                                              ) {
+                                                                setState(() {
+                                                                  _fileChangeSummaryExpanded[pageKey] =
+                                                                      expanded;
+                                                                });
+                                                              },
+                                                          activityExpanded:
+                                                              (
+                                                                pageKey,
+                                                                activityId,
+                                                              ) =>
+                                                                  _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
+                                                                  false,
+                                                          onTimelineMetricsChanged:
+                                                              _handleTimelineMetricsChanged,
+                                                          onTimelineUserScrollDirection:
+                                                              _handleTimelineUserScrollDirection,
+                                                          showScrollToBottom:
+                                                              _timelineIsAboveLatest[_displayedThreadKey] ??
+                                                              false,
+                                                          onScrollToBottom:
+                                                              _scrollTimelineToBottom,
+                                                          onActivityExpandedChanged:
+                                                              (
+                                                                pageKey,
+                                                                activityId,
+                                                                expanded,
+                                                              ) {
+                                                                setState(() {
+                                                                  _activityListExpanded['${pageKey.storageKey}/$activityId'] =
+                                                                      expanded;
+                                                                });
+                                                              },
+                                                          onSend: _send,
+                                                          onQueueSteer:
+                                                              _queueDirection,
+                                                          onReview: () =>
+                                                              _showCodeReview(
+                                                                CodeReviewSource
+                                                                    .latestTurn,
+                                                              ),
+                                                          onUndo:
+                                                              _undoFileChanges,
+                                                          onOpenSubagent:
+                                                              _openSubagentInspector,
+                                                          onSubmitUserMessageEdit:
+                                                              _submitEditedUserMessage,
+                                                        ),
+                                                        if (_threadHistoryLoading)
+                                                          Positioned.fill(
+                                                            child: IgnorePointer(
+                                                              child: ColoredBox(
+                                                                key: const Key(
+                                                                  'thread-history-loading',
+                                                                ),
+                                                                color:
+                                                                    YeknomPalette.of(
+                                                                      context,
+                                                                    ).module,
+                                                                child: const Center(
+                                                                  child:
+                                                                      CodexLoadingMark(),
+                                                                ),
+                                                              ),
+                                                            ),
+                                                          ),
+                                                        if (compact &&
+                                                            hasSidePanelContents)
+                                                          ExcludeFocus(
+                                                            excluding:
+                                                                !sidePanelOpen,
+                                                            child: Offstage(
+                                                              offstage:
+                                                                  !sidePanelOpen,
+                                                              child:
+                                                                  sidePanelTabs,
+                                                            ),
+                                                          ),
+                                                        if (!compact &&
+                                                            !sidePanelExpanded &&
+                                                            !showSidePanelLauncher &&
+                                                            _destination ==
+                                                                WorkspaceDestination
+                                                                    .conversation)
+                                                          Positioned(
+                                                            top: 0,
+                                                            right: 0,
+                                                            width:
+                                                                inspectorWidth +
+                                                                8,
+                                                            height: 500,
+                                                            child: Offstage(
+                                                              offstage:
+                                                                  !_sidePanelCollapsed,
+                                                              child: Row(
+                                                                crossAxisAlignment:
+                                                                    CrossAxisAlignment
+                                                                        .stretch,
+                                                                children: [
+                                                                  PaneResizeHandle(
+                                                                    key: const Key(
+                                                                      'inspector-resize-handle',
+                                                                    ),
+                                                                    onDragDelta: (delta) => setState(() {
+                                                                      _inspectorWidth =
+                                                                          (_inspectorWidth -
+                                                                                  delta)
+                                                                              .clamp(
+                                                                                _minimumInspectorWidth,
+                                                                                inspectorMaximum,
+                                                                              )
+                                                                              .toDouble();
+                                                                    }),
+                                                                  ),
+                                                                  SizedBox(
+                                                                    width:
+                                                                        inspectorWidth,
+                                                                    child: Inspector(
+                                                                      width:
+                                                                          inspectorWidth,
+                                                                      controller:
+                                                                          controller,
+                                                                      onShowTaskChanges: () => _showCodeReview(
+                                                                        CodeReviewSource
+                                                                            .latestTurn,
+                                                                      ),
+                                                                      onShowGitProject: () => _showCodeReview(
+                                                                        CodeReviewSource
+                                                                            .gitWorkspace,
+                                                                      ),
+                                                                      onShowAgents:
+                                                                          _showAgents,
+                                                                    ),
+                                                                  ),
+                                                                ],
+                                                              ),
+                                                            ),
+                                                          ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      if (!compact)
+                                        WorkspaceDesktopSidePanel(
+                                          expanded: sidePanelExpanded,
+                                          panelOpen: sidePanelOpen,
+                                          hasContents: hasSidePanelContents,
+                                          width: animatedSidePanelWidth,
+                                          minimumContentWidth:
+                                              _browserPageMounted ||
+                                                  _filesPageMounted
+                                              ? _minimumAuxiliaryWidth
+                                              : 8.0,
+                                          contents: sidePanelTabs,
+                                          onResize: (delta) => setState(() {
+                                            _reviewWidth =
+                                                (_reviewWidth - delta)
+                                                    .clamp(
+                                                      _minimumAuxiliaryWidth,
+                                                      reviewMaximum,
+                                                    )
+                                                    .toDouble();
+                                          }),
+                                          onLauncherSelect:
+                                              _handleSidePanelLauncherSelection,
+                                        ),
+                                    ],
+                                  ),
+                            if (_destination !=
+                                    WorkspaceDestination.conversation &&
+                                hasSidePanelContents)
+                              ExcludeFocus(
+                                child: Offstage(child: sidePanelTabs),
+                              ),
                           ],
                         ),
                       ),
-                    ),
-                    PaneResizeHandle(
-                      key: const Key('sidebar-resize-handle'),
-                      onDragDelta: (delta) {
-                        final nextWidth = (_sidebarWidth + delta)
-                            .clamp(_minimumSidebarWidth, sidebarMaximum)
-                            .toDouble();
-                        if (nextWidth == _sidebarWidth) return;
-                        setState(() => _sidebarWidth = nextWidth);
-                        widget.onSidebarWidthChanged?.call(nextWidth);
-                      },
-                    ),
-                    Expanded(
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          _destination == WorkspaceDestination.scheduledTasks
-                              ? ScheduledTasksPage(
-                                  controller: controller,
-                                  onCreate: _showScheduledTaskComposer,
-                                )
-                              : _destination == WorkspaceDestination.plugins
-                              ? PluginsPage(
-                                  controller: controller,
-                                  onAddMarketplace: _showAddMarketplace,
-                                  onOpenSettings: _showPlugins,
-                                  onCreatePlugin: _createPluginWithCodex,
-                                  onRecordSkill: _recordSkillWithCodex,
-                                )
-                              : _destination == WorkspaceDestination.agents
-                              ? AgentsPage(
-                                  controller: controller,
-                                  onOpenSubagent: _openSubagentThread,
-                                )
-                              : _destination ==
-                                    WorkspaceDestination.pullRequests
-                              ? PullRequestsPage(
-                                  controller: controller,
-                                  onOpenGitProject: _showGitProject,
-                                  onAskCodex: _askCodexAboutGitHubCli,
-                                )
-                              : Row(
-                                  children: [
-                                    Expanded(
-                                      child: Column(
-                                        children: [
-                                          Align(
-                                            alignment: Alignment.centerLeft,
-                                            child: SizedBox(
-                                              width:
-                                                  !compact &&
-                                                      !auxiliaryFullHeight
-                                                  ? (workbenchWidth -
-                                                            (inspectorWidth *
-                                                                2) -
-                                                            8)
-                                                        .clamp(
-                                                          0.0,
-                                                          double.infinity,
-                                                        )
-                                                        .toDouble()
-                                                  : null,
-                                              child: TopBar(
-                                                key: const Key(
-                                                  'workbench-column-topbar',
-                                                ),
-                                                controller: controller,
-                                                themeMode: widget.themeMode,
-                                                themePreset: widget.themePreset,
-                                                onThemeModeChanged:
-                                                    widget.onThemeModeChanged,
-                                                onThemePresetChanged:
-                                                    widget.onThemePresetChanged,
-                                                onChooseWorkspace:
-                                                    _showWorkspaceDirectories,
-                                                onAccount: _showAccount,
-                                                onCodexConfiguration:
-                                                    _showCodexConfiguration,
-                                                onPlugins: _showPlugins,
-                                                showIdentity: false,
-                                                showControls: true,
-                                                showTaskContext: true,
-                                                onShowFileChanges: () =>
-                                                    _showCodeReview(
-                                                      CodeReviewSource
-                                                          .latestTurn,
-                                                    ),
-                                                sidePanelExpanded:
-                                                    sidePanelExpanded,
-                                                onToggleSidePanel: sidePanelOpen
-                                                    ? null
-                                                    : _toggleSidePanel,
-                                              ),
-                                            ),
-                                          ),
-                                          const Divider(height: 1),
-                                          Expanded(
-                                            child: Row(
-                                              children: [
-                                                Expanded(
-                                                  child: Stack(
-                                                    fit: StackFit.expand,
-                                                    children: [
-                                                      ConversationPane(
-                                                        controller: controller,
-                                                        composer: _composer,
-                                                        recordSkillRequest:
-                                                            _recordSkillRequest,
-                                                        timelinePages:
-                                                            _timelinePages,
-                                                        timelineScrollControllers:
-                                                            _timelineScrollControllers,
-                                                        activeTimelinePageKey:
-                                                            _displayedThreadKey,
-                                                        threadHistoryLoading:
-                                                            _threadHistoryLoading,
-                                                        fileChangeSummaryExpanded:
-                                                            (pageKey) =>
-                                                                _fileChangeSummaryExpanded[pageKey] ??
-                                                                false,
-                                                        onFileChangeSummaryExpandedChanged:
-                                                            (
-                                                              pageKey,
-                                                              expanded,
-                                                            ) {
-                                                              setState(() {
-                                                                _fileChangeSummaryExpanded[pageKey] =
-                                                                    expanded;
-                                                              });
-                                                            },
-                                                        activityExpanded:
-                                                            (
-                                                              pageKey,
-                                                              activityId,
-                                                            ) =>
-                                                                _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
-                                                                false,
-                                                        onTimelineMetricsChanged:
-                                                            _handleTimelineMetricsChanged,
-                                                        onTimelineUserScrollDirection:
-                                                            _handleTimelineUserScrollDirection,
-                                                        showScrollToBottom:
-                                                            _timelineIsAboveLatest[_displayedThreadKey] ??
-                                                            false,
-                                                        onScrollToBottom:
-                                                            _scrollTimelineToBottom,
-                                                        onActivityExpandedChanged:
-                                                            (
-                                                              pageKey,
-                                                              activityId,
-                                                              expanded,
-                                                            ) {
-                                                              setState(() {
-                                                                _activityListExpanded['${pageKey.storageKey}/$activityId'] =
-                                                                    expanded;
-                                                              });
-                                                            },
-                                                        onSend: _send,
-                                                        onQueueSteer:
-                                                            _queueDirection,
-                                                        onReview: () =>
-                                                            _showCodeReview(
-                                                              CodeReviewSource
-                                                                  .latestTurn,
-                                                            ),
-                                                        onUndo:
-                                                            _undoFileChanges,
-                                                        onOpenSubagent:
-                                                            _openSubagentInspector,
-                                                        onSubmitUserMessageEdit:
-                                                            _submitEditedUserMessage,
-                                                      ),
-                                                      if (_threadHistoryLoading)
-                                                        Positioned.fill(
-                                                          child: IgnorePointer(
-                                                            child: ColoredBox(
-                                                              key: const Key(
-                                                                'thread-history-loading',
-                                                              ),
-                                                              color:
-                                                                  YeknomPalette.of(
-                                                                    context,
-                                                                  ).module,
-                                                              child: const Center(
-                                                                child:
-                                                                    CodexLoadingMark(),
-                                                              ),
-                                                            ),
-                                                          ),
-                                                        ),
-                                                      if (compact &&
-                                                          hasSidePanelContents)
-                                                        ExcludeFocus(
-                                                          excluding:
-                                                              !sidePanelOpen,
-                                                          child: Offstage(
-                                                            offstage:
-                                                                !sidePanelOpen,
-                                                            child:
-                                                                sidePanelTabs,
-                                                          ),
-                                                        ),
-                                                      if (!compact &&
-                                                          !sidePanelExpanded &&
-                                                          !showSidePanelLauncher &&
-                                                          _destination ==
-                                                              WorkspaceDestination
-                                                                  .conversation)
-                                                        Positioned(
-                                                          top: 0,
-                                                          right: 0,
-                                                          child: Offstage(
-                                                            offstage:
-                                                                !_sidePanelCollapsed,
-                                                            child: Row(
-                                                              children: [
-                                                                PaneResizeHandle(
-                                                                  key: const Key(
-                                                                    'inspector-resize-handle',
-                                                                  ),
-                                                                  onDragDelta: (delta) => setState(() {
-                                                                    _inspectorWidth =
-                                                                        (_inspectorWidth -
-                                                                                delta)
-                                                                            .clamp(
-                                                                              _minimumInspectorWidth,
-                                                                              inspectorMaximum,
-                                                                            )
-                                                                            .toDouble();
-                                                                  }),
-                                                                ),
-                                                                SizedBox(
-                                                                  width:
-                                                                      inspectorWidth,
-                                                                  height: 500,
-                                                                  child: Inspector(
-                                                                    width:
-                                                                        inspectorWidth,
-                                                                    controller:
-                                                                        controller,
-                                                                    onShowTaskChanges: () =>
-                                                                        _showCodeReview(
-                                                                          CodeReviewSource
-                                                                              .latestTurn,
-                                                                        ),
-                                                                    onShowGitProject: () =>
-                                                                        _showCodeReview(
-                                                                          CodeReviewSource
-                                                                              .gitWorkspace,
-                                                                        ),
-                                                                    onShowAgents:
-                                                                        _showAgents,
-                                                                  ),
-                                                                ),
-                                                              ],
-                                                            ),
-                                                          ),
-                                                        ),
-                                                    ],
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    if (!compact)
-                                      WorkspaceDesktopSidePanel(
-                                        expanded: sidePanelExpanded,
-                                        panelOpen: sidePanelOpen,
-                                        hasContents: hasSidePanelContents,
-                                        width: animatedSidePanelWidth,
-                                        minimumContentWidth:
-                                            _browserPageMounted ||
-                                                _filesPageMounted
-                                            ? _minimumAuxiliaryWidth
-                                            : 8.0,
-                                        contents: sidePanelTabs,
-                                        onResize: (delta) => setState(() {
-                                          _reviewWidth = (_reviewWidth - delta)
-                                              .clamp(
-                                                _minimumAuxiliaryWidth,
-                                                reviewMaximum,
-                                              )
-                                              .toDouble();
-                                        }),
-                                        onLauncherSelect:
-                                            _handleSidePanelLauncherSelection,
-                                      ),
-                                  ],
-                                ),
-                          if (_destination !=
-                                  WorkspaceDestination.conversation &&
-                              hasSidePanelContents)
-                            ExcludeFocus(child: Offstage(child: sidePanelTabs)),
-                        ],
+                    ],
+                  ),
+                  if (_destination == WorkspaceDestination.conversation &&
+                      !sidePanelOpen)
+                    Positioned(
+                      top: 16,
+                      right: 16,
+                      child: Builder(
+                        builder: (context) {
+                          final palette = YeknomPalette.of(context);
+                          return IconButton(
+                            key: Key(
+                              sidePanelExpanded
+                                  ? 'side-panel-collapse'
+                                  : 'side-panel-expand',
+                            ),
+                            tooltip: sidePanelExpanded ? '收起右侧工作区' : '展开右侧工作区',
+                            onPressed: _toggleSidePanel,
+                            style: IconButton.styleFrom(
+                              backgroundColor: palette.selected,
+                              minimumSize: const Size.square(40),
+                              maximumSize: const Size.square(40),
+                              padding: EdgeInsets.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            icon: Icon(
+                              Icons.view_sidebar_outlined,
+                              size: 16,
+                              color: palette.trace,
+                            ),
+                          );
+                        },
                       ),
                     ),
-                  ],
-                ),
-                if (_destination == WorkspaceDestination.conversation &&
-                    !sidePanelOpen)
-                  Positioned(
-                    top: 16,
-                    right: 16,
-                    child: Builder(
-                      builder: (context) {
-                        final palette = YeknomPalette.of(context);
-                        return IconButton(
-                          key: Key(
-                            sidePanelExpanded
-                                ? 'side-panel-collapse'
-                                : 'side-panel-expand',
-                          ),
-                          tooltip: sidePanelExpanded ? '收起右侧工作区' : '展开右侧工作区',
-                          onPressed: _toggleSidePanel,
-                          style: IconButton.styleFrom(
-                            backgroundColor: palette.selected,
-                            minimumSize: const Size.square(40),
-                            maximumSize: const Size.square(40),
-                            padding: EdgeInsets.zero,
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                          ),
-                          icon: Icon(
-                            Icons.view_sidebar_outlined,
-                            size: 16,
-                            color: palette.trace,
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-              ],
-            );
-          },
+                ],
+              );
+            },
+          ),
         ),
       ),
     );

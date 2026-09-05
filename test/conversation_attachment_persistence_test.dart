@@ -5,6 +5,7 @@ import 'package:chatgpt/src/app_controller.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/services/conversation_attachment_store.dart';
+import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -425,5 +426,67 @@ void main() {
       [durablePath],
     );
     restoredController.dispose();
+  });
+
+  test('keeps a sent image when its thread is archived', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'codex-desk-archived-image-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final workspace = await Directory('${root.path}/workspace').create();
+    final source = File('${root.path}/clipboard-image.png');
+    await source.writeAsBytes(const [137, 80, 78, 71]);
+    final attachments = Directory('${root.path}/conversation-images');
+    final server = FakeCodexAppServer();
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore()
+        ..workspace = workspace.path,
+      conversationAttachmentStore: ConversationAttachmentStore(
+        directory: attachments,
+      ),
+    );
+    await controller.waitForInitialConfiguration();
+    controller.status = RuntimeStatus.ready;
+
+    expect(
+      await controller.sendPrompt(
+        '请保留这张图片',
+        imagePaths: [source.path],
+        additionalInput: [
+          {'type': 'localImage', 'path': source.path},
+        ],
+      ),
+      isTrue,
+    );
+    final durablePath = controller.entries
+        .singleWhere((entry) => entry.imagePaths.isNotEmpty)
+        .imagePaths
+        .single;
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'new-thread',
+          'turn': {
+            'id': 'turn-1',
+            'threadId': 'new-thread',
+            'status': 'completed',
+          },
+        },
+      ),
+    );
+
+    await controller.archiveThread(
+      const CodexThread(
+        id: 'new-thread',
+        preview: '请保留这张图片',
+        createdAt: 1,
+        updatedAt: 1,
+      ),
+    );
+
+    expect(await File(durablePath).exists(), isTrue);
+    controller.dispose();
   });
 }

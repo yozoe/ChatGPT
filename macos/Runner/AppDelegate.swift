@@ -119,6 +119,16 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
   override func applicationDidFinishLaunching(_ notification: Notification) {
     UNUserNotificationCenter.current().delegate = self
     super.applicationDidFinishLaunching(notification)
+    if let preferencesItem = NSApp.mainMenu?.items
+      .first(where: { $0.submenu?.items.contains(where: { $0.keyEquivalent == "," }) == true })?
+      .submenu?.items.first(where: { $0.keyEquivalent == "," }) {
+      preferencesItem.target = self
+      preferencesItem.action = #selector(openPreferences(_:))
+    }
+  }
+
+  @objc private func openPreferences(_ sender: Any?) {
+    (NSApp.mainWindow as? MainFlutterWindow)?.openSettings()
   }
 
   override func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

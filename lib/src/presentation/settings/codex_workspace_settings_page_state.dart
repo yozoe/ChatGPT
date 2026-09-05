@@ -17,16 +17,16 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
   String _section = '常规';
   String _archiveTypeFilter = '全部聊天';
   String _archiveProjectFilter = '当前项目';
-  String _defaultEditor = 'VS Code';
-  bool _showInMenuBar = true;
-  bool _showBottomPanel = true;
-  String _terminalPosition = '底部';
-  bool _preventSleep = false;
-  bool _promptSuggestions = false;
-  bool _usePointerCursor = false;
-  String _reduceMotion = '系统';
-  String _diffMarkers = '颜色';
-  bool _fontSmoothing = true;
+  final String _defaultEditor = 'VS Code';
+  final bool _showInMenuBar = true;
+  final bool _showBottomPanel = true;
+  final String _terminalPosition = '底部';
+  final bool _preventSleep = false;
+  final bool _promptSuggestions = false;
+  final bool _usePointerCursor = false;
+  final String _reduceMotion = '系统';
+  final String _diffMarkers = '颜色';
+  final bool _fontSmoothing = true;
   int _dockIcon = 0;
   final DockIconService _dockIconService = DockIconService();
   final TextEditingController _uiFontSize = TextEditingController(text: '14');
@@ -48,6 +48,26 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
   }
 
   void _select(String section) => setState(() => _section = section);
+
+  void _handleSettingsSearch(String value) {
+    final query = value.trim().toLowerCase();
+    if (query.isEmpty) return;
+    const targets = <String, String>{
+      '常规 项目 编辑器 终端 休眠 提示词': '常规',
+      '外观 主题 图标 字号 动画 diff 字体': '外观',
+      '配置 模型 权限 sandbox runtime': '配置',
+      '插件 mcp 技能': '插件',
+      '浏览器 网页': '浏览器',
+      '钩子 hooks': '钩子',
+      '归档 聊天 历史': '已归档的聊天',
+    };
+    final match = targets.entries
+        .where((entry) => entry.key.contains(query))
+        .firstOrNull;
+    if (match != null && match.value != _section) {
+      setState(() => _section = match.value);
+    }
+  }
 
   void _selectArchivedChats() {
     setState(() {
@@ -411,13 +431,12 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                     ),
                     Divider(height: 1, color: palette.border),
                     _settingRow(
-                      title: '默认文件打开位置',
+                      title: '默认文件打开位置（待开发）',
                       description: '默认打开文件和文件夹的位置。',
                       trailing: PopupMenuButton<String>(
                         key: const Key('settings-default-editor'),
                         initialValue: _defaultEditor,
-                        onSelected: (value) =>
-                            setState(() => _defaultEditor = value),
+                        enabled: false,
                         itemBuilder: (context) => const [
                           PopupMenuItem(
                             value: 'VS Code',
@@ -441,27 +460,22 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                     ),
                     Divider(height: 1, color: palette.border),
                     _settingRow(
-                      title: '在菜单栏中显示',
+                      title: '在菜单栏中显示（待开发）',
                       description: '关闭主窗口后，仍在 macOS 菜单栏中保留 Codex Desk',
-                      trailing: Switch(
-                        value: _showInMenuBar,
-                        onChanged: (value) =>
-                            setState(() => _showInMenuBar = value),
-                      ),
+                      trailing: Switch(value: _showInMenuBar, onChanged: null),
                     ),
                     Divider(height: 1, color: palette.border),
                     _settingRow(
-                      title: '底部面板',
+                      title: '底部面板（待开发）',
                       description: '在应用标题栏中显示底部面板控件',
                       trailing: Switch(
                         value: _showBottomPanel,
-                        onChanged: (value) =>
-                            setState(() => _showBottomPanel = value),
+                        onChanged: null,
                       ),
                     ),
                     Divider(height: 1, color: palette.border),
                     _settingRow(
-                      title: '默认终端位置',
+                      title: '默认终端位置（待开发）',
                       description: '选择终端快捷键和环境操作在何处打开终端标签页',
                       trailing: SegmentedButton<String>(
                         segments: const [
@@ -469,28 +483,22 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                           ButtonSegment(value: '右侧', label: Text('右侧')),
                         ],
                         selected: {_terminalPosition},
-                        onSelectionChanged: (selection) =>
-                            setState(() => _terminalPosition = selection.first),
+                        onSelectionChanged: null,
                       ),
                     ),
                     Divider(height: 1, color: palette.border),
                     _settingRow(
-                      title: '运行时防止系统休眠',
+                      title: '运行时防止系统休眠（待开发）',
                       description: '在 Codex Desk 运行任务时，让电脑保持唤醒状态',
-                      trailing: Switch(
-                        value: _preventSleep,
-                        onChanged: (value) =>
-                            setState(() => _preventSleep = value),
-                      ),
+                      trailing: Switch(value: _preventSleep, onChanged: null),
                     ),
                     Divider(height: 1, color: palette.border),
                     _settingRow(
-                      title: '提示词建议',
+                      title: '提示词建议（待开发）',
                       description: '通过搜索项目文件和已连接的应用，建议下一步操作',
                       trailing: Switch(
                         value: _promptSuggestions,
-                        onChanged: (value) =>
-                            setState(() => _promptSuggestions = value),
+                        onChanged: null,
                       ),
                     ),
                   ],
@@ -570,12 +578,11 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                 child: Column(
                   children: [
                     _settingRow(
-                      title: '使用指针光标',
+                      title: '使用指针光标（待开发）',
                       description: '悬停交互元素时切换为指针光标',
                       trailing: Switch(
                         value: _usePointerCursor,
-                        onChanged: (value) =>
-                            setState(() => _usePointerCursor = value),
+                        onChanged: null,
                       ),
                     ),
                     Divider(height: 1, color: palette.border),
@@ -592,7 +599,7 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                     ),
                     Divider(height: 1, color: palette.border),
                     _settingRow(
-                      title: '减少动态效果',
+                      title: '减少动态效果（待开发）',
                       description: '减少动画效果或匹配系统设置',
                       trailing: SegmentedButton<String>(
                         segments: const [
@@ -601,25 +608,24 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                           ButtonSegment(value: '关闭', label: Text('关闭')),
                         ],
                         selected: {_reduceMotion},
-                        onSelectionChanged: (selection) =>
-                            setState(() => _reduceMotion = selection.first),
+                        onSelectionChanged: null,
                       ),
                     ),
                     Divider(height: 1, color: palette.border),
                     _settingRow(
-                      title: 'UI 字号',
+                      title: 'UI 字号（待开发）',
                       description: '调整 ChatGPT 界面使用的基准字号',
                       trailing: _fontField(_uiFontSize),
                     ),
                     Divider(height: 1, color: palette.border),
                     _settingRow(
-                      title: '代码字体大小',
+                      title: '代码字体大小（待开发）',
                       description: '调整聊天和差异视图中代码使用的基础字号',
                       trailing: _fontField(_codeFontSize),
                     ),
                     Divider(height: 1, color: palette.border),
                     _settingRow(
-                      title: '差异标记',
+                      title: '差异标记（待开发）',
                       description: '使用颜色或 +/- 标记显示更改',
                       trailing: SegmentedButton<String>(
                         segments: const [
@@ -627,19 +633,14 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                           ButtonSegment(value: '+/-', label: Text('+/-')),
                         ],
                         selected: {_diffMarkers},
-                        onSelectionChanged: (selection) =>
-                            setState(() => _diffMarkers = selection.first),
+                        onSelectionChanged: null,
                       ),
                     ),
                     Divider(height: 1, color: palette.border),
                     _settingRow(
-                      title: '字体平滑',
+                      title: '字体平滑（待开发）',
                       description: '使用 macOS 原生字体抗锯齿',
-                      trailing: Switch(
-                        value: _fontSmoothing,
-                        onChanged: (value) =>
-                            setState(() => _fontSmoothing = value),
-                      ),
+                      trailing: Switch(value: _fontSmoothing, onChanged: null),
                     ),
                   ],
                 ),
@@ -655,6 +656,7 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
     width: 128,
     child: TextField(
       controller: controller,
+      enabled: false,
       keyboardType: TextInputType.number,
       textAlign: TextAlign.center,
       decoration: const InputDecoration(suffixText: 'px'),
@@ -1566,6 +1568,7 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                         TextField(
                           key: const Key('settings-search-field'),
                           controller: _search,
+                          onChanged: _handleSettingsSearch,
                           decoration: const InputDecoration(
                             hintText: '搜索设置...',
                             prefixIcon: Icon(Icons.search),

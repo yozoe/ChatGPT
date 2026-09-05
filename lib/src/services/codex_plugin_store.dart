@@ -37,6 +37,8 @@ class CodexPluginStore {
     CodexPluginScopedProcessRunner? scopedProcessRunner,
   }) : _executableProvider = executableProvider ?? _defaultExecutable,
        _codexHome = codexHome,
+       _usesDefaultProcessRunner =
+           processRunner == null && scopedProcessRunner == null,
        _processRunner = processRunner ?? _defaultProcessRunner,
        _scopedProcessRunner =
            scopedProcessRunner ??
@@ -47,6 +49,7 @@ class CodexPluginStore {
 
   final CodexPluginExecutableProvider _executableProvider;
   final Directory? _codexHome;
+  final bool _usesDefaultProcessRunner;
   final CodexPluginProcessRunner _processRunner;
   final CodexPluginScopedProcessRunner _scopedProcessRunner;
   Future<void> _configWriteQueue = Future.value();
@@ -454,16 +457,59 @@ class CodexPluginStore {
     final executable = await Future<String>.sync(
       _executableProvider,
     ).timeout(_commandTimeout);
-    final result =
-        await (workingDirectory == null
-                ? _processRunner(executable, arguments)
-                : _scopedProcessRunner(executable, arguments, workingDirectory))
-            .timeout(_commandTimeout);
+    final result = _usesDefaultProcessRunner
+        ? await _runManagedProcess(
+            executable,
+            arguments,
+            workingDirectory: workingDirectory,
+          )
+        : await (workingDirectory == null
+                  ? _processRunner(executable, arguments)
+                  : _scopedProcessRunner(
+                      executable,
+                      arguments,
+                      workingDirectory,
+                    ))
+              .timeout(_commandTimeout);
     if (result.exitCode != 0) {
       final detail = result.stderr.toString().trim();
       throw StateError(detail.isEmpty ? 'Codex CLI 插件命令执行失败。' : detail);
     }
     return result.stdout.toString();
+  }
+
+  Future<ProcessResult> _runManagedProcess(
+    String executable,
+    List<String> arguments, {
+    String? workingDirectory,
+  }) async {
+    final process = await Process.start(
+      executable,
+      arguments,
+      workingDirectory: workingDirectory,
+      runInShell: false,
+    );
+    final stdout = process.stdout.transform(utf8.decoder).join();
+    final stderr = process.stderr.transform(utf8.decoder).join();
+    try {
+      final exitCode = await process.exitCode.timeout(_commandTimeout);
+      return ProcessResult(process.pid, exitCode, await stdout, await stderr);
+    } on TimeoutException {
+      await _terminateProcess(process);
+      await Future.wait([stdout, stderr]);
+      throw TimeoutException('Codex CLI 插件命令执行超时。');
+    }
+  }
+
+  Future<void> _terminateProcess(Process process) async {
+    process.kill(ProcessSignal.sigterm);
+    try {
+      await process.exitCode.timeout(const Duration(seconds: 2));
+      return;
+    } on TimeoutException {
+      process.kill(ProcessSignal.sigkill);
+      await process.exitCode;
+    }
   }
 
   /// 在 TOML 中替换或添加指定插件表内的 `enabled` 键。

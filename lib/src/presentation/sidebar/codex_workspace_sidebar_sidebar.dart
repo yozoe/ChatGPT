@@ -32,6 +32,7 @@ class Sidebar extends StatefulWidget {
     required this.onOpenConversation,
     required this.onNewConversation,
     required this.destination,
+    super.key,
   });
 
   final double width;

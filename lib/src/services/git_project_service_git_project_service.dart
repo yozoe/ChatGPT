@@ -400,13 +400,36 @@ class GitProjectService {
 
   /// 运行不带 Shell 的 Git 只读命令，并限制单次等待时间。
   /// Runs a non-shell read-only Git command with a bounded wait time.
-  Future<ProcessResult> _run(String workspace, List<String> arguments) {
-    return Process.run(
+  Future<ProcessResult> _run(String workspace, List<String> arguments) async {
+    final process = await Process.start(
       'git',
       arguments,
       workingDirectory: workspace,
       runInShell: false,
-    ).timeout(const Duration(seconds: 8));
+    );
+    final stdout = process.stdout.transform(utf8.decoder).join();
+    final stderr = process.stderr.transform(utf8.decoder).join();
+    try {
+      final exitCode = await process.exitCode.timeout(
+        const Duration(seconds: 8),
+      );
+      return ProcessResult(process.pid, exitCode, await stdout, await stderr);
+    } on TimeoutException {
+      await _terminateProcess(process);
+      await Future.wait([stdout, stderr]);
+      throw TimeoutException('Git 读取操作超时。');
+    }
+  }
+
+  Future<void> _terminateProcess(Process process) async {
+    process.kill(ProcessSignal.sigterm);
+    try {
+      await process.exitCode.timeout(const Duration(seconds: 2));
+      return;
+    } on TimeoutException {
+      process.kill(ProcessSignal.sigkill);
+      await process.exitCode;
+    }
   }
 
   /// 执行单个受限 Git 写入并将 Git stderr 转换为界面错误。
@@ -437,13 +460,9 @@ class GitProjectService {
       );
       return ProcessResult(process.pid, exitCode, await stdout, await stderr);
     } on TimeoutException {
-      process.kill();
-      try {
-        await process.exitCode.timeout(const Duration(seconds: 2));
-      } on TimeoutException {
-        // The operating system may need more time to reap a network command.
-      }
-      throw TimeoutException('Git 写入操作超时，已请求终止。');
+      await _terminateProcess(process);
+      await Future.wait([stdout, stderr]);
+      throw TimeoutException('Git 写入操作超时，已终止。');
     }
   }
 
@@ -471,13 +490,9 @@ class GitProjectService {
         return ProcessResult(process.pid, exitCode, await stdout, await stderr);
       })().timeout(const Duration(seconds: 60));
     } on TimeoutException {
-      process.kill();
-      try {
-        await process.exitCode.timeout(const Duration(seconds: 2));
-      } on TimeoutException {
-        // The operating system may need more time to reap the command.
-      }
-      throw TimeoutException('撤销操作超时，已请求终止。');
+      await _terminateProcess(process);
+      await Future.wait([stdout, stderr]);
+      throw TimeoutException('撤销操作超时，已终止。');
     }
   }
 

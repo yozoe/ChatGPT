@@ -194,6 +194,7 @@ class CodexController extends ChangeNotifier {
   final List<RuntimeLogEntry> _runtimeLogs = [];
   final List<ScheduledTask> _scheduledTasks = [];
   final Map<String, Timer> _scheduledTaskTimers = {};
+  final Set<String> _dispatchingScheduledTaskIds = {};
   final Map<String, int> _agentEntryIndexByItem = {};
   final Map<String, String> _agentPhaseByItem = {};
   String? _activeStreamingAgentItemId;
@@ -290,9 +291,11 @@ class CodexController extends ChangeNotifier {
   // is currently open in the workbench.
   final Set<String> _runningThreadIds = {};
   bool _preparingTurnStart = false;
-  // Prevent two submissions from both persisting attachments and racing to
-  // create/attach a thread while the first request is awaiting disk I/O.
-  bool _sendPromptInFlight = false;
+  // Prevent two submissions from the same conversation view from both
+  // persisting attachments and racing to create/attach a thread. A newer view
+  // (for example after the user opens New chat) may submit independently while
+  // the previous task is still finishing its App Server startup handshake.
+  final Set<int> _sendPromptInFlightRevisions = {};
   // Owning workspace for every thread that is still executing on the shared
   // App Server. This lets the foreground project change without losing the
   // background task's routing or completion reminder.
@@ -372,6 +375,10 @@ class CodexController extends ChangeNotifier {
   /// Registers the workspace callback for native app activation events.
   void setDockActivationHandler(void Function()? handler) {
     _taskCompletionNotifier.setDockActivationHandler(handler);
+  }
+
+  void setOpenSettingsHandler(void Function()? handler) {
+    _taskCompletionNotifier.setOpenSettingsHandler(handler);
   }
 
   /// Registers the workspace callback used when the agent requests a browser navigation.
@@ -1032,6 +1039,9 @@ class CodexController extends ChangeNotifier {
   /// Scheduled prompts are local to Codex Desk and remain queued across app
   /// restarts. They execute only while this desktop app is running.
   List<ScheduledTask> get scheduledTasks => List.unmodifiable(_scheduledTasks);
+
+  bool isScheduledTaskDispatching(String id) =>
+      _dispatchingScheduledTaskIds.contains(id);
 
   /// 返回当前项目中被置顶的任务 ID，不允许外部修改集合。
   /// Returns pinned task IDs for the current workspace as an immutable set.
@@ -1758,6 +1768,7 @@ class CodexController extends ChangeNotifier {
     String path, {
     bool allowWhileRunning = false,
   }) async {
+    await _workspaceLoad;
     if (!allowWhileRunning && !canChooseWorkspace) {
       lastError = pluginSaving ? '请等待扩展配置更新完成后再切换项目。' : '请先停止当前运行时，再切换项目。';
       _add(TimelineKind.error, '无法切换项目', lastError!);
@@ -2001,6 +2012,7 @@ class CodexController extends ChangeNotifier {
     String name = '',
     List<String> additionalPaths = const [],
   }) async {
+    await _workspaceLoad;
     final normalized = path?.trim() ?? '';
     if (_creatingWorkspace) return false;
     _creatingWorkspace = true;
@@ -2127,6 +2139,10 @@ class CodexController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    final previousConfigurations = List<WorkspaceConfiguration>.of(
+      _workspaceConfigurations,
+    );
+    final previousTaskList = _workspaceTaskLists[primaryPath];
     final previousLength = _workspaceConfigurations.length;
     _workspaceConfigurations.removeWhere(
       (configuration) => configuration.primaryPath == primaryPath,
@@ -2145,6 +2161,13 @@ class CodexController extends ChangeNotifier {
         );
       }
     } catch (error) {
+      _workspaceConfigurations
+        ..clear()
+        ..addAll(previousConfigurations);
+      if (previousTaskList != null) {
+        _workspaceTaskLists[primaryPath] = previousTaskList;
+      }
+      if (wasPinned) _pinnedWorkspacePaths.add(primaryPath);
       _add(TimelineKind.error, '无法保存工作区列表', _messageOf(error));
       if (!_disposed) notifyListeners();
     }
@@ -2169,6 +2192,7 @@ class CodexController extends ChangeNotifier {
     try {
       await _saveAdditionalWorkspacePaths();
     } catch (error) {
+      _workspaceConfigurations[index] = current;
       lastError = '无法保存项目名称：${_messageOf(error)}';
       if (!_disposed) notifyListeners();
     }
@@ -2177,10 +2201,43 @@ class CodexController extends ChangeNotifier {
   /// 移除当前项目记录并清空活动工作区，不删除磁盘目录或历史缓存文件。
   /// Removes the current project record and clears the active workspace without deleting its directory or history.
   Future<bool> removeCurrentWorkspace() async {
+    await _workspaceLoad;
     final primary = workspacePath;
     if (primary == null || !canChangePrimaryWorkspace || hasRunningTasks) {
       return false;
     }
+    final previousConfigurations = List<WorkspaceConfiguration>.of(
+      _workspaceConfigurations,
+    );
+    final previousPinned = Set<String>.of(_pinnedWorkspacePaths);
+    final previousAdditional = List<String>.of(_additionalWorkspacePaths);
+    final nextConfigurations = previousConfigurations
+        .where((configuration) => configuration.primaryPath != primary)
+        .toList(growable: false);
+    final nextPinned = Set<String>.of(previousPinned)..remove(primary);
+    try {
+      await _runtimeConfigurationStore.clearWorkspace();
+      await _runtimeConfigurationStore.saveWorkspaces(nextConfigurations);
+      await _runtimeConfigurationStore.saveAdditionalWorkspaces(const []);
+      await _runtimeConfigurationStore.savePinnedWorkspaces(nextPinned);
+    } catch (error) {
+      // Best-effort rollback protects the next launch if one of the sequential
+      // preference writes failed after an earlier write had succeeded.
+      try {
+        await _runtimeConfigurationStore.saveWorkspace(primary);
+        await _runtimeConfigurationStore.saveWorkspaces(previousConfigurations);
+        await _runtimeConfigurationStore.saveAdditionalWorkspaces(
+          previousAdditional,
+        );
+        await _runtimeConfigurationStore.savePinnedWorkspaces(previousPinned);
+      } catch (_) {
+        // Keep the original failure as the actionable error.
+      }
+      lastError = '无法保存项目移除状态：${_messageOf(error)}';
+      if (!_disposed) notifyListeners();
+      return false;
+    }
+
     await stopRuntime();
     _workspaceConfigurations.removeWhere(
       (configuration) => configuration.primaryPath == primary,
@@ -2213,17 +2270,6 @@ class CodexController extends ChangeNotifier {
     _clearStreamingState();
     _add(TimelineKind.system, '已移除本地项目', primary);
     notifyListeners();
-    try {
-      await _runtimeConfigurationStore.clearWorkspace();
-      await _runtimeConfigurationStore.saveWorkspaces(_workspaceConfigurations);
-      await _runtimeConfigurationStore.saveAdditionalWorkspaces(const []);
-      await _runtimeConfigurationStore.savePinnedWorkspaces(
-        _pinnedWorkspacePaths,
-      );
-    } catch (error) {
-      lastError = '无法保存项目移除状态：${_messageOf(error)}';
-      if (!_disposed) notifyListeners();
-    }
     return true;
   }
 
@@ -2261,6 +2307,8 @@ class CodexController extends ChangeNotifier {
     try {
       await _saveAdditionalWorkspacePaths();
     } catch (error) {
+      _additionalWorkspacePaths.remove(canonicalPath);
+      _updateCurrentWorkspaceConfiguration();
       _add(TimelineKind.error, '无法保存附加目录', _messageOf(error));
       if (!_disposed) notifyListeners();
     }
@@ -2292,6 +2340,7 @@ class CodexController extends ChangeNotifier {
     if (index < 0) return;
     final configuration = _workspaceConfigurations[index];
     if (configuration.isUnrooted) {
+      final previousTaskList = _workspaceTaskLists[primaryPath];
       _workspaceConfigurations[index] = WorkspaceConfiguration(
         id: configuration.id,
         primaryPath: canonicalPath,
@@ -2304,11 +2353,25 @@ class CodexController extends ChangeNotifier {
       _workspaceTaskLists.remove(primaryPath);
       _add(TimelineKind.system, '已添加项目主目录', canonicalPath);
       notifyListeners();
-      await _saveWorkspaceConfigurations();
-      if (pinMoved) {
-        await _runtimeConfigurationStore.savePinnedWorkspaces(
-          _pinnedWorkspacePaths,
-        );
+      try {
+        await _saveWorkspaceConfigurations();
+        if (pinMoved) {
+          await _runtimeConfigurationStore.savePinnedWorkspaces(
+            _pinnedWorkspacePaths,
+          );
+        }
+        if (previousTaskList != null) {
+          _workspaceTaskLists[primaryPath] = previousTaskList;
+        }
+      } catch (error) {
+        _workspaceConfigurations[index] = configuration;
+        if (pinMoved) {
+          _pinnedWorkspacePaths
+            ..remove(canonicalPath)
+            ..add(primaryPath);
+        }
+        lastError = '无法保存项目目录：${_messageOf(error)}';
+        if (!_disposed) notifyListeners();
       }
       return;
     }
@@ -2327,7 +2390,16 @@ class CodexController extends ChangeNotifier {
     }
     _add(TimelineKind.system, '已添加工作区目录', canonicalPath);
     notifyListeners();
-    await _saveAdditionalWorkspacePaths();
+    try {
+      await _saveAdditionalWorkspacePaths();
+    } catch (error) {
+      _workspaceConfigurations[index] = configuration;
+      if (primaryPath == workspacePath) {
+        _additionalWorkspacePaths.remove(canonicalPath);
+      }
+      lastError = '无法保存附加目录：${_messageOf(error)}';
+      if (!_disposed) notifyListeners();
+    }
   }
 
   /// 删除当前工作区的一个附加目录；主目录由工作区记录确定。
@@ -2340,6 +2412,8 @@ class CodexController extends ChangeNotifier {
     try {
       await _saveAdditionalWorkspacePaths();
     } catch (error) {
+      _additionalWorkspacePaths.add(path);
+      _updateCurrentWorkspaceConfiguration();
       _add(TimelineKind.error, '无法保存附加目录', _messageOf(error));
       if (!_disposed) notifyListeners();
     }
@@ -2371,7 +2445,13 @@ class CodexController extends ChangeNotifier {
     );
     _add(TimelineKind.system, '已移除工作区目录', path);
     notifyListeners();
-    await _saveAdditionalWorkspacePaths();
+    try {
+      await _saveAdditionalWorkspacePaths();
+    } catch (error) {
+      _workspaceConfigurations[index] = configuration;
+      lastError = '无法保存附加目录：${_messageOf(error)}';
+      if (!_disposed) notifyListeners();
+    }
   }
 
   /// 清空当前任务状态，使下一条消息创建新的服务器线程。
@@ -2447,6 +2527,12 @@ class CodexController extends ChangeNotifier {
   /// Removes an unsent scheduled prompt without changing any project files.
   Future<void> cancelScheduledTask(String id) async {
     await _runtimeLoad;
+    if (_dispatchingScheduledTaskIds.contains(id)) {
+      lastError = '该已安排任务正在发送，无法再取消。';
+      _add(TimelineKind.error, '无法取消已安排任务', lastError!);
+      if (!_disposed) notifyListeners();
+      return;
+    }
     final removed = _scheduledTasks.where((task) => task.id == id).firstOrNull;
     if (removed == null) return;
     _scheduledTasks.remove(removed);
@@ -2562,8 +2648,8 @@ class CodexController extends ChangeNotifier {
     List<String> imagePaths = const [],
     bool rollbackUserEntryOnFailure = false,
   }) async {
-    if (_sendPromptInFlight) return false;
-    _sendPromptInFlight = true;
+    final requestRevision = _conversationViewRevision;
+    if (!_sendPromptInFlightRevisions.add(requestRevision)) return false;
     try {
       return await _sendPromptInternal(
         prompt,
@@ -2574,7 +2660,7 @@ class CodexController extends ChangeNotifier {
         rollbackUserEntryOnFailure: rollbackUserEntryOnFailure,
       );
     } finally {
-      _sendPromptInFlight = false;
+      _sendPromptInFlightRevisions.remove(requestRevision);
     }
   }
 
@@ -3384,12 +3470,16 @@ class CodexController extends ChangeNotifier {
     if (workspace == null) {
       throw StateError('请先选择一个本地项目，再导入历史记录。');
     }
+    if (hasRunningTasks) {
+      throw StateError('请先等待所有任务完成或停止运行中的任务，再导入历史记录。');
+    }
     final decoded = jsonDecode(encoded);
     if (decoded is! Map) {
       throw const FormatException('历史导出文件的根节点必须是 JSON 对象。');
     }
     final imported = PortableConversationHistory.fromJson(decoded);
     final snapshot = imported.snapshot;
+    final previous = _conversationHistorySnapshot();
     _invalidateThreadRefreshes();
     _threadViewCache.clear();
     _userMessageEntriesByThreadId
@@ -3420,15 +3510,20 @@ class CodexController extends ChangeNotifier {
         snapshot.fileChanges.map((change) => MapEntry(change.path, change)),
       );
     turnDiff = snapshot.turnDiff;
-    // Imported history may contain file metadata without file-level Diff.
-    // Hydrate safe untracked-file previews after restoring the snapshot.
-    unawaited(_hydrateMissingFileChangeDiffs());
     _add(
       TimelineKind.system,
       '已导入本地历史',
       '导出来源：${imported.workspace.isEmpty ? '未知项目' : imported.workspace}。仅恢复本应用缓存，不恢复 App Server 原始任务。',
     );
-    await _saveConversationHistory();
+    try {
+      await _saveConversationHistory(rethrowOnFailure: true);
+    } catch (_) {
+      _restoreConversationHistorySnapshot(previous);
+      rethrow;
+    }
+    // Imported history may contain file metadata without file-level Diff.
+    // Hydrate safe untracked-file previews after the replacement is durable.
+    unawaited(_hydrateMissingFileChangeDiffs());
     if (!_disposed) notifyListeners();
   }
 
@@ -3952,10 +4047,6 @@ class CodexController extends ChangeNotifier {
     final candidates = <String, CodexThread>{
       for (final thread in selected) thread.id: thread,
     }.values.toList(growable: false);
-    final attachmentPathsByThread = <String, Set<String>>{
-      for (final thread in candidates)
-        thread.id: _attachmentPathsForThread(thread.id),
-    };
     final runningThreadIds = candidates
         .where(isThreadExecutionActive)
         .map((thread) => thread.id)
@@ -4048,9 +4139,8 @@ class CodexController extends ChangeNotifier {
           _resetConversationTimeline();
           _clearStreamingState();
         }
-        await _reclaimUnreferencedThreadAttachments(
-          attachmentPathsByThread[thread.id] ?? const <String>{},
-        );
+        // Archiving is reversible. Keep durable attachments referenced by the
+        // archived history; permanent deletion owns their final reclamation.
       }
       if (archivedIds.isNotEmpty) {
         _scheduleConversationHistorySave();
@@ -5266,6 +5356,7 @@ class CodexController extends ChangeNotifier {
         activeThreadId: snapshot.activeThreadId,
         ownedThreadIds: snapshot.ownedThreadIds,
         historyInitialized: snapshot.historyInitialized,
+        userMessageEntriesByThreadId: snapshot.userMessageEntriesByThreadId,
       );
       await _conversationHistoryStore.save(
         workspace: historyKey,
@@ -7188,8 +7279,14 @@ class CodexController extends ChangeNotifier {
       );
       return;
     }
+    _dispatchingScheduledTaskIds.add(id);
     createThread();
-    final sent = await sendPrompt(task.prompt);
+    late final bool sent;
+    try {
+      sent = await sendPrompt(task.prompt);
+    } finally {
+      _dispatchingScheduledTaskIds.remove(id);
+    }
     if (!sent) {
       _scheduledTaskTimers[id] = Timer(
         const Duration(minutes: 1),
@@ -7880,7 +7977,7 @@ class CodexController extends ChangeNotifier {
 
   /// 快照当前工作区状态并串行加密写入本地历史缓存。
   /// Snapshots workspace state and serially writes it to the encrypted local history cache.
-  Future<void> _saveConversationHistory() async {
+  Future<void> _saveConversationHistory({bool rethrowOnFailure = false}) async {
     final workspace = workspacePath;
     if (workspace == null || _disposed) return;
     // Resolve the owning project while this snapshot is captured. The save is
@@ -7913,7 +8010,45 @@ class CodexController extends ChangeNotifier {
         _entries.add(_entry(TimelineKind.error, '无法保存本地历史', _messageOf(error)));
         notifyListeners();
       }
+      if (rethrowOnFailure) rethrow;
     }
+  }
+
+  void _restoreConversationHistorySnapshot(
+    ConversationHistorySnapshot snapshot,
+  ) {
+    _threadViewCache.clear();
+    _userMessageEntriesByThreadId
+      ..clear()
+      ..addAll({
+        for (final entry in snapshot.userMessageEntriesByThreadId.entries)
+          entry.key: List<TimelineEntry>.of(entry.value),
+      });
+    activeThreadId = snapshot.activeThreadId;
+    _activeThreadAttached = activeThreadId != null;
+    threads = List<CodexThread>.of(snapshot.threads);
+    archivedThreads = List<CodexThread>.of(snapshot.archivedThreads);
+    _pinnedThreadIds
+      ..clear()
+      ..addAll(snapshot.pinnedThreadIds);
+    _acknowledgedCompletedThreadIds
+      ..clear()
+      ..addAll(snapshot.acknowledgedCompletedThreadIds);
+    _entries
+      ..clear()
+      ..addAll(snapshot.entries);
+    _fileChangesByPath
+      ..clear()
+      ..addEntries(
+        snapshot.fileChanges.map((change) => MapEntry(change.path, change)),
+      );
+    turnDiff = snapshot.turnDiff;
+    _ownedThreadIds
+      ..clear()
+      ..addAll(snapshot.ownedThreadIds);
+    _threadHistoryInitialized = snapshot.historyInitialized;
+    _clearStreamingState();
+    if (!_disposed) notifyListeners();
   }
 
   /// 捕获当前项目的线程、置顶状态、时间线和文件变更，用于持久化或导出。

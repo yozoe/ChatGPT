@@ -22,6 +22,7 @@ class FileChangeSummaryRowState extends State<FileChangeSummaryRow> {
   Timer? _showTimer;
   Timer? _hideTimer;
   bool _hovering = false;
+  bool _focused = false;
   Offset _previewOffset = Offset.zero;
   Alignment _targetAnchor = Alignment.topLeft;
   Alignment _followerAnchor = Alignment.bottomLeft;
@@ -134,6 +135,25 @@ class FileChangeSummaryRowState extends State<FileChangeSummaryRow> {
     });
   }
 
+  void _handleFocusChanged(bool focused) {
+    setState(() => _focused = focused);
+    if (focused) {
+      _showTimer?.cancel();
+      _showPreview();
+    } else if (!_hovering) {
+      _scheduleHide();
+    }
+  }
+
+  void _togglePreview() {
+    if (_previewEntry == null) {
+      _showPreview();
+    } else {
+      _previewEntry?.remove();
+      _previewEntry = null;
+    }
+  }
+
   @override
   void dispose() {
     _showTimer?.cancel();
@@ -167,44 +187,62 @@ class FileChangeSummaryRowState extends State<FileChangeSummaryRow> {
     final palette = YeknomPalette.of(context);
     final stats = diffStats(_diff);
     final unknown = _diff.trim().isEmpty;
-    return CompositedTransformTarget(
-      link: _layerLink,
-      child: MouseRegion(
-        key: ValueKey('file-change-row-${widget.change.path}'),
-        onEnter: (_) {
-          setState(() => _hovering = true);
-          _schedulePreviewShow();
-        },
-        onExit: (_) {
-          setState(() => _hovering = false);
-          _scheduleHide();
-        },
-        cursor: SystemMouseCursors.basic,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
-          color: palette.field.withValues(alpha: _hovering ? 0.68 : 0.42),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  widget.change.path,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: palette.trace),
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.enter): _togglePreview,
+        const SingleActivator(LogicalKeyboardKey.space): _togglePreview,
+      },
+      child: Focus(
+        onFocusChange: _handleFocusChanged,
+        child: Semantics(
+          button: true,
+          label: '预览变更文件 ${widget.change.path}',
+          child: CompositedTransformTarget(
+            link: _layerLink,
+            child: MouseRegion(
+              key: ValueKey('file-change-row-${widget.change.path}'),
+              onEnter: (_) {
+                setState(() => _hovering = true);
+                _schedulePreviewShow();
+              },
+              onExit: (_) {
+                setState(() => _hovering = false);
+                if (!_focused) _scheduleHide();
+              },
+              cursor: SystemMouseCursors.basic,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 120),
+                color: palette.field.withValues(
+                  alpha: _hovering || _focused ? 0.68 : 0.42,
+                ),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 11,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        widget.change.path,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: palette.trace),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Text(
+                      diffCountLabel('+', stats.additions, unknown: unknown),
+                      style: TextStyle(color: palette.ack),
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      diffCountLabel('-', stats.deletions, unknown: unknown),
+                      style: TextStyle(color: palette.fault),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(width: 12),
-              Text(
-                diffCountLabel('+', stats.additions, unknown: unknown),
-                style: TextStyle(color: palette.ack),
-              ),
-              const SizedBox(width: 10),
-              Text(
-                diffCountLabel('-', stats.deletions, unknown: unknown),
-                style: TextStyle(color: palette.fault),
-              ),
-            ],
+            ),
           ),
         ),
       ),

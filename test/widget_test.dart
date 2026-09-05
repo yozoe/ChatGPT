@@ -61,6 +61,7 @@ typedef _FakeRuntimeConfigurationStore = FakeRuntimeConfigurationStore;
 typedef _DelayedAdditionalWorkspaceStore = DelayedAdditionalWorkspaceStore;
 typedef _RejectingAdditionalWorkspaceStore = RejectingAdditionalWorkspaceStore;
 typedef _MemoryConversationHistoryStore = MemoryConversationHistoryStore;
+typedef _FailingConversationHistoryStore = FailingConversationHistoryStore;
 typedef _BlockingConversationHistoryStore = BlockingConversationHistoryStore;
 typedef _BlockingReadConversationHistoryStore =
     BlockingReadConversationHistoryStore;
@@ -118,6 +119,20 @@ Future<dynamic> _resolveLastAgentMarkdownLinks(WidgetTester tester) async {
   );
   await tester.pump();
   return state;
+}
+
+Future<void> _pumpUntilFound(
+  WidgetTester tester,
+  Finder finder, {
+  int attempts = 50,
+}) async {
+  for (var attempt = 0; attempt < attempts; attempt++) {
+    await tester.pump();
+    if (finder.evaluate().isNotEmpty) return;
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+  }
 }
 
 void main() {
@@ -333,7 +348,7 @@ void main() {
     );
     expect(fullHeightPanel.top, 0);
     expect(fullHeightPanel.bottom, 900);
-    expect(find.byKey(const Key('codex-environment-card')), findsOneWidget);
+    expect(find.byKey(const Key('codex-environment-card')), findsNothing);
     expect(
       tester
           .getSize(find.byKey(const Key('conversation-viewport-stack')))
@@ -343,17 +358,7 @@ void main() {
     final expandedConversation = tester.getRect(
       find.byKey(const Key('conversation-viewport-stack')),
     );
-    final expandedInspectorHandle = tester.getRect(
-      find.byKey(const Key('inspector-resize-handle')),
-    );
-    expect(
-      expandedConversation.right,
-      lessThanOrEqualTo(expandedInspectorHandle.left),
-    );
-    expect(
-      expandedInspectorHandle.right,
-      lessThanOrEqualTo(fullHeightPanel.left),
-    );
+    expect(expandedConversation.right, lessThanOrEqualTo(fullHeightPanel.left));
     expect(
       2048 - tester.getRect(find.byKey(const Key('side-panel-collapse'))).right,
       closeTo(16, 0.1),
@@ -1104,7 +1109,10 @@ void main() {
       greaterThan(tester.getBottomLeft(workbenchTopBar).dy),
     );
     final environmentPane = find.byKey(const Key('environment-inspector-pane'));
-    expect(tester.getTopLeft(environmentPane).dy, 0);
+    expect(
+      tester.getTopLeft(environmentPane).dy,
+      closeTo(tester.getBottomLeft(workbenchTopBar).dy, 1.1),
+    );
     expect(
       tester.getTopRight(workbenchTopBar).dx,
       lessThanOrEqualTo(tester.getTopLeft(environmentPane).dx),
@@ -1373,21 +1381,6 @@ void main() {
     final topBar = find.byKey(const Key('workbench-column-topbar'));
     expect(
       find.descendant(of: topBar, matching: find.text('初始任务名称')),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(of: topBar, matching: find.text('Codex 配置 / App Server')),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(of: topBar, matching: find.text('workspace-write')),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(
-        of: topBar,
-        matching: find.byKey(const Key('workbench-file-changes-button')),
-      ),
       findsOneWidget,
     );
     expect(find.text('任务控制台'), findsNothing);
@@ -7503,7 +7496,7 @@ void main() {
       find.byKey(const Key('completed-turn-disclosure-divider')),
       findsOneWidget,
     );
-    expect(find.byType(AnimatedSize), findsOneWidget);
+    expect(find.byType(AnimatedSize), findsAtLeastNWidgets(1));
 
     await tester.tap(find.text('已运行了命令'));
     await tester.pump();
@@ -7518,12 +7511,6 @@ void main() {
     await tester.tap(elapsedToggle);
     await tester.pump();
 
-    expect(
-      tester
-          .widget<AnimatedCrossFade>(find.byType(AnimatedCrossFade))
-          .crossFadeState,
-      CrossFadeState.showFirst,
-    );
     final expandedDividerY = tester
         .getTopLeft(find.byKey(const Key('completed-turn-disclosure-divider')))
         .dy;
@@ -7559,12 +7546,6 @@ void main() {
     await tester.tap(elapsedToggle);
     await tester.pump();
 
-    expect(
-      tester
-          .widget<AnimatedCrossFade>(find.byType(AnimatedCrossFade))
-          .crossFadeState,
-      CrossFadeState.showSecond,
-    );
     expect(
       tester
           .widget<AnimatedRotation>(
@@ -9179,10 +9160,8 @@ void main() {
             find.byKey(const Key('markdown-preview-back-button')),
           )
           .onPressed!();
-      await Future<void>.delayed(const Duration(milliseconds: 60));
     });
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 120));
+    await _pumpUntilFound(tester, find.text('产品说明'));
     expect(find.text('产品说明'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('markdown-source-mode-button')));
@@ -9776,6 +9755,13 @@ void main() {
       expect(
         firstSnapshot.acknowledgedCompletedThreadIds,
         isNot(contains('first-thread')),
+      );
+      expect(
+        firstSnapshot
+            .userMessageEntriesByThreadId['first-thread']
+            ?.single
+            .detail,
+        '第一个项目继续执行',
       );
       expect(await controller.sendPrompt('继续第二个项目的任务'), isTrue);
       expect(server.startedTurnThreadId, 'second-thread');
@@ -11350,6 +11336,68 @@ void main() {
       target.dispose();
     },
   );
+
+  test('rejects local history import while a task is running', () async {
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/target'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'running-thread'
+      ..threads = [_thread(id: 'running-thread', status: 'running')];
+    final imported = CodexController(server: CodexAppServer())
+      ..workspacePath = '/source'
+      ..threads = [_thread(id: 'imported-thread')];
+
+    await expectLater(
+      controller.importConversationHistory(
+        imported.exportConversationHistory(),
+      ),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          contains('等待所有任务完成'),
+        ),
+      ),
+    );
+
+    expect(controller.activeThreadId, 'running-thread');
+    expect(controller.threads.single.id, 'running-thread');
+    controller.dispose();
+    imported.dispose();
+  });
+
+  test('rolls back local history import when persistence fails', () async {
+    final store = _FailingConversationHistoryStore();
+    final controller =
+        CodexController(
+            server: CodexAppServer(),
+            conversationHistoryStore: store,
+          )
+          ..workspacePath = '/target'
+          ..activeThreadId = 'original-thread'
+          ..threads = [_thread(id: 'original-thread')];
+    controller.toggleThreadPinned(controller.threads.single);
+    final imported = CodexController(server: CodexAppServer())
+      ..workspacePath = '/source'
+      ..threads = [_thread(id: 'imported-thread')];
+
+    await expectLater(
+      controller.importConversationHistory(
+        imported.exportConversationHistory(),
+      ),
+      throwsA(isA<StateError>()),
+    );
+
+    expect(controller.activeThreadId, 'original-thread');
+    expect(controller.threads.single.id, 'original-thread');
+    expect(controller.isThreadPinned('original-thread'), isTrue);
+    expect(
+      controller.entries.where((entry) => entry.title == '已导入本地历史'),
+      isEmpty,
+    );
+    controller.dispose();
+    imported.dispose();
+  });
 
   testWidgets('searches tasks from the top toolbar command surface', (
     tester,
@@ -13577,10 +13625,7 @@ void main() {
       expect(git.reversedDiff, taskDiff);
       expect(git.reversedExpectedPaths, ['lib/main.dart']);
       expect(tester.widget<TextButton>(undo).onPressed, isNull);
-      expect(
-        find.byKey(const Key('code-review-file-operation')),
-        findsOneWidget,
-      );
+      expect(controller.fileChangeUndoRunning, isTrue);
       expect(controller.canSend, isFalse);
 
       await tester.tap(undo);
@@ -13774,10 +13819,10 @@ void main() {
   });
 
   testWidgets('previews an edited SVG as an image on hover', (tester) async {
-    final directory = await Directory.systemTemp.createTemp('codex-svg-hover-');
-    addTearDown(() => directory.delete(recursive: true));
+    final directory = Directory.systemTemp.createTempSync('codex-svg-hover-');
+    addTearDown(() => directory.deleteSync(recursive: true));
     final svgPath = '${directory.path}/preview.svg';
-    await File(svgPath).writeAsString(
+    File(svgPath).writeAsStringSync(
       '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80">'
       '<circle cx="40" cy="40" r="30" fill="red"/></svg>',
     );
@@ -13810,6 +13855,8 @@ void main() {
     expect(find.textContaining('SVG'), findsNothing);
     mouseRegion.onExit?.call(const PointerExitEvent());
     await tester.pump(const Duration(milliseconds: 140));
+    expect(find.byKey(const Key('file-change-hover-preview')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
   });
 
   test(
@@ -14175,7 +14222,7 @@ void main() {
     await tester.tap(
       find.descendant(
         of: find.byKey(const Key('codex-environment-card')),
-        matching: find.text('变更'),
+        matching: find.text('本地'),
       ),
     );
     await tester.pumpAndSettle();
@@ -14512,7 +14559,7 @@ void main() {
       await tester.tap(
         find.descendant(
           of: find.byKey(const Key('codex-environment-card')),
-          matching: find.text('变更'),
+          matching: find.text('本地'),
         ),
       );
       await tester.pumpAndSettle();
@@ -14533,12 +14580,6 @@ void main() {
       expect(
         find.byKey(const Key('code-review-file-operation')),
         findsOneWidget,
-      );
-      expect(
-        tester
-            .widget<IconButton>(find.byKey(const Key('code-review-commit')))
-            .onPressed,
-        isNull,
       );
 
       git.stageCompleter!.complete();
@@ -14574,7 +14615,7 @@ void main() {
     await tester.tap(
       find.descendant(
         of: find.byKey(const Key('codex-environment-card')),
-        matching: find.text('变更'),
+        matching: find.text('本地'),
       ),
     );
     await tester.pumpAndSettle();

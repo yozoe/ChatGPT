@@ -2,6 +2,7 @@ export 'widget_fakes/fake_runtime_configuration_store.dart';
 export 'widget_fakes/delayed_additional_workspace_store.dart';
 export 'widget_fakes/rejecting_additional_workspace_store.dart';
 export 'widget_fakes/memory_conversation_history_store.dart';
+export 'widget_fakes/failing_conversation_history_store.dart';
 export 'widget_fakes/blocking_conversation_history_store.dart';
 export 'widget_fakes/blocking_read_conversation_history_store.dart';
 export 'widget_fakes/memory_local_session_thread_store.dart';

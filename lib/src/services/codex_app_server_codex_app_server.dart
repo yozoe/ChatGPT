@@ -77,9 +77,7 @@ class CodexAppServer {
       );
     }
     try {
-      final result = await Process.run(resolvedExecutable, const [
-        '--version',
-      ], runInShell: false).timeout(const Duration(seconds: 5));
+      final result = await _runProbe(resolvedExecutable);
       if (result.exitCode != 0) {
         return CodexRuntimeProbe(
           isAvailable: false,
@@ -101,6 +99,30 @@ class CodexAppServer {
         discovery: _executableDiscovery,
         error: _redact(error.toString()),
       );
+    }
+  }
+
+  Future<ProcessResult> _runProbe(String executable) async {
+    final process = await Process.start(executable, const [
+      '--version',
+    ], runInShell: false);
+    final stdout = process.stdout.transform(utf8.decoder).join();
+    final stderr = process.stderr.transform(utf8.decoder).join();
+    try {
+      final exitCode = await process.exitCode.timeout(
+        const Duration(seconds: 5),
+      );
+      return ProcessResult(process.pid, exitCode, await stdout, await stderr);
+    } on TimeoutException {
+      process.kill(ProcessSignal.sigterm);
+      try {
+        await process.exitCode.timeout(const Duration(seconds: 2));
+      } on TimeoutException {
+        process.kill(ProcessSignal.sigkill);
+        await process.exitCode;
+      }
+      await Future.wait([stdout, stderr]);
+      rethrow;
     }
   }
 

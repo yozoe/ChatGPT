@@ -74,6 +74,12 @@ class ConversationViewportState extends State<ConversationViewport> {
     _setComposerPrompt('$prompt。');
   }
 
+  void _hideExploreMenu() {
+    if (_exploreMenuVisible && mounted) {
+      setState(() => _exploreMenuVisible = false);
+    }
+  }
+
   void _scheduleBottomOverlayMeasurement() {
     if (_overlayMeasureScheduled) return;
     _overlayMeasureScheduled = true;
@@ -153,253 +159,261 @@ class ConversationViewportState extends State<ConversationViewport> {
         showNewTaskWelcome &&
         _exploreMenuVisible &&
         widget.composerValue.value.text == '探索';
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final availableAboveComposer = math.max(
-          100.0,
-          constraints.maxHeight - _bottomOverlayHeight - 16,
-        );
-        final planHeight = availableAboveComposer.clamp(100.0, 340.0);
-        final timelineBottomPadding =
-            _bottomOverlayHeight +
-            (plan == null
-                ? _timelineBottomClearance
-                : planHeight + _timelineBottomClearance);
-        return Stack(
-          key: const Key('conversation-viewport-stack'),
-          children: [
-            Positioned.fill(
-              child: ShaderMask(
-                key: const Key('composer-bottom-fade'),
-                blendMode: BlendMode.dstIn,
-                shaderCallback: (bounds) {
-                  final height = math.max(1.0, bounds.height);
-                  final fadeEnd =
-                      (1 -
-                              ((_bottomOverlayHeight - _fadeComposerOverlap) /
-                                  height))
-                          .clamp(0.0, 1.0);
-                  final fadeStart = (fadeEnd - (_fadeHeight / height)).clamp(
-                    0.0,
-                    fadeEnd,
-                  );
-                  return LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: const [
-                      Colors.white,
-                      Colors.white,
-                      Colors.transparent,
-                      Colors.transparent,
-                    ],
-                    stops: [0, fadeStart, fadeEnd, 1],
-                  ).createShader(bounds);
-                },
-                child: IndexedStack(
-                  index: activePageIndex < 0 ? 0 : activePageIndex,
-                  children: [
-                    for (final page in pages)
-                      if (showNewTaskWelcome &&
-                          page.key == widget.activeTimelinePageKey)
-                        NewTaskWelcome(
-                          bottomInset: _bottomOverlayHeight + 28,
-                          suggestionsVisible: !showExploreMenu,
-                          onExploreSelected: _showExploreMenu,
-                          onSuggestionSelected: _setComposerPrompt,
-                        )
-                      else
-                        ConversationTimeline(
-                          key: ValueKey(
-                            'conversation-timeline-${page.key.storageKey}',
-                          ),
-                          pageKey: page.key,
-                          data: page.value,
-                          scrollController:
-                              widget.timelineScrollControllers[page.key]!,
-                          bottomPadding: timelineBottomPadding,
-                          active: page.key == widget.activeTimelinePageKey,
-                          fileChangeSummaryExpanded: widget
-                              .fileChangeSummaryExpanded(page.key),
-                          onFileChangeSummaryExpandedChanged: (expanded) =>
-                              widget.onFileChangeSummaryExpandedChanged(
-                                page.key,
-                                expanded,
-                              ),
-                          activityExpanded: (activityId) =>
-                              widget.activityExpanded(page.key, activityId),
-                          onMetricsChanged: (viewportDimension) => widget
-                              .onTimelineMetricsChanged(viewportDimension),
-                          onUserScrollDirection: (metrics, direction) =>
-                              widget.onTimelineUserScrollDirection(
-                                page.key,
-                                metrics,
-                                direction,
-                              ),
-                          onActivityExpandedChanged: (activityId, expanded) =>
-                              widget.onActivityExpandedChanged(
-                                page.key,
-                                activityId,
-                                expanded,
-                              ),
-                          onReview: widget.onReview,
-                          onUndo: widget.onUndo,
-                          onOpenSubagent: widget.onOpenSubagent,
-                          onSubmitUserMessageEdit:
-                              widget.onSubmitUserMessageEdit,
-                          canUndo:
-                              page.key == widget.activeTimelinePageKey &&
-                              widget.controller.canUndoFileChanges,
-                          undoRunning:
-                              page.key == widget.activeTimelinePageKey &&
-                              widget.controller.fileChangeUndoRunning,
-                        ),
-                  ],
-                ),
-              ),
-            ),
-            if (plan != null)
-              Positioned(
-                left: 16,
-                right: 16,
-                bottom: _bottomOverlayHeight + 12,
-                child: Align(
-                  alignment: Alignment.bottomCenter,
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxWidth: 620,
-                      maxHeight: planHeight,
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (showFloatingThinking) ...[
-                          IgnorePointer(
-                            child: LiveThinkingRow(label: thinkingLabel),
-                          ),
-                          const SizedBox(height: 12),
-                        ],
-                        Flexible(child: TaskPlanPanel(plan: plan)),
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): _hideExploreMenu,
+      },
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final availableAboveComposer = math.max(
+            100.0,
+            constraints.maxHeight - _bottomOverlayHeight - 16,
+          );
+          final planHeight = availableAboveComposer.clamp(100.0, 340.0);
+          final timelineBottomPadding =
+              _bottomOverlayHeight +
+              (plan == null
+                  ? _timelineBottomClearance
+                  : planHeight + _timelineBottomClearance);
+          return Stack(
+            key: const Key('conversation-viewport-stack'),
+            children: [
+              Positioned.fill(
+                child: ShaderMask(
+                  key: const Key('composer-bottom-fade'),
+                  blendMode: BlendMode.dstIn,
+                  shaderCallback: (bounds) {
+                    final height = math.max(1.0, bounds.height);
+                    final fadeEnd =
+                        (1 -
+                                ((_bottomOverlayHeight - _fadeComposerOverlap) /
+                                    height))
+                            .clamp(0.0, 1.0);
+                    final fadeStart = (fadeEnd - (_fadeHeight / height)).clamp(
+                      0.0,
+                      fadeEnd,
+                    );
+                    return LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: const [
+                        Colors.white,
+                        Colors.white,
+                        Colors.transparent,
+                        Colors.transparent,
                       ],
-                    ),
+                      stops: [0, fadeStart, fadeEnd, 1],
+                    ).createShader(bounds);
+                  },
+                  child: IndexedStack(
+                    index: activePageIndex < 0 ? 0 : activePageIndex,
+                    children: [
+                      for (final page in pages)
+                        if (showNewTaskWelcome &&
+                            page.key == widget.activeTimelinePageKey)
+                          NewTaskWelcome(
+                            bottomInset: _bottomOverlayHeight + 28,
+                            suggestionsVisible: !showExploreMenu,
+                            onExploreSelected: _showExploreMenu,
+                            onSuggestionSelected: _setComposerPrompt,
+                          )
+                        else
+                          ConversationTimeline(
+                            key: ValueKey(
+                              'conversation-timeline-${page.key.storageKey}',
+                            ),
+                            pageKey: page.key,
+                            data: page.value,
+                            scrollController:
+                                widget.timelineScrollControllers[page.key]!,
+                            bottomPadding: timelineBottomPadding,
+                            active: page.key == widget.activeTimelinePageKey,
+                            fileChangeSummaryExpanded: widget
+                                .fileChangeSummaryExpanded(page.key),
+                            onFileChangeSummaryExpandedChanged: (expanded) =>
+                                widget.onFileChangeSummaryExpandedChanged(
+                                  page.key,
+                                  expanded,
+                                ),
+                            activityExpanded: (activityId) =>
+                                widget.activityExpanded(page.key, activityId),
+                            onMetricsChanged: (viewportDimension) => widget
+                                .onTimelineMetricsChanged(viewportDimension),
+                            onUserScrollDirection: (metrics, direction) =>
+                                widget.onTimelineUserScrollDirection(
+                                  page.key,
+                                  metrics,
+                                  direction,
+                                ),
+                            onActivityExpandedChanged: (activityId, expanded) =>
+                                widget.onActivityExpandedChanged(
+                                  page.key,
+                                  activityId,
+                                  expanded,
+                                ),
+                            onReview: widget.onReview,
+                            onUndo: widget.onUndo,
+                            onOpenSubagent: widget.onOpenSubagent,
+                            onSubmitUserMessageEdit:
+                                widget.onSubmitUserMessageEdit,
+                            canUndo:
+                                page.key == widget.activeTimelinePageKey &&
+                                widget.controller.canUndoFileChanges,
+                            undoRunning:
+                                page.key == widget.activeTimelinePageKey &&
+                                widget.controller.fileChangeUndoRunning,
+                          ),
+                    ],
                   ),
                 ),
               ),
-            if (showFloatingThinking && plan == null)
-              Positioned(
-                left: 24,
-                right: 24,
-                bottom: _bottomOverlayHeight + 20,
-                child: IgnorePointer(
-                  child: LiveThinkingRow(label: thinkingLabel),
-                ),
-              ),
-            if (widget.showScrollToBottom && !widget.threadHistoryLoading)
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom:
-                    _bottomOverlayHeight +
-                    (plan == null
-                        ? showFloatingThinking
-                              ? 68
-                              : 20
-                        : planHeight + 20),
-                child: Center(
-                  child: ConversationScrollToBottomButton(
-                    onPressed: widget.onScrollToBottom,
-                  ),
-                ),
-              ),
-            if (showNewTaskWelcome)
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: _bottomOverlayHeight + 4,
-                child: Align(
-                  alignment: Alignment.bottomCenter,
-                  child: SizedBox(
-                    width: math.min(
-                      conversationContentMaxWidth,
-                      constraints.maxWidth,
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.only(
-                        left: conversationContentHorizontalInset,
-                        right: conversationContentHorizontalInset,
+              if (plan != null)
+                Positioned(
+                  left: 16,
+                  right: 16,
+                  bottom: _bottomOverlayHeight + 12,
+                  child: Align(
+                    alignment: Alignment.bottomCenter,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth: 620,
+                        maxHeight: planHeight,
                       ),
-                      child: Align(
-                        alignment: Alignment.bottomLeft,
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(
-                            maxWidth: 430,
-                            maxHeight: math.max(
-                              80,
-                              math.min(
-                                180,
-                                constraints.maxHeight -
-                                    _bottomOverlayHeight -
-                                    12,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (showFloatingThinking) ...[
+                            IgnorePointer(
+                              child: LiveThinkingRow(label: thinkingLabel),
+                            ),
+                            const SizedBox(height: 12),
+                          ],
+                          Flexible(child: TaskPlanPanel(plan: plan)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              if (showFloatingThinking && plan == null)
+                Positioned(
+                  left: 24,
+                  right: 24,
+                  bottom: _bottomOverlayHeight + 20,
+                  child: IgnorePointer(
+                    child: LiveThinkingRow(label: thinkingLabel),
+                  ),
+                ),
+              if (widget.showScrollToBottom && !widget.threadHistoryLoading)
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom:
+                      _bottomOverlayHeight +
+                      (plan == null
+                          ? showFloatingThinking
+                                ? 68
+                                : 20
+                          : planHeight + 20),
+                  child: Center(
+                    child: ConversationScrollToBottomButton(
+                      onPressed: widget.onScrollToBottom,
+                    ),
+                  ),
+                ),
+              if (showNewTaskWelcome)
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: _bottomOverlayHeight + 4,
+                  child: Align(
+                    alignment: Alignment.bottomCenter,
+                    child: SizedBox(
+                      width: math.min(
+                        conversationContentMaxWidth,
+                        constraints.maxWidth,
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.only(
+                          left: conversationContentHorizontalInset,
+                          right: conversationContentHorizontalInset,
+                        ),
+                        child: Align(
+                          alignment: Alignment.bottomLeft,
+                          child: ConstrainedBox(
+                            constraints: BoxConstraints(
+                              maxWidth: 430,
+                              maxHeight: math.max(
+                                80,
+                                math.min(
+                                  180,
+                                  constraints.maxHeight -
+                                      _bottomOverlayHeight -
+                                      12,
+                                ),
                               ),
                             ),
-                          ),
-                          child: AnimatedSwitcher(
-                            duration: MediaQuery.disableAnimationsOf(context)
-                                ? Duration.zero
-                                : const Duration(milliseconds: 180),
-                            reverseDuration:
-                                MediaQuery.disableAnimationsOf(context)
-                                ? Duration.zero
-                                : const Duration(milliseconds: 130),
-                            switchInCurve: Curves.easeOutCubic,
-                            switchOutCurve: Curves.easeInCubic,
-                            transitionBuilder: (child, animation) =>
-                                FadeTransition(
-                                  opacity: animation,
-                                  child: SlideTransition(
-                                    position: Tween<Offset>(
-                                      begin: const Offset(0, 0.16),
-                                      end: Offset.zero,
-                                    ).animate(animation),
-                                    child: child,
-                                  ),
-                                ),
-                            child: showExploreMenu
-                                ? NewTaskExploreMenu(
-                                    key: const ValueKey(
-                                      'new-task-explore-menu-visible',
-                                    ),
-                                    onSelected: _selectExplorePrompt,
-                                  )
-                                : const SizedBox(
-                                    key: ValueKey(
-                                      'new-task-explore-menu-hidden',
+                            child: AnimatedSwitcher(
+                              duration: MediaQuery.disableAnimationsOf(context)
+                                  ? Duration.zero
+                                  : const Duration(milliseconds: 180),
+                              reverseDuration:
+                                  MediaQuery.disableAnimationsOf(context)
+                                  ? Duration.zero
+                                  : const Duration(milliseconds: 130),
+                              switchInCurve: Curves.easeOutCubic,
+                              switchOutCurve: Curves.easeInCubic,
+                              transitionBuilder: (child, animation) =>
+                                  FadeTransition(
+                                    opacity: animation,
+                                    child: SlideTransition(
+                                      position: Tween<Offset>(
+                                        begin: const Offset(0, 0.16),
+                                        end: Offset.zero,
+                                      ).animate(animation),
+                                      child: child,
                                     ),
                                   ),
+                              child: showExploreMenu
+                                  ? TapRegion(
+                                      onTapOutside: (_) => _hideExploreMenu(),
+                                      child: NewTaskExploreMenu(
+                                        key: const ValueKey(
+                                          'new-task-explore-menu-visible',
+                                        ),
+                                        onSelected: _selectExplorePrompt,
+                                      ),
+                                    )
+                                  : const SizedBox(
+                                      key: ValueKey(
+                                        'new-task-explore-menu-hidden',
+                                      ),
+                                    ),
+                            ),
                           ),
                         ),
                       ),
                     ),
                   ),
                 ),
-              ),
-            Align(
-              alignment: Alignment.bottomCenter,
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(
-                  maxWidth: conversationContentMaxWidth,
-                ),
-                child: NotificationListener<SizeChangedLayoutNotification>(
-                  onNotification: _handleBottomOverlaySizeChanged,
-                  child: SizeChangedLayoutNotifier(
-                    key: _bottomOverlayKey,
-                    child: widget.bottomOverlay,
+              Align(
+                alignment: Alignment.bottomCenter,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    maxWidth: conversationContentMaxWidth,
+                  ),
+                  child: NotificationListener<SizeChangedLayoutNotification>(
+                    onNotification: _handleBottomOverlaySizeChanged,
+                    child: SizeChangedLayoutNotifier(
+                      key: _bottomOverlayKey,
+                      child: widget.bottomOverlay,
+                    ),
                   ),
                 ),
               ),
-            ),
-          ],
-        );
-      },
+            ],
+          );
+        },
+      ),
     );
   }
 }

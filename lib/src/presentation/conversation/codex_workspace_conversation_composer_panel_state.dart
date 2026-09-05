@@ -394,6 +394,33 @@ class ComposerPanelState extends State<ComposerPanel> {
     setState(() => _slashMenuDismissed = true);
   }
 
+  void _handleEscape() {
+    if (_showSlashMenu) {
+      _dismissSlashMenu();
+      return;
+    }
+    if (_codeReviewOptionsVisible) {
+      _codeReviewBranchRequest++;
+      composer.clear();
+      setState(() {
+        _codeReviewOptionsVisible = false;
+        _codeReviewBranchesLoading = false;
+        _codeReviewBranchesError = null;
+      });
+      return;
+    }
+    if (_mcpStatusVisible) {
+      _dismissMcpStatus();
+      return;
+    }
+    final composing = composer.value.composing;
+    if (_imeCompositionActive ||
+        (composing.isValid && !composing.isCollapsed)) {
+      return;
+    }
+    if (controller.canStop) unawaited(controller.stopCurrentTurn());
+  }
+
   Future<void> _selectSlashCommand(ComposerSlashCommand command) async {
     setState(() => _slashMenuDismissed = true);
     switch (command.kind) {
@@ -1201,10 +1228,9 @@ class ComposerPanelState extends State<ComposerPanel> {
                                       const SingleActivator(
                                         LogicalKeyboardKey.tab,
                                       ): _selectFocusedSlashCommand,
-                                    if (_showSlashMenu)
-                                      const SingleActivator(
-                                        LogicalKeyboardKey.escape,
-                                      ): _dismissSlashMenu,
+                                    const SingleActivator(
+                                      LogicalKeyboardKey.escape,
+                                    ): _handleEscape,
                                     // Do not register Enter while the IME owns
                                     // an active composition. This lets macOS
                                     // cancel or confirm its candidate instead
