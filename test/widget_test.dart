@@ -2119,6 +2119,41 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('manual files launcher opens a retained workspace tab', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1800, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(
+      server: CodexAppServer(messageSink: (_) {}),
+    );
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(home: CodexWorkspace(controller: controller)),
+      ),
+    );
+
+    await tester.tap(find.byTooltip('展开右侧工作区'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('文件'));
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('files-workspace-page')), findsOneWidget);
+    expect(find.byKey(const ValueKey('side-panel-tab-files')), findsOneWidget);
+    expect(find.text('尚未打开工作区'), findsOneWidget);
+    expect(find.byType(ConversationPane), findsOneWidget);
+    expect(find.byKey(const Key('environment-inspector-pane')), findsNothing);
+
+    await tester.tap(find.byTooltip('收起右侧工作区'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('files-workspace-page')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('files-workspace-page'), skipOffstage: false),
+      findsOneWidget,
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('keeps browser state across full-page destinations', (
     tester,
   ) async {

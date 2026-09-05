@@ -8,6 +8,7 @@ import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
 import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_page.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_workspace_page.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_workspace_page_state.dart';
+import 'package:chatgpt/src/presentation/files/codex_workspace_files_workspace_page.dart';
 import 'package:chatgpt/src/presentation/agents/codex_workspace_agents_page.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_desktop_side_panel.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
@@ -60,6 +61,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   // after its first use, but do not construct it during the initial frame.
   // 原生 WebView 在 macOS 上初始化成本较高；首次使用后保活，但首帧不创建。
   bool _browserPageMounted = false;
+  bool _filesPageMounted = false;
   String? _browserInitialUrl;
   int _browserNavigationRevision = 0;
   String? _selectedSubagentThreadId;
@@ -357,7 +359,12 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       case 'terminal':
         unawaited(_showRuntime());
       case 'files':
-        unawaited(_showGitProject());
+        setState(() {
+          _filesPageMounted = true;
+          _destination = WorkspaceDestination.conversation;
+          _activeSidePanelTab = 'files';
+          _sidePanelCollapsed = false;
+        });
     }
   }
 
@@ -2457,6 +2464,16 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                 _activeSidePanelTab == 'browser',
           )
         : null;
+    final filesPage = _filesPageMounted
+        ? FilesWorkspacePage(
+            key: const ValueKey('files-workspace-page'),
+            workspacePath: controller.workspacePath,
+            isVisible:
+                _destination == WorkspaceDestination.conversation &&
+                !_sidePanelCollapsed &&
+                _activeSidePanelTab == 'files',
+          )
+        : null;
     if (_destination == WorkspaceDestination.settings) {
       return Scaffold(
         body: SafeArea(
@@ -2481,6 +2498,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
               ),
               if (browserPage != null)
                 ExcludeFocus(child: Offstage(child: browserPage)),
+              if (filesPage != null)
+                ExcludeFocus(child: Offstage(child: filesPage)),
             ],
           ),
         ),
@@ -2506,6 +2525,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
             final hasSidePanelContents =
                 _reviewOpen ||
                 _browserPageMounted ||
+                _filesPageMounted ||
                 _openedSubagentThreadIds.isNotEmpty;
             final sidePanelOpen = sidePanelExpanded && hasSidePanelContents;
             final showSidePanelLauncher =
@@ -2534,6 +2554,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                   onCollapse: _returnToMainTask,
                 ),
               if (_browserPageMounted) 'browser': browserPage!,
+              if (_filesPageMounted) 'files': filesPage!,
               for (final id in _openedSubagentThreadIds)
                 'subagent:$id': SubagentThreadPanel(
                   key: ValueKey('subagent-panel-$id'),
@@ -2546,6 +2567,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
             final sidePanelLabels = <String, String>{
               if (_reviewOpen) 'review': '审查',
               if (_browserPageMounted) 'browser': '浏览器',
+              if (_filesPageMounted) 'files': '文件',
               for (final id in _openedSubagentThreadIds)
                 'subagent:$id': _subagentTitles[id] ?? '子智能体',
             };
@@ -2886,7 +2908,9 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                         panelOpen: sidePanelOpen,
                                         hasContents: hasSidePanelContents,
                                         width: animatedSidePanelWidth,
-                                        minimumContentWidth: _browserPageMounted
+                                        minimumContentWidth:
+                                            _browserPageMounted ||
+                                                _filesPageMounted
                                             ? _minimumAuxiliaryWidth
                                             : 8.0,
                                         contents: sidePanelTabs,
