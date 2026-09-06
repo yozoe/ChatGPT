@@ -9398,13 +9398,15 @@ void main() {
     },
   );
 
-  testWidgets('opens project Markdown links in an in-app formatted preview', (
+  testWidgets('opens project Markdown links as retained workspace tabs', (
     tester,
   ) async {
-    await tester.binding.setSurfaceSize(const Size(680, 520));
+    await tester.binding.setSurfaceSize(const Size(1400, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     late Directory workspace;
     late File document;
+    late String documentPath;
+    late String nextDocumentPath;
     await tester.runAsync(() async {
       workspace = await Directory.systemTemp.createTemp(
         'codex-desk-markdown-preview-',
@@ -9418,6 +9420,8 @@ void main() {
       );
       final nextDocument = File('${guideDirectory.path}/next.md');
       await nextDocument.writeAsString('# 下一页标题\n\n返回后继续阅读。');
+      documentPath = await document.resolveSymbolicLinks();
+      nextDocumentPath = await nextDocument.resolveSymbolicLinks();
     });
     addTearDown(() => workspace.delete(recursive: true));
 
@@ -9454,7 +9458,12 @@ void main() {
     });
     await tester.pump(const Duration(milliseconds: 220));
 
-    expect(find.byKey(const Key('markdown-preview-dialog')), findsOneWidget);
+    final documentTab = ValueKey('side-panel-tab-file:$documentPath');
+    final documentPage = ValueKey('markdown-workspace-page-$documentPath');
+    expect(find.byKey(const Key('markdown-preview-dialog')), findsNothing);
+    expect(find.byKey(documentTab), findsOneWidget);
+    expect(find.byKey(documentPage), findsOneWidget);
+    expect(find.byType(ConversationPane), findsOneWidget);
     expect(find.byKey(const Key('markdown-preview-file-name')), findsOneWidget);
     expect(find.text('L3'), findsOneWidget);
     expect(find.text('产品说明'), findsOneWidget);
@@ -9465,25 +9474,15 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 60));
     });
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 120));
-    expect(find.text('下一页标题'), findsOneWidget);
     expect(
-      tester
-          .widget<IconButton>(
-            find.byKey(const Key('markdown-preview-back-button')),
-          )
-          .onPressed,
-      isNotNull,
+      find.byKey(ValueKey('side-panel-tab-file:$nextDocumentPath')),
+      findsOneWidget,
     );
+    await _pumpUntilFound(tester, find.text('下一页标题'));
+    expect(find.text('下一页标题'), findsOneWidget);
 
-    await tester.runAsync(() async {
-      tester
-          .widget<IconButton>(
-            find.byKey(const Key('markdown-preview-back-button')),
-          )
-          .onPressed!();
-    });
-    await _pumpUntilFound(tester, find.text('产品说明'));
+    await tester.tap(find.byKey(documentTab));
+    await tester.pump();
     expect(find.text('产品说明'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('markdown-source-mode-button')));
@@ -9499,10 +9498,108 @@ void main() {
       lessThan(40000),
     );
 
-    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-    await tester.pump();
+    await tester.tap(
+      find.byKey(ValueKey('side-panel-tab-close-file:$documentPath')),
+    );
     await tester.pump(const Duration(milliseconds: 180));
-    expect(find.byKey(const Key('markdown-preview-dialog')), findsNothing);
+    expect(find.byKey(documentTab), findsNothing);
+    expect(
+      find.byKey(ValueKey('side-panel-tab-file:$nextDocumentPath')),
+      findsOneWidget,
+    );
+    await _pumpUntilFound(tester, find.text('下一页标题'));
+    expect(find.text('下一页标题'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('opens other project text files in source workspace tabs', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(680, 520));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    late Directory workspace;
+    late Directory nextWorkspace;
+    late File document;
+    late String documentPath;
+    await tester.runAsync(() async {
+      workspace = await Directory.systemTemp.createTemp(
+        'codex-desk-source-preview-',
+      );
+      nextWorkspace = await Directory.systemTemp.createTemp(
+        'codex-desk-source-preview-next-',
+      );
+      document = File('${workspace.path}/example.dart');
+      await document.writeAsString('const message = "before";');
+      documentPath = await document.resolveSymbolicLinks();
+    });
+    addTearDown(() async {
+      await workspace.delete(recursive: true);
+      await nextWorkspace.delete(recursive: true);
+    });
+
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = workspace.path
+      ..replaceTimelineEntriesForTesting([
+        TimelineEntry(
+          kind: TimelineKind.agent,
+          title: 'Codex',
+          detail: '[example.dart](${document.uri})',
+          createdAt: DateTime(2026, 1, 1),
+        ),
+      ]);
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await _resolveLastAgentMarkdownLinks(tester);
+
+    final fileRow = find
+        .ancestor(of: find.text('example.dart'), matching: find.byType(InkWell))
+        .first;
+    await tester.runAsync(() async {
+      tester.widget<InkWell>(fileRow).onTap!();
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+    });
+    await tester.pump();
+
+    expect(
+      find.byKey(ValueKey('side-panel-tab-file:$documentPath')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(ValueKey('source-workspace-page-$documentPath')),
+      findsOneWidget,
+    );
+    await _pumpUntilFound(tester, find.textContaining('before'));
+    expect(find.textContaining('before'), findsOneWidget);
+    expect(find.byType(ConversationPane), findsOneWidget);
+    final source = tester.widget<SelectableText>(
+      find.byKey(const Key('source-workspace-content')),
+    );
+    expect(source.style?.fontFamily, 'monospace');
+    expect(source.style?.fontSize, 12);
+    expect(source.style?.height, 1.5);
+
+    await tester.runAsync(() async {
+      await document.writeAsString('const message = "after";');
+      tester.widget<InkWell>(fileRow).onTap!();
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+    });
+    await tester.pump();
+    await _pumpUntilFound(tester, find.textContaining('after'));
+    expect(find.textContaining('after'), findsOneWidget);
+    expect(find.textContaining('before'), findsNothing);
+
+    controller.workspacePath = nextWorkspace.path;
+    controller.notifyListeners();
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(ValueKey('side-panel-tab-file:$documentPath')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(ValueKey('source-workspace-page-$documentPath')),
+      findsNothing,
+    );
     await tester.pumpWidget(const SizedBox());
   });
 

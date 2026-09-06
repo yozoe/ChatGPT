@@ -16,11 +16,17 @@ class WorkspaceMarkdownPreview extends StatefulWidget {
   const WorkspaceMarkdownPreview({
     required this.reference,
     required this.workspacePath,
+    this.embedded = false,
+    this.onClose,
+    this.onOpenReference,
     super.key,
   });
 
   final WorkspaceFileReference reference;
   final String workspacePath;
+  final bool embedded;
+  final VoidCallback? onClose;
+  final ValueChanged<WorkspaceFileReference>? onOpenReference;
 
   @override
   State<WorkspaceMarkdownPreview> createState() =>

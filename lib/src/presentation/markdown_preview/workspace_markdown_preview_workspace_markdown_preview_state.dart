@@ -37,6 +37,17 @@ class WorkspaceMarkdownPreviewState extends State<WorkspaceMarkdownPreview> {
   }
 
   @override
+  void didUpdateWidget(covariant WorkspaceMarkdownPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.workspacePath == widget.workspacePath &&
+        oldWidget.reference == widget.reference) {
+      return;
+    }
+    _history.clear();
+    unawaited(_load(widget.reference));
+  }
+
+  @override
   void dispose() {
     _loadRevision += 1;
     _previewController.dispose();
@@ -186,6 +197,10 @@ class WorkspaceMarkdownPreviewState extends State<WorkspaceMarkdownPreview> {
       return;
     }
     if (isMarkdownFilePath(reference.path)) {
+      if (widget.onOpenReference != null) {
+        widget.onOpenReference!(reference);
+        return;
+      }
       _history.add(_reference);
       await _load(reference);
       return;
@@ -211,7 +226,7 @@ class WorkspaceMarkdownPreviewState extends State<WorkspaceMarkdownPreview> {
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
     if (event.logicalKey == LogicalKeyboardKey.escape) {
-      Navigator.of(context).pop();
+      _close();
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
@@ -222,9 +237,40 @@ class WorkspaceMarkdownPreviewState extends State<WorkspaceMarkdownPreview> {
     return segments.isEmpty ? _reference.path : segments.last;
   }
 
+  void _close() {
+    if (widget.onClose != null) {
+      widget.onClose!();
+      return;
+    }
+    Navigator.of(context).pop();
+  }
+
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
+    final content = Column(
+      children: [
+        _buildHeader(palette),
+        Divider(height: 1, color: palette.border),
+        Expanded(child: _buildBody(palette)),
+      ],
+    );
+    if (widget.embedded) {
+      return Material(
+        key: ValueKey('markdown-workspace-page-${widget.reference.path}'),
+        color: palette.module,
+        child: Focus(
+          autofocus: true,
+          onKeyEvent: _handleKeyEvent,
+          child: Semantics(
+            container: true,
+            explicitChildNodes: true,
+            label: 'Markdown 文档工作区',
+            child: content,
+          ),
+        ),
+      );
+    }
     return Material(
       type: MaterialType.transparency,
       child: Focus(
@@ -260,13 +306,7 @@ class WorkspaceMarkdownPreviewState extends State<WorkspaceMarkdownPreview> {
                       ),
                     ],
                   ),
-                  child: Column(
-                    children: [
-                      _buildHeader(palette),
-                      Divider(height: 1, color: palette.border),
-                      Expanded(child: _buildBody(palette)),
-                    ],
-                  ),
+                  child: content,
                 ),
               ),
             ),
@@ -353,8 +393,8 @@ class WorkspaceMarkdownPreviewState extends State<WorkspaceMarkdownPreview> {
                   ),
                   IconButton(
                     key: const Key('markdown-preview-close-button'),
-                    tooltip: '关闭预览',
-                    onPressed: () => Navigator.of(context).pop(),
+                    tooltip: widget.embedded ? '关闭文件' : '关闭预览',
+                    onPressed: _close,
                     icon: const Icon(Icons.close, size: 21),
                   ),
                 ],

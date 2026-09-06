@@ -9,8 +9,12 @@ import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_page.
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_workspace_page.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_workspace_page_state.dart';
 import 'package:chatgpt/src/presentation/files/codex_workspace_files_workspace_page.dart';
+import 'package:chatgpt/src/presentation/files/workspace_source_file_preview.dart';
 import 'package:chatgpt/src/presentation/agents/codex_workspace_agents_page.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_desktop_side_panel.dart';
+import 'package:chatgpt/src/presentation/workspace/workspace_file_open_scope.dart';
+import 'package:chatgpt/src/presentation/workspace/workspace_file_tabs_notifier.dart';
+import 'package:chatgpt/src/presentation/workspace/workspace_file_tabs_state.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:chatgpt/src/services/theme_preferences_store.dart';
@@ -63,6 +67,11 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   // 原生 WebView 在 macOS 上初始化成本较高；首次使用后保活，但首帧不创建。
   bool _browserPageMounted = false;
   bool _filesPageMounted = false;
+  late final WorkspaceFileTabsProviderArgument _workspaceFileTabsArgument;
+  late ProviderContainer _workspaceFileTabsContainer;
+  late ProviderSubscription<WorkspaceFileTabsState>
+  _workspaceFileTabsSubscription;
+  bool _ownsWorkspaceFileTabsContainer = false;
   String? _browserInitialUrl;
   int _browserNavigationRevision = 0;
   String? _selectedSubagentThreadId;
@@ -98,6 +107,25 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
         .clamp(_minimumSidebarWidth, _maximumSidebarWidth)
         .toDouble();
     _controller = widget.controller ?? ref.read(codexControllerProvider)!;
+    _workspaceFileTabsArgument = (
+      scope: Object(),
+      initialWorkspacePath: _controller.workspacePath,
+    );
+    try {
+      _workspaceFileTabsContainer = ProviderScope.containerOf(
+        context,
+        listen: false,
+      );
+    } on StateError {
+      _workspaceFileTabsContainer = ProviderContainer();
+      _ownsWorkspaceFileTabsContainer = true;
+    }
+    _workspaceFileTabsSubscription = _workspaceFileTabsContainer.listen(
+      workspaceFileTabsProvider(_workspaceFileTabsArgument),
+      (previous, next) {
+        if (mounted) setState(() {});
+      },
+    );
     _displayedThreadKey = _viewportKey(_controller.activeThreadId);
     _timelineScrollController = _timelineControllerFor(_displayedThreadKey);
     _captureActiveTimelinePage();
@@ -122,6 +150,18 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     previousController.setOpenSettingsHandler(null);
     previousController.setBrowserInvocationHandler(null);
     _controller = nextController;
+    final nextWorkspacePath = _controller.workspacePath;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _controller.workspacePath != nextWorkspacePath) return;
+      final workspaceChanged = _synchronizeWorkspaceFileTabs(nextWorkspacePath);
+      if (!workspaceChanged || !_activeSidePanelTab.startsWith('file:')) {
+        return;
+      }
+      setState(() {
+        _activeSidePanelTab = _fallbackSidePanelTab() ?? '';
+        if (_activeSidePanelTab.isEmpty) _sidePanelCollapsed = true;
+      });
+    });
     _controller.addListener(_handleControllerUpdate);
     _controller.setDockActivationHandler(_handleDockActivation);
     _controller.setOpenSettingsHandler(_showSettings);
@@ -155,6 +195,10 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     _controller.setOpenSettingsHandler(null);
     _controller.setBrowserInvocationHandler(null);
     _controller.removeListener(_handleControllerUpdate);
+    _workspaceFileTabsSubscription.close();
+    if (_ownsWorkspaceFileTabsContainer) {
+      _workspaceFileTabsContainer.dispose();
+    }
     _composer.dispose();
     _recordSkillRequest.dispose();
     _pendingTimelineAboveLatest.clear();
@@ -223,6 +267,16 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   /// 响应控制器更新；显式注入时由工作区重建，Provider 场景仍由 ref.watch 重建。
   /// Responds to controller updates; the workspace rebuilds explicit injections while ref.watch rebuilds provider state.
   void _handleControllerUpdate() {
+    final workspaceChanged = _synchronizeWorkspaceFileTabs(
+      _controller.workspacePath,
+    );
+    if (workspaceChanged) {
+      final removedActiveFile = _activeSidePanelTab.startsWith('file:');
+      if (removedActiveFile) {
+        _activeSidePanelTab = _fallbackSidePanelTab() ?? '';
+        if (_activeSidePanelTab.isEmpty) _sidePanelCollapsed = true;
+      }
+    }
     if (_selectedSubagentParentThreadId != null &&
         _selectedSubagentParentThreadId != _controller.activeThreadId) {
       _selectedSubagentThreadId = null;
@@ -376,6 +430,64 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   void _selectSidePanelTab(String tab) {
     if (!mounted) return;
     setState(() => _activeSidePanelTab = tab);
+  }
+
+  String _workspaceFileName(WorkspaceFileReference reference) {
+    final segments = reference.uri.pathSegments;
+    return segments.isEmpty ? reference.path : segments.last;
+  }
+
+  bool _synchronizeWorkspaceFileTabs(String? workspacePath) =>
+      _workspaceFileTabsContainer
+          .read(workspaceFileTabsProvider(_workspaceFileTabsArgument).notifier)
+          .synchronizeWorkspace(workspacePath);
+
+  void _openWorkspaceFile(
+    WorkspaceFileReference reference, {
+    required String workspacePath,
+  }) {
+    if (!mounted || _controller.workspacePath != workspacePath) return;
+    final tab = _workspaceFileTabsContainer
+        .read(workspaceFileTabsProvider(_workspaceFileTabsArgument).notifier)
+        .open(reference, workspacePath: workspacePath);
+    if (tab == null) return;
+    setState(() {
+      _destination = WorkspaceDestination.conversation;
+      _activeSidePanelTab = tab;
+      _sidePanelCollapsed = false;
+    });
+  }
+
+  void _closeWorkspaceFile(String tab) {
+    if (!mounted ||
+        !_workspaceFileTabsContainer
+            .read(
+              workspaceFileTabsProvider(_workspaceFileTabsArgument).notifier,
+            )
+            .close(tab)) {
+      return;
+    }
+    setState(() {
+      if (_activeSidePanelTab != tab) return;
+      _activeSidePanelTab = _fallbackSidePanelTab() ?? '';
+      if (_activeSidePanelTab.isEmpty) _sidePanelCollapsed = true;
+    });
+  }
+
+  String? _fallbackSidePanelTab() {
+    if (_openedSubagentThreadIds.isNotEmpty) {
+      return 'subagent:${_openedSubagentThreadIds.last}';
+    }
+    final openedWorkspaceFiles = _workspaceFileTabsContainer
+        .read(workspaceFileTabsProvider(_workspaceFileTabsArgument))
+        .files;
+    if (openedWorkspaceFiles.isNotEmpty) {
+      return openedWorkspaceFiles.keys.last;
+    }
+    if (_filesPageMounted) return 'files';
+    if (_browserPageMounted) return 'browser';
+    if (_reviewOpen) return 'review';
+    return null;
   }
 
   /// Creates a retained controller and remembers when the user deliberately
@@ -2501,6 +2613,13 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller ?? ref.watch(codexControllerProvider)!;
+    final workspaceFileTabs = _workspaceFileTabsContainer.read(
+      workspaceFileTabsProvider(_workspaceFileTabsArgument),
+    );
+    final openedWorkspaceFiles =
+        workspaceFileTabs.workspacePath == controller.workspacePath
+        ? workspaceFileTabs.files
+        : const <String, WorkspaceFileReference>{};
     final browserPage = _browserPageMounted
         ? BrowserWorkspacePage(
             key: _browserPanelKey,
@@ -2580,6 +2699,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                   _reviewOpen ||
                   _browserPageMounted ||
                   _filesPageMounted ||
+                  openedWorkspaceFiles.isNotEmpty ||
                   _openedSubagentThreadIds.isNotEmpty;
               final sidePanelOpen = sidePanelExpanded && hasSidePanelContents;
               final showSidePanelLauncher =
@@ -2611,6 +2731,25 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                   ),
                 if (_browserPageMounted) 'browser': browserPage!,
                 if (_filesPageMounted) 'files': filesPage!,
+                for (final entry in openedWorkspaceFiles.entries)
+                  entry.key: isMarkdownFilePath(entry.value.path)
+                      ? WorkspaceMarkdownPreview(
+                          key: ValueKey('workspace-${entry.key}'),
+                          reference: entry.value,
+                          workspacePath: workspaceFileTabs.workspacePath!,
+                          embedded: true,
+                          onClose: () => _closeWorkspaceFile(entry.key),
+                          onOpenReference: (reference) => _openWorkspaceFile(
+                            reference,
+                            workspacePath: workspaceFileTabs.workspacePath!,
+                          ),
+                        )
+                      : WorkspaceSourceFilePreview(
+                          key: ValueKey('workspace-${entry.key}'),
+                          reference: entry.value,
+                          workspacePath: workspaceFileTabs.workspacePath!,
+                          onClose: () => _closeWorkspaceFile(entry.key),
+                        ),
                 for (final id in _openedSubagentThreadIds)
                   'subagent:$id': SubagentThreadPanel(
                     key: ValueKey('subagent-panel-$id'),
@@ -2624,6 +2763,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                 if (_reviewOpen) 'review': '审查',
                 if (_browserPageMounted) 'browser': '浏览器',
                 if (_filesPageMounted) 'files': '文件',
+                for (final entry in openedWorkspaceFiles.entries)
+                  entry.key: _workspaceFileName(entry.value),
                 for (final id in _openedSubagentThreadIds)
                   'subagent:$id': _subagentTitles[id] ?? '子智能体',
               };
@@ -2634,6 +2775,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                 activeTab: _activeSidePanelTab,
                 onSelect: _selectSidePanelTab,
                 onCollapse: _returnToMainTask,
+                closableTabs: openedWorkspaceFiles.keys.toSet(),
+                onClose: _closeWorkspaceFile,
               );
               return Stack(
                 fit: StackFit.expand,
@@ -2798,75 +2941,79 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                                     child: Stack(
                                                       fit: StackFit.expand,
                                                       children: [
-                                                        ConversationPane(
-                                                          controller:
-                                                              controller,
-                                                          composer: _composer,
-                                                          recordSkillRequest:
-                                                              _recordSkillRequest,
-                                                          timelinePages:
-                                                              _timelinePages,
-                                                          timelineScrollControllers:
-                                                              _timelineScrollControllers,
-                                                          activeTimelinePageKey:
-                                                              _displayedThreadKey,
-                                                          threadHistoryLoading:
-                                                              _threadHistoryLoading,
-                                                          fileChangeSummaryExpanded:
-                                                              (pageKey) =>
-                                                                  _fileChangeSummaryExpanded[pageKey] ??
-                                                                  false,
-                                                          onFileChangeSummaryExpandedChanged:
-                                                              (
-                                                                pageKey,
-                                                                expanded,
-                                                              ) {
-                                                                setState(() {
-                                                                  _fileChangeSummaryExpanded[pageKey] =
-                                                                      expanded;
-                                                                });
-                                                              },
-                                                          activityExpanded:
-                                                              (
-                                                                pageKey,
-                                                                activityId,
-                                                              ) =>
-                                                                  _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
-                                                                  false,
-                                                          onTimelineMetricsChanged:
-                                                              _handleTimelineMetricsChanged,
-                                                          onTimelineUserScrollDirection:
-                                                              _handleTimelineUserScrollDirection,
-                                                          showScrollToBottom:
-                                                              _timelineIsAboveLatest[_displayedThreadKey] ??
-                                                              false,
-                                                          onScrollToBottom:
-                                                              _scrollTimelineToBottom,
-                                                          onActivityExpandedChanged:
-                                                              (
-                                                                pageKey,
-                                                                activityId,
-                                                                expanded,
-                                                              ) {
-                                                                setState(() {
-                                                                  _activityListExpanded['${pageKey.storageKey}/$activityId'] =
-                                                                      expanded;
-                                                                });
-                                                              },
-                                                          onSend: _send,
-                                                          onQueueSteer:
-                                                              _queueDirection,
-                                                          onReview: () =>
-                                                              _showCodeReview(
-                                                                CodeReviewSource
-                                                                    .latestTurn,
-                                                              ),
-                                                          onUndo:
-                                                              _undoFileChanges,
-                                                          onOpenSubagent:
-                                                              _openSubagentInspector,
-                                                          onSubmitUserMessageEdit:
-                                                              _submitEditedUserMessage,
+                                                        WorkspaceFileOpenScope(
+                                                          onOpenFile:
+                                                              _openWorkspaceFile,
+                                                          child: ConversationPane(
+                                                            controller:
+                                                                controller,
+                                                            composer: _composer,
+                                                            recordSkillRequest:
+                                                                _recordSkillRequest,
+                                                            timelinePages:
+                                                                _timelinePages,
+                                                            timelineScrollControllers:
+                                                                _timelineScrollControllers,
+                                                            activeTimelinePageKey:
+                                                                _displayedThreadKey,
+                                                            threadHistoryLoading:
+                                                                _threadHistoryLoading,
+                                                            fileChangeSummaryExpanded:
+                                                                (pageKey) =>
+                                                                    _fileChangeSummaryExpanded[pageKey] ??
+                                                                    false,
+                                                            onFileChangeSummaryExpandedChanged:
+                                                                (
+                                                                  pageKey,
+                                                                  expanded,
+                                                                ) {
+                                                                  setState(() {
+                                                                    _fileChangeSummaryExpanded[pageKey] =
+                                                                        expanded;
+                                                                  });
+                                                                },
+                                                            activityExpanded:
+                                                                (
+                                                                  pageKey,
+                                                                  activityId,
+                                                                ) =>
+                                                                    _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
+                                                                    false,
+                                                            onTimelineMetricsChanged:
+                                                                _handleTimelineMetricsChanged,
+                                                            onTimelineUserScrollDirection:
+                                                                _handleTimelineUserScrollDirection,
+                                                            showScrollToBottom:
+                                                                _timelineIsAboveLatest[_displayedThreadKey] ??
+                                                                false,
+                                                            onScrollToBottom:
+                                                                _scrollTimelineToBottom,
+                                                            onActivityExpandedChanged:
+                                                                (
+                                                                  pageKey,
+                                                                  activityId,
+                                                                  expanded,
+                                                                ) {
+                                                                  setState(() {
+                                                                    _activityListExpanded['${pageKey.storageKey}/$activityId'] =
+                                                                        expanded;
+                                                                  });
+                                                                },
+                                                            onSend: _send,
+                                                            onQueueSteer:
+                                                                _queueDirection,
+                                                            onReview: () =>
+                                                                _showCodeReview(
+                                                                  CodeReviewSource
+                                                                      .latestTurn,
+                                                                ),
+                                                            onUndo:
+                                                                _undoFileChanges,
+                                                            onOpenSubagent:
+                                                                _openSubagentInspector,
+                                                            onSubmitUserMessageEdit:
+                                                                _submitEditedUserMessage,
+                                                          ),
                                                         ),
                                                         if (_threadHistoryLoading)
                                                           Positioned.fill(
@@ -2974,8 +3121,11 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                           hasContents: hasSidePanelContents,
                                           width: animatedSidePanelWidth,
                                           minimumContentWidth:
-                                              _browserPageMounted ||
-                                                  _filesPageMounted
+                                              _sidePanelCollapsed ||
+                                                  _browserPageMounted ||
+                                                  _filesPageMounted ||
+                                                  openedWorkspaceFiles
+                                                      .isNotEmpty
                                               ? _minimumAuxiliaryWidth
                                               : 8.0,
                                           contents: sidePanelTabs,

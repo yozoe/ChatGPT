@@ -6,6 +6,7 @@ import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation.dart';
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_agent_linked_image.dart';
+import 'package:chatgpt/src/presentation/workspace/workspace_file_open_scope.dart';
 // ignore_for_file: use_key_in_widget_constructors
 
 import 'dart:math' as math;
@@ -418,6 +419,7 @@ Future<void> openAgentMarkdownDestination(
   required String href,
   required String? workspacePath,
 }) async {
+  final openWorkspaceFile = WorkspaceFileOpenScope.maybeOf(context);
   // A reference resolved while rendering is presentation data only. Always
   // authorize the target again at activation time so a file replaced by a
   // symbolic link cannot escape the workspace boundary.
@@ -427,6 +429,12 @@ Future<void> openAgentMarkdownDestination(
           href: href,
           workspacePath: workspacePath,
         );
+  if (resolvedReference != null && openWorkspaceFile != null) {
+    if (context.mounted) {
+      openWorkspaceFile(resolvedReference, workspacePath: workspacePath!);
+    }
+    return;
+  }
   if (resolvedReference != null && isMarkdownFilePath(resolvedReference.path)) {
     if (context.mounted) {
       await showWorkspaceMarkdownPreview(

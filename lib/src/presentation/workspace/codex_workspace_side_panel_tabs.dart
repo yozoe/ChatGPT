@@ -10,6 +10,8 @@ class WorkspaceSidePanelTabs extends StatelessWidget {
     required this.activeTab,
     required this.onSelect,
     required this.onCollapse,
+    this.closableTabs = const <String>{},
+    this.onClose,
   });
 
   final Map<String, Widget> contents;
@@ -17,6 +19,8 @@ class WorkspaceSidePanelTabs extends StatelessWidget {
   final String activeTab;
   final ValueChanged<String> onSelect;
   final VoidCallback onCollapse;
+  final Set<String> closableTabs;
+  final ValueChanged<String>? onClose;
 
   @override
   Widget build(BuildContext context) {
@@ -84,23 +88,56 @@ class WorkspaceSidePanelTabs extends StatelessWidget {
                                   borderRadius: BorderRadius.circular(8),
                                   onTap: () => onSelect(entry),
                                   child: Padding(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 10,
-                                      vertical: 8,
+                                    padding: EdgeInsets.only(
+                                      left: 10,
+                                      right: closableTabs.contains(entry)
+                                          ? 2
+                                          : 10,
+                                      top: 4,
+                                      bottom: 4,
                                     ),
-                                    child: Text(
-                                      labels[entry] ?? entry,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        color: entry == activeTab
-                                            ? palette.trace
-                                            : palette.muted,
-                                        fontSize: 12,
-                                        fontWeight: entry == activeTab
-                                            ? FontWeight.w600
-                                            : FontWeight.w500,
-                                      ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        ConstrainedBox(
+                                          constraints: const BoxConstraints(
+                                            maxWidth: 180,
+                                          ),
+                                          child: Text(
+                                            labels[entry] ?? entry,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: TextStyle(
+                                              color: entry == activeTab
+                                                  ? palette.trace
+                                                  : palette.muted,
+                                              fontSize: 12,
+                                              fontWeight: entry == activeTab
+                                                  ? FontWeight.w600
+                                                  : FontWeight.w500,
+                                            ),
+                                          ),
+                                        ),
+                                        if (closableTabs.contains(entry))
+                                          IconButton(
+                                            key: ValueKey(
+                                              'side-panel-tab-close-$entry',
+                                            ),
+                                            tooltip: '关闭文件',
+                                            onPressed: () =>
+                                                onClose?.call(entry),
+                                            icon: const Icon(
+                                              Icons.close,
+                                              size: 14,
+                                            ),
+                                            padding: EdgeInsets.zero,
+                                            constraints:
+                                                const BoxConstraints.tightFor(
+                                                  width: 26,
+                                                  height: 26,
+                                                ),
+                                          ),
+                                      ],
                                     ),
                                   ),
                                 ),
