@@ -1305,6 +1305,12 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   Future<bool> _send(ComposerSubmission submission) async {
     final rawPrompt = submission.prompt.trim();
     if (rawPrompt.isEmpty && !submission.hasContext) return false;
+    final submittedText = [
+      if (rawPrompt.isNotEmpty) rawPrompt,
+      ...submission.pastedTexts
+          .map((text) => text.trim())
+          .where((text) => text.isNotEmpty),
+    ].join('\n\n');
     final contextLines = <String>[];
     final additionalInput = <Map<String, dynamic>>[];
     final imagePaths = <String>[];
@@ -1340,7 +1346,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     final skillPrefix = skillNames.map((name) => '\$$name').join(' ');
     final promptParts = <String>[
       if (skillPrefix.isNotEmpty) skillPrefix,
-      rawPrompt.isEmpty ? '请分析已附加的内容。' : rawPrompt,
+      submittedText.isEmpty ? '请分析已附加的内容。' : submittedText,
       if (contextLines.isNotEmpty) '\n${contextLines.join('\n')}',
     ];
     final sent = await _controller.sendPrompt(
@@ -1378,8 +1384,15 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   /// 运行中 Composer 的文本与附件上下文先暂存为临时尾项，等待用户明确发送。
   Future<bool> _queueDirection(ComposerSubmission submission) async {
     final rawPrompt = submission.prompt.trim();
+    final submittedText = [
+      if (rawPrompt.isNotEmpty) rawPrompt,
+      ...submission.pastedTexts
+          .map((text) => text.trim())
+          .where((text) => text.isNotEmpty),
+    ].join('\n\n');
     final hasSubmittedContext =
         submission.attachments.isNotEmpty ||
+        submission.pastedTexts.isNotEmpty ||
         submission.includeWorkspace ||
         submission.goal?.trim().isNotEmpty == true ||
         submission.planMode ||
@@ -1426,12 +1439,12 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     final skillPrefix = skillNames.map((name) => '\$$name').join(' ');
     final prompt = <String>[
       if (skillPrefix.isNotEmpty) skillPrefix,
-      rawPrompt.isEmpty ? '请根据附加内容调整当前任务。' : rawPrompt,
+      submittedText.isEmpty ? '请根据附加内容调整当前任务。' : submittedText,
       if (contextLines.isNotEmpty) '\n${contextLines.join('\n')}',
     ].join(' ').trim();
     return _controller.queueTurnSteer(
       PendingTurnSteer(
-        displayText: rawPrompt.isEmpty ? '请根据附加内容调整当前任务。' : rawPrompt,
+        displayText: submittedText.isEmpty ? '请根据附加内容调整当前任务。' : submittedText,
         prompt: prompt,
         additionalInput: List.unmodifiable(additionalInput),
         imagePaths: List.unmodifiable(imagePaths),

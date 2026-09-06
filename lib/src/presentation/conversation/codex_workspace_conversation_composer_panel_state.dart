@@ -16,6 +16,8 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_panel.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_add_menu_action.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_attachment.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_pasted_text.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_pasted_text_card.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_submission.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_add_menu_header.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_add_menu_item.dart';
@@ -31,7 +33,10 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 
 class ComposerPanelState extends State<ComposerPanel> {
   static const _clipboardFileReader = ClipboardFileReader();
+  static const _collapsedPasteCharacterThreshold = 800;
+  static const _collapsedPasteLineThreshold = 8;
   final List<ComposerAttachment> _attachments = [];
+  final List<ComposerPastedText> _pastedTexts = [];
   final Set<String> _selectedSkillPaths = {};
   final Map<String, Uint8List> _securityBookmarks = {};
   final Set<String> _temporaryAttachmentPaths = {};
@@ -55,6 +60,7 @@ class ComposerPanelState extends State<ComposerPanel> {
   bool _imeCompositionJustEnded = false;
   bool _slashMenuDismissed = false;
   int _slashMenuSelectedIndex = 0;
+  int _nextPastedTextId = 0;
   String _slashMenuQuery = '';
   Timer? _imeCompositionDeferral;
   late int _handledRecordSkillRequest;
@@ -96,6 +102,9 @@ class ComposerPanelState extends State<ComposerPanel> {
       characters += entry.title.runes.length + entry.detail.runes.length;
     }
     characters += composer.text.runes.length;
+    for (final pastedText in _pastedTexts) {
+      characters += pastedText.text.runes.length;
+    }
     for (final attachment in _attachments) {
       characters += attachment.path.runes.length + 256;
     }
@@ -105,7 +114,7 @@ class ComposerPanelState extends State<ComposerPanel> {
     return (used: (characters / 4).ceil(), maximum: 258000);
   }
 
-  bool get _hasComposerContext =>
+  bool get _hasComposerChips =>
       _attachments.isNotEmpty ||
       _includeWorkspace ||
       _goal?.isNotEmpty == true ||
@@ -646,8 +655,11 @@ class ComposerPanelState extends State<ComposerPanel> {
     final submission = ComposerSubmission(
       prompt: composer.text.trim(),
       attachments: List.unmodifiable(_attachments),
+      pastedTexts: List.unmodifiable(
+        _pastedTexts.map((pastedText) => pastedText.text),
+      ),
       includeWorkspace: _includeWorkspace,
-      goal: _goalMode ? composer.text.trim() : _goal,
+      goal: _goalMode ? _combinedComposerText : _goal,
       planMode: _planMode,
       recordSkill: _recordSkill,
       skills: _selectedSkills,
@@ -663,6 +675,7 @@ class ComposerPanelState extends State<ComposerPanel> {
     setState(() {
       composer.clear();
       _attachments.clear();
+      _pastedTexts.clear();
       _selectedSkillPaths.clear();
       _includeWorkspace = false;
       _recordSkill = false;
@@ -792,6 +805,38 @@ class ComposerPanelState extends State<ComposerPanel> {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final pastedText = data?.text;
     if (!mounted || pastedText == null || pastedText.isEmpty) return;
+    if (_shouldCollapsePastedText(pastedText)) {
+      _replaceComposerSelection('');
+      setState(() {
+        _pastedTexts.add(
+          ComposerPastedText(id: ++_nextPastedTextId, text: pastedText),
+        );
+      });
+      return;
+    }
+    _replaceComposerSelection(pastedText);
+  }
+
+  bool _shouldCollapsePastedText(String text) {
+    var characters = 0;
+    var lineBreaks = 0;
+    for (final rune in text.runes) {
+      characters++;
+      if (rune == 0x0A) lineBreaks++;
+      if (characters > _collapsedPasteCharacterThreshold ||
+          lineBreaks >= _collapsedPasteLineThreshold) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  String get _combinedComposerText => [
+    composer.text.trim(),
+    ..._pastedTexts.map((pastedText) => pastedText.text.trim()),
+  ].where((text) => text.isNotEmpty).join('\n\n');
+
+  void _replaceComposerSelection(String replacement) {
     final current = composer.text;
     final selection = composer.selection;
     final rawStart = selection.isValid ? selection.start : current.length;
@@ -801,9 +846,21 @@ class ComposerPanelState extends State<ComposerPanel> {
     final lower = start < end ? start : end;
     final upper = start < end ? end : start;
     composer.value = TextEditingValue(
-      text: current.replaceRange(lower, upper, pastedText),
-      selection: TextSelection.collapsed(offset: lower + pastedText.length),
+      text: current.replaceRange(lower, upper, replacement),
+      selection: TextSelection.collapsed(offset: lower + replacement.length),
     );
+  }
+
+  void _showPastedTextInComposer(ComposerPastedText pastedText) {
+    if (!_pastedTexts.any((item) => item.id == pastedText.id)) return;
+    _replaceComposerSelection(pastedText.text);
+    setState(() {
+      _pastedTexts.removeWhere((item) => item.id == pastedText.id);
+    });
+  }
+
+  void _removePastedText(int id) {
+    setState(() => _pastedTexts.removeWhere((item) => item.id == id));
   }
 
   Widget _buildComposerContextMenu(
@@ -1172,7 +1229,45 @@ class ComposerPanelState extends State<ComposerPanel> {
                       ),
                       child: Column(
                         children: [
+                          if (_pastedTexts.isNotEmpty) ...[
+                            ConstrainedBox(
+                              key: const Key('composer-pasted-text-region'),
+                              constraints: const BoxConstraints(maxHeight: 110),
+                              child: Scrollbar(
+                                child: SingleChildScrollView(
+                                  key: const Key('composer-pasted-text-scroll'),
+                                  primary: false,
+                                  child: Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: Wrap(
+                                      spacing: 7,
+                                      runSpacing: 7,
+                                      children: [
+                                        for (final pastedText in _pastedTexts)
+                                          ComposerPastedTextCard(
+                                            key: ValueKey(
+                                              'composer-pasted-text-${pastedText.id}',
+                                            ),
+                                            id: pastedText.id,
+                                            label: pastedText.previewLabel,
+                                            onShowInComposer: () =>
+                                                _showPastedTextInComposer(
+                                                  pastedText,
+                                                ),
+                                            onRemove: () => _removePastedText(
+                                              pastedText.id,
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                          ],
                           ConstrainedBox(
+                            key: const Key('composer-field-region'),
                             constraints: const BoxConstraints(
                               minHeight: 64,
                               maxHeight: 124,
@@ -1278,7 +1373,7 @@ class ComposerPanelState extends State<ComposerPanel> {
                             ),
                           ),
                           const SizedBox(height: 8),
-                          if (_hasComposerContext) ...[
+                          if (_hasComposerChips) ...[
                             Align(
                               alignment: Alignment.centerLeft,
                               child: Wrap(

@@ -26,6 +26,7 @@ import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_side_panel_tabs.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_conversation_timeline.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_conversation_pane.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_pasted_text.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_timeline_page_data.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_user_message_rail.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_user_message_rail_mark.dart';
@@ -136,6 +137,15 @@ Future<void> _pumpUntilFound(
 }
 
 void main() {
+  test('bounds the cached preview for very large pasted text', () {
+    final text = '首行 ${List.filled(200000, 'x').join()}';
+    final pastedText = ComposerPastedText(id: 1, text: text);
+
+    expect(pastedText.previewLabel, startsWith('首行 '));
+    expect(pastedText.previewLabel.runes.length, lessThanOrEqualTo(96));
+    expect(pastedText.text, same(text));
+  });
+
   test('conversation rail preview stays inside vertical viewport bounds', () {
     const viewport = Size(900, 600);
     const preview = Size(322, 132);
@@ -5324,6 +5334,318 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('已有内容：粘贴文本'), findsOneWidget);
+    expect(find.byKey(const ValueKey('composer-pasted-text-1')), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('collapses multiline paste and can restore it at the selection', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(560, 700));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    const channel = MethodChannel('codex_desk/clipboard');
+    final pastedText = List.generate(
+      9,
+      (index) => index == 0 ? '2026-09-06T05:00:00Z' : '第 $index 行内容',
+    ).join('\n');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async => <String>[]);
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.getData') {
+        return <String, Object?>{'text': pastedText};
+      }
+      return null;
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    final fieldFinder = find.byKey(const Key('composer-field'));
+    await tester.enterText(fieldFinder, '前缀待替换后缀');
+    tester.widget<TextField>(fieldFinder).controller!.selection =
+        const TextSelection(baseOffset: 2, extentOffset: 5);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pumpAndSettle();
+
+    expect(tester.widget<TextField>(fieldFinder).controller!.text, '前缀后缀');
+    expect(
+      find.byKey(const ValueKey('composer-pasted-text-1')),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .getSize(find.byKey(const Key('composer-pasted-text-scroll')))
+          .height,
+      lessThan(60),
+    );
+    expect(
+      find.text(
+        '2026-09-06T05:00:00Z 第 1 行内容 第 2 行内容 第 3 行内容 第 4 行内容 第 5 行内容 第 6 行内容 第 7 行内容 第 8 行内容',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('在文本框中显示 ›'), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(const ValueKey('composer-pasted-text-remove-1')),
+    );
+    await tester.pump();
+    expect(find.byKey(const ValueKey('composer-pasted-text-1')), findsNothing);
+    expect(tester.widget<TextField>(fieldFinder).controller!.text, '前缀后缀');
+
+    await tester.tap(fieldFinder);
+    tester.widget<TextField>(fieldFinder).controller!.selection =
+        const TextSelection.collapsed(offset: 2);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('composer-pasted-text-2')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const ValueKey('composer-pasted-text-show-2')));
+    await tester.pump();
+
+    expect(
+      tester.widget<TextField>(fieldFinder).controller!.text,
+      '前缀$pastedText后缀',
+    );
+    expect(find.byKey(const ValueKey('composer-pasted-text-2')), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('sends collapsed text intact and clears its composer card', (
+    tester,
+  ) async {
+    const channel = MethodChannel('codex_desk/clipboard');
+    final pastedText = List.filled(90, '需要保留的长文本片段').join(' ');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async => <String>[]);
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.getData') {
+        return <String, Object?>{'text': pastedText};
+      }
+      return null;
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+    final server = _FakeCodexAppServer()
+      ..listResponse = [
+        {'id': 'new-thread'},
+      ];
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    final fieldFinder = find.byKey(const Key('composer-field'));
+    await tester.enterText(fieldFinder, '请总结这段文本');
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('composer-pasted-text-1')),
+      findsOneWidget,
+    );
+
+    tester
+        .widget<IconButton>(
+          find.byWidgetPredicate(
+            (widget) => widget is IconButton && widget.tooltip == '发送任务',
+          ),
+        )
+        .onPressed!();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(server.startedTurnPrompt, '请总结这段文本\n\n$pastedText');
+    expect(tester.widget<TextField>(fieldFinder).controller!.text, isEmpty);
+    expect(find.byKey(const ValueKey('composer-pasted-text-1')), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('retains collapsed text when task start fails', (tester) async {
+    const channel = MethodChannel('codex_desk/clipboard');
+    final pastedText = List.filled(90, '失败后仍需保留的文本').join(' ');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async => <String>[]);
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.getData') {
+        return <String, Object?>{'text': pastedText};
+      }
+      return null;
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+    final server = _FakeCodexAppServer()
+      ..listResponse = [
+        {'id': 'new-thread'},
+      ]
+      ..startTurnError = StateError('turn rejected');
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: _FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    final fieldFinder = find.byKey(const Key('composer-field'));
+    await tester.enterText(fieldFinder, '失败后保留指令');
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pumpAndSettle();
+
+    tester
+        .widget<IconButton>(
+          find.byWidgetPredicate(
+            (widget) => widget is IconButton && widget.tooltip == '发送任务',
+          ),
+        )
+        .onPressed!();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(tester.widget<TextField>(fieldFinder).controller!.text, '失败后保留指令');
+    expect(
+      find.byKey(const ValueKey('composer-pasted-text-1')),
+      findsOneWidget,
+    );
+    expect(server.startedTurnPrompt, '失败后保留指令\n\n$pastedText');
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('queues collapsed text while an active turn is running', (
+    tester,
+  ) async {
+    const channel = MethodChannel('codex_desk/clipboard');
+    final pastedText = List.filled(90, '运行中追加的长文本').join(' ');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async => <String>[]);
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.getData') {
+        return <String, Object?>{'text': pastedText};
+      }
+      return null;
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    final fieldFinder = find.byKey(const Key('composer-field'));
+    await tester.enterText(fieldFinder, '请调整当前方向');
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+
+    expect(controller.pendingTurnSteer?.displayText, '请调整当前方向\n\n$pastedText');
+    expect(find.byKey(const ValueKey('composer-pasted-text-1')), findsNothing);
+    await tester.tap(find.byKey(const Key('adjust-direction-button')));
+    await tester.pump();
+    expect(server.steeredTurnPrompt, '请调整当前方向\n\n$pastedText');
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('keeps many pasted text cards inside a scrolling region', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(560, 520));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    const channel = MethodChannel('codex_desk/clipboard');
+    final pastedText = List.filled(90, '窄窗口中的多卡片文本').join(' ');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async => <String>[]);
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.getData') {
+        return <String, Object?>{'text': pastedText};
+      }
+      return null;
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.tap(find.byKey(const Key('composer-field')));
+    for (var index = 0; index < 12; index++) {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await tester.pump();
+    }
+    await tester.pump();
+
+    final scrollRegion = find.byKey(const Key('composer-pasted-text-scroll'));
+    expect(scrollRegion, findsOneWidget);
+    expect(tester.getSize(scrollRegion).height, lessThanOrEqualTo(110));
+    final scrollable = find.descendant(
+      of: scrollRegion,
+      matching: find.byType(Scrollable),
+    );
+    expect(scrollable, findsOneWidget);
+    expect(
+      tester.state<ScrollableState>(scrollable).position.maxScrollExtent,
+      greaterThan(0),
+    );
+    expect(
+      find.byKey(const ValueKey('composer-pasted-text-12')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('composer-field')), findsOneWidget);
+    expect(find.byTooltip('发送任务'), findsOneWidget);
+    expect(tester.takeException(), isNull);
 
     await tester.pumpWidget(const SizedBox());
   });
