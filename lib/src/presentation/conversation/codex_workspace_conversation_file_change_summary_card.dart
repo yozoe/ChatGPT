@@ -1,13 +1,6 @@
 // Extracted class from codex_workspace_conversation.dart.
-// ignore_for_file: unused_import, unnecessary_import, use_key_in_widget_constructors
-import 'dart:math' as math;
-import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
-import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.dart';
-import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
-import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_support.dart';
-import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_diff_stats.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_file_change_summary_row.dart';
 
 class FileChangeSummaryCard extends StatelessWidget {
@@ -32,24 +25,10 @@ class FileChangeSummaryCard extends StatelessWidget {
   final bool canUndo;
   final bool undoRunning;
 
-  DiffStats get _stats {
-    final stats = changes.fold(
-      const DiffStats(0, 0),
-      (total, change) => total + diffStats(change.diff),
-    );
-    final fallback = turnDiff;
-    final hasMissingDiff = changes.any((change) => change.diff.trim().isEmpty);
-    return hasMissingDiff && fallback != null && fallback.isNotEmpty
-        ? diffStats(fallback)
-        : stats;
-  }
-
-  bool get _statsUnknown => fileChangeStatsUnknown(changes, turnDiff);
-
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
-    final stats = _stats;
+    final stats = reliableFileChangeStats(changes, turnDiff);
     final visibleChanges = expanded
         ? changes
         : changes.take(3).toList(growable: false);
@@ -96,35 +75,27 @@ class FileChangeSummaryCard extends StatelessWidget {
                           fontWeight: FontWeight.w600,
                         ),
                       ),
-                      const SizedBox(height: 4),
-                      Text.rich(
-                        key: const Key('file-change-summary-stats'),
-                        TextSpan(
-                          children: [
-                            TextSpan(
-                              text: diffCountLabel(
-                                '+',
-                                stats.additions,
-                                unknown: _statsUnknown,
+                      if (stats != null) ...[
+                        const SizedBox(height: 4),
+                        Text.rich(
+                          key: const Key('file-change-summary-stats'),
+                          TextSpan(
+                            children: [
+                              TextSpan(
+                                text: '+${stats.additions}',
+                                style: TextStyle(color: palette.ack),
                               ),
-                              style: TextStyle(color: palette.ack),
-                            ),
-                            const TextSpan(text: '  '),
-                            TextSpan(
-                              text: diffCountLabel(
-                                '-',
-                                stats.deletions,
-                                unknown: _statsUnknown,
+                              const TextSpan(text: '  '),
+                              TextSpan(
+                                text: '-${stats.deletions}',
+                                style: TextStyle(color: palette.fault),
                               ),
-                              style: TextStyle(color: palette.fault),
-                            ),
-                          ],
+                            ],
+                          ),
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(fontSize: 13, height: 1.2),
                         ),
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          fontSize: 13,
-                          height: 1.2,
-                        ),
-                      ),
+                      ],
                     ],
                   ),
                 ),

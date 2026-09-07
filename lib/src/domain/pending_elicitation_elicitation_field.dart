@@ -1,7 +1,4 @@
 // Extracted class from pending_elicitation.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, use_key_in_widget_constructors
-import 'package:chatgpt/src/services/codex_app_server.dart';
-import 'pending_elicitation_support.dart';
 
 class ElicitationField {
   const ElicitationField({

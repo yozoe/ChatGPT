@@ -1,11 +1,7 @@
 // Shared declarations extracted from codex_workspace_conversation.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, invalid_annotation_target
-import 'dart:math' as math;
+// ignore_for_file: invalid_annotation_target
 import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
-import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.dart';
-import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
-import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_diff_stats.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_diff_preview_line.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_local_image_preview.dart';
@@ -65,21 +61,65 @@ DiffStats diffStats(String diff) {
   return DiffStats(additions, deletions);
 }
 
-String diffCountLabel(String prefix, int count, {required bool unknown}) =>
-    unknown ? '$prefix?' : '$prefix$count';
+/// Whether a unified Diff contains at least one line whose change count is
+/// meaningful to present. File headers alone describe a changed file but do
+/// not justify showing a misleading `+0 -0` summary.
+bool hasCountableDiffStats(String diff) {
+  final stats = diffStats(diff);
+  return stats.additions > 0 || stats.deletions > 0;
+}
+
+/// Returns an exact aggregate only when every reported file has a countable
+/// patch. Missing per-file patches may be recovered from the turn-wide Diff,
+/// but only by matching the corresponding file path.
+DiffStats? reliableFileChangeStats(
+  List<CodexFileChange> changes,
+  String? turnDiff,
+) {
+  if (changes.isEmpty) return null;
+  final fallback = turnDiff?.trim();
+  final fallbackChanges = fallback == null || fallback.isEmpty
+      ? const <CodexFileChange>[]
+      : codexFileChangesFromUnifiedDiff(fallback);
+
+  String normalizePath(String path) => path
+      .replaceAll('\\', '/')
+      .replaceFirst(RegExp(r'^\./'), '')
+      .replaceFirst(RegExp(r'^/+'), '');
+
+  var total = const DiffStats(0, 0);
+  for (final change in changes) {
+    var patch = change.diff.trim();
+    if (patch.isEmpty) {
+      final sourcePath = normalizePath(change.path);
+      final exactMatches = fallbackChanges
+          .where((candidate) => normalizePath(candidate.path) == sourcePath)
+          .toList(growable: false);
+      final suffixMatches = exactMatches.isEmpty
+          ? fallbackChanges
+                .where((candidate) {
+                  final candidatePath = normalizePath(candidate.path);
+                  return sourcePath.endsWith('/$candidatePath') ||
+                      candidatePath.endsWith('/$sourcePath');
+                })
+                .toList(growable: false)
+          : const <CodexFileChange>[];
+      final matches = exactMatches.isNotEmpty ? exactMatches : suffixMatches;
+      final recovered = matches.length == 1 ? matches.single : null;
+      if (recovered == null) return null;
+      patch = recovered.diff;
+    }
+    if (!hasCountableDiffStats(patch)) return null;
+    total += diffStats(patch);
+  }
+  return total;
+}
 
 /// Reports whether the available Diff can support an honest line-count total.
 /// A header-only, binary, or metadata-only Diff describes a file change but
 /// does not provide countable added or deleted lines.
 bool fileChangeStatsUnknown(List<CodexFileChange> changes, String? turnDiff) {
-  final hasMissingDiff = changes.any((change) => change.diff.trim().isEmpty);
-  final fallback = turnDiff?.trim();
-  if (hasMissingDiff && (fallback == null || fallback.isEmpty)) return true;
-  final source = hasMissingDiff
-      ? fallback!
-      : changes.map((change) => change.diff).join('\n');
-  final stats = diffStats(source);
-  return stats.additions == 0 && stats.deletions == 0;
+  return reliableFileChangeStats(changes, turnDiff) == null;
 }
 
 List<DiffPreviewLine> previewLines(String diff) {

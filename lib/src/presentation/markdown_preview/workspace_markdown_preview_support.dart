@@ -1,26 +1,11 @@
 // Shared declarations extracted from workspace_markdown_preview.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, invalid_annotation_target
+// ignore_for_file: invalid_annotation_target
 import 'dart:async';
-import 'dart:io';
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:chatgpt/src/services/agent_markdown_link.dart';
 import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 import 'package:chatgpt/src/presentation/markdown_preview/workspace_markdown_preview_workspace_markdown_preview.dart';
-import 'dart:async';
-import 'dart:io';
-import 'dart:math' as math;
-
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
-import 'package:url_launcher/url_launcher.dart';
-
-import 'package:chatgpt/src/services/agent_markdown_link.dart';
-import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 
 const maximumMarkdownBytes = 8 * 1024 * 1024;
 const sourceLineExtent = 24.0;

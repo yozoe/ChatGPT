@@ -1,13 +1,7 @@
 // Extracted class from codex_workspace_conversation.dart.
-// ignore_for_file: unused_import, unnecessary_import, use_key_in_widget_constructors
-import 'dart:convert';
-import 'dart:io';
 import 'dart:math' as math;
 import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
-import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.dart';
-import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
-import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_support.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_pending_turn_steer_queue.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_model_controls.dart';
@@ -64,7 +58,9 @@ class ComposerPanelState extends State<ComposerPanel> {
   String _slashMenuQuery = '';
   Timer? _imeCompositionDeferral;
   late int _handledRecordSkillRequest;
+  String? _draftBeforeGoalMode;
   String? _goal;
+  String? _goalBeforeGoalMode;
 
   CodexController get controller => widget.controller;
   TextEditingController get composer => widget.composer;
@@ -442,11 +438,7 @@ class ComposerPanelState extends State<ComposerPanel> {
         composer.clear();
         await _showAttachmentPicker();
       case ComposerSlashCommandKind.goal:
-        composer.clear();
-        setState(() {
-          _goal = null;
-          _goalMode = true;
-        });
+        _enterGoalMode();
       case ComposerSlashCommandKind.planMode:
         setState(() => _planMode = !_planMode);
         composer.clear();
@@ -652,14 +644,21 @@ class ComposerPanelState extends State<ComposerPanel> {
       }
       return false;
     }
+    final goalText = _goalMode ? _combinedComposerText : _goal;
+    final preservedDraft = _draftBeforeGoalMode?.trim();
     final submission = ComposerSubmission(
-      prompt: composer.text.trim(),
+      // When the Add menu entered goal mode from an empty composer, the goal
+      // is also the only actionable instruction. Sending an empty prompt made
+      // the workspace substitute its attachment-analysis fallback instead.
+      prompt: (_goalMode && preservedDraft?.isNotEmpty == true)
+          ? preservedDraft!
+          : composer.text.trim(),
       attachments: List.unmodifiable(_attachments),
       pastedTexts: List.unmodifiable(
         _pastedTexts.map((pastedText) => pastedText.text),
       ),
       includeWorkspace: _includeWorkspace,
-      goal: _goalMode ? _combinedComposerText : _goal,
+      goal: goalText,
       planMode: _planMode,
       recordSkill: _recordSkill,
       skills: _selectedSkills,
@@ -683,6 +682,8 @@ class ComposerPanelState extends State<ComposerPanel> {
       // belongs to that task from here on, rather than remaining as a draft
       // context chip for every later composer submission.
       _goal = null;
+      _goalBeforeGoalMode = null;
+      _draftBeforeGoalMode = null;
       _goalMode = false;
     });
     for (final path in submittedTemporaryPaths) {
@@ -716,7 +717,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       case AddMenuActionKind.workspace:
         setState(() => _includeWorkspace = !_includeWorkspace);
       case AddMenuActionKind.goal:
-        await _editGoal();
+        _enterGoalMode(preserveDraft: true);
       case AddMenuActionKind.plan:
         setState(() => _planMode = !_planMode);
       case AddMenuActionKind.recordSkill:
@@ -970,46 +971,34 @@ class ComposerPanelState extends State<ComposerPanel> {
     await showLocalImagePreview(context, path);
   }
 
-  Future<void> _editGoal() async {
-    var draft = _goal ?? '';
-    final result = await showDialog<String?>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        key: const Key('composer-goal-dialog'),
-        title: const Text('设置目标'),
-        content: SizedBox(
-          width: 480,
-          child: TextFormField(
-            key: const Key('composer-goal-field'),
-            initialValue: draft,
-            onChanged: (value) => draft = value,
-            autofocus: true,
-            minLines: 2,
-            maxLines: 5,
-            decoration: const InputDecoration(hintText: '描述这个任务需要持续追求的结果'),
-          ),
-        ),
-        actions: [
-          if (_goal?.isNotEmpty == true)
-            TextButton(
-              key: const Key('clear-composer-goal'),
-              onPressed: () => Navigator.pop(dialogContext, ''),
-              child: const Text('清除'),
-            ),
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            key: const Key('save-composer-goal'),
-            onPressed: () => Navigator.pop(dialogContext, draft.trim()),
-            child: const Text('设置'),
-          ),
-        ],
-      ),
+  void _enterGoalMode({bool preserveDraft = false}) {
+    if (_goalMode) return;
+    final originalDraft = composer.text;
+    final existingGoal = _goal;
+    composer.value = TextEditingValue(
+      text: existingGoal ?? '',
+      selection: TextSelection.collapsed(offset: (existingGoal ?? '').length),
     );
-    if (result == null || !mounted) return;
-    setState(() => _goal = result.isEmpty ? null : result);
+    setState(() {
+      _draftBeforeGoalMode = preserveDraft ? originalDraft : null;
+      _goalBeforeGoalMode = existingGoal;
+      _goal = null;
+      _goalMode = true;
+    });
+  }
+
+  void _leaveGoalMode() {
+    final restoredDraft = _draftBeforeGoalMode;
+    composer.value = TextEditingValue(
+      text: restoredDraft ?? '',
+      selection: TextSelection.collapsed(offset: (restoredDraft ?? '').length),
+    );
+    setState(() {
+      _draftBeforeGoalMode = null;
+      _goal = _goalBeforeGoalMode;
+      _goalBeforeGoalMode = null;
+      _goalMode = false;
+    });
   }
 
   List<PopupMenuEntry<AddMenuAction>> _buildAddMenu(BuildContext context) {
@@ -1574,8 +1563,7 @@ class ComposerPanelState extends State<ComposerPanel> {
                                           'composer-goal-mode-control',
                                         ),
                                         borderRadius: BorderRadius.circular(8),
-                                        onTap: () =>
-                                            setState(() => _goalMode = false),
+                                        onTap: _leaveGoalMode,
                                         child: Padding(
                                           padding: const EdgeInsets.symmetric(
                                             horizontal: 5,

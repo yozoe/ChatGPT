@@ -1,10 +1,5 @@
 // Extracted class from codex_workspace_timeline.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, use_key_in_widget_constructors
-import 'dart:math' as math;
-import 'package:markdown/markdown.dart' as md;
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
-import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation.dart';
-import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_support.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_collaboration_activity_badge.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_live_activity_shimmer.dart';
@@ -12,7 +7,11 @@ import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_live_
 /// 渲染单项实时运行状态，并按活动类型提供子线程入口或进度动画。
 /// Renders one live activity with a subthread affordance or progress animation by activity type.
 class LiveActivityRow extends StatelessWidget {
-  const LiveActivityRow({required this.activity, this.onOpenSubagent});
+  const LiveActivityRow({
+    super.key,
+    required this.activity,
+    this.onOpenSubagent,
+  });
 
   final LiveTurnActivity activity;
   final VoidCallback? onOpenSubagent;

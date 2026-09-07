@@ -2,15 +2,14 @@ import 'dart:io';
 
 import 'package:chatgpt/src/domain/runtime_log_entry.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
+import 'package:flutter/foundation.dart';
 import 'app_controller_support.dart';
 
 /// Builds and manages the in-memory runtime diagnostics surface.
-class CodexRuntimeDiagnostics {
+class CodexRuntimeDiagnostics extends ChangeNotifier {
   CodexRuntimeDiagnostics({
     required List<RuntimeLogEntry> Function() logs,
     required void Function() clearLogs,
-    required bool Function() isDisposed,
-    required void Function() notify,
     required CodexRuntimeProbe? Function() probe,
     required RuntimeStatus Function() status,
     required bool Function() serverRunning,
@@ -21,8 +20,6 @@ class CodexRuntimeDiagnostics {
     required String? Function() lastError,
   }) : _logs = logs,
        _clearLogs = clearLogs,
-       _isDisposed = isDisposed,
-       _notify = notify,
        _probe = probe,
        _status = status,
        _serverRunning = serverRunning,
@@ -36,8 +33,6 @@ class CodexRuntimeDiagnostics {
 
   final List<RuntimeLogEntry> Function() _logs;
   final void Function() _clearLogs;
-  final bool Function() _isDisposed;
-  final void Function() _notify;
   final CodexRuntimeProbe? Function() _probe;
   final RuntimeStatus Function() _status;
   final bool Function() _serverRunning;
@@ -50,8 +45,11 @@ class CodexRuntimeDiagnostics {
   void clear() {
     if (_logs().isEmpty) return;
     _clearLogs();
-    if (!_isDisposed()) _notify();
+    notifyListeners();
   }
+
+  /// Notifies diagnostics-only consumers after the controller appends a log.
+  void notifyLogChanged() => notifyListeners();
 
   String buildReport() {
     final probe = _probe();

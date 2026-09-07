@@ -1,5 +1,3 @@
-// ignore_for_file: use_key_in_widget_constructors
-
 import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
@@ -1904,43 +1902,57 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                     const SizedBox(height: 16),
                     const Divider(height: 1),
                     const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Text(
-                          '最近运行时日志（${controller.runtimeLogs.length}/200）',
-                          style: Theme.of(context).textTheme.labelLarge,
-                        ),
-                        const Spacer(),
-                        TextButton(
-                          onPressed: controller.runtimeLogs.isEmpty
-                              ? null
-                              : controller.clearRuntimeLogs,
-                          child: const Text('清除'),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    Container(
-                      key: const Key('runtime-diagnostics-log'),
-                      constraints: const BoxConstraints(maxHeight: 180),
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.surfaceContainerHighest,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: SingleChildScrollView(
-                        child: SelectableText(
-                          controller.runtimeLogs.isEmpty
-                              ? '本次应用运行中尚未记录 stderr 或协议日志。'
-                              : controller.runtimeLogs
-                                    .map((entry) => entry.toDiagnosticLine())
-                                    .join('\n'),
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      ),
+                    ListenableBuilder(
+                      listenable: controller.runtimeDiagnostics,
+                      builder: (context, _) {
+                        final logs = controller.runtimeLogs;
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Text(
+                                  '最近运行时日志（${logs.length}/200）',
+                                  style: Theme.of(context).textTheme.labelLarge,
+                                ),
+                                const Spacer(),
+                                TextButton(
+                                  onPressed: logs.isEmpty
+                                      ? null
+                                      : controller.clearRuntimeLogs,
+                                  child: const Text('清除'),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            Container(
+                              key: const Key('runtime-diagnostics-log'),
+                              constraints: const BoxConstraints(maxHeight: 180),
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.surfaceContainerHighest,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: SingleChildScrollView(
+                                child: SelectableText(
+                                  logs.isEmpty
+                                      ? '本次应用运行中尚未记录 stderr 或协议日志。'
+                                      : logs
+                                            .map(
+                                              (entry) =>
+                                                  entry.toDiagnosticLine(),
+                                            )
+                                            .join('\n'),
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ),
+                            ),
+                          ],
+                        );
+                      },
                     ),
                     const SizedBox(height: 8),
                     Text(

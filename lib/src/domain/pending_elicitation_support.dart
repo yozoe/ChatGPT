@@ -1,7 +1,5 @@
 // Shared declarations extracted from pending_elicitation.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, invalid_annotation_target
-import 'package:chatgpt/src/services/codex_app_server.dart';
-import 'package:chatgpt/src/services/codex_app_server.dart';
+// ignore_for_file: invalid_annotation_target
 
 /// MCP 服务器向用户请求补充信息的形式。
 /// The form of additional information requested by an MCP server.

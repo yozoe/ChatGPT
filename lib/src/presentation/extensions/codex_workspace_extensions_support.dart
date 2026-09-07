@@ -1,15 +1,6 @@
 // Shared declarations extracted from codex_workspace_extensions.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, invalid_annotation_target
-import 'dart:math' as math;
+// ignore_for_file: invalid_annotation_target
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
-import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
-import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
-// ignore_for_file: use_key_in_widget_constructors
-
-import 'dart:math' as math;
-
-import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
-import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
 
 /// Matches Codex's compact source form while keeping the one supported input
@@ -101,15 +92,16 @@ List<ConversationTimelineItem> conversationTimelineItems(
 /// inline with work while placing `final_answer` after tools and before the
 /// duration/terminal status, regardless of notification arrival order.
 List<TimelineEntry> orderAgentMessagePhases(List<TimelineEntry> entries) {
+  final normalizedEntries = collapseReplayedTurnCompletions(entries);
   final ordered = <TimelineEntry>[];
   var turnStart = 0;
-  while (turnStart < entries.length) {
+  while (turnStart < normalizedEntries.length) {
     var nextUser = turnStart + 1;
-    while (nextUser < entries.length &&
-        entries[nextUser].kind != TimelineKind.user) {
+    while (nextUser < normalizedEntries.length &&
+        normalizedEntries[nextUser].kind != TimelineKind.user) {
       nextUser++;
     }
-    final turnEntries = entries.sublist(turnStart, nextUser);
+    final turnEntries = normalizedEntries.sublist(turnStart, nextUser);
     var finalAnswers = turnEntries
         .where(
           (entry) =>
@@ -168,11 +160,7 @@ List<TimelineEntry> orderAgentMessagePhases(List<TimelineEntry> entries) {
 }
 
 bool isTerminalTaskStatus(TimelineEntry entry) =>
-    (entry.kind == TimelineKind.system &&
-        (entry.title == '任务完成' ||
-            entry.title == '任务已停止' ||
-            entry.title == '任务已结束')) ||
-    (entry.kind == TimelineKind.error && entry.title == '任务失败');
+    isTerminalTimelineEntry(entry);
 
 /// Adds uncompleted entries to the timeline, retaining compact tool groups.
 void appendStandardTimelineItems(

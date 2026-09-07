@@ -5,8 +5,7 @@ class MainFlutterWindow: NSWindow {
   private var taskCompletionChannel: FlutterMethodChannel?
   private var appActivationObserver: NSObjectProtocol?
   private static let frameAutosaveName = "CodexDeskMainWindow"
-  private static let clipboardTemporaryDirectory = FileManager.default.temporaryDirectory
-    .appendingPathComponent("CodexDeskClipboard", isDirectory: true)
+  private static let clipboardTemporaryDirectory = ClipboardTemporaryItemStore.directory
 
   func openSettings() {
     taskCompletionChannel?.invokeMethod("openSettings", arguments: nil)
@@ -58,19 +57,6 @@ class MainFlutterWindow: NSWindow {
     ]]
   }
 
-  private static func deleteClipboardTemporaryItem(atPath path: String) -> Bool {
-    let target = URL(fileURLWithPath: path).standardizedFileURL
-    let directory = clipboardTemporaryDirectory.standardizedFileURL
-    guard target.deletingLastPathComponent() == directory else { return false }
-    guard FileManager.default.fileExists(atPath: target.path) else { return true }
-    do {
-      try FileManager.default.removeItem(at: target)
-      return true
-    } catch {
-      return false
-    }
-  }
-
   override func awakeFromNib() {
     // Let Flutter paint behind the window controls so the workspace reaches
     // the top edge instead of sitting below a separate AppKit title bar.
@@ -118,7 +104,7 @@ class MainFlutterWindow: NSWindow {
           ))
           return
         }
-        result(Self.deleteClipboardTemporaryItem(atPath: path))
+        result(ClipboardTemporaryItemStore.deleteItem(atPath: path))
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -144,9 +130,14 @@ class MainFlutterWindow: NSWindow {
           result(delivered)
         }
       case "setDockBadge":
-        let arguments = call.arguments as? [String: Any]
-        let visible = arguments?["visible"] as? Bool ?? false
-        let count = arguments?["count"] as? Int ?? (visible ? 1 : 0)
+        guard let count = DockBadgeCount.value(from: call.arguments) else {
+          result(FlutterError(
+            code: "invalid_dock_badge_arguments",
+            message: "A Dock badge request requires a Boolean visible value or an integer count.",
+            details: nil
+          ))
+          return
+        }
         // Update the application Dock tile directly instead of requiring an
         // AppDelegate cast. This keeps the diagnostic button usable even when
         // the host delegate is supplied by another Flutter embedding.

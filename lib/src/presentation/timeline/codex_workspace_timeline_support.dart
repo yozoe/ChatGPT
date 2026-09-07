@@ -1,21 +1,10 @@
 // Shared declarations extracted from codex_workspace_timeline.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, invalid_annotation_target
-import 'dart:math' as math;
+// ignore_for_file: invalid_annotation_target
 import 'package:markdown/markdown.dart' as md;
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
-import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation.dart';
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_agent_linked_image.dart';
 import 'package:chatgpt/src/presentation/workspace/workspace_file_open_scope.dart';
-// ignore_for_file: use_key_in_widget_constructors
-
-import 'dart:math' as math;
-
-import 'package:markdown/markdown.dart' as md;
-
-import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
-import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation.dart';
-import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.dart';
 
 /// Couples a timeline entry to its stable source index while it is grouped.
 

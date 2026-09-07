@@ -1,11 +1,8 @@
 // Extracted class from code_review_panel.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, use_key_in_widget_constructors
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:chatgpt/src/app_controller.dart';
-import 'package:chatgpt/src/domain/git_project_status.dart';
 import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 import 'package:chatgpt/src/presentation/code_review/code_review_panel_support.dart';
 import 'package:chatgpt/src/presentation/code_review/code_review_panel_code_review_panel.dart';
@@ -474,9 +471,11 @@ class CodeReviewPanelState extends State<CodeReviewPanel> {
       const ReviewStats(),
       (total, file) => total + reviewStats(file.diff),
     );
-    final unknown = files.any(
-      (file) => file.diff.trim().isEmpty || file.error != null,
-    );
+    final hasStats =
+        files.isNotEmpty &&
+        files.every(
+          (file) => file.error == null && hasCountableReviewStats(file.diff),
+        );
     final fileCount = widget.source == CodeReviewSource.latestTurn
         ? widget.controller.fileChanges.length
         : widget.controller.gitProjectStatus?.changes.length ?? 0;
@@ -491,7 +490,7 @@ class CodeReviewPanelState extends State<CodeReviewPanel> {
           children: [
             _buildTitleBar(context, palette),
             Divider(height: 1, color: palette.border),
-            _buildToolbar(context, palette, stats, unknown, fileCount),
+            _buildToolbar(context, palette, stats, !hasStats, fileCount),
             Divider(height: 1, color: palette.border),
             if (selected != null)
               SizedBox.shrink(
@@ -662,16 +661,16 @@ class CodeReviewPanelState extends State<CodeReviewPanel> {
                   ],
                 ),
               ),
-              if (!hideStats) ...[
+              if (!hideStats && !unknown) ...[
                 SizedBox(width: compactToolbar ? 8 : 12),
                 Text(
-                  unknown ? '+?' : '+${stats.additions}',
+                  '+${stats.additions}',
                   key: const Key('code-review-additions'),
                   style: TextStyle(color: palette.ack, fontSize: 12),
                 ),
                 SizedBox(width: compactToolbar ? 5 : 7),
                 Text(
-                  unknown ? '-?' : '-${stats.deletions}',
+                  '-${stats.deletions}',
                   key: const Key('code-review-deletions'),
                   style: TextStyle(color: palette.fault, fontSize: 12),
                 ),

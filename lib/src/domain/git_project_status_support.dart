@@ -1,5 +1,5 @@
 // Shared declarations extracted from git_project_status.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, invalid_annotation_target
+// ignore_for_file: invalid_annotation_target
 /// 只读 Git 文件列表支持的筛选范围。
 /// Filter scopes supported by the read-only Git change list.
 enum GitChangeFilter { all, staged, unstaged, untracked }

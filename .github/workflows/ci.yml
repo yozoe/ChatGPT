@@ -36,5 +36,8 @@ jobs:
       - name: Test
         run: flutter test
 
+      - name: Test macOS native layer
+        run: xcodebuild -workspace macos/Runner.xcworkspace -scheme Runner -configuration Debug -destination 'platform=macOS' test
+
       - name: Build macOS Debug
         run: flutter build macos --debug

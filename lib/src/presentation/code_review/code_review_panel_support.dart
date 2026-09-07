@@ -1,24 +1,10 @@
 // Shared declarations extracted from code_review_panel.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, invalid_annotation_target
-import 'dart:async';
+// ignore_for_file: invalid_annotation_target
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:chatgpt/src/app_controller.dart';
-import 'package:chatgpt/src/domain/git_project_status.dart';
-import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 import 'package:chatgpt/src/presentation/code_review/code_review_panel_review_file.dart';
 import 'package:chatgpt/src/presentation/code_review/code_review_panel_review_row.dart';
 import 'package:chatgpt/src/presentation/code_review/code_review_panel_review_stats.dart';
-import 'dart:async';
-import 'dart:math' as math;
-
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-
-import 'package:chatgpt/src/app_controller.dart';
-import 'package:chatgpt/src/domain/git_project_status.dart';
-import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 
 /// Data source displayed by the workbench review surface.
 enum CodeReviewSource { latestTurn, gitWorkspace }
@@ -146,6 +132,14 @@ ReviewStats reviewStats(String diff) {
     }
   }
   return ReviewStats(additions: additions, deletions: deletions);
+}
+
+/// Whether a review Diff contains line changes that can be stated exactly.
+/// Header-only and binary diffs still identify files, but must not render as
+/// misleading `+0 -0` or speculative `+? -?` counters.
+bool hasCountableReviewStats(String diff) {
+  final stats = reviewStats(diff);
+  return stats.additions > 0 || stats.deletions > 0;
 }
 
 IconData reviewFileIcon(String kind) {

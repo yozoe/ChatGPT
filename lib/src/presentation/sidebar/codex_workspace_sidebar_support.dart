@@ -1,13 +1,6 @@
 // Shared declarations extracted from codex_workspace_sidebar.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, invalid_annotation_target
+// ignore_for_file: invalid_annotation_target
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
-import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
-import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
-// ignore_for_file: use_key_in_widget_constructors
-
-import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
-import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
-import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
 
 /// 右侧主区域当前显示的工作台目的地。
 /// Destination currently shown in the right-side workbench area.

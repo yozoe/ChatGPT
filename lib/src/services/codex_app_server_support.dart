@@ -1,14 +1,5 @@
 // Shared declarations extracted from codex_app_server.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, invalid_annotation_target
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-import 'package:flutter/foundation.dart';
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-
-import 'package:flutter/foundation.dart';
+// ignore_for_file: invalid_annotation_target
 
 /// JSON-RPC 载荷在协议边界内使用的可变映射别名。
 /// Mutable map alias used for JSON-RPC payloads at the protocol boundary.

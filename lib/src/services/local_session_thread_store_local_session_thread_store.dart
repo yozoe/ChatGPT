@@ -1,10 +1,8 @@
 // Extracted class from local_session_thread_store.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, use_key_in_widget_constructors
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:chatgpt/src/domain/codex_thread.dart';
-import 'local_session_thread_store_support.dart';
 import 'local_session_thread_store_cached_threads.dart';
 
 class LocalSessionThreadStore {

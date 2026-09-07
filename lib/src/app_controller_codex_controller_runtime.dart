@@ -1,12 +1,9 @@
 // Extracted class from app_controller.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, use_key_in_widget_constructors
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
 import 'package:chatgpt/src/domain/codex_plugin.dart';
 import 'package:chatgpt/src/domain/codex_skill.dart';
@@ -23,7 +20,7 @@ import 'package:chatgpt/src/domain/task_plan.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/domain/workspace_configuration.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
-import 'package:chatgpt/src/services/clipboard_file_reader.dart';
+import 'package:chatgpt/src/services/codex_clock.dart';
 import 'package:chatgpt/src/services/codex_plugin_store.dart';
 import 'package:chatgpt/src/services/conversation_history_store.dart';
 import 'package:chatgpt/src/services/conversation_attachment_store.dart';
@@ -52,6 +49,7 @@ import 'app_controller_timeline_entries.dart';
 import 'app_controller_thread_lifecycle.dart';
 import 'app_controller_configuration_values.dart';
 import 'app_controller_runtime_connection.dart';
+import 'app_controller_scheduled_task_coordinator.dart';
 
 /// 协调工作区运行时、会话历史、时间线和用户审批的核心控制器。
 /// Coordinates the workspace runtime, persisted history, timeline, and user approvals.
@@ -69,6 +67,7 @@ class CodexController extends ChangeNotifier {
     CodexPluginStore? pluginStore,
     GitProjectService? gitProjectService,
     TaskCompletionNotifier? taskCompletionNotifier,
+    CodexClock? clock,
   }) : _server = server ?? CodexAppServer(),
        _runtimeConfigurationStore =
            runtimeConfigurationStore ??
@@ -84,7 +83,8 @@ class CodexController extends ChangeNotifier {
            localSessionThreadStore ?? LocalSessionThreadStore(),
        _gitProjectService = gitProjectService ?? GitProjectService(),
        _taskCompletionNotifier =
-           taskCompletionNotifier ?? TaskCompletionNotifier() {
+           taskCompletionNotifier ?? TaskCompletionNotifier(),
+       _clock = clock ?? CodexClock() {
     _gitOperations = CodexGitOperations(
       service: _gitProjectService,
       workspace: () => workspacePath,
@@ -124,8 +124,6 @@ class CodexController extends ChangeNotifier {
     _runtimeDiagnostics = CodexRuntimeDiagnostics(
       logs: () => _runtimeLogs,
       clearLogs: _runtimeLogs.clear,
-      isDisposed: () => _disposed,
-      notify: notifyListeners,
       probe: () => runtimeProbe,
       status: () => status,
       serverRunning: () => _server.isRunning,
@@ -147,6 +145,26 @@ class CodexController extends ChangeNotifier {
     _threadLifecycle = CodexThreadLifecycle();
     _configurationValues = CodexConfigurationValues();
     _runtimeConnection = CodexRuntimeConnection(_server);
+    _scheduledTaskCoordinator = ScheduledTaskCoordinator(
+      store: _runtimeConfigurationStore,
+      clock: _clock,
+      isDisposed: () => _disposed,
+      hasRunningTasks: () => hasRunningTasks,
+      currentWorkspace: () => workspacePath,
+      selectWorkspace: selectWorkspaceAndReconnect,
+      canSend: () => status == RuntimeStatus.ready,
+      send: (prompt) async {
+        createThread();
+        return sendPrompt(prompt);
+      },
+      reportError: (title, detail) {
+        lastError = detail;
+        _add(TimelineKind.error, title, detail);
+      },
+      reportSystem: (title, detail) => _add(TimelineKind.system, title, detail),
+      notifyChanged: notifyListeners,
+      describeError: _messageOf,
+    );
     _pluginStore =
         pluginStore ??
         CodexPluginStore(executableProvider: _server.resolveExecutable);
@@ -168,6 +186,7 @@ class CodexController extends ChangeNotifier {
   final LocalSessionThreadStore _localSessionThreadStore;
   final GitProjectService _gitProjectService;
   final TaskCompletionNotifier _taskCompletionNotifier;
+  final CodexClock _clock;
   late final CodexGitOperations _gitOperations;
   late final CodexRuntimeDiagnostics _runtimeDiagnostics;
   late final CodexAttachmentCoordinator _attachments;
@@ -176,12 +195,14 @@ class CodexController extends ChangeNotifier {
   late final CodexThreadLifecycle _threadLifecycle;
   late final CodexConfigurationValues _configurationValues;
   late final CodexRuntimeConnection _runtimeConnection;
+  late final ScheduledTaskCoordinator _scheduledTaskCoordinator;
   late final CodexPluginStore _pluginStore;
   StreamSubscription<ServerEvent>? _eventSubscription;
   final List<TimelineEntry> _entries = [];
   final Set<String> _temporaryAttachmentPaths = {};
   final Map<String, int> _composerTemporaryAttachmentRetains = {};
   final Map<String, CodexFileChange> _fileChangesByPath = {};
+  final Set<String> _turnDiffDerivedFileChangePaths = {};
   final Set<String> _pinnedThreadIds = {};
   final Set<String> _acknowledgedCompletedThreadIds = {};
   // This is intentionally app-session scoped. The Dock badge indicates work
@@ -191,10 +212,10 @@ class CodexController extends ChangeNotifier {
   // Prevent duplicate OS notifications when the same completion event is
   // replayed, while allowing later turns in the same thread to notify again.
   final Set<String> _notifiedCompletionKeys = {};
+  // Completion events can be replayed after the runtime reconnects. Keep the
+  // stable thread/turn identity so the foreground timeline is idempotent too.
+  final Set<String> _handledTurnCompletionKeys = {};
   final List<RuntimeLogEntry> _runtimeLogs = [];
-  final List<ScheduledTask> _scheduledTasks = [];
-  final Map<String, Timer> _scheduledTaskTimers = {};
-  final Set<String> _dispatchingScheduledTaskIds = {};
   final Map<String, int> _agentEntryIndexByItem = {};
   final Map<String, String> _agentPhaseByItem = {};
   String? _activeStreamingAgentItemId;
@@ -1036,12 +1057,15 @@ class CodexController extends ChangeNotifier {
   /// Returns recent redacted runtime logs; logs are retained only in this app process's memory.
   List<RuntimeLogEntry> get runtimeLogs => List.unmodifiable(_runtimeLogs);
 
+  /// Exposes the diagnostics-only notifier for narrow UI subscriptions.
+  CodexRuntimeDiagnostics get runtimeDiagnostics => _runtimeDiagnostics;
+
   /// Scheduled prompts are local to Codex Desk and remain queued across app
   /// restarts. They execute only while this desktop app is running.
-  List<ScheduledTask> get scheduledTasks => List.unmodifiable(_scheduledTasks);
+  List<ScheduledTask> get scheduledTasks => _scheduledTaskCoordinator.tasks;
 
   bool isScheduledTaskDispatching(String id) =>
-      _dispatchingScheduledTaskIds.contains(id);
+      _scheduledTaskCoordinator.isDispatching(id);
 
   /// 返回当前项目中被置顶的任务 ID，不允许外部修改集合。
   /// Returns pinned task IDs for the current workspace as an immutable set.
@@ -2495,58 +2519,13 @@ class CodexController extends ChangeNotifier {
     required DateTime runAt,
   }) async {
     await _runtimeLoad;
-    final text = prompt.trim();
-    final workspace = workspacePath;
-    if (text.isEmpty || workspace == null || !runAt.isAfter(DateTime.now())) {
-      return false;
-    }
-    final task = ScheduledTask(
-      id: '${DateTime.now().microsecondsSinceEpoch}-${math.Random().nextInt(1 << 32)}',
-      workspacePath: workspace,
-      prompt: text,
-      runAt: runAt,
-    );
-    _scheduledTasks.add(task);
-    _scheduledTasks.sort((left, right) => left.runAt.compareTo(right.runAt));
-    _armScheduledTask(task);
-    try {
-      await _saveScheduledTasks();
-    } catch (error) {
-      _scheduledTasks.removeWhere((value) => value.id == task.id);
-      _scheduledTaskTimers.remove(task.id)?.cancel();
-      lastError = '无法保存已安排任务：${_messageOf(error)}';
-      _add(TimelineKind.error, '已安排任务保存失败', lastError!);
-      notifyListeners();
-      return false;
-    }
-    _add(TimelineKind.system, '已安排任务', '将在 ${task.runAt} 发送到项目 $workspace。');
-    notifyListeners();
-    return true;
+    return _scheduledTaskCoordinator.schedule(prompt: prompt, runAt: runAt);
   }
 
   /// Removes an unsent scheduled prompt without changing any project files.
   Future<void> cancelScheduledTask(String id) async {
     await _runtimeLoad;
-    if (_dispatchingScheduledTaskIds.contains(id)) {
-      lastError = '该已安排任务正在发送，无法再取消。';
-      _add(TimelineKind.error, '无法取消已安排任务', lastError!);
-      if (!_disposed) notifyListeners();
-      return;
-    }
-    final removed = _scheduledTasks.where((task) => task.id == id).firstOrNull;
-    if (removed == null) return;
-    _scheduledTasks.remove(removed);
-    _scheduledTaskTimers.remove(id)?.cancel();
-    try {
-      await _saveScheduledTasks();
-    } catch (error) {
-      _scheduledTasks.add(removed);
-      _scheduledTasks.sort((left, right) => left.runAt.compareTo(right.runAt));
-      _armScheduledTask(removed);
-      lastError = '无法取消已安排任务：${_messageOf(error)}';
-      _add(TimelineKind.error, '取消已安排任务失败', lastError!);
-    }
-    if (!_disposed) notifyListeners();
+    await _scheduledTaskCoordinator.cancel(id);
   }
 
   /// 启动、初始化本地 App Server，并加载账户与线程状态。
@@ -2806,6 +2785,7 @@ class CodexController extends ChangeNotifier {
       // belong to the requested turn. Before the request is issued, any turn
       // event is necessarily stale and must not enter the new timeline.
       _preparingTurnStart = false;
+      _forgetUnidentifiedTurnCompletion(threadId);
       await _server.startTurn(
         threadId: threadId,
         prompt: text,
@@ -2885,6 +2865,7 @@ class CodexController extends ChangeNotifier {
       if (objective != null && objective.isNotEmpty) {
         await _server.setThreadGoal(threadId: threadId, objective: objective);
       }
+      _forgetUnidentifiedTurnCompletion(threadId);
       await _server.startTurn(
         threadId: threadId,
         prompt: submission.prompt,
@@ -4744,6 +4725,7 @@ class CodexController extends ChangeNotifier {
         final turn = event.params['turn'];
         final threadId = _threadIdFromEvent(event.params);
         final turnId = turn is Map ? _label(turn['id']) : '';
+        if (threadId != null) _forgetUnidentifiedTurnCompletion(threadId);
         if (threadId != null &&
             turnId.isNotEmpty &&
             isThreadRunning(threadId)) {
@@ -4784,10 +4766,65 @@ class CodexController extends ChangeNotifier {
       case 'turn/completed':
         final currentThreadId = activeThreadId;
         final eventThreadId = _threadIdFromEvent(event.params);
+        final eventTurnId = _turnIdFromEvent(event.params);
         if (_preparingTurnStart &&
             (eventThreadId == null || eventThreadId == currentThreadId)) {
           // A new turn has not been requested yet. A late completion for the
           // thread being reused must not finish the optimistic new task.
+          return;
+        }
+        if (eventTurnId == null) {
+          final isForegroundLegacyTurn =
+              status == RuntimeStatus.running &&
+              activeTurnId == null &&
+              ((currentThreadId != null &&
+                      (eventThreadId == null ||
+                          eventThreadId == currentThreadId)) ||
+                  (currentThreadId == null &&
+                      eventThreadId == null &&
+                      !_hasBackgroundRunningTasks));
+          if (isForegroundLegacyTurn) {
+            // Older App Server versions omit turn IDs for both start and
+            // completion notifications. When the currently running foreground
+            // turn also has no ID, this event is the only authoritative
+            // completion signal. The completion-key guard keeps a replay
+            // idempotent, while `_preparingTurnStart` above still rejects a
+            // late event during reuse of the same thread.
+            _handleTurnCompleted(event.params);
+            unawaited(refreshThreads());
+            break;
+          }
+          final isScopedBackgroundLegacyTurn =
+              eventThreadId != null &&
+              eventThreadId != currentThreadId &&
+              isThreadRunning(eventThreadId);
+          if (isScopedBackgroundLegacyTurn) {
+            // A thread-scoped completion remains authoritative after the user
+            // switches away, even when a compatible server omits the turn ID.
+            // Unscoped notifications still take the reconciliation path below
+            // so they cannot finish the wrong background task.
+            _handleBackgroundTurnCompleted(event.params);
+            unawaited(refreshThreads());
+            break;
+          }
+          // An ID-less legacy completion cannot distinguish an old replay
+          // from the current turn after the same thread starts again. Re-read
+          // the authoritative thread state before ending any local turn.
+          final completionStatus = _completionStatusFromParams(event.params);
+          if (_hasBackgroundRunningTasks) {
+            unawaited(
+              _reconcileUnidentifiedCompletionAcrossWorkspaces(
+                completionStatus,
+              ),
+            );
+          } else {
+            unawaited(
+              refreshThreads(
+                reconcileUnidentifiedBackgroundCompletion: true,
+                unidentifiedCompletionStatus: completionStatus,
+              ),
+            );
+          }
           return;
         }
         final backgroundCompletionNeedsReconciliation =
@@ -4830,6 +4867,9 @@ class CodexController extends ChangeNotifier {
       case 'runtime/stderr':
       case 'runtime/invalidMessage':
         _recordRuntimeLog(event.params['message']?.toString() ?? '');
+        // Diagnostic text is consumed by its own notifier. Do not rebuild the
+        // workspace for high-frequency stderr or malformed-protocol logs.
+        return;
       case 'runtime/exited':
         // 只有进程退出才会使连接失败；单个 turn 失败仍可继续复用当前连接。
         // Only process exit fails the connection; an individual failed turn remains recoverable in-place.
@@ -5009,6 +5049,18 @@ class CodexController extends ChangeNotifier {
     return nested.isEmpty ? null : nested;
   }
 
+  /// Returns the stable identity used to make terminal turn events idempotent.
+  String? _turnCompletionKey(JsonMap params, String? threadId) {
+    if (threadId == null) return null;
+    final turnId = _turnIdFromEvent(params);
+    return '$threadId:${turnId?.isNotEmpty == true ? turnId : 'unidentified'}';
+  }
+
+  /// A compatible runtime can omit the turn ID; permit its next turn to end.
+  void _forgetUnidentifiedTurnCompletion(String threadId) {
+    _handledTurnCompletionKeys.remove('$threadId:unidentified');
+  }
+
   void _markNetworkRetryActivitiesHistorical({
     required String threadId,
     required String turnId,
@@ -5171,6 +5223,11 @@ class CodexController extends ChangeNotifier {
     // can still render “任务完成” in that window, so notification and Dock
     // feedback must not be skipped solely because the local focus is empty.
     final completedThreadId = activeThreadId ?? _threadIdFromEvent(params);
+    final completionKey = _turnCompletionKey(params, completedThreadId);
+    if (completionKey != null &&
+        !_handledTurnCompletionKeys.add(completionKey)) {
+      return;
+    }
     final failedTurnError = _findText(turnMap['error']).isNotEmpty
         ? _findText(turnMap['error'])
         : 'Codex 未能完成当前任务。';
@@ -7017,9 +7074,15 @@ class CodexController extends ChangeNotifier {
       final change = CodexFileChange.fromJson(rawChange);
       if (change.path.isEmpty) continue;
       final previous = _fileChangesByPath[change.path];
-      _fileChangesByPath[change.path] = change.diff.isEmpty && previous != null
-          ? previous.copyWith(kind: change.kind)
-          : change;
+      if (change.diff.isEmpty && previous != null) {
+        // Metadata-only events must not discard that this entry's patch was
+        // derived from turn/diff/updated. A later diff update still owns the
+        // displayed patch and needs to replace it.
+        _fileChangesByPath[change.path] = previous.copyWith(kind: change.kind);
+      } else {
+        _turnDiffDerivedFileChangePaths.remove(change.path);
+        _fileChangesByPath[change.path] = change;
+      }
       changed = true;
     }
     if (changed) {
@@ -7181,6 +7244,25 @@ class CodexController extends ChangeNotifier {
   void _updateTurnDiff(Object? rawDiff) {
     final diff = rawDiff?.toString() ?? '';
     turnDiff = diff.isEmpty ? null : diff;
+    for (final path in _turnDiffDerivedFileChangePaths) {
+      _fileChangesByPath.remove(path);
+    }
+    _turnDiffDerivedFileChangePaths.clear();
+    if (diff.isEmpty) return;
+
+    // Some App Server versions send only a turn-level patch. Derive the
+    // per-file task snapshot from its Git headers so the environment card,
+    // timeline summary, and review panel do not disagree about this turn.
+    for (final change in codexFileChangesFromUnifiedDiff(diff)) {
+      final previous = _fileChangesByPath[change.path];
+      final patchIsDerived = previous == null || previous.diff.trim().isEmpty;
+      _fileChangesByPath[change.path] = patchIsDerived
+          ? previous?.copyWith(diff: change.diff) ?? change
+          : previous;
+      if (patchIsDerived) {
+        _turnDiffDerivedFileChangePaths.add(change.path);
+      }
+    }
   }
 
   /// 根据账户读取结果更新认证方式与账户显示信息。
@@ -7238,93 +7320,18 @@ class CodexController extends ChangeNotifier {
       if (!_browserEnabledChangedBeforeLoad) {
         browserEnabled = values[5] as bool? ?? true;
       }
-      _scheduledTasks
-        ..clear()
-        ..addAll(values[6] as List<ScheduledTask>);
-      _scheduledTasks.sort((left, right) => left.runAt.compareTo(right.runAt));
-      for (final task in _scheduledTasks) {
-        _armScheduledTask(task);
-      }
+      _scheduledTaskCoordinator.load(values[6] as List<ScheduledTask>);
     } catch (error) {
       runtimeError = '无法读取已保存的运行时配置：${_messageOf(error)}';
     }
   }
 
-  Future<void> _saveScheduledTasks() =>
-      _runtimeConfigurationStore.saveScheduledTasks(_scheduledTasks);
+  @visibleForTesting
+  Future<void> dispatchScheduledTaskForTesting(String id) =>
+      _scheduledTaskCoordinator.dispatchForTesting(id);
 
-  /// Starts one timer per saved task. Overdue items are dispatched promptly
-  /// after launch; a task is removed only after it has been handed to Codex.
-  void _armScheduledTask(ScheduledTask task) {
-    _scheduledTaskTimers.remove(task.id)?.cancel();
-    final delay = task.runAt.difference(DateTime.now());
-    _scheduledTaskTimers[task.id] = Timer(
-      delay.isNegative ? Duration.zero : delay,
-      () => unawaited(_dispatchScheduledTask(task.id)),
-    );
-  }
-
-  Future<void> _dispatchScheduledTask(String id) async {
-    _scheduledTaskTimers.remove(id)?.cancel();
-    final task = _scheduledTasks.where((value) => value.id == id).firstOrNull;
-    if (task == null || _disposed) return;
-    // A live turn must not be replaced by unattended work. Keep the task and
-    // retry after a short delay, preserving the user's currently running task.
-    if (hasRunningTasks) {
-      _scheduledTaskTimers[id] = Timer(
-        const Duration(minutes: 1),
-        () => unawaited(_dispatchScheduledTask(id)),
-      );
-      return;
-    }
-    if (task.workspacePath != workspacePath) {
-      final switched = await selectWorkspaceAndReconnect(task.workspacePath);
-      // Selecting a different workspace waits for runtime teardown and
-      // startup. The user can cancel the task during that await, so never let
-      // a stale dispatch create a thread or schedule another retry.
-      if (_disposed || !_isScheduledTaskPending(task)) return;
-      if (!switched || _disposed || workspacePath != task.workspacePath) {
-        _scheduledTaskTimers[id] = Timer(
-          const Duration(minutes: 1),
-          () => unawaited(_dispatchScheduledTask(id)),
-        );
-        return;
-      }
-    }
-    if (status != RuntimeStatus.ready) {
-      _scheduledTaskTimers[id] = Timer(
-        const Duration(minutes: 1),
-        () => unawaited(_dispatchScheduledTask(id)),
-      );
-      return;
-    }
-    _dispatchingScheduledTaskIds.add(id);
-    createThread();
-    late final bool sent;
-    try {
-      sent = await sendPrompt(task.prompt);
-    } finally {
-      _dispatchingScheduledTaskIds.remove(id);
-    }
-    if (!sent) {
-      _scheduledTaskTimers[id] = Timer(
-        const Duration(minutes: 1),
-        () => unawaited(_dispatchScheduledTask(id)),
-      );
-      return;
-    }
-    _scheduledTasks.removeWhere((value) => value.id == id);
-    try {
-      await _saveScheduledTasks();
-    } catch (error) {
-      lastError = '已安排任务已发送，但清理记录失败：${_messageOf(error)}';
-      _add(TimelineKind.error, '已安排任务清理失败', lastError!);
-    }
-    if (!_disposed) notifyListeners();
-  }
-
-  bool _isScheduledTaskPending(ScheduledTask task) =>
-      _scheduledTasks.any((candidate) => candidate.id == task.id);
+  /// Returns the same clock used to validate and arm scheduled tasks.
+  DateTime get currentTime => _clock.now();
 
   /// 构建新线程的可选推理配置；模型为空时由 App Server 跟随 Codex 配置。
   /// Builds optional reasoning configuration for a new thread; a null model follows Codex configuration.
@@ -7785,19 +7792,20 @@ class CodexController extends ChangeNotifier {
             entry.key: List<TimelineEntry>.of(entry.value),
         });
       if (snapshot.entries.isNotEmpty) {
-        final restoredEntries = snapshot.entries
+        final scopedEntries = snapshot.entries
             .where(
               (entry) =>
                   !_isUnscopedBridgeEntry(entry) &&
                   !_isBridgeEntryForAnotherThread(entry, activeThreadId),
             )
             .toList(growable: false);
+        final restoredEntries = collapseReplayedTurnCompletions(scopedEntries);
         _entries
           ..clear()
           ..addAll(restoredEntries);
         if (restoredEntries.length != snapshot.entries.length) {
-          // Drop bridge records written by older versions that had no parent
-          // thread field and therefore could not be scoped to a conversation.
+          // Persist both unscoped bridge cleanup and replayed completion
+          // cleanup so the same damaged history is not restored again.
           _scheduleConversationHistorySave();
         }
       }
@@ -7870,6 +7878,7 @@ class CodexController extends ChangeNotifier {
         _runtimeLogs.length - _maximumRuntimeLogEntries,
       );
     }
+    _runtimeDiagnostics.notifyLogChanged();
   }
 
   /// 执行一个插件配置变更，避免在任务执行中修改运行时配置。
@@ -8055,7 +8064,7 @@ class CodexController extends ChangeNotifier {
       ..addAll(snapshot.acknowledgedCompletedThreadIds);
     _entries
       ..clear()
-      ..addAll(snapshot.entries);
+      ..addAll(collapseReplayedTurnCompletions(snapshot.entries));
     _fileChangesByPath
       ..clear()
       ..addEntries(
@@ -8096,6 +8105,7 @@ class CodexController extends ChangeNotifier {
   /// Clears the current task's file-change collection and unified diff.
   void _clearFileChanges() {
     _fileChangesByPath.clear();
+    _turnDiffDerivedFileChangePaths.clear();
     turnDiff = null;
     fileChangeUndoError = null;
   }
@@ -8451,10 +8461,7 @@ class CodexController extends ChangeNotifier {
     _historySaveTimer?.cancel();
     _runtimeReconnectTimer?.cancel();
     _runtimeReconnectTimer = null;
-    for (final timer in _scheduledTaskTimers.values) {
-      timer.cancel();
-    }
-    _scheduledTaskTimers.clear();
+    _scheduledTaskCoordinator.dispose();
     for (final timer in _subagentRefreshTimers.values) {
       timer.cancel();
     }

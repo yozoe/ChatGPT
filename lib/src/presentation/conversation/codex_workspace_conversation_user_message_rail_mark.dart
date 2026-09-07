@@ -1,5 +1,4 @@
 // Extracted class from codex_workspace_conversation.dart.
-// ignore_for_file: unused_import, unnecessary_import, use_key_in_widget_constructors
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
 
 /// One compact line in the fixed user-message rail.

@@ -1,16 +1,7 @@
 // Extracted class from conversation_history_store.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, use_key_in_widget_constructors
-import 'dart:convert';
-import 'dart:io';
-import 'dart:math';
-import 'package:cryptography/cryptography.dart'
-    show AesGcm, Mac, SecretBox, SecretKey;
 import 'package:chatgpt/src/domain/codex_file_change.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
-import 'app_storage_scope.dart';
-import 'codex_keychain_storage.dart';
-import 'conversation_history_store_support.dart';
 
 class ConversationHistorySnapshot {
   const ConversationHistorySnapshot({

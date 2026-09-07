@@ -1,17 +1,8 @@
 // Extracted class from codex_workspace_conversation.dart.
-// ignore_for_file: unused_import, unnecessary_import, use_key_in_widget_constructors
-import 'dart:math' as math;
-import 'package:chatgpt/src/domain/codex_file_change.dart';
-import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
-import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.dart';
-import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
-import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_support.dart';
-import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_inspector_section_header.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_inspector_action_row.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_inspector_thread_row.dart';
-import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_inspector_file_changes_list.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_inspector_subagents_summary.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_inspector_branch_menu.dart';
 
@@ -19,6 +10,7 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 /// Right-side environment inspector for approvals, file changes, and subagent summaries.
 class Inspector extends StatelessWidget {
   const Inspector({
+    super.key,
     required this.width,
     required this.controller,
     required this.onShowTaskChanges,
@@ -35,12 +27,10 @@ class Inspector extends StatelessWidget {
   Widget _taskProjectChange(
     BuildContext context,
     ({String root, List<CodexFileChange> changes}) group,
+    String? turnDiff,
   ) {
     final palette = YeknomPalette.of(context);
-    final stats = diffStats(
-      group.changes.map((change) => change.diff).join('\n'),
-    );
-    final statsUnknown = fileChangeStatsUnknown(group.changes, null);
+    final stats = reliableFileChangeStats(group.changes, turnDiff);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -51,28 +41,30 @@ class Inspector extends StatelessWidget {
         InspectorActionRow(
           icon: Icons.add_box_outlined,
           label: '变更',
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                diffCountLabel('+', stats.additions, unknown: statsUnknown),
-                style: TextStyle(
-                  color: palette.ack,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
+          trailing: stats == null
+              ? null
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '+${stats.additions}',
+                      style: TextStyle(
+                        color: palette.ack,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      '-${stats.deletions}',
+                      style: TextStyle(
+                        color: palette.fault,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-              const SizedBox(width: 4),
-              Text(
-                diffCountLabel('-', stats.deletions, unknown: statsUnknown),
-                style: TextStyle(
-                  color: palette.fault,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
           onTap: onShowTaskChanges,
         ),
       ],
@@ -85,6 +77,13 @@ class Inspector extends StatelessWidget {
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
     final branchAnchorKey = GlobalKey();
+    final taskChanges = controller.fileChanges;
+    final hasTurnDiff = controller.turnDiff?.trim().isNotEmpty ?? false;
+    final taskGroups = groupTaskFileChanges(
+      primaryRoot: controller.workspacePath,
+      additionalRoots: controller.additionalWorkspacePaths,
+      changes: taskChanges,
+    );
     return SizedBox(
       key: const Key('environment-inspector-pane'),
       width: width,
@@ -123,17 +122,18 @@ class Inspector extends StatelessWidget {
                       ],
                     ),
                     const SizedBox(height: 22),
-                    for (final group in groupTaskFileChanges(
-                      primaryRoot: controller.workspacePath,
-                      additionalRoots: controller.additionalWorkspacePaths,
-                      changes: controller.fileChanges,
-                    ))
-                      _taskProjectChange(context, group),
+                    if (taskChanges.isNotEmpty || hasTurnDiff)
+                      for (final group in taskGroups)
+                        _taskProjectChange(context, group, controller.turnDiff),
                     InspectorActionRow(
                       icon: Icons.description_outlined,
                       label: '任务文件',
                       trailing: Text(
-                        fileChangeCountLabel(controller.fileChanges.length),
+                        taskChanges.isNotEmpty
+                            ? fileChangeCountLabel(taskChanges.length)
+                            : hasTurnDiff
+                            ? '完整 Diff'
+                            : fileChangeCountLabel(0),
                         style: TextStyle(color: palette.muted, fontSize: 12),
                       ),
                       onTap: onShowTaskChanges,

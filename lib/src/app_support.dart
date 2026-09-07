@@ -1,24 +1,9 @@
 // Shared declarations extracted from app.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, invalid_annotation_target
+// ignore_for_file: invalid_annotation_target
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'codex_hover_popup.dart';
-import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/services/theme_preferences_store.dart';
-import 'theme_preferences_controller.dart';
-import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 import 'app_codex_desk_app.dart';
-import 'dart:async';
-
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-
-import 'codex_hover_popup.dart';
-import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
-import 'package:chatgpt/src/services/theme_preferences_store.dart';
-import 'theme_preferences_controller.dart';
-import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 
 /// 挂载 Codex Desk 的根 Widget。
 /// Mounts the Codex Desk root widget.

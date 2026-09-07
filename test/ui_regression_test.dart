@@ -2,6 +2,7 @@ import 'package:chatgpt/src/app_controller.dart';
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_scheduled_tasks_dialog.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
+import 'package:chatgpt/src/services/codex_clock.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -133,9 +134,14 @@ void main() {
   testWidgets('scheduling a past time shows actionable validation', (
     tester,
   ) async {
-    final controller = CodexController(server: CodexAppServer())
-      ..workspacePath = '/workspace'
-      ..status = RuntimeStatus.ready;
+    final now = DateTime(2030, 1, 2, 9);
+    final controller =
+        CodexController(
+            server: CodexAppServer(),
+            clock: CodexClock(now: () => now),
+          )
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready;
     addTearDown(controller.dispose);
 
     await tester.pumpWidget(
@@ -144,25 +150,11 @@ void main() {
           body: ScheduledTasksDialog(
             controller: controller,
             initialPrompt: '检查项目状态',
+            initialRunAt: now.subtract(const Duration(minutes: 1)),
           ),
         ),
       ),
     );
-    await tester.tap(find.byKey(const Key('scheduled-task-time-picker')));
-    await tester.pumpAndSettle();
-    final today = DateTime.now().day.toString();
-    await tester.tap(find.text(today).last);
-    await tester.tap(find.text('OK'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('Switch to text input mode'));
-    await tester.pumpAndSettle();
-    final timeFields = find.byType(TextField);
-    await tester.enterText(timeFields.first, '12');
-    await tester.enterText(timeFields.last, '00');
-    final am = find.text('AM');
-    if (am.evaluate().isNotEmpty) await tester.tap(am);
-    await tester.tap(find.text('OK'));
-    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('schedule-task-confirm')));
     await tester.pump();
 

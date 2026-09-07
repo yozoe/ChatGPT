@@ -1,5 +1,4 @@
 // Extracted class from workspace_markdown_preview.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, use_key_in_widget_constructors
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;

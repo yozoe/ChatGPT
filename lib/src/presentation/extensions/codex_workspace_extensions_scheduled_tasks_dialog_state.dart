@@ -1,10 +1,5 @@
 // Extracted class from codex_workspace_extensions.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, use_key_in_widget_constructors
-import 'dart:math' as math;
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
-import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
-import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
-import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_support.dart';
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_scheduled_tasks_dialog.dart';
 
 class ScheduledTasksDialogState extends State<ScheduledTasksDialog> {
@@ -17,7 +12,9 @@ class ScheduledTasksDialogState extends State<ScheduledTasksDialog> {
   void initState() {
     super.initState();
     _prompt.text = widget.initialPrompt ?? '';
-    _runAt = DateTime.now().add(const Duration(hours: 1));
+    _runAt =
+        widget.initialRunAt ??
+        widget.controller.currentTime.add(const Duration(hours: 1));
   }
 
   @override
@@ -30,8 +27,8 @@ class ScheduledTasksDialogState extends State<ScheduledTasksDialog> {
     final date = await showDatePicker(
       context: context,
       initialDate: _runAt,
-      firstDate: DateTime.now(),
-      lastDate: DateTime.now().add(const Duration(days: 365)),
+      firstDate: widget.controller.currentTime,
+      lastDate: widget.controller.currentTime.add(const Duration(days: 365)),
       helpText: '选择执行日期',
     );
     if (date == null || !mounted) return;
@@ -53,7 +50,8 @@ class ScheduledTasksDialogState extends State<ScheduledTasksDialog> {
   }
 
   Future<void> _schedule() async {
-    if (_prompt.text.trim().isEmpty || !_runAt.isAfter(DateTime.now())) {
+    if (_prompt.text.trim().isEmpty ||
+        !_runAt.isAfter(widget.controller.currentTime)) {
       setState(() => _validationError = '请填写提示词，并选择未来的执行时间。');
       return;
     }
@@ -69,7 +67,7 @@ class ScheduledTasksDialogState extends State<ScheduledTasksDialog> {
     if (saved) {
       _prompt.clear();
       setState(() {
-        _runAt = DateTime.now().add(const Duration(hours: 1));
+        _runAt = widget.controller.currentTime.add(const Duration(hours: 1));
         _saving = false;
         _validationError = null;
       });

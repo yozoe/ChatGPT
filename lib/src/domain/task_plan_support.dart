@@ -1,5 +1,5 @@
 // Shared declarations extracted from task_plan.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, invalid_annotation_target
+// ignore_for_file: invalid_annotation_target
 /// App Server 结构化计划中单一步骤的执行状态。
 /// Execution state of one step in an App Server structured plan.
 enum TaskPlanStepStatus { pending, inProgress, completed }

@@ -52,8 +52,7 @@ enum DockBadge {
         size: NSSize(width: diameter, height: diameter)
       )
     ).fill()
-    let label = min(badgeCount, 99)
-    let text = "\(label)" as NSString
+    let text = (DockBadgeCount.label(for: badgeCount) ?? "") as NSString
     let font = NSFont.boldSystemFont(ofSize: diameter * 0.56)
     let attributes: [NSAttributedString.Key: Any] = [
       .font: font,

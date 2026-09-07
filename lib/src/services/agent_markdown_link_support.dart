@@ -1,9 +1,8 @@
 // Shared declarations extracted from agent_markdown_link.dart.
-// ignore_for_file: unused_import, unnecessary_import, duplicate_import, invalid_annotation_target
+// ignore_for_file: invalid_annotation_target
 import 'dart:io';
 import 'agent_markdown_link_workspace_file_reference.dart';
 import 'agent_markdown_link_file_destination.dart';
-import 'dart:io';
 
 /// 用户主动点击 Markdown 链接时调用的平台外部打开器。
 /// Platform external-link launcher called only after a user activates Markdown content.

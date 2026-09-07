@@ -1,18 +1,11 @@
 // Extracted class from codex_workspace_conversation.dart.
-// ignore_for_file: unused_import, unnecessary_import, use_key_in_widget_constructors
-import 'dart:async';
-import 'dart:math' as math;
-import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
-import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.dart';
-import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar.dart';
-import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline.dart';
-import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_support.dart';
 
 /// 展示 App Server 的待审批请求，并提供一次性或持久化的允许/拒绝操作。
 /// Presents an App Server approval request with allow-once, allow-similar, and decline actions.
 class ApprovalPanel extends StatelessWidget {
   const ApprovalPanel({
+    super.key,
     required this.approval,
     required this.taskLabel,
     required this.enabled,

@@ -74,6 +74,7 @@ class FakeCodexAppServer extends CodexAppServer {
   String? steerResponseTurnId;
   Object? steerTurnError;
   Completer<String>? steerCompleter;
+  final steerEntered = Completer<void>();
   String? interruptedThreadId;
   String? interruptedTurnId;
   Completer<void>? interruptCompleter;
@@ -202,6 +203,7 @@ class FakeCodexAppServer extends CodexAppServer {
     steeredTurnId = expectedTurnId;
     steeredTurnPrompt = prompt;
     steeredTurnAdditionalInput = List.of(additionalInput);
+    if (!steerEntered.isCompleted) steerEntered.complete();
     if (steerTurnError case final error?) throw error;
     if (steerCompleter case final completer?) return completer.future;
     return steerResponseTurnId ?? expectedTurnId;

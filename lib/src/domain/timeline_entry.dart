@@ -12,6 +12,51 @@ enum TimelineKind {
   elapsed,
 }
 
+/// Repairs timelines written before terminal turn events became idempotent.
+/// A user message starts one turn, so repeated duration and terminal records
+/// before the next user message describe replayed completion notifications.
+List<TimelineEntry> collapseReplayedTurnCompletions(
+  Iterable<TimelineEntry> entries,
+) {
+  final source = entries.toList(growable: false);
+  final result = <TimelineEntry>[];
+  var turnStart = 0;
+  while (turnStart < source.length) {
+    var nextUser = turnStart + 1;
+    while (nextUser < source.length &&
+        source[nextUser].kind != TimelineKind.user) {
+      nextUser++;
+    }
+    final turnEntries = source.sublist(turnStart, nextUser);
+    final terminalCount = turnEntries.where(isTerminalTimelineEntry).length;
+    if (terminalCount < 2) {
+      result.addAll(turnEntries);
+    } else {
+      final lastTerminal = turnEntries.lastWhere(isTerminalTimelineEntry);
+      var keptElapsed = false;
+      for (final entry in turnEntries) {
+        if (entry.kind == TimelineKind.elapsed) {
+          if (keptElapsed) continue;
+          keptElapsed = true;
+        }
+        if (isTerminalTimelineEntry(entry) && entry.id != lastTerminal.id) {
+          continue;
+        }
+        result.add(entry);
+      }
+    }
+    turnStart = nextUser;
+  }
+  return result;
+}
+
+bool isTerminalTimelineEntry(TimelineEntry entry) =>
+    (entry.kind == TimelineKind.system &&
+        (entry.title == '任务完成' ||
+            entry.title == '任务已停止' ||
+            entry.title == '任务已结束')) ||
+    (entry.kind == TimelineKind.error && entry.title == '任务失败');
+
 /// 可持久化的单条对话时间线记录，不包含仅在运行时存在的活动状态。
 /// One persistable conversation timeline record, excluding transient live activity.
 class TimelineEntry {
