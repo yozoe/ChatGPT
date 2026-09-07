@@ -3161,6 +3161,9 @@ class CodexController extends ChangeNotifier {
     _sendingPendingTurnSteer = pending;
     notifyListeners();
     try {
+      if (pending.goal?.trim() case final goal? when goal.isNotEmpty) {
+        if (!await _setPendingTurnSteerGoal(threadId, goal)) return false;
+      }
       final sent = await steerCurrentTurn(
         pending.prompt,
         additionalInput: pending.additionalInput,
@@ -3211,6 +3214,7 @@ class CodexController extends ChangeNotifier {
     final sent = await sendPrompt(
       pending.prompt,
       additionalInput: pending.additionalInput,
+      goal: pending.goal,
       imagePaths: pending.imagePaths,
       rollbackUserEntryOnFailure: true,
     );
@@ -3238,6 +3242,21 @@ class CodexController extends ChangeNotifier {
     _sendingPendingTurnSteer = null;
     if (!_disposed) notifyListeners();
     return sent;
+  }
+
+  Future<bool> _setPendingTurnSteerGoal(String? threadId, String goal) async {
+    if (threadId == null) return false;
+    try {
+      await _server.setThreadGoal(threadId: threadId, objective: goal);
+      return true;
+    } catch (error) {
+      if (!_disposed && activeThreadId == threadId) {
+        lastError = _messageOf(error);
+        _add(TimelineKind.error, '设置目标失败', lastError!);
+        notifyListeners();
+      }
+      return false;
+    }
   }
 
   /// 停止 App Server 并重置仅在运行期有效的状态。

@@ -1558,6 +1558,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       PendingTurnSteer(
         displayText: submittedText.isEmpty ? '请根据附加内容调整当前任务。' : submittedText,
         prompt: prompt,
+        goal: submission.goal?.trim(),
         additionalInput: List.unmodifiable(additionalInput),
         imagePaths: List.unmodifiable(imagePaths),
       ),

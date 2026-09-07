@@ -679,6 +679,10 @@ class ComposerPanelState extends State<ComposerPanel> {
       _selectedSkillPaths.clear();
       _includeWorkspace = false;
       _recordSkill = false;
+      // A goal is persisted on the thread by the successful submission.  It
+      // belongs to that task from here on, rather than remaining as a draft
+      // context chip for every later composer submission.
+      _goal = null;
       _goalMode = false;
     });
     for (final path in submittedTemporaryPaths) {

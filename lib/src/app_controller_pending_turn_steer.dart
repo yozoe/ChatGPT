@@ -40,12 +40,14 @@ class PendingTurnSteer {
   const PendingTurnSteer({
     required this.displayText,
     required this.prompt,
+    this.goal,
     this.additionalInput = const [],
     this.imagePaths = const [],
   });
 
   final String displayText;
   final String prompt;
+  final String? goal;
   final List<JsonMap> additionalInput;
   final List<String> imagePaths;
 }
