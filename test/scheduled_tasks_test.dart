@@ -42,7 +42,9 @@ void main() {
       );
       addTearDown(() => first.delete(recursive: true));
       addTearDown(() => second.delete(recursive: true));
-      final server = DelayedStartRuntimeFakeServer()..running = true;
+      final server = ManagedRuntimeFakeServer()
+        ..running = true
+        ..queueListRequests = true;
       final now = DateTime(2030, 1, 2, 9);
       final controller = CodexController(
         server: server,
@@ -64,9 +66,11 @@ void main() {
       final taskId = controller.scheduledTasks.single.id;
       controller.workspacePath = second.path;
       final dispatch = controller.dispatchScheduledTaskForTesting(taskId);
-      await server.startEntered.future;
+      while (server.listRequests.isEmpty) {
+        await Future<void>.delayed(Duration.zero);
+      }
       await controller.cancelScheduledTask(taskId);
-      server.allowStart.complete();
+      server.listRequests.single.complete(const []);
       await dispatch;
 
       expect(controller.scheduledTasks, isEmpty);

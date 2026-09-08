@@ -1,9 +1,11 @@
 // Extracted class from conversation_history_store.dart.
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math';
 import 'package:cryptography/cryptography.dart'
-    show AesGcm, Mac, SecretBox, SecretKey;
+    show AesGcm, Mac, SecretBox, SecretKey, Sha256;
 import 'app_storage_scope.dart';
 import 'codex_keychain_storage.dart';
 import 'conversation_history_store_conversation_history_snapshot.dart';
@@ -19,20 +21,52 @@ class ConversationHistoryStore {
   final Directory? _directory;
   final CodexKeychainStorage _secureStorage;
   Future<void> _saveQueue = Future<void>.value();
+  final Map<String, ConversationHistorySnapshot> _memorySnapshots = {};
 
   /// 读取指定工作区的历史快照；没有缓存时返回 `null`。
   /// Reads the history snapshot for a workspace and returns `null` when absent.
   Future<ConversationHistorySnapshot?> read(String workspace) async {
-    final file = await _file();
-    if (!await file.exists()) return null;
-    final decoded = jsonDecode(await _decrypt(await file.readAsString()));
+    final cached = _memorySnapshots[workspace];
+    if (cached != null) return cached;
+    final projectFile = await _projectFile(workspace);
+    if (await projectFile.exists()) {
+      final clearText = await _decrypt(await projectFile.readAsString());
+      final decoded = await Isolate.run(() => jsonDecode(clearText));
+      if (decoded is! Map || decoded['snapshot'] is! Map) {
+        throw const FormatException('本地项目历史记录格式无效。');
+      }
+      final storedWorkspace = decoded['workspace']?.toString();
+      if (storedWorkspace != null && storedWorkspace != workspace) {
+        throw const FormatException('本地项目历史记录归属无效。');
+      }
+      final rawSnapshot = decoded['snapshot'] as Map;
+      final snapshot = await Isolate.run(
+        () => ConversationHistorySnapshot.fromJson(rawSnapshot),
+      );
+      _memorySnapshots[workspace] = snapshot;
+      return snapshot;
+    }
+
+    // Older releases kept all projects in one encrypted JSON document. Read
+    // it only as a compatibility path, then migrate this project in the
+    // background so future switches do not decode unrelated histories.
+    final legacyFile = await _legacyFile();
+    if (!await legacyFile.exists()) return null;
+    final legacyText = await _decrypt(await legacyFile.readAsString());
+    final decoded = await Isolate.run(() => jsonDecode(legacyText));
     if (decoded is! Map || decoded['workspaces'] is! Map) {
       throw const FormatException('本地历史记录格式无效。');
     }
-    final snapshot = (decoded['workspaces'] as Map)[workspace];
-    return snapshot is Map
-        ? ConversationHistorySnapshot.fromJson(snapshot)
-        : null;
+    final rawSnapshot = (decoded['workspaces'] as Map)[workspace];
+    if (rawSnapshot is! Map) return null;
+    final snapshot = await Isolate.run(
+      () => ConversationHistorySnapshot.fromJson(rawSnapshot),
+    );
+    _memorySnapshots[workspace] = snapshot;
+    unawaited(
+      save(workspace: workspace, snapshot: snapshot).onError((_, _) {}),
+    );
+    return snapshot;
   }
 
   /// 串行且原子地保存指定工作区的历史快照，并保留其他工作区的缓存。
@@ -41,6 +75,9 @@ class ConversationHistoryStore {
     required String workspace,
     required ConversationHistorySnapshot snapshot,
   }) async {
+    // Make a just-captured snapshot immediately available to project switching;
+    // durable writes remain serialized in the background.
+    _memorySnapshots[workspace] = snapshot;
     final previousSave = _saveQueue;
     final nextSave = () async {
       try {
@@ -59,34 +96,19 @@ class ConversationHistoryStore {
     required String workspace,
     required ConversationHistorySnapshot snapshot,
   }) async {
-    final file = await _file();
+    final file = await _projectFile(workspace);
     await file.parent.create(recursive: true);
-    Map<String, dynamic> content = {
-      'version': 1,
-      'workspaces': <String, dynamic>{},
-    };
-    if (await file.exists()) {
-      // The on-disk value is normally an AES-GCM envelope. Decode the
-      // plaintext before updating one workspace so existing encrypted entries
-      // are retained instead of being silently replaced.
-      final decoded = jsonDecode(await _decrypt(await file.readAsString()));
-      if (decoded is! Map || decoded['workspaces'] is! Map) {
-        throw const FormatException('本地历史记录格式无效。');
-      }
-      content = Map<String, dynamic>.from(decoded);
-      content['workspaces'] = Map<String, dynamic>.from(
-        decoded['workspaces'] as Map,
-      );
-    }
-    (content['workspaces'] as Map<String, dynamic>)[workspace] = snapshot
-        .toJson();
     final temporary = File(
       '${file.path}.${DateTime.now().microsecondsSinceEpoch}.${Random.secure().nextInt(1 << 32)}.tmp',
     );
-    await temporary.writeAsString(
-      await _encrypt(jsonEncode(content)),
-      flush: true,
+    final clearText = await Isolate.run(
+      () => jsonEncode({
+        'version': 2,
+        'workspace': workspace,
+        'snapshot': snapshot.toJson(),
+      }),
     );
+    await temporary.writeAsString(await _encrypt(clearText), flush: true);
     await temporary.rename(file.path);
   }
 
@@ -99,18 +121,20 @@ class ConversationHistoryStore {
       utf8.encode(value),
       secretKey: secretKey,
     );
-    return jsonEncode({
-      'version': 1,
-      'nonce': base64Encode(box.nonce),
-      'mac': base64Encode(box.mac.bytes),
-      'ciphertext': base64Encode(box.cipherText),
-    });
+    return Isolate.run(
+      () => jsonEncode({
+        'version': 1,
+        'nonce': base64Encode(box.nonce),
+        'mac': base64Encode(box.mac.bytes),
+        'ciphertext': base64Encode(box.cipherText),
+      }),
+    );
   }
 
   /// 解密 AES-GCM 缓存，并兼容读取首版的明文缓存。
   /// Decrypts the AES-GCM cache and remains compatible with the first plaintext format.
   Future<String> _decrypt(String encoded) async {
-    final envelope = jsonDecode(encoded);
+    final envelope = await Isolate.run(() => jsonDecode(encoded));
     // The first cache release used plain JSON. Keep it readable so the next
     // successful save can migrate it to an encrypted envelope.
     if (envelope is Map && envelope['workspaces'] is Map) return encoded;
@@ -146,11 +170,18 @@ class ConversationHistoryStore {
     return generated;
   }
 
-  /// 返回历史缓存文件的绝对路径对象。
-  /// Returns the file object for the absolute history cache path.
-  Future<File> _file() async {
+  /// Returns the legacy all-project cache used only for migration.
+  Future<File> _legacyFile() async {
     final directory = _directory ?? _defaultDirectory();
     return File('${directory.path}/conversation-history-v1.json');
+  }
+
+  /// Returns a collision-resistant cache file dedicated to one project.
+  Future<File> _projectFile(String workspace) async {
+    final directory = _directory ?? _defaultDirectory();
+    final digest = await Sha256().hash(utf8.encode(workspace));
+    final fileName = base64UrlEncode(digest.bytes).replaceAll('=', '');
+    return File('${directory.path}/conversation-history-v2/$fileName.json');
   }
 
   /// 解析 macOS Application Support 中的默认缓存目录。

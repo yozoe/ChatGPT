@@ -9,6 +9,8 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_task_plan_panel.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_new_task_welcome.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_new_task_explore_menu.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_timeline_page_data.dart';
+import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_thread_viewport_key.dart';
 
 class ConversationViewportState extends State<ConversationViewport> {
   static const _initialBottomOverlayHeight = 172.0;
@@ -19,6 +21,11 @@ class ConversationViewportState extends State<ConversationViewport> {
   static const _timelineBottomClearance = 52.0;
 
   final GlobalKey _bottomOverlayKey = GlobalKey();
+  final Map<
+    ThreadViewportKey,
+    ({TimelinePageData data, double bottomPadding, bool active, Widget widget})
+  >
+  _retainedTimelineWidgets = {};
   var _bottomOverlayHeight = _initialBottomOverlayHeight;
   var _overlayMeasureScheduled = false;
   var _exploreMenuVisible = false;
@@ -170,6 +177,59 @@ class ConversationViewportState extends State<ConversationViewport> {
               (plan == null
                   ? _timelineBottomClearance
                   : planHeight + _timelineBottomClearance);
+          final retainedKeys = pages.map((page) => page.key).toSet();
+          _retainedTimelineWidgets.removeWhere(
+            (key, _) => !retainedKeys.contains(key),
+          );
+
+          Widget retainedTimeline(
+            MapEntry<ThreadViewportKey, TimelinePageData> page,
+          ) {
+            final isActive = page.key == widget.activeTimelinePageKey;
+            final retained = _retainedTimelineWidgets[page.key];
+            if (!isActive &&
+                retained != null &&
+                identical(retained.data, page.value) &&
+                retained.bottomPadding == timelineBottomPadding &&
+                retained.active == isActive) {
+              return retained.widget;
+            }
+            final timeline = ConversationTimeline(
+              key: ValueKey('conversation-timeline-${page.key.storageKey}'),
+              pageKey: page.key,
+              data: page.value,
+              scrollController: widget.timelineScrollControllers[page.key]!,
+              bottomPadding: timelineBottomPadding,
+              active: isActive,
+              fileChangeSummaryExpanded: widget.fileChangeSummaryExpanded(
+                page.key,
+              ),
+              onFileChangeSummaryExpandedChanged: (expanded) =>
+                  widget.onFileChangeSummaryExpandedChanged(page.key, expanded),
+              activityExpanded: (activityId) =>
+                  widget.activityExpanded(page.key, activityId),
+              onMetricsChanged: (viewportDimension) =>
+                  widget.onTimelineMetricsChanged(viewportDimension),
+              onUserScrollDirection: (metrics, direction) => widget
+                  .onTimelineUserScrollDirection(page.key, metrics, direction),
+              onActivityExpandedChanged: (activityId, expanded) => widget
+                  .onActivityExpandedChanged(page.key, activityId, expanded),
+              onReview: widget.onReview,
+              onUndo: widget.onUndo,
+              onOpenSubagent: widget.onOpenSubagent,
+              onSubmitUserMessageEdit: widget.onSubmitUserMessageEdit,
+              canUndo: isActive && widget.controller.canUndoFileChanges,
+              undoRunning: isActive && widget.controller.fileChangeUndoRunning,
+            );
+            _retainedTimelineWidgets[page.key] = (
+              data: page.value,
+              bottomPadding: timelineBottomPadding,
+              active: isActive,
+              widget: timeline,
+            );
+            return timeline;
+          }
+
           return Stack(
             key: const Key('conversation-viewport-stack'),
             children: [
@@ -213,51 +273,7 @@ class ConversationViewportState extends State<ConversationViewport> {
                             onSuggestionSelected: _setComposerPrompt,
                           )
                         else
-                          ConversationTimeline(
-                            key: ValueKey(
-                              'conversation-timeline-${page.key.storageKey}',
-                            ),
-                            pageKey: page.key,
-                            data: page.value,
-                            scrollController:
-                                widget.timelineScrollControllers[page.key]!,
-                            bottomPadding: timelineBottomPadding,
-                            active: page.key == widget.activeTimelinePageKey,
-                            fileChangeSummaryExpanded: widget
-                                .fileChangeSummaryExpanded(page.key),
-                            onFileChangeSummaryExpandedChanged: (expanded) =>
-                                widget.onFileChangeSummaryExpandedChanged(
-                                  page.key,
-                                  expanded,
-                                ),
-                            activityExpanded: (activityId) =>
-                                widget.activityExpanded(page.key, activityId),
-                            onMetricsChanged: (viewportDimension) => widget
-                                .onTimelineMetricsChanged(viewportDimension),
-                            onUserScrollDirection: (metrics, direction) =>
-                                widget.onTimelineUserScrollDirection(
-                                  page.key,
-                                  metrics,
-                                  direction,
-                                ),
-                            onActivityExpandedChanged: (activityId, expanded) =>
-                                widget.onActivityExpandedChanged(
-                                  page.key,
-                                  activityId,
-                                  expanded,
-                                ),
-                            onReview: widget.onReview,
-                            onUndo: widget.onUndo,
-                            onOpenSubagent: widget.onOpenSubagent,
-                            onSubmitUserMessageEdit:
-                                widget.onSubmitUserMessageEdit,
-                            canUndo:
-                                page.key == widget.activeTimelinePageKey &&
-                                widget.controller.canUndoFileChanges,
-                            undoRunning:
-                                page.key == widget.activeTimelinePageKey &&
-                                widget.controller.fileChangeUndoRunning,
-                          ),
+                          retainedTimeline(page),
                     ],
                   ),
                 ),

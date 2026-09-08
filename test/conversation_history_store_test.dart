@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:chatgpt/src/domain/codex_thread.dart';
@@ -51,6 +52,40 @@ void main() {
 
     expect((await store.read('project-a'))!.threads.single.id, 'thread-a');
     expect((await store.read('project-b'))!.threads.single.id, 'thread-b');
+    final projectFiles = Directory(
+      '${temporaryDirectory.path}/conversation-history-v2',
+    ).listSync();
+    expect(projectFiles.whereType<File>(), hasLength(2));
+    expect(
+      File(
+        '${temporaryDirectory.path}/conversation-history-v1.json',
+      ).existsSync(),
+      isFalse,
+    );
+  });
+
+  test('migrates a legacy all-project snapshot on first read', () async {
+    final legacySnapshot = snapshot('legacy-thread');
+    await File(
+      '${temporaryDirectory.path}/conversation-history-v1.json',
+    ).writeAsString(
+      jsonEncode({
+        'version': 1,
+        'workspaces': {'legacy-project': legacySnapshot.toJson()},
+      }),
+    );
+    final store = createStore();
+
+    final restored = await store.read('legacy-project');
+    await store.save(workspace: 'legacy-project', snapshot: restored!);
+
+    expect(restored.threads.single.id, 'legacy-thread');
+    expect(
+      Directory(
+        '${temporaryDirectory.path}/conversation-history-v2',
+      ).listSync().whereType<File>(),
+      hasLength(1),
+    );
   });
 
   test('serializes concurrent project history saves', () async {

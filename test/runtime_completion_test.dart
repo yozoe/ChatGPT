@@ -263,7 +263,7 @@ void main() {
   });
 
   test(
-    'serializes an inactive completion with switching back to its project',
+    'uses the in-memory project snapshot when switching after completion',
     () async {
       final root = await Directory.systemTemp.createTemp(
         'codex-desk-completion-switch-race-',
@@ -273,7 +273,7 @@ void main() {
       final second = await Directory('${root.path}/second').create();
       final firstPath = await first.resolveSymbolicLinks();
       final secondPath = await second.resolveSymbolicLinks();
-      final history = BlockingReadConversationHistoryStore();
+      final history = MemoryConversationHistoryStore();
       final server = ManagedRuntimeFakeServer()
         ..startThreadResponseIds.add('completion-switch-thread')
         ..listResponsesByDirectory[firstPath] = [
@@ -292,9 +292,6 @@ void main() {
       await controller.waitForInitialConfiguration();
       expect(await controller.createWorkspace(first.path), isTrue);
       expect(await controller.createWorkspace(second.path), isTrue);
-      final firstProject = controller.workspaceConfigurations.singleWhere(
-        (workspace) => workspace.primaryPath == firstPath,
-      );
       expect(await controller.selectWorkspaceAndReconnect(first.path), isTrue);
       expect(await controller.sendPrompt('完成时切回所属项目'), isTrue);
       expect(await controller.selectWorkspaceAndReconnect(second.path), isTrue);
@@ -306,7 +303,6 @@ void main() {
           'status': 'idle',
         },
       ];
-      history.blockNextRead(firstProject.id!);
       controller.handleServerEventForTesting(
         const ServerEvent(
           method: 'turn/completed',
@@ -319,19 +315,9 @@ void main() {
           },
         ),
       );
-      await history.readStarted!.future;
-      var switchCompleted = false;
-      final switchBack = controller
-          .selectWorkspaceAndReconnect(first.path)
-          .then((result) {
-            switchCompleted = true;
-            return result;
-          });
       await Future<void>.delayed(Duration.zero);
-
-      expect(switchCompleted, isFalse);
-      history.allowRead!.complete();
-      expect(await switchBack, isTrue);
+      await Future<void>.delayed(Duration.zero);
+      expect(await controller.selectWorkspaceAndReconnect(first.path), isTrue);
 
       expect(controller.workspacePath, firstPath);
       expect(controller.activeThreadId, 'completion-switch-thread');

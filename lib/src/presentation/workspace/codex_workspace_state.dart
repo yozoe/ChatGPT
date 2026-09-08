@@ -760,14 +760,15 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   void _pruneTimelineViewports() {
     final workspace = _controller.workspacePath;
     final activeThreadId = _controller.activeThreadId;
-    final cachedThreadIds = _controller.cachedThreadViewIds;
     final staleKeys = _timelineScrollControllers.keys
         .where(
           (key) =>
-              key.workspace != workspace ||
-              (key.threadId != null &&
-                  key.threadId != activeThreadId &&
-                  !cachedThreadIds.contains(key.threadId)),
+              !(key.workspace == workspace && key.threadId == activeThreadId) &&
+              (key.threadId == null ||
+                  !_controller.isThreadViewCached(
+                    workspace: key.workspace ?? '',
+                    threadId: key.threadId!,
+                  )),
         )
         .toList(growable: false);
     for (final key in staleKeys) {

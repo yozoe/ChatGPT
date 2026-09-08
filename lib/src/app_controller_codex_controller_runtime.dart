@@ -236,6 +236,7 @@ class CodexController extends ChangeNotifier {
   // foreground view. Serialize them so a slower history restore or task-list
   // read cannot resume against a different selected project.
   Future<void> _workspaceSwitchQueue = Future.value();
+  int _workspaceSelectionRequest = 0;
   // Background completions use read-modify-write snapshots. Keep mutations
   // for the same inactive project ordered so simultaneous turns cannot save
   // two descendants of the same stale snapshot.
@@ -304,9 +305,11 @@ class CodexController extends ChangeNotifier {
   final Set<String> _ownedThreadIds = {};
   bool _threadHistoryInitialized = false;
   final Set<String> _legacyWorkspaceHistoryPaths = {};
-  final LinkedHashMap<String, ThreadViewSnapshot> _threadViewCache =
-      LinkedHashMap();
+  final LinkedHashMap<({String workspace, String threadId}), ThreadViewSnapshot>
+  _threadViewCache = LinkedHashMap();
   final Map<String, List<TimelineEntry>> _userMessageEntriesByThreadId = {};
+  final Map<String, ConversationHistorySnapshot> _workspaceHistorySnapshots =
+      {};
   // A task can continue on App Server after the user opens another task. This
   // is intentionally independent of [status], which describes the task that
   // is currently open in the workbench.
@@ -944,9 +947,11 @@ class CodexController extends ChangeNotifier {
         paths.addAll(entry.imagePaths);
       }
     }
-    final cached = _threadViewCache[threadId];
-    if (cached != null) {
-      for (final entry in cached.entries) {
+    final cachedViews = _threadViewCache.entries.where(
+      (entry) => entry.key.threadId == threadId,
+    );
+    for (final cached in cachedViews) {
+      for (final entry in cached.value.entries) {
         paths.addAll(entry.imagePaths);
       }
     }
@@ -1024,12 +1029,27 @@ class CodexController extends ChangeNotifier {
   /// Whether the currently selected task already has an in-memory view cache.
   /// 当前选中任务是否已有内存视图缓存。
   bool get hasCachedActiveThreadView =>
-      activeThreadId != null && _threadViewCache.containsKey(activeThreadId);
+      activeThreadId != null &&
+      workspacePath != null &&
+      _threadViewCache.containsKey((
+        workspace: workspacePath!,
+        threadId: activeThreadId!,
+      ));
 
   /// Thread IDs with a retained in-memory page snapshot for this workspace.
   /// 当前项目中已保留内存页面快照的任务 ID。
-  Set<String> get cachedThreadViewIds =>
-      Set.unmodifiable(_threadViewCache.keys);
+  Set<String> get cachedThreadViewIds => Set.unmodifiable(
+    _threadViewCache.keys
+        .where((key) => key.workspace == workspacePath)
+        .map((key) => key.threadId),
+  );
+
+  /// Whether a retained task page exists for the exact project and thread.
+  bool isThreadViewCached({
+    required String workspace,
+    required String threadId,
+  }) =>
+      _threadViewCache.containsKey((workspace: workspace, threadId: threadId));
 
   /// 返回不可修改的已记录文件变更视图。
   /// Returns an unmodifiable view of recorded file changes.
@@ -1791,6 +1811,7 @@ class CodexController extends ChangeNotifier {
   Future<void> selectWorkspace(
     String path, {
     bool allowWhileRunning = false,
+    bool Function()? isCurrentSelection,
   }) async {
     await _workspaceLoad;
     if (!allowWhileRunning && !canChooseWorkspace) {
@@ -1815,7 +1836,12 @@ class CodexController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    await _saveConversationHistory();
+    final previousThreadId = activeThreadId;
+    if (previousThreadId != null && !isThreadRunning(previousThreadId)) {
+      _cacheActiveThreadView(includeUnattached: true);
+    }
+    unawaited(_saveConversationHistory());
+    if (isCurrentSelection?.call() == false) return;
     _updateCurrentWorkspaceConfiguration();
     final existingIndex = _workspaceConfigurations.indexWhere(
       (configuration) => configuration.primaryPath == canonicalPath,
@@ -1848,7 +1874,6 @@ class CodexController extends ChangeNotifier {
     _gitProjectRefreshRequest++;
     _gitDiffRefreshRequest++;
     _gitReviewRefreshRequest++;
-    _threadViewCache.clear();
     _clearSubagentThreadViews();
     // Running turns belong to the shared App Server rather than the visible
     // project. Keep their registries intact so they continue receiving events
@@ -1880,6 +1905,7 @@ class CodexController extends ChangeNotifier {
       await _saveConversationHistory();
     } else {
       await _restoreConversationHistory(canonicalPath);
+      if (isCurrentSelection?.call() == false) return;
       // Selecting a project is an explicit visit to the task that was last
       // open there. Clear its completion dot just as opening the task row
       // does. Startup restoration does not pass through this method, so
@@ -1941,12 +1967,33 @@ class CodexController extends ChangeNotifier {
   }
 
   Future<bool> selectWorkspaceAndReconnect(String path) =>
-      _serializeWorkspaceOperation(() {
-        if (_disposed) return Future<bool>.value(false);
-        return _selectWorkspaceAndReconnectNow(path);
-      });
+      _selectWorkspaceAndReconnect(path);
 
-  Future<bool> _selectWorkspaceAndReconnectNow(String path) async {
+  Future<bool> _selectWorkspaceAndReconnect(
+    String path, {
+    CodexThread? preferredThread,
+  }) {
+    final request = ++_workspaceSelectionRequest;
+    return _serializeWorkspaceOperation(() {
+      if (_disposed || request != _workspaceSelectionRequest) {
+        return Future<bool>.value(false);
+      }
+      return _selectWorkspaceAndReconnectNow(
+        path,
+        selectionRequest: request,
+        preferredThread: preferredThread,
+      );
+    });
+  }
+
+  Future<bool> _selectWorkspaceAndReconnectNow(
+    String path, {
+    required int selectionRequest,
+    CodexThread? preferredThread,
+  }) async {
+    bool isCurrentSelection() =>
+        !_disposed && selectionRequest == _workspaceSelectionRequest;
+
     final normalized = path.trim();
     if (normalized.isEmpty) return false;
     final directory = Directory(normalized);
@@ -1973,9 +2020,12 @@ class CodexController extends ChangeNotifier {
         if (!_disposed) notifyListeners();
       }
       if (status == RuntimeStatus.stopped || status == RuntimeStatus.failed) {
+        if (preferredThread != null) {
+          _selectPreferredThreadForWorkspace(preferredThread);
+        }
         await startRuntime();
       }
-      return true;
+      return isCurrentSelection();
     }
     if (!canChangePrimaryWorkspace) {
       lastError = pluginSaving ? '请等待扩展配置更新完成后再切换工作区。' : '运行时正在自动连接，请稍后再切换工作区。';
@@ -1984,31 +2034,64 @@ class CodexController extends ChangeNotifier {
       return false;
     }
 
-    final runtimeWasRunning = _server.isRunning;
-    final keepRuntimeForBackgroundTurns = runtimeWasRunning && hasRunningTasks;
-    if (runtimeWasRunning && !keepRuntimeForBackgroundTurns) {
-      await stopRuntime();
-      if (_server.isRunning) return false;
-    }
+    final reuseRuntime = _server.isRunning;
     await selectWorkspace(
       canonicalPath,
-      allowWhileRunning: keepRuntimeForBackgroundTurns,
+      allowWhileRunning: reuseRuntime,
+      isCurrentSelection: isCurrentSelection,
     );
-    if (workspacePath != canonicalPath || _disposed) return false;
-    if (!keepRuntimeForBackgroundTurns &&
+    if (!isCurrentSelection() || workspacePath != canonicalPath) return false;
+    if (preferredThread != null) {
+      _selectPreferredThreadForWorkspace(preferredThread);
+    }
+    if (!reuseRuntime &&
         (status == RuntimeStatus.stopped || status == RuntimeStatus.failed)) {
       await startRuntime();
-    } else if (keepRuntimeForBackgroundTurns) {
-      // Refresh only the newly focused project's rows; do not restart the
-      // process that owns turns from the previous project.
+    } else if (reuseRuntime) {
+      // The App Server already supports requests scoped by working directory.
+      // Keep the shared process alive and refresh only project-owned state.
       await refreshCodexConfiguration(notify: false);
+      if (!isCurrentSelection()) return false;
       await _refreshReasoningEffortCapabilities();
-      await refreshThreads();
-      await refreshArchivedThreads();
-      await _resumeRestoredThreadIfNeeded();
-      await refreshSkills(notify: false);
+      if (!isCurrentSelection()) return false;
+      if (preferredThread != null) {
+        await _resumeRestoredThreadIfNeeded();
+        if (!isCurrentSelection()) return false;
+        unawaited(refreshArchivedThreads());
+        unawaited(refreshSkills(notify: false));
+      } else {
+        await refreshThreads();
+        await refreshArchivedThreads();
+        await _resumeRestoredThreadIfNeeded();
+        await refreshSkills(notify: false);
+      }
     }
-    return true;
+    return isCurrentSelection();
+  }
+
+  /// Selects the user's requested task before runtime refreshes can restore a
+  /// different last-open task from the destination project's snapshot.
+  void _selectPreferredThreadForWorkspace(CodexThread thread) {
+    if (activeThreadId != thread.id) {
+      _cacheActiveThreadView(includeUnattached: true);
+      activeThreadId = thread.id;
+      _activeThreadAttached = false;
+      final cachedView = _cachedThreadView(thread.id);
+      if (cachedView != null) {
+        _restoreThreadView(cachedView);
+      } else {
+        _clearThreadTimelineForRestoration();
+      }
+    }
+    if (_runningThreadIds.contains(thread.id)) {
+      status = RuntimeStatus.running;
+      activeTurnId = _runningTurnIdsByThread[thread.id];
+    } else {
+      status = _server.isRunning ? RuntimeStatus.ready : RuntimeStatus.stopped;
+      activeTurnId = null;
+    }
+    _startupSelectedThread = thread;
+    if (!_disposed) notifyListeners();
   }
 
   /// Switches to a task's owning workspace before resuming it. Cached task
@@ -2019,7 +2102,10 @@ class CodexController extends ChangeNotifier {
     required CodexThread thread,
   }) async {
     if (workspace != workspacePath) {
-      final switched = await selectWorkspaceAndReconnect(workspace);
+      final switched = await _selectWorkspaceAndReconnect(
+        workspace,
+        preferredThread: thread,
+      );
       if (!switched || workspacePath != workspace || _disposed) return;
     }
     await acknowledgeCompletedThread(thread.id, workspace: workspace);
@@ -2267,7 +2353,7 @@ class CodexController extends ChangeNotifier {
       (configuration) => configuration.primaryPath == primary,
     );
     _pinnedWorkspacePaths.remove(primary);
-    _threadViewCache.clear();
+    _clearCachedThreadViewsForWorkspace(primary);
     _clearSubagentThreadViews();
     _runningThreadIds.clear();
     _threadWorkspaceById.clear();
@@ -2493,7 +2579,7 @@ class CodexController extends ChangeNotifier {
       _runningThreadIds.add(previousThreadId);
       final workspace = workspacePath;
       if (workspace != null) _threadWorkspaceById[previousThreadId] = workspace;
-      _threadViewCache.remove(previousThreadId);
+      _removeCachedThreadView(previousThreadId, workspace: workspacePath);
     }
     // A writer conflict belongs to the previously selected thread. Starting
     // a fresh conversation must not carry that recovery notice into the new
@@ -3481,7 +3567,7 @@ class CodexController extends ChangeNotifier {
     final snapshot = imported.snapshot;
     final previous = _conversationHistorySnapshot();
     _invalidateThreadRefreshes();
-    _threadViewCache.clear();
+    _clearCachedThreadViewsForWorkspace(workspace);
     _userMessageEntriesByThreadId
       ..clear()
       ..addAll({
@@ -3830,7 +3916,7 @@ class CodexController extends ChangeNotifier {
       _runningThreadIds.add(previousThreadId);
       final workspace = workspacePath;
       if (workspace != null) _threadWorkspaceById[previousThreadId] = workspace;
-      _threadViewCache.remove(previousThreadId);
+      _removeCachedThreadView(previousThreadId, workspace: workspacePath);
     }
     final cachedView = _cachedThreadView(thread.id);
     _resumingThread = true;
@@ -4123,7 +4209,7 @@ class CodexController extends ChangeNotifier {
         archivedIds.add(thread.id);
         _localThreadStatuses.remove(thread.id);
         _acknowledgedCompletedThreadIds.remove(thread.id);
-        _threadViewCache.remove(thread.id);
+        _removeCachedThreadView(thread.id, workspace: workspace);
         _runningTurnSubmissions.remove(thread.id);
         _failedTurnRetries.remove(thread.id);
         if (_retryingFailedTurnThreadId == thread.id) {
@@ -4196,7 +4282,7 @@ class CodexController extends ChangeNotifier {
           .toList(growable: false);
       _localThreadStatuses.remove(thread.id);
       _acknowledgedCompletedThreadIds.remove(thread.id);
-      _threadViewCache.remove(thread.id);
+      _removeCachedThreadView(thread.id, workspace: workspacePath);
       _userMessageEntriesByThreadId.remove(thread.id);
       _runningTurnIdsByThread.remove(thread.id);
       _pendingNetworkRetryEntriesByThread.remove(thread.id);
@@ -5310,7 +5396,10 @@ class CodexController extends ChangeNotifier {
       failedTurnError,
       kind: _failedTurnKindFromError(turnMap['error'], failedTurnError),
     );
-    _threadViewCache.remove(threadId);
+    _removeCachedThreadView(
+      threadId,
+      workspace: ownerWorkspace ?? workspacePath,
+    );
     final completedStatus = completionOutcome == TurnCompletionOutcome.failed
         ? 'systemError'
         : 'idle';
@@ -5384,7 +5473,8 @@ class CodexController extends ChangeNotifier {
   }) async {
     try {
       final historyKey = _historyKeyFor(workspace);
-      var snapshot = await _conversationHistoryStore.read(historyKey);
+      var snapshot = _workspaceHistorySnapshots[historyKey];
+      snapshot ??= await _conversationHistoryStore.read(historyKey);
       if (snapshot == null && historyKey != workspace) {
         snapshot = await _conversationHistoryStore.read(workspace);
       }
@@ -5434,6 +5524,7 @@ class CodexController extends ChangeNotifier {
         historyInitialized: snapshot.historyInitialized,
         userMessageEntriesByThreadId: snapshot.userMessageEntriesByThreadId,
       );
+      _workspaceHistorySnapshots[historyKey] = next;
       await _conversationHistoryStore.save(
         workspace: historyKey,
         snapshot: next,
@@ -5518,7 +5609,7 @@ class CodexController extends ChangeNotifier {
     for (final threadId in completedIds) {
       _runningThreadIds.remove(threadId);
       _threadWorkspaceById.remove(threadId);
-      _threadViewCache.remove(threadId);
+      _removeCachedThreadView(threadId);
       final serverStatus = serverThreadById[threadId]?.status;
       final completionStatus = completedIds.length == 1
           ? eventCompletionStatus?.trim().isNotEmpty == true
@@ -7196,15 +7287,16 @@ class CodexController extends ChangeNotifier {
         _clearFileChanges();
         _scheduleConversationHistorySave();
       } else if (workspacePath == workspace && threadId != null) {
-        final cached = _threadViewCache.remove(threadId);
+        final cacheKey = (workspace: workspace, threadId: threadId);
+        final cached = _threadViewCache.remove(cacheKey);
         if (cached != null && cached.turnDiff == diff) {
-          _threadViewCache[threadId] = ThreadViewSnapshot(
+          _threadViewCache[cacheKey] = ThreadViewSnapshot(
             entries: cached.entries,
             fileChanges: const [],
             turnDiff: null,
           );
         } else if (cached != null) {
-          _threadViewCache[threadId] = cached;
+          _threadViewCache[cacheKey] = cached;
         }
       }
       if (workspacePath == workspace) await refreshGitProject();
@@ -7762,7 +7854,8 @@ class CodexController extends ChangeNotifier {
   Future<void> _restoreConversationHistory(String workspace) async {
     try {
       final historyKey = _historyKeyFor(workspace);
-      var snapshot = await _conversationHistoryStore.read(historyKey);
+      var snapshot = _workspaceHistorySnapshots[historyKey];
+      snapshot ??= await _conversationHistoryStore.read(historyKey);
       if (snapshot == null && historyKey != workspace) {
         snapshot = await _conversationHistoryStore.read(workspace);
         // Persist the recovered legacy snapshot immediately. Previously this
@@ -7776,6 +7869,7 @@ class CodexController extends ChangeNotifier {
         }
       }
       if (_disposed || workspacePath != workspace || snapshot == null) return;
+      _workspaceHistorySnapshots[historyKey] = snapshot;
       threads = snapshot.threads;
       archivedThreads = snapshot.archivedThreads;
       _pinnedThreadIds
@@ -8016,6 +8110,7 @@ class CodexController extends ChangeNotifier {
     _historySaveTimer?.cancel();
     _historySaveTimer = null;
     final snapshot = _conversationHistorySnapshot();
+    _workspaceHistorySnapshots[historyKey] = snapshot;
     final previousSave = _historySave;
     final nextSave = () async {
       try {
@@ -8033,7 +8128,7 @@ class CodexController extends ChangeNotifier {
       await nextSave;
       _historySaveFailed = false;
     } catch (error) {
-      if (!_disposed && !_historySaveFailed) {
+      if (!_disposed && workspacePath == workspace && !_historySaveFailed) {
         _historySaveFailed = true;
         _entries.add(_entry(TimelineKind.error, '无法保存本地历史', _messageOf(error)));
         notifyListeners();
@@ -8045,7 +8140,7 @@ class CodexController extends ChangeNotifier {
   void _restoreConversationHistorySnapshot(
     ConversationHistorySnapshot snapshot,
   ) {
-    _threadViewCache.clear();
+    _clearCachedThreadViewsForWorkspace(workspacePath);
     _userMessageEntriesByThreadId
       ..clear()
       ..addAll({
@@ -8124,10 +8219,16 @@ class CodexController extends ChangeNotifier {
   /// 切换任务前缓存当前已连接任务的页面状态。
   void _cacheActiveThreadView({bool includeUnattached = false}) {
     final id = activeThreadId;
-    if (id == null || (!_activeThreadAttached && !includeUnattached)) return;
+    final workspace = workspacePath;
+    if (id == null ||
+        workspace == null ||
+        (!_activeThreadAttached && !includeUnattached)) {
+      return;
+    }
+    final key = (workspace: workspace, threadId: id);
     _threadViewCache
-      ..remove(id)
-      ..[id] = _currentThreadViewSnapshot();
+      ..remove(key)
+      ..[key] = _currentThreadViewSnapshot();
     while (_threadViewCache.length > _maximumThreadViewCacheEntries) {
       _threadViewCache.remove(_threadViewCache.keys.first);
     }
@@ -8136,9 +8237,25 @@ class CodexController extends ChangeNotifier {
   /// Promotes a cached task page so recently revisited tasks remain retained.
   /// 提升刚访问的任务页面，优先保留近期重新打开的任务。
   ThreadViewSnapshot? _cachedThreadView(String id) {
-    final snapshot = _threadViewCache.remove(id);
-    if (snapshot != null) _threadViewCache[id] = snapshot;
+    final workspace = workspacePath;
+    if (workspace == null) return null;
+    final key = (workspace: workspace, threadId: id);
+    final snapshot = _threadViewCache.remove(key);
+    if (snapshot != null) _threadViewCache[key] = snapshot;
     return snapshot;
+  }
+
+  void _removeCachedThreadView(String threadId, {String? workspace}) {
+    if (workspace != null) {
+      _threadViewCache.remove((workspace: workspace, threadId: threadId));
+      return;
+    }
+    _threadViewCache.removeWhere((key, _) => key.threadId == threadId);
+  }
+
+  void _clearCachedThreadViewsForWorkspace(String? workspace) {
+    if (workspace == null) return;
+    _threadViewCache.removeWhere((key, _) => key.workspace == workspace);
   }
 
   ThreadViewSnapshot _currentThreadViewSnapshot() => ThreadViewSnapshot(

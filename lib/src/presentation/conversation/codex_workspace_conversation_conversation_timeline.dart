@@ -224,10 +224,8 @@ class ConversationTimeline extends StatelessWidget {
     // an asynchronous preflight after they are built.  With the default small
     // cache this makes the scrollbar thumb change size while a slow gesture is
     // crossing the history, and the viewport repeatedly corrects its offset.
-    // Keep the usual desktop-sized histories laid out before the first gesture
-    // so their geometry is stable during scrolling.  The cap prevents an
-    // unbounded cache for pathological transcripts; very large histories still
-    // retain normal lazy behaviour beyond that bound.
+    // Cache enough nearby rows to keep scrolling stable without laying out an
+    // entire long transcript during the first frame after a task switch.
     final itemCount =
         timelineItems.length +
         (activeTurnStartedAt == null ? 0 : 1) +
@@ -239,8 +237,8 @@ class ConversationTimeline extends StatelessWidget {
         .where((entry) => entry.kind == TimelineKind.user)
         .toList(growable: false);
     final timelineCacheExtent = math.min(
-      96000.0,
-      math.max(2000.0, itemCount * 800.0),
+      active ? 16000.0 : 2000.0,
+      math.max(2000.0, itemCount * 400.0),
     );
 
     return NotificationListener<ScrollMetricsNotification>(

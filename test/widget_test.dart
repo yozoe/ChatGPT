@@ -8690,7 +8690,7 @@ void main() {
   );
 
   test(
-    'serializes rapid project switches while a background turn runs',
+    'skips superseded project switches while a background turn runs',
     () async {
       final root = await Directory.systemTemp.createTemp(
         'codex-desk-serialized-project-switch-',
@@ -8744,7 +8744,7 @@ void main() {
 
       expect(thirdSwitchCompleted, isFalse);
       history.allowRead!.complete();
-      expect(await secondSwitch, isTrue);
+      expect(await secondSwitch, isFalse);
       expect(await thirdSwitch, isTrue);
 
       expect(controller.workspacePath, thirdPath);
@@ -9224,7 +9224,7 @@ void main() {
       );
 
       expect(controller.workspacePath, secondPath);
-      expect(server.runtimeDirectory, secondPath);
+      expect(server.configReadDirectory, secondPath);
       expect(server.resumedThreadId, 'second-project-thread');
       controller.dispose();
     },
@@ -9315,17 +9315,17 @@ void main() {
       expect(server.stopCalls, 0);
       expect(await controller.selectWorkspaceAndReconnect(second.path), isTrue);
       expect(controller.status, RuntimeStatus.ready);
-      expect(server.stopCalls, 1);
-      expect(server.startCalls, 2);
-      expect(server.runtimeDirectory, await second.resolveSymbolicLinks());
+      expect(server.stopCalls, 0);
+      expect(server.startCalls, 1);
+      expect(server.configReadDirectory, await second.resolveSymbolicLinks());
       expect(controller.workspaceConfigurations, hasLength(2));
       expect(controller.additionalWorkspacePaths, isEmpty);
 
       controller.status = RuntimeStatus.running;
       expect(await controller.selectWorkspaceAndReconnect(first.path), isTrue);
       expect(controller.workspacePath, await first.resolveSymbolicLinks());
-      expect(server.stopCalls, 1);
-      expect(server.startCalls, 2);
+      expect(server.stopCalls, 0);
+      expect(server.startCalls, 1);
       controller.dispose();
     },
   );
