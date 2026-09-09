@@ -174,6 +174,7 @@ void main() {
         },
       ),
     );
+    await Future<void>.delayed(const Duration(milliseconds: 100));
     var notifications = 0;
     controller.addListener(() => notifications += 1);
 

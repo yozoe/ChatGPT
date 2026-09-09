@@ -3177,7 +3177,11 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('等待当前任务接收审查…'), findsOneWidget);
+      expect(find.text('等待当前任务接收审查…'), findsNothing);
+      expect(
+        find.byKey(const Key('composer-code-review-options-panel')),
+        findsOneWidget,
+      );
       expect(controller.pendingTurnSteers, isEmpty);
 
       controller
@@ -3186,10 +3190,7 @@ void main() {
       await tester.pump();
       await tester.pump();
 
-      expect(
-        controller.pendingTurnSteers.map((item) => item.displayText),
-        contains('审查当前未提交的更改。'),
-      );
+      expect(controller.pendingTurnSteers, isEmpty);
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -14742,7 +14743,7 @@ void main() {
       expect(await firstSend, isTrue);
       expect(controller.activeThreadId, 'thread-b');
       expect(controller.status, RuntimeStatus.running);
-      expect(server.startedTurnThreadIds, ['thread-a']);
+      expect(server.startedTurnThreadIds, ['thread-a', 'thread-b']);
       expect(
         controller.threads.map((thread) => thread.id),
         containsAll(['thread-a', 'thread-b']),

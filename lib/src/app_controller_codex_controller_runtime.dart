@@ -2161,8 +2161,17 @@ class CodexController extends ChangeNotifier {
         unawaited(refreshArchivedThreads());
         unawaited(refreshSkills(notify: false));
       } else {
-        await refreshThreads();
-        await refreshArchivedThreads();
+        // A project switch must remain responsive while another project's turn
+        // is still running. Remote list hydration can be slow or temporarily
+        // blocked; it is safe to reconcile it after the foreground workspace
+        // has switched because every refresh is request/epoch guarded.
+        if (_runningThreadIds.isNotEmpty) {
+          unawaited(refreshThreads());
+          unawaited(refreshArchivedThreads());
+        } else {
+          await refreshThreads();
+          await refreshArchivedThreads();
+        }
         await _resumeRestoredThreadIfNeeded();
         await refreshSkills(notify: false);
       }
