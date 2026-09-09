@@ -252,9 +252,10 @@ class ComposerPanelState extends State<ComposerPanel> {
   List<ComposerSlashCommand> get _slashCommands => [
     const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.workspaceContext,
-      label: '当前项目上下文',
-      description: '附加当前项目路径；IDE 选区和打开文件尚未连接',
+      label: 'IDE 上下文',
+      description: '未连接 IDE 宿主，当前不可用',
       icon: Icons.auto_awesome_outlined,
+      enabled: false,
     ),
     const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.mcpStatus,

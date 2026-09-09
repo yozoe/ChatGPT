@@ -2768,7 +2768,7 @@ void main() {
 
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
-    expect(find.byKey(const Key('composer-workspace-chip')), findsOneWidget);
+    expect(find.byKey(const Key('composer-workspace-chip')), findsNothing);
     await tester.enterText(field, '@bro');
     await tester.pump();
     expect(find.byKey(const Key('composer-mention-menu')), findsOneWidget);
@@ -2835,13 +2835,11 @@ void main() {
     await tester.enterText(field, '/IDE');
     await tester.pump();
 
-    await tester.tap(
+    final ideContextItem = tester.widget<InkWell>(
       find.byKey(const ValueKey('composer-slash-command-workspaceContext')),
     );
-    await tester.pump();
-    expect(find.byKey(const Key('composer-workspace-chip')), findsOneWidget);
-    expect(tester.widget<TextField>(field).controller!.text, isEmpty);
-    expect(find.byKey(const Key('composer-slash-menu')), findsNothing);
+    expect(ideContextItem.onTap, isNull);
+    expect(find.text('未连接 IDE 宿主，当前不可用'), findsOneWidget);
 
     await tester.enterText(field, '/');
     await tester.pump();

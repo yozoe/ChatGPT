@@ -22,7 +22,7 @@
 
 | 能力 | 官方证据 | App Server 协议 | 当前实现状态 |
 | --- | --- | --- | --- |
-| IDE 上下文 | 已确认（文档）：`/ide-context` 切换自动 IDE 上下文；CLI `/ide` 包含打开文件和当前选区 | 需继续确认宿主向 App Server 注入上下文的公开输入格式 | 当前仅附加项目路径，未完成 |
+| IDE 上下文 | 已确认（文档）：`/ide-context` 切换自动 IDE 上下文；CLI `/ide` 包含打开文件和当前选区 | 需继续确认宿主向 App Server 注入上下文的公开输入格式 | 未连接 IDE 宿主时 `/` 项禁用；当前项目路径从 `@`/添加菜单单独提供 |
 | MCP | 已确认（文档） | `mcpServerStatus/list` | 已有真实状态面板，待桌面实测 |
 | 代码审查 | 已确认（文档）：未提交改动或相对基础分支 | `review/start`，目标支持 `uncommittedChanges`、`baseBranch`、`commit`、`custom` | 已改用结构化 `review/start` |
 | 侧边聊天 | 已确认（文档）：临时聊天，不中断主聊天；审查模式和嵌套侧边聊天中不可用 | `thread/fork` + `ephemeral: true`；分页线程使用 `excludeTurns: true` | 已接入独立侧栏 UI；审查/嵌套禁用和精确布局仍待桌面实测 |
