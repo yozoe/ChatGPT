@@ -11,6 +11,7 @@ class PendingTurnSteer {
     required this.displayText,
     required this.prompt,
     this.goal,
+    this.planMode = false,
     this.additionalInput = const [],
     this.imagePaths = const [],
   });
@@ -18,6 +19,7 @@ class PendingTurnSteer {
   final String displayText;
   final String prompt;
   final String? goal;
+  final bool planMode;
   final List<JsonMap> additionalInput;
   final List<String> imagePaths;
 }

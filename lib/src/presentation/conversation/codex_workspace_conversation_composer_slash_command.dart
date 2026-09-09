@@ -19,17 +19,20 @@ class ComposerSlashCommand {
     required this.label,
     required this.description,
     required this.icon,
+    this.aliases = const [],
   });
 
   final ComposerSlashCommandKind kind;
   final String label;
   final String description;
   final IconData icon;
+  final List<String> aliases;
 
   bool matches(String query) {
     final normalized = query.trim().toLowerCase();
     if (normalized.isEmpty) return true;
     return label.toLowerCase().contains(normalized) ||
-        description.toLowerCase().contains(normalized);
+        description.toLowerCase().contains(normalized) ||
+        aliases.any((alias) => alias.toLowerCase().contains(normalized));
   }
 }

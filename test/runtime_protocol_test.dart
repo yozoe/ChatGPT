@@ -48,6 +48,94 @@ void main() {
     controller.dispose();
   });
 
+  test('restores a persisted goal when reopening a thread', () async {
+    final server = FakeCodexAppServer()
+      ..threadGoalResponse = {
+        'threadId': 'goal-thread',
+        'objective': '完成跨会话目标',
+        'status': 'paused',
+        'tokenBudget': 2000,
+        'tokensUsed': 500,
+        'timeUsedSeconds': 90,
+      };
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+
+    await controller.resumeThread(protocolThread(id: 'goal-thread'));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(controller.activeThreadGoal?.objective, '完成跨会话目标');
+    expect(controller.activeThreadGoal?.status, 'paused');
+    expect(controller.activeThreadGoal?.progress, 0.25);
+    controller.dispose();
+  });
+
+  test('uses the authoritative goal returned by a lifecycle update', () async {
+    final server = FakeCodexAppServer()
+      ..threadGoalResponse = {
+        'threadId': 'goal-thread',
+        'objective': '原目标',
+        'status': 'active',
+        'tokenBudget': 2000,
+        'tokensUsed': 500,
+        'timeUsedSeconds': 120,
+      }
+      ..threadGoalSetResponse = {
+        'threadId': 'goal-thread',
+        'objective': '更新后的目标',
+        'status': 'paused',
+        'tokenBudget': null,
+        'tokensUsed': 750,
+        'timeUsedSeconds': 180,
+      };
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await controller.resumeThread(protocolThread(id: 'goal-thread'));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(await controller.editActiveGoal('本地输入'), isTrue);
+
+    expect(controller.activeThreadGoal?.objective, '更新后的目标');
+    expect(controller.activeThreadGoal?.status, 'paused');
+    expect(controller.activeThreadGoal?.tokenBudget, isNull);
+    expect(controller.activeThreadGoal?.tokensUsed, 750);
+    expect(controller.activeThreadGoal?.timeUsedSeconds, 180);
+    controller.dispose();
+  });
+
+  test(
+    'does not silently downgrade plan mode without a resolved model',
+    () async {
+      final server = FakeCodexAppServer();
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      );
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+
+      expect(await controller.sendPrompt('先制定计划', planMode: true), isFalse);
+
+      expect(server.startedTurnPrompt, isNull);
+      expect(controller.lastError, contains('读取可用模型'));
+      controller.dispose();
+    },
+  );
+
   test('passes every workspace root only when creating a new thread', () async {
     final root = await Directory.systemTemp.createTemp(
       'codex-desk-thread-roots-',
@@ -182,6 +270,26 @@ void main() {
       'threadId': 'thread-1',
       'turnId': 'turn-1',
     });
+  });
+
+  test('encodes goal lifecycle operations', () async {
+    final server = ProtocolCaptureCodexAppServer();
+
+    await server.updateThreadGoal(
+      threadId: 'thread-1',
+      objective: '完成迁移',
+      status: 'paused',
+    );
+    expect(server.requestedMethod, 'thread/goal/set');
+    expect(server.requestedParams, {
+      'threadId': 'thread-1',
+      'objective': '完成迁移',
+      'status': 'paused',
+    });
+
+    await server.clearThreadGoal(threadId: 'thread-1');
+    expect(server.requestedMethod, 'thread/goal/clear');
+    expect(server.requestedParams, {'threadId': 'thread-1'});
   });
 
   test('opts into experimental App Server fields during initialize', () async {

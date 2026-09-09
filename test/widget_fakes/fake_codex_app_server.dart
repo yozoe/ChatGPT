@@ -82,6 +82,11 @@ class FakeCodexAppServer extends CodexAppServer {
   Object? interruptTurnError;
   Object? unarchiveError;
   String? threadGoal;
+  String threadGoalStatus = 'active';
+  JsonMap? threadGoalResponse;
+  JsonMap? threadGoalSetResponse;
+  final Map<String, Completer<JsonMap?>> threadGoalUpdateCompleters = {};
+  int clearThreadGoalCalls = 0;
   String? renamedThreadId;
   String? renamedThreadName;
   String? unarchivedThreadId;
@@ -225,11 +230,56 @@ class FakeCodexAppServer extends CodexAppServer {
   }
 
   @override
-  Future<void> setThreadGoal({
+  Future<JsonMap?> setThreadGoal({
     required String threadId,
     required String objective,
   }) async {
     threadGoal = objective;
+    threadGoalStatus = 'active';
+    return threadGoalSetResponse ?? _threadGoalResult(threadId);
+  }
+
+  @override
+  Future<JsonMap?> getThreadGoal({required String threadId}) async {
+    if (threadGoalResponse case final response?) return JsonMap.from(response);
+    final objective = threadGoal;
+    if (objective == null) return null;
+    return {
+      'threadId': threadId,
+      'objective': objective,
+      'status': threadGoalStatus,
+      'tokensUsed': 0,
+      'timeUsedSeconds': 0,
+    };
+  }
+
+  @override
+  Future<JsonMap?> updateThreadGoal({
+    required String threadId,
+    String? objective,
+    String? status,
+  }) async {
+    if (threadGoalUpdateCompleters[threadId] case final completer?) {
+      final response = await completer.future;
+      if (response != null) return response;
+    }
+    if (objective != null) threadGoal = objective;
+    if (status != null) threadGoalStatus = status;
+    return threadGoalSetResponse ?? _threadGoalResult(threadId);
+  }
+
+  JsonMap _threadGoalResult(String threadId) => {
+    'threadId': threadId,
+    'objective': threadGoal,
+    'status': threadGoalStatus,
+    'tokensUsed': 0,
+    'timeUsedSeconds': 0,
+  };
+
+  @override
+  Future<void> clearThreadGoal({required String threadId}) async {
+    clearThreadGoalCalls++;
+    threadGoal = null;
   }
 
   @override

@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
+import 'package:chatgpt/src/domain/codex_thread_goal.dart';
 import 'package:chatgpt/src/domain/codex_plugin.dart';
 import 'package:chatgpt/src/domain/codex_skill.dart';
 import 'package:chatgpt/src/domain/codex_marketplace.dart';
@@ -226,6 +227,7 @@ class CodexController extends ChangeNotifier {
   final Map<String, Timer> _subagentRefreshTimers = {};
   int _subagentViewRequestSequence = 0;
   final Set<String> _completedCommandItemIds = {};
+  final Set<String> _completedPlanItemIds = {};
   final Set<String> _handledBrowserInvocationIds = {};
   Timer? _deltaNotificationTimer;
   Timer? _historySaveTimer;
@@ -465,6 +467,26 @@ class CodexController extends ChangeNotifier {
   int _collaborationBridgeRequestSequence = 0;
   final Map<String, Map<int, String>> _reasoningSummaryParts = {};
   TaskPlan? activeTaskPlan;
+  final Map<String, CodexThreadGoal> _threadGoalsById = {};
+  final Map<String, int> _threadGoalRevisions = {};
+  final Set<String> _goalOperationThreadIds = {};
+  final Map<String, String> _goalOperationErrorsByThread = {};
+
+  CodexThreadGoal? get activeThreadGoal {
+    final threadId = activeThreadId;
+    return threadId == null ? null : _threadGoalsById[threadId];
+  }
+
+  bool get goalOperationInProgress {
+    final threadId = activeThreadId;
+    return threadId != null && _goalOperationThreadIds.contains(threadId);
+  }
+
+  String? get goalOperationError {
+    final threadId = activeThreadId;
+    return threadId == null ? null : _goalOperationErrorsByThread[threadId];
+  }
+
   String? lastError;
   ThreadWriterConflict? _threadWriterConflict;
   bool _retryingThreadWriterConflict = false;
@@ -2788,6 +2810,12 @@ class CodexController extends ChangeNotifier {
     final requestThread = activeThreadId;
     final requestRevision = _conversationViewRevision;
     if (text.isEmpty || !canSend || requestWorkspace == null) return false;
+    if (planMode && _newThreadModelId == null) {
+      lastError = '计划模式需要先从 Codex 运行时读取可用模型。';
+      _add(TimelineKind.error, '无法启动计划模式', lastError!);
+      notifyListeners();
+      return false;
+    }
     if (activeThreadId != null && !_activeThreadAttached) {
       lastError = '当前历史任务尚未恢复，请先点击左侧任务后再发送。';
       _add(TimelineKind.error, '无法继续历史任务', lastError!);
@@ -2908,7 +2936,7 @@ class CodexController extends ChangeNotifier {
       _updateThreadStatus(threadId, 'active');
       _scheduleConversationHistorySave();
       if (objective != null && objective.isNotEmpty) {
-        await _server.setThreadGoal(threadId: threadId, objective: objective);
+        await _setThreadGoal(threadId, objective);
       }
       // From this point onward even an ID-less compatible-server event can
       // belong to the requested turn. Before the request is issued, any turn
@@ -3000,7 +3028,7 @@ class CodexController extends ChangeNotifier {
     try {
       final objective = submission.goal;
       if (objective != null && objective.isNotEmpty) {
-        await _server.setThreadGoal(threadId: threadId, objective: objective);
+        await _setThreadGoal(threadId, objective);
       }
       _forgetUnidentifiedTurnCompletion(threadId);
       await _server.startTurn(
@@ -3333,6 +3361,7 @@ class CodexController extends ChangeNotifier {
       pending.prompt,
       additionalInput: pending.additionalInput,
       goal: pending.goal,
+      planMode: pending.planMode,
       imagePaths: pending.imagePaths,
       rollbackUserEntryOnFailure: true,
     );
@@ -3365,7 +3394,7 @@ class CodexController extends ChangeNotifier {
   Future<bool> _setPendingTurnSteerGoal(String? threadId, String goal) async {
     if (threadId == null) return false;
     try {
-      await _server.setThreadGoal(threadId: threadId, objective: goal);
+      await _setThreadGoal(threadId, goal);
       return true;
     } catch (error) {
       if (!_disposed && activeThreadId == threadId) {
@@ -3374,6 +3403,165 @@ class CodexController extends ChangeNotifier {
         notifyListeners();
       }
       return false;
+    }
+  }
+
+  int _nextThreadGoalRevision(String threadId) {
+    final revision = (_threadGoalRevisions[threadId] ?? 0) + 1;
+    _threadGoalRevisions[threadId] = revision;
+    return revision;
+  }
+
+  Future<void> _setThreadGoal(String threadId, String objective) async {
+    final revision = _nextThreadGoalRevision(threadId);
+    final rawGoal = await _server.setThreadGoal(
+      threadId: threadId,
+      objective: objective,
+    );
+    if (_threadGoalRevisions[threadId] != revision) return;
+    _threadGoalsById[threadId] = _normalizedThreadGoal(
+      rawGoal,
+      threadId: threadId,
+      objective: objective,
+      status: 'active',
+    );
+  }
+
+  /// Refreshes the selected thread's persisted goal without delaying its UI.
+  Future<void> refreshThreadGoal(String threadId) async {
+    final revision = _nextThreadGoalRevision(threadId);
+    try {
+      final rawGoal = await _server.getThreadGoal(threadId: threadId);
+      if (_disposed || _threadGoalRevisions[threadId] != revision) return;
+      final previous = _threadGoalsById[threadId];
+      var changed = false;
+      if (rawGoal == null) {
+        changed = _threadGoalsById.remove(threadId) != null;
+      } else {
+        final goal = CodexThreadGoal.fromJson(rawGoal);
+        if (goal.objective.isEmpty) {
+          changed = _threadGoalsById.remove(threadId) != null;
+        } else {
+          final normalized = _normalizedThreadGoal(
+            rawGoal,
+            threadId: threadId,
+            objective: goal.objective,
+            status: goal.status,
+          );
+          changed = !_sameThreadGoal(previous, normalized);
+          _threadGoalsById[threadId] = normalized;
+        }
+      }
+      if (changed && activeThreadId == threadId) notifyListeners();
+    } catch (_) {
+      // Goal mode was introduced after the base thread APIs. Older compatible
+      // runtimes keep the conversation usable without displaying stale state.
+    }
+  }
+
+  bool _sameThreadGoal(CodexThreadGoal? left, CodexThreadGoal right) =>
+      left != null &&
+      left.threadId == right.threadId &&
+      left.objective == right.objective &&
+      left.status == right.status &&
+      left.tokenBudget == right.tokenBudget &&
+      left.tokensUsed == right.tokensUsed &&
+      left.timeUsedSeconds == right.timeUsedSeconds;
+
+  CodexThreadGoal _normalizedThreadGoal(
+    JsonMap? rawGoal, {
+    required String threadId,
+    required String objective,
+    required String status,
+    int? tokenBudget,
+    int tokensUsed = 0,
+    int timeUsedSeconds = 0,
+  }) {
+    final parsed = rawGoal == null ? null : CodexThreadGoal.fromJson(rawGoal);
+    return CodexThreadGoal(
+      threadId: parsed?.threadId.isNotEmpty == true
+          ? parsed!.threadId
+          : threadId,
+      objective: parsed?.objective.isNotEmpty == true
+          ? parsed!.objective
+          : objective,
+      status: parsed?.status.isNotEmpty == true ? parsed!.status : status,
+      tokenBudget: rawGoal == null ? tokenBudget : parsed!.tokenBudget,
+      tokensUsed: parsed?.tokensUsed ?? tokensUsed,
+      timeUsedSeconds: parsed?.timeUsedSeconds ?? timeUsedSeconds,
+    );
+  }
+
+  Future<bool> pauseActiveGoal() => _updateActiveGoal(status: 'paused');
+
+  Future<bool> resumeActiveGoal() => _updateActiveGoal(status: 'active');
+
+  Future<bool> editActiveGoal(String objective) async {
+    final normalized = objective.trim();
+    if (normalized.isEmpty || normalized.runes.length > 4000) return false;
+    return _updateActiveGoal(objective: normalized);
+  }
+
+  Future<bool> _updateActiveGoal({String? objective, String? status}) async {
+    final threadId = activeThreadId;
+    final goal = activeThreadGoal;
+    if (threadId == null || goal == null || goalOperationInProgress) {
+      return false;
+    }
+    final revision = _nextThreadGoalRevision(threadId);
+    _goalOperationThreadIds.add(threadId);
+    _goalOperationErrorsByThread.remove(threadId);
+    notifyListeners();
+    try {
+      final rawGoal = await _server.updateThreadGoal(
+        threadId: threadId,
+        objective: objective,
+        status: status,
+      );
+      if (_threadGoalRevisions[threadId] == revision) {
+        _threadGoalsById[threadId] = _normalizedThreadGoal(
+          rawGoal,
+          threadId: threadId,
+          objective: objective ?? goal.objective,
+          status: status ?? goal.status,
+          tokenBudget: goal.tokenBudget,
+          tokensUsed: goal.tokensUsed,
+          timeUsedSeconds: goal.timeUsedSeconds,
+        );
+      }
+      return true;
+    } catch (error) {
+      _goalOperationErrorsByThread[threadId] = _messageOf(error);
+      return false;
+    } finally {
+      _goalOperationThreadIds.remove(threadId);
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  Future<bool> clearActiveGoal() async {
+    final threadId = activeThreadId;
+    if (threadId == null ||
+        activeThreadGoal == null ||
+        goalOperationInProgress) {
+      return false;
+    }
+    final revision = _nextThreadGoalRevision(threadId);
+    _goalOperationThreadIds.add(threadId);
+    _goalOperationErrorsByThread.remove(threadId);
+    notifyListeners();
+    try {
+      await _server.clearThreadGoal(threadId: threadId);
+      if (_threadGoalRevisions[threadId] == revision) {
+        _threadGoalsById.remove(threadId);
+      }
+      return true;
+    } catch (error) {
+      _goalOperationErrorsByThread[threadId] = _messageOf(error);
+      return false;
+    } finally {
+      _goalOperationThreadIds.remove(threadId);
+      if (!_disposed) notifyListeners();
     }
   }
 
@@ -4010,6 +4198,7 @@ class CodexController extends ChangeNotifier {
         _activeThreadAttached = true;
         status = RuntimeStatus.ready;
       }
+      unawaited(refreshThreadGoal(thread.id));
       try {
         if (cachedView == null) {
           history = openingRunningThread
@@ -4905,6 +5094,10 @@ class CodexController extends ChangeNotifier {
         if (_isEventForActiveTurn(event.params)) {
           _updateTaskPlan(event.params);
         }
+      case 'thread/goal/updated':
+        _applyThreadGoalUpdated(event.params);
+      case 'thread/goal/cleared':
+        _applyThreadGoalCleared(event.params);
       case 'item/completed':
         if (_isEventForActiveTurn(event.params)) {
           _recordCompletedLiveActivity(event.params);
@@ -5013,6 +5206,13 @@ class CodexController extends ChangeNotifier {
         unawaited(refreshThreads());
         unawaited(refreshArchivedThreads());
       case 'thread/deleted':
+        final deletedThreadId = _threadIdFromEvent(event.params);
+        if (deletedThreadId != null) {
+          _threadGoalsById.remove(deletedThreadId);
+          _threadGoalRevisions.remove(deletedThreadId);
+          _goalOperationThreadIds.remove(deletedThreadId);
+          _goalOperationErrorsByThread.remove(deletedThreadId);
+        }
         unawaited(refreshThreads(allowLocalSessionFallback: false));
         unawaited(refreshArchivedThreads());
       case 'runtime/stderr':
@@ -5359,6 +5559,36 @@ class CodexController extends ChangeNotifier {
     }
     activeTurnId ??= turnId.isEmpty ? null : turnId;
     activeTaskPlan = TaskPlan.fromNotification(params);
+  }
+
+  void _applyThreadGoalUpdated(JsonMap params) {
+    final rawGoal = params['goal'];
+    if (rawGoal is! Map) return;
+    final parsed = CodexThreadGoal.fromJson(rawGoal);
+    final threadId = parsed.threadId.isNotEmpty
+        ? parsed.threadId
+        : _threadIdFromEvent(params);
+    if (threadId == null || parsed.objective.isEmpty) return;
+    _nextThreadGoalRevision(threadId);
+    _threadGoalsById[threadId] = parsed.threadId.isEmpty
+        ? CodexThreadGoal(
+            threadId: threadId,
+            objective: parsed.objective,
+            status: parsed.status,
+            tokenBudget: parsed.tokenBudget,
+            tokensUsed: parsed.tokensUsed,
+            timeUsedSeconds: parsed.timeUsedSeconds,
+          )
+        : parsed;
+    _goalOperationErrorsByThread.remove(threadId);
+  }
+
+  void _applyThreadGoalCleared(JsonMap params) {
+    final threadId = _threadIdFromEvent(params);
+    if (threadId == null) return;
+    _nextThreadGoalRevision(threadId);
+    _threadGoalsById.remove(threadId);
+    _goalOperationErrorsByThread.remove(threadId);
   }
 
   /// 处理任务结束事件，并采集其中的文件变更与统一 Diff。
@@ -6016,13 +6246,14 @@ class CodexController extends ChangeNotifier {
     if (rawItem is! Map) return;
     final item = JsonMap.from(rawItem);
     final itemId = _label(item['id']);
+    final itemType = item['type']?.toString();
     if (_isCollaborationItem(item)) {
       final collaborationId = _collaborationActivityId(item);
       if (collaborationId.isNotEmpty) {
         _liveCollaborationActivities.remove(collaborationId);
       }
     }
-    if (item['type']?.toString() == 'agentMessage') {
+    if (itemType == 'agentMessage') {
       final phase = _label(item['phase']);
       if (phase.isNotEmpty && itemId.isNotEmpty) {
         _agentPhaseByItem[itemId] = phase;
@@ -6063,7 +6294,7 @@ class CodexController extends ChangeNotifier {
         }
       }
     }
-    if (item['type']?.toString() == 'agentMessage' &&
+    if (itemType == 'agentMessage' &&
         (itemId.isEmpty || itemId == _activeStreamingAgentItemId)) {
       _activeStreamingAgentItemId = null;
     }
@@ -6071,7 +6302,13 @@ class CodexController extends ChangeNotifier {
     if (itemId.isEmpty || itemId == _activeLiveActivity?.itemId) {
       _activeLiveActivity = null;
     }
-    if (item['type']?.toString() == 'commandExecution') {
+    if (itemType == 'plan') {
+      final planKey = itemId.isEmpty ? 'active-plan' : itemId;
+      final text = item['text']?.toString().trim() ?? '';
+      if (text.isNotEmpty && _completedPlanItemIds.add(planKey)) {
+        _add(TimelineKind.system, '计划', text);
+      }
+    } else if (itemType == 'commandExecution') {
       if (itemId.isEmpty || itemId == _activeCommandItemId) {
         _activeCommand = null;
         _activeCommandItemId = null;
@@ -8196,6 +8433,7 @@ class CodexController extends ChangeNotifier {
     _completedAgentMessageItemIds.clear();
     _activeStreamingAgentItemId = null;
     _completedCommandItemIds.clear();
+    _completedPlanItemIds.clear();
     activeTurnId = null;
     if (clearPendingTurnSteer) {
       _pendingTurnSteers.clear();

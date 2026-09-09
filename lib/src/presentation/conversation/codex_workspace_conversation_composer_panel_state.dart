@@ -254,12 +254,14 @@ class ComposerPanelState extends State<ComposerPanel> {
       label: '目标',
       description: '设置需要持续追求的任务结果',
       icon: Icons.track_changes_outlined,
+      aliases: ['goal'],
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.planMode,
       label: '计划模式',
       description: '让 Codex 先整理实施计划',
       icon: Icons.lightbulb_outline,
+      aliases: ['plan'],
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.recordSkill,
@@ -279,6 +281,11 @@ class ComposerPanelState extends State<ComposerPanel> {
     final query = _currentSlashQuery;
     if (query == null) return const [];
     return _slashCommands
+        .where(
+          (command) =>
+              command.kind != ComposerSlashCommandKind.planMode ||
+              !controller.canSteer,
+        )
         .where((command) => command.matches(query))
         .toList(growable: false);
   }
@@ -440,7 +447,8 @@ class ComposerPanelState extends State<ComposerPanel> {
       case ComposerSlashCommandKind.goal:
         _enterGoalMode();
       case ComposerSlashCommandKind.planMode:
-        setState(() => _planMode = !_planMode);
+        if (controller.canSteer) return;
+        _togglePlanMode();
         composer.clear();
       case ComposerSlashCommandKind.recordSkill:
         setState(() => _recordSkill = !_recordSkill);
@@ -644,15 +652,39 @@ class ComposerPanelState extends State<ComposerPanel> {
       }
       return false;
     }
-    final goalText = _goalMode ? _combinedComposerText : _goal;
-    final preservedDraft = _draftBeforeGoalMode?.trim();
+    final rawComposerText = composer.text.trim();
+    final inlineGoal = !_goalMode
+        ? RegExp(
+            r'^/(?:goal|目标)\s+(.+)$',
+            caseSensitive: false,
+            dotAll: true,
+          ).firstMatch(rawComposerText)
+        : null;
+    final inlinePlan = !_goalMode && !controller.canSteer
+        ? RegExp(
+            r'^/(?:plan|计划模式)\s+(.+)$',
+            caseSensitive: false,
+            dotAll: true,
+          ).firstMatch(rawComposerText)
+        : null;
+    final inlineGoalText = inlineGoal?.group(1)?.trim();
+    final inlinePlanPrompt = inlinePlan?.group(1)?.trim();
+    final goalText =
+        inlineGoalText ?? (_goalMode ? _combinedComposerText : _goal);
+    if (goalText != null && goalText.runes.length > 4000) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('目标不能超过 4000 个字符。')));
+      return false;
+    }
+    if (inlinePlanPrompt?.isNotEmpty == true && !_planMode) {
+      setState(() => _planMode = true);
+    }
     final submission = ComposerSubmission(
-      // When the Add menu entered goal mode from an empty composer, the goal
-      // is also the only actionable instruction. Sending an empty prompt made
-      // the workspace substitute its attachment-analysis fallback instead.
-      prompt: (_goalMode && preservedDraft?.isNotEmpty == true)
-          ? preservedDraft!
-          : composer.text.trim(),
+      // Codex Goal mode uses the objective as both the first prompt and the
+      // completion criteria. A prior draft is restored only when Goal mode is
+      // cancelled; submitting intentionally sends the goal text itself.
+      prompt: inlineGoalText ?? inlinePlanPrompt ?? rawComposerText,
       attachments: List.unmodifiable(_attachments),
       pastedTexts: List.unmodifiable(
         _pastedTexts.map((pastedText) => pastedText.text),
@@ -719,7 +751,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       case AddMenuActionKind.goal:
         _enterGoalMode(preserveDraft: true);
       case AddMenuActionKind.plan:
-        setState(() => _planMode = !_planMode);
+        if (!controller.canSteer) _togglePlanMode();
       case AddMenuActionKind.recordSkill:
         setState(() => _recordSkill = !_recordSkill);
       case AddMenuActionKind.skill:
@@ -1001,6 +1033,11 @@ class ComposerPanelState extends State<ComposerPanel> {
     });
   }
 
+  void _togglePlanMode() {
+    if (controller.canSteer) return;
+    setState(() => _planMode = !_planMode);
+  }
+
   List<PopupMenuEntry<AddMenuAction>> _buildAddMenu(BuildContext context) {
     final palette = YeknomPalette.of(context);
     final workspace = controller.workspacePath;
@@ -1035,8 +1072,13 @@ class ComposerPanelState extends State<ComposerPanel> {
         value: const AddMenuAction(AddMenuActionKind.plan),
         icon: Icons.lightbulb_outline,
         label: '计划模式',
-        description: _planMode ? '已开启计划模式' : '开启计划模式',
+        description: controller.canSteer
+            ? '任务运行时不可用'
+            : _planMode
+            ? '已开启计划模式'
+            : '开启计划模式',
         selected: _planMode,
+        enabled: !controller.canSteer,
       ),
       AddMenuItem(
         key: const Key('record-skill-menu-item'),
@@ -1316,6 +1358,13 @@ class ComposerPanelState extends State<ComposerPanel> {
                                       const SingleActivator(
                                         LogicalKeyboardKey.tab,
                                       ): _selectFocusedSlashCommand,
+                                    if (!_showSlashMenu &&
+                                        !controller.canSteer &&
+                                        !_goalMode)
+                                      const SingleActivator(
+                                        LogicalKeyboardKey.tab,
+                                        shift: true,
+                                      ): _togglePlanMode,
                                     const SingleActivator(
                                       LogicalKeyboardKey.escape,
                                     ): _handleEscape,
@@ -1425,8 +1474,9 @@ class ComposerPanelState extends State<ComposerPanel> {
                                       key: const Key('composer-plan-mode-chip'),
                                       icon: Icons.lightbulb_outline,
                                       label: '计划模式',
-                                      onRemove: () =>
-                                          setState(() => _planMode = false),
+                                      onRemove: controller.canSteer
+                                          ? null
+                                          : _togglePlanMode,
                                     ),
                                   if (_recordSkill)
                                     ComposerContextChip(

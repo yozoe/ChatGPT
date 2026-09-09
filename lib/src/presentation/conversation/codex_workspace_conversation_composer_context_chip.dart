@@ -13,7 +13,7 @@ class ComposerContextChip extends StatelessWidget {
 
   final IconData icon;
   final String label;
-  final VoidCallback onRemove;
+  final VoidCallback? onRemove;
   final String? thumbnailPath;
   final VoidCallback? onPreview;
 
@@ -69,7 +69,11 @@ class ComposerContextChip extends StatelessWidget {
             borderRadius: BorderRadius.circular(8),
             child: Padding(
               padding: const EdgeInsets.all(2),
-              child: Icon(Icons.close, size: 14, color: palette.muted),
+              child: Icon(
+                Icons.close,
+                size: 14,
+                color: onRemove == null ? palette.faint : palette.muted,
+              ),
             ),
           ),
         ],

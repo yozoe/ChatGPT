@@ -386,15 +386,49 @@ class CodexAppServer {
   }
 
   /// Sets or replaces the persistent objective for a thread.
-  Future<void> setThreadGoal({
+  Future<JsonMap?> setThreadGoal({
     required String threadId,
     required String objective,
+  }) {
+    return updateThreadGoal(
+      threadId: threadId,
+      objective: objective,
+      status: 'active',
+    );
+  }
+
+  /// Reads the persisted goal for a thread, returning null when none exists.
+  Future<JsonMap?> getThreadGoal({required String threadId}) async {
+    final response = await request('thread/goal/get', {'threadId': threadId});
+    _throwIfError(response);
+    final result = response['result'];
+    if (result is! Map) return null;
+    final goal =
+        result['goal'] ?? (result.containsKey('objective') ? result : null);
+    return goal is Map ? JsonMap.from(goal) : null;
+  }
+
+  /// Updates a goal objective or lifecycle status without clearing usage.
+  Future<JsonMap?> updateThreadGoal({
+    required String threadId,
+    String? objective,
+    String? status,
   }) async {
     final response = await request('thread/goal/set', {
       'threadId': threadId,
-      'objective': objective,
-      'status': 'active',
+      'objective': ?objective,
+      'status': ?status,
     });
+    _throwIfError(response);
+    final result = response['result'];
+    if (result is! Map) return null;
+    final goal = result['goal'];
+    return goal is Map ? JsonMap.from(goal) : null;
+  }
+
+  /// Clears the persisted goal for a thread.
+  Future<void> clearThreadGoal({required String threadId}) async {
+    final response = await request('thread/goal/clear', {'threadId': threadId});
     _throwIfError(response);
   }
 

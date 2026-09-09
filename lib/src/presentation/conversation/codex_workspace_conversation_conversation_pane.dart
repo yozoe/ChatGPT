@@ -12,6 +12,7 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_submission.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_approval_panel.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_elicitation_panel.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_goal_progress_row.dart';
 
 class ConversationPane extends StatelessWidget {
   const ConversationPane({
@@ -140,6 +141,8 @@ class ConversationPane extends StatelessWidget {
             bottomOverlay: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (controller.activeThreadGoal case final goal?)
+                  GoalProgressRow(controller: controller, goal: goal),
                 if (pendingElicitation case final elicitation?)
                   Flexible(
                     child: ElicitationPanel(

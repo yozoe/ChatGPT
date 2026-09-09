@@ -26,6 +26,7 @@ import 'package:chatgpt/src/presentation/workspace/codex_workspace_side_panel_ta
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_conversation_timeline.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_conversation_pane.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_panel.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_add_menu_action.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_pasted_text.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_submission.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_timeline_page_data.dart';
@@ -4378,7 +4379,241 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('removes a submitted goal from the composer draft', (
+  testWidgets(
+    'toggles plan mode with Shift+Tab and disables it while running',
+    (tester) async {
+      final controller = CodexController(server: _FakeCodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      await tester.tap(find.byKey(const Key('composer-field')));
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.tab);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.tab);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump();
+      expect(find.byKey(const Key('composer-plan-mode-chip')), findsOneWidget);
+
+      controller
+        ..status = RuntimeStatus.running
+        ..activeThreadId = 'thread-plan'
+        ..activeTurnId = 'turn-plan';
+      controller.handleServerEventForTesting(
+        const ServerEvent(method: 'turn/started', params: {}),
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('composer-add-button')));
+      await tester.pump(const Duration(milliseconds: 500));
+
+      final item = tester.widget<PopupMenuItem<AddMenuAction>>(
+        find.byKey(const Key('add-plan-mode-menu-item')),
+      );
+      expect(item.enabled, isFalse);
+      expect(find.text('任务运行时不可用'), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(const Key('composer-plan-mode-chip')),
+          matching: find.byIcon(Icons.close),
+        ),
+      );
+      await tester.pump();
+      expect(find.byKey(const Key('composer-plan-mode-chip')), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  test('isolates concurrent goal operations and errors by thread', () async {
+    final server = _FakeCodexAppServer();
+    final firstOperation = Completer<JsonMap?>();
+    final secondOperation = Completer<JsonMap?>();
+    server.threadGoalUpdateCompleters.addAll({
+      'goal-a': firstOperation,
+      'goal-b': secondOperation,
+    });
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..activeThreadId = 'goal-a';
+    addTearDown(controller.dispose);
+
+    void publishGoal(String threadId) {
+      controller.handleServerEventForTesting(
+        ServerEvent(
+          method: 'thread/goal/updated',
+          params: {
+            'threadId': threadId,
+            'goal': {
+              'threadId': threadId,
+              'objective': '完成 $threadId',
+              'status': 'active',
+              'tokensUsed': 0,
+              'timeUsedSeconds': 0,
+            },
+          },
+        ),
+      );
+    }
+
+    publishGoal('goal-a');
+    final firstResult = controller.pauseActiveGoal();
+    expect(controller.goalOperationInProgress, isTrue);
+
+    controller.activeThreadId = 'goal-b';
+    publishGoal('goal-b');
+    expect(controller.goalOperationInProgress, isFalse);
+    final secondResult = controller.pauseActiveGoal();
+    expect(controller.goalOperationInProgress, isTrue);
+
+    controller.activeThreadId = 'goal-a';
+    expect(controller.goalOperationInProgress, isTrue);
+    expect(await controller.resumeActiveGoal(), isFalse);
+    firstOperation.completeError(StateError('目标 A 更新失败'));
+    expect(await firstResult, isFalse);
+    expect(controller.goalOperationError, contains('目标 A 更新失败'));
+
+    controller.activeThreadId = 'goal-b';
+    expect(controller.goalOperationInProgress, isTrue);
+    expect(controller.goalOperationError, isNull);
+    secondOperation.complete(null);
+    expect(await secondResult, isTrue);
+    expect(controller.goalOperationInProgress, isFalse);
+
+    controller.activeThreadId = 'goal-a';
+    expect(controller.goalOperationError, contains('目标 A 更新失败'));
+  });
+
+  testWidgets('shows and manages the active thread goal above the composer', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(520, 800);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..activeThreadId = 'thread-goal';
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'thread/goal/updated',
+        params: {
+          'threadId': 'thread-goal',
+          'goal': {
+            'threadId': 'thread-goal',
+            'objective': '完成目标模式复刻',
+            'status': 'active',
+            'tokenBudget': 1000,
+            'tokensUsed': 250,
+            'timeUsedSeconds': 75,
+          },
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(find.byKey(const Key('goal-progress-row')), findsOneWidget);
+    expect(find.text('完成目标模式复刻'), findsOneWidget);
+    expect(find.text('250 / 1000 tokens · 1 分钟'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('goal-pause-resume-button')));
+    await tester.pumpAndSettle();
+    expect(server.threadGoalStatus, 'paused');
+    expect(find.text('已暂停'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('goal-actions-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('编辑目标'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('goal-edit-field')),
+      '完成目标模式和计划模式复刻',
+    );
+    await tester.tap(find.byKey(const Key('goal-edit-save-button')));
+    await tester.pumpAndSettle();
+    expect(server.threadGoal, '完成目标模式和计划模式复刻');
+    expect(find.text('完成目标模式和计划模式复刻'), findsOneWidget);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'thread/goal/updated',
+        params: {
+          'threadId': 'thread-goal',
+          'goal': {
+            'threadId': 'thread-goal',
+            'objective': '完成目标模式和计划模式复刻',
+            'status': 'usageLimited',
+            'tokensUsed': 1000,
+            'timeUsedSeconds': 120,
+          },
+        },
+      ),
+    );
+    await tester.pump();
+    expect(find.text('用量已达上限'), findsOneWidget);
+    expect(find.byKey(const Key('goal-pause-resume-button')), findsNothing);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'thread/goal/updated',
+        params: {
+          'threadId': 'thread-goal',
+          'goal': {
+            'threadId': 'thread-goal',
+            'objective': '完成目标模式和计划模式复刻',
+            'status': 'budgetLimited',
+            'tokensUsed': 1000,
+            'timeUsedSeconds': 120,
+          },
+        },
+      ),
+    );
+    await tester.pump();
+    expect(find.text('预算已用尽'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('goal-actions-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('清除目标'));
+    await tester.pumpAndSettle();
+    expect(server.clearThreadGoalCalls, 1);
+    expect(find.byKey(const Key('goal-progress-row')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  test('keeps the authoritative completed plan in the live timeline', () {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-plan'
+      ..activeTurnId = 'turn-plan';
+    addTearDown(controller.dispose);
+    const event = ServerEvent(
+      method: 'item/completed',
+      params: {
+        'threadId': 'thread-plan',
+        'turnId': 'turn-plan',
+        'item': {'id': 'plan-item', 'type': 'plan', 'text': '1. 检查协议\n2. 完成实现'},
+      },
+    );
+
+    controller.handleServerEventForTesting(event);
+    controller.handleServerEventForTesting(event);
+
+    final plans = controller.entries.where(
+      (entry) => entry.title == '计划' && entry.detail.contains('检查协议'),
+    );
+    expect(plans, hasLength(1));
+  });
+
+  testWidgets('uses a submitted goal as its first prompt and criteria', (
     tester,
   ) async {
     final controller = CodexController(server: _FakeCodexAppServer());
@@ -4430,7 +4665,7 @@ void main() {
     await tester.tap(find.byTooltip('发送任务'));
     await tester.pump();
 
-    expect(submitted?.prompt, '实现附件菜单。');
+    expect(submitted?.prompt, '完成附件菜单');
     expect(submitted?.goal, '完成附件菜单');
     expect(find.byKey(const Key('composer-goal-chip')), findsNothing);
   });
@@ -4477,6 +4712,59 @@ void main() {
 
     expect(submitted?.prompt, '优化任务列表');
     expect(submitted?.goal, '优化任务列表');
+  });
+
+  testWidgets('accepts the official inline plan slash command', (tester) async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server);
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..selectedModelId = 'gpt-test'
+      ..modelOptions = const [
+        CodexModelOption(
+          id: 'gpt-test',
+          displayName: 'GPT Test',
+          description: '',
+          isDefault: true,
+        ),
+      ];
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.enterText(
+      find.byKey(const Key('composer-field')),
+      '/plan 先检查协议再给出实施方案',
+    );
+    await tester.tap(find.byTooltip('发送任务'));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(server.startedTurnPrompt, '先检查协议再给出实施方案');
+    expect(server.startedTurnCollaborationMode?['mode'], 'plan');
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('accepts the official inline goal slash command', (tester) async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.enterText(
+      find.byKey(const Key('composer-field')),
+      '/goal 完成协议和界面复刻',
+    );
+    await tester.tap(find.byTooltip('发送任务'));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(server.startedTurnPrompt, '完成协议和界面复刻');
+    expect(server.threadGoal, '完成协议和界面复刻');
+    await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('highlights the composer and deduplicates dropped files', (

@@ -1544,9 +1544,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     if (submission.goal?.trim() case final goal? when goal.isNotEmpty) {
       contextLines.add('调整目标：$goal');
     }
-    if (submission.planMode) {
-      contextLines.add('请先给出执行计划，再继续处理这次调整。');
-    }
     final skillPrefix = skillNames.map((name) => '\$$name').join(' ');
     final prompt = <String>[
       if (skillPrefix.isNotEmpty) skillPrefix,
@@ -1558,6 +1555,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
         displayText: submittedText.isEmpty ? '请根据附加内容调整当前任务。' : submittedText,
         prompt: prompt,
         goal: submission.goal?.trim(),
+        planMode: submission.planMode,
         additionalInput: List.unmodifiable(additionalInput),
         imagePaths: List.unmodifiable(imagePaths),
       ),
