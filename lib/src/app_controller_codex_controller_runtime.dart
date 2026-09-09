@@ -218,6 +218,7 @@ class CodexController extends ChangeNotifier {
   final List<RuntimeLogEntry> _runtimeLogs = [];
   final Map<String, int> _agentEntryIndexByItem = {};
   final Map<String, String> _agentPhaseByItem = {};
+  final Set<String> _completedAgentMessageItemIds = {};
   String? _activeStreamingAgentItemId;
   final LinkedHashMap<String, SubagentThreadView> _subagentThreadViews =
       LinkedHashMap();
@@ -5331,6 +5332,7 @@ class CodexController extends ChangeNotifier {
     if (text.isEmpty) return;
 
     final itemId = params['itemId']?.toString() ?? 'active-agent-message';
+    if (_completedAgentMessageItemIds.contains(itemId)) return;
     _activeStreamingAgentItemId = itemId;
     _recordAgentMessageActivity(itemId);
     final index = _agentEntryIndexByItem[itemId];
@@ -6020,9 +6022,9 @@ class CodexController extends ChangeNotifier {
         _liveCollaborationActivities.remove(collaborationId);
       }
     }
-    if (item['type']?.toString() == 'agentMessage' && itemId.isNotEmpty) {
+    if (item['type']?.toString() == 'agentMessage') {
       final phase = _label(item['phase']);
-      if (phase.isNotEmpty) {
+      if (phase.isNotEmpty && itemId.isNotEmpty) {
         _agentPhaseByItem[itemId] = phase;
         final entryIndex = _agentEntryIndexByItem[itemId];
         if (entryIndex != null &&
@@ -6031,6 +6033,33 @@ class CodexController extends ChangeNotifier {
           _entries[entryIndex] = _entries[entryIndex].copyWith(
             agentPhase: phase,
           );
+        }
+      }
+      // Some compatible App Server versions omit streaming deltas and send
+      // the complete assistant message only with item/completed. Recover it
+      // here so the user sees the answer instead of only the terminal status.
+      final completedText =
+          item['text']?.toString() ?? _findText(item['content']);
+      if (completedText.isNotEmpty) {
+        final messageKey = itemId.isEmpty
+            ? (_activeStreamingAgentItemId ?? 'active-agent-message')
+            : itemId;
+        _completedAgentMessageItemIds.add(messageKey);
+        final existingIndex = _agentEntryIndexByItem[messageKey];
+        if (existingIndex == null) {
+          _agentEntryIndexByItem[messageKey] = _entries.length;
+          _add(
+            TimelineKind.agent,
+            'Codex',
+            completedText,
+            agentPhase: phase.isEmpty ? null : phase,
+          );
+        } else if (existingIndex >= 0 && existingIndex < _entries.length) {
+          final existing = _entries[existingIndex];
+          if (existing.detail != completedText &&
+              completedText.length >= existing.detail.length) {
+            _entries[existingIndex] = existing.copyWith(detail: completedText);
+          }
         }
       }
     }
@@ -8164,6 +8193,7 @@ class CodexController extends ChangeNotifier {
   void _clearStreamingState({bool clearPendingTurnSteer = true}) {
     _agentEntryIndexByItem.clear();
     _agentPhaseByItem.clear();
+    _completedAgentMessageItemIds.clear();
     _activeStreamingAgentItemId = null;
     _completedCommandItemIds.clear();
     activeTurnId = null;

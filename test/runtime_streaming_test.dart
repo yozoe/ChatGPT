@@ -60,6 +60,103 @@ void main() {
     controller.dispose();
   });
 
+  test('recovers an agent message delivered only with item completion', () {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'message-1',
+            'type': 'agentMessage',
+            'phase': 'final_answer',
+            'text': '任务已经完成。',
+          },
+        },
+      ),
+    );
+
+    expect(
+      controller.entries
+          .where((entry) => entry.kind == TimelineKind.agent)
+          .single
+          .detail,
+      '任务已经完成。',
+    );
+    controller.dispose();
+  });
+
+  test('recovers a completion message without an item id', () {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {'type': 'agentMessage', 'text': '无 ID 的最终回复'},
+        },
+      ),
+    );
+
+    expect(
+      controller.entries
+          .where((entry) => entry.kind == TimelineKind.agent)
+          .single
+          .detail,
+      '无 ID 的最终回复',
+    );
+    controller.dispose();
+  });
+
+  test('ignores a late delta after the agent item completed', () {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {'id': 'message-1', 'type': 'agentMessage', 'text': '完整回复'},
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/agentMessage/delta',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'itemId': 'message-1',
+          'delta': '迟到片段',
+        },
+      ),
+    );
+
+    expect(
+      controller.entries
+          .where((entry) => entry.kind == TimelineKind.agent)
+          .single
+          .detail,
+      '完整回复',
+    );
+    controller.dispose();
+  });
+
   test('throttles reasoning summary delta notifications', () async {
     final controller = CodexController(server: CodexAppServer());
     await controller.waitForInitialConfiguration();
