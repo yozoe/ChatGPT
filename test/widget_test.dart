@@ -5810,6 +5810,11 @@ void main() {
 
     expect(server.startedTurnPrompt, contains('附加路径：/tmp/reference.png'));
     expect(server.startedTurnAdditionalInput, [
+      {
+        'type': 'mention',
+        'name': 'reference.png',
+        'path': '/tmp/reference.png',
+      },
       {'type': 'localImage', 'path': '/tmp/design.png'},
     ]);
     expect(

@@ -1473,6 +1473,16 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
         imagePaths.add(path);
         additionalInput.add({'type': 'localImage', 'path': path});
       } else {
+        // Keep the readable prompt context for compatibility while also
+        // sending the App Server's structured mention input for files and
+        // directories selected from the Composer.
+        additionalInput.add({
+          'type': 'mention',
+          'name': path
+              .split('/')
+              .lastWhere((segment) => segment.isNotEmpty, orElse: () => path),
+          'path': path,
+        });
         contextLines.add('附加路径：$path');
       }
     }
