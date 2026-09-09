@@ -1,3 +1,4 @@
+/// 从已解析的 Codex 配置中提取不含敏感信息的展示值。
 /// Extracts non-sensitive display values from resolved Codex configuration.
 class CodexConfigurationValues {
   String? nonEmptyString(Object? value) {

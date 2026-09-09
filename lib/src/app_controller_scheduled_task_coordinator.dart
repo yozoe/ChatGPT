@@ -5,6 +5,7 @@ import 'package:chatgpt/src/domain/scheduled_task.dart';
 import 'package:chatgpt/src/services/codex_clock.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 
+/// 管理本地定时任务的计时、持久化、重试与取消。
 /// Owns local scheduled-task timing, persistence, retry, and cancellation.
 class ScheduledTaskCoordinator {
   ScheduledTaskCoordinator({

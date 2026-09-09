@@ -1,5 +1,6 @@
 import 'package:flutter/services.dart';
 
+/// 将任务完成反馈桥接到桌面宿主，并在不支持的平台安全忽略调用。
 /// Bridges task-completion feedback to the desktop host.
 ///
 /// Unsupported hosts deliberately ignore the calls so the shared controller

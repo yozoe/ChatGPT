@@ -2,6 +2,7 @@ import 'package:chatgpt/src/presentation/files/workspace_source_file_preview_sta
 import 'package:chatgpt/src/services/agent_markdown_link.dart';
 import 'package:flutter/material.dart';
 
+/// 会话打开工作区文件 Tab 时使用的只读源码预览。
 /// Read-only source preview used by a conversation-opened workspace file tab.
 class WorkspaceSourceFilePreview extends StatefulWidget {
   const WorkspaceSourceFilePreview({

@@ -8,6 +8,7 @@ abstract final class AppStorageScope {
   static const releaseDirectoryName = 'Codex Desk';
   static const developmentDirectoryName = 'Codex Desk Development';
 
+  /// Debug/Profile 运行不能与 Release 应用共享加密状态。
   /// Debug and profile runs must not share encrypted state with the release app.
   static String get directoryName =>
       kReleaseMode ? releaseDirectoryName : developmentDirectoryName;

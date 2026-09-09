@@ -197,6 +197,40 @@ void main() {
     },
   );
 
+  test(
+    'does not wait for remote lists when switching away from a running task',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-desk-background-switch-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final first = await Directory('${root.path}/first').create();
+      final second = await Directory('${root.path}/second').create();
+      final server = ManagedRuntimeFakeServer()
+        ..startThreadResponseIds.add('background-thread');
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+        conversationHistoryStore: MemoryConversationHistoryStore(),
+      );
+      addTearDown(controller.dispose);
+      await controller.waitForInitialConfiguration();
+      expect(await controller.createWorkspace(first.path), isTrue);
+      expect(await controller.createWorkspace(second.path), isTrue);
+      expect(await controller.selectWorkspaceAndReconnect(first.path), isTrue);
+      expect(await controller.sendPrompt('继续后台运行'), isTrue);
+
+      server.queueListRequests = true;
+      final switched = await controller
+          .selectWorkspaceAndReconnect(second.path)
+          .timeout(const Duration(seconds: 1));
+
+      expect(switched, isTrue);
+      expect(controller.workspacePath, await second.resolveSymbolicLinks());
+      expect(server.listRequests, isNotEmpty);
+    },
+  );
+
   test('reconciles an id-less completion in an inactive project', () async {
     final root = await Directory.systemTemp.createTemp(
       'codex-desk-inactive-idless-completion-',
@@ -243,9 +277,7 @@ void main() {
         },
       ),
     );
-    await Future<void>.delayed(Duration.zero);
-    await Future<void>.delayed(Duration.zero);
-    await Future<void>.delayed(Duration.zero);
+    await controller.waitForBackgroundCompletionPersistenceForTesting();
 
     expect(controller.isThreadRunning('idless-background'), isFalse);
     final snapshot = history.snapshots[firstProject.id!];

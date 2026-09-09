@@ -7,6 +7,7 @@ typedef WorkspaceFileOpenCallback =
       required String workspacePath,
     });
 
+/// 向会话子组件暴露当前工作台的文件 Tab 打开操作。
 /// Exposes the current workbench file-tab action to conversation descendants.
 class WorkspaceFileOpenScope extends InheritedWidget {
   const WorkspaceFileOpenScope({

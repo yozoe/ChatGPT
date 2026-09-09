@@ -229,6 +229,7 @@ class CodexController extends ChangeNotifier {
   Timer? _deltaNotificationTimer;
   Timer? _historySaveTimer;
   Future<void> _historySave = Future.value();
+  final Map<String, Future<void>> _historySavesByWorkspace = {};
   // 串行化附加目录快照，保证完成较晚的旧写入不会覆盖新目录集合。
   // Serializes workspace-root snapshots so a slow older write cannot overwrite newer state.
   Future<void> _workspaceRootsSave = Future.value();
@@ -331,12 +332,15 @@ class CodexController extends ChangeNotifier {
   final Map<String, FailedTurnRetry> _failedTurnRetries = {};
   String? _retryingFailedTurnThreadId;
   String? activeThreadId;
+  // 初始运行时连接进行期间选中的任务可能不在首个服务端列表中；保留该选择，
+  // 让启动后的常规恢复流程仍能定位到用户选中的任务。
   // A task selected while the initial runtime connection is in flight may not
   // be present in the first server list response. Retain the model so the
   // normal post-start resume can still target the user's selection.
   CodexThread? _startupSelectedThread;
 
   /// 返回已加载的子智能体详情；未打开过的线程不会隐式触发读取。
+  /// 返回已加载的子智能体详情；不会隐式启动 I/O 读取。
   /// Returns a loaded subagent detail view without implicitly starting I/O.
   SubagentThreadView? subagentThreadView(String threadId) {
     final view = _subagentThreadViews.remove(threadId);
@@ -371,6 +375,7 @@ class CodexController extends ChangeNotifier {
   }
 
   /// 结束属于旧运行时连接的子线程读取，并保留已加载内容供检查器重试。
+  /// 结束旧运行时连接拥有的子线程读取，同时保留已加载内容供重试。
   /// Ends child-thread reads owned by an obsolete runtime connection while retaining loaded content for retry.
   void _invalidateSubagentViewsForRuntimeChange() {
     for (final timer in _subagentRefreshTimers.values) {
@@ -388,14 +393,17 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// 指示指定任务的完成提醒是否已查看。
   /// Whether the completion reminder for a thread has been viewed.
   bool isCompletedThreadAcknowledged(String threadId) =>
       _acknowledgedCompletedThreadIds.contains(threadId);
 
+  /// 指示本次应用会话是否仍为指定任务保留 Dock 完成徽标。
   /// Whether this app session still has a Dock completion badge for a thread.
   bool hasUnacknowledgedCompletion(String threadId) =>
       _unacknowledgedCompletionThreadIds.contains(threadId);
 
+  /// 注册原生应用激活事件使用的工作区回调。
   /// Registers the workspace callback for native app activation events.
   void setDockActivationHandler(void Function()? handler) {
     _taskCompletionNotifier.setDockActivationHandler(handler);
@@ -405,6 +413,7 @@ class CodexController extends ChangeNotifier {
     _taskCompletionNotifier.setOpenSettingsHandler(handler);
   }
 
+  /// 注册智能体请求浏览器导航时调用的工作区回调。
   /// Registers the workspace callback used when the agent requests a browser navigation.
   void setBrowserInvocationHandler(void Function(String url)? handler) {
     _browserInvocationHandler = handler;
@@ -871,6 +880,7 @@ class CodexController extends ChangeNotifier {
     );
   }
 
+  /// 刷新所有非当前工作区的本地任务预览，并由全局控制器统一发布异步状态。
   /// Refreshes local task previews for every inactive workspace. This state is
   /// held by the app-wide controller so Riverpod publishes lifecycle and
   /// asynchronous updates consistently to every sidebar instance.
@@ -914,6 +924,7 @@ class CodexController extends ChangeNotifier {
   /// Returns an unmodifiable view of the current timeline.
   List<TimelineEntry> get entries => List.unmodifiable(_entries);
 
+  /// 在用户消息写入持久历史前，将剪贴板图片路径替换为持久副本。
   /// Replaces clipboard-owned image paths with durable local copies before a
   /// user message becomes part of the persisted conversation history.
   Future<
@@ -1902,7 +1913,7 @@ class CodexController extends ChangeNotifier {
       // even when Codex has older sessions for the same source directory.
       _threadHistoryInitialized = true;
       _ownedThreadIds.clear();
-      await _saveConversationHistory();
+      unawaited(_saveConversationHistory());
     } else {
       await _restoreConversationHistory(canonicalPath);
       if (isCurrentSelection?.call() == false) return;
@@ -1966,12 +1977,16 @@ class CodexController extends ChangeNotifier {
     return operation;
   }
 
-  Future<bool> selectWorkspaceAndReconnect(String path) =>
-      _selectWorkspaceAndReconnect(path);
+  Future<bool> selectWorkspaceAndReconnect(
+    String path, {
+    bool restoreLastThread = true,
+  }) =>
+      _selectWorkspaceAndReconnect(path, restoreLastThread: restoreLastThread);
 
   Future<bool> _selectWorkspaceAndReconnect(
     String path, {
     CodexThread? preferredThread,
+    bool restoreLastThread = true,
   }) {
     final request = ++_workspaceSelectionRequest;
     return _serializeWorkspaceOperation(() {
@@ -1982,6 +1997,7 @@ class CodexController extends ChangeNotifier {
         path,
         selectionRequest: request,
         preferredThread: preferredThread,
+        restoreLastThread: restoreLastThread,
       );
     });
   }
@@ -1990,6 +2006,7 @@ class CodexController extends ChangeNotifier {
     String path, {
     required int selectionRequest,
     CodexThread? preferredThread,
+    required bool restoreLastThread,
   }) async {
     bool isCurrentSelection() =>
         !_disposed && selectionRequest == _workspaceSelectionRequest;
@@ -2023,7 +2040,10 @@ class CodexController extends ChangeNotifier {
         if (preferredThread != null) {
           _selectPreferredThreadForWorkspace(preferredThread);
         }
-        await startRuntime();
+        await startRuntime(
+          waitForWorkspaceData: false,
+          restoreLastThread: preferredThread == null && restoreLastThread,
+        );
       }
       return isCurrentSelection();
     }
@@ -2046,7 +2066,10 @@ class CodexController extends ChangeNotifier {
     }
     if (!reuseRuntime &&
         (status == RuntimeStatus.stopped || status == RuntimeStatus.failed)) {
-      await startRuntime();
+      await startRuntime(
+        waitForWorkspaceData: false,
+        restoreLastThread: preferredThread == null && restoreLastThread,
+      );
     } else if (reuseRuntime) {
       // The App Server already supports requests scoped by working directory.
       // Keep the shared process alive and refresh only project-owned state.
@@ -2105,6 +2128,7 @@ class CodexController extends ChangeNotifier {
       final switched = await _selectWorkspaceAndReconnect(
         workspace,
         preferredThread: thread,
+        restoreLastThread: false,
       );
       if (!switched || workspacePath != workspace || _disposed) return;
     }
@@ -2616,7 +2640,10 @@ class CodexController extends ChangeNotifier {
 
   /// 启动、初始化本地 App Server，并加载账户与线程状态。
   /// Starts and initializes the local App Server, then loads account and thread state.
-  Future<void> startRuntime() async {
+  Future<void> startRuntime({
+    bool waitForWorkspaceData = true,
+    bool restoreLastThread = true,
+  }) async {
     final workspace = workspacePath;
     if (workspace == null) {
       lastError = '请先选择一个本地项目目录。';
@@ -2663,12 +2690,6 @@ class CodexController extends ChangeNotifier {
       }
       await _server.initialize();
       if (!_isCurrentRuntimeConnection(connectionEpoch)) return;
-      await refreshCodexConfiguration(notify: false);
-      if (!_isCurrentRuntimeConnection(connectionEpoch)) return;
-      await refreshAccount();
-      if (!_isCurrentRuntimeConnection(connectionEpoch)) return;
-      await _refreshReasoningEffortCapabilities();
-      if (!_isCurrentRuntimeConnection(connectionEpoch)) return;
       status = RuntimeStatus.ready;
       _runtimeReconnectAttempt = 0;
       if (pluginRuntimeRestartRequired) {
@@ -2676,10 +2697,15 @@ class CodexController extends ChangeNotifier {
         pluginActionResult = '运行时已重启，最新插件配置将在新建任务中生效。';
       }
       _add(TimelineKind.system, '运行时已连接', 'App Server 已通过本地 stdio 通道就绪。');
-      await refreshArchivedThreads();
-      await refreshThreads();
-      await _resumeRestoredThreadIfNeeded();
-      await refreshSkills(notify: false);
+      notifyListeners();
+      // These reads are independent after the protocol handshake. Running
+      // them together removes the previous serial wait during every project
+      // switch; the caller may opt out of waiting for this background work.
+      final workspaceData = _refreshRuntimeWorkspaceData(
+        connectionEpoch,
+        restoreLastThread: restoreLastThread,
+      );
+      if (waitForWorkspaceData) await workspaceData;
     } catch (error) {
       if (!_isCurrentRuntimeConnection(connectionEpoch)) return;
       status = RuntimeStatus.failed;
@@ -2693,6 +2719,23 @@ class CodexController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> _refreshRuntimeWorkspaceData(
+    int connectionEpoch, {
+    required bool restoreLastThread,
+  }) async {
+    await Future.wait([
+      refreshCodexConfiguration(notify: false),
+      refreshAccount(expectedEpoch: connectionEpoch),
+      _refreshReasoningEffortCapabilities(expectedEpoch: connectionEpoch),
+      refreshArchivedThreads(),
+      refreshThreads(),
+      refreshSkills(notify: false),
+    ]);
+    if (restoreLastThread && _isCurrentRuntimeConnection(connectionEpoch)) {
+      await _resumeRestoredThreadIfNeeded();
+    }
+  }
+
   /// 等待本地配置、工作区和历史恢复完成，并为已恢复的主目录自动连接运行时。
   /// Waits for local configuration, workspace, and history restoration, then automatically connects the restored primary directory.
   Future<void> connectRestoredWorkspace() async {
@@ -2700,7 +2743,7 @@ class CodexController extends ChangeNotifier {
     if (_disposed || workspacePath == null || status != RuntimeStatus.stopped) {
       return;
     }
-    await startRuntime();
+    await startRuntime(waitForWorkspaceData: false);
   }
 
   /// 向当前或新建线程发送用户提示词，并返回任务是否已成功启动。
@@ -2860,7 +2903,6 @@ class CodexController extends ChangeNotifier {
       _ensureActiveThreadVisible(threadId, text);
       _runningThreadIds.add(threadId);
       _threadWorkspaceById[threadId] = workspace;
-      await refreshThreads();
       _acknowledgedCompletedThreadIds.remove(threadId);
       _updateThreadStatus(threadId, 'active');
       _scheduleConversationHistorySave();
@@ -2879,6 +2921,14 @@ class CodexController extends ChangeNotifier {
         additionalInput: persistedAdditionalInput,
         collaborationMode: collaborationMode,
       );
+      // Keep the turn-start handshake contiguous. Refreshing the entire task
+      // list before setting the goal/startTurn introduced a long await where
+      // switching tasks could detach the new turn before it was registered as
+      // a background-running task. Refresh after the server accepted the turn
+      // so task switching can safely retain it in the background. This sync is
+      // deliberately non-blocking: a list-read failure must never roll back a
+      // turn that App Server has already accepted.
+      unawaited(refreshThreads());
       notifyListeners();
       return true;
     } catch (error) {
@@ -3997,7 +4047,13 @@ class CodexController extends ChangeNotifier {
         _add(TimelineKind.system, '任务已恢复', '可以继续在此任务中追问。');
       }
       if (viewLoaded) _cacheActiveThreadView();
-      await refreshThreads();
+      // Cached task views already contain the complete local timeline and the
+      // task list is unchanged by selecting them. Avoid another full list
+      // request during back-and-forth navigation; uncached restores still
+      // refresh server state and newly-created tasks.
+      if (cachedView == null) {
+        await refreshThreads();
+      }
       _appendPendingNetworkRetryEntries(thread.id);
       if (viewLoaded) _cacheActiveThreadView();
     } catch (error) {
@@ -4488,13 +4544,21 @@ class CodexController extends ChangeNotifier {
 
   /// 从 App Server 读取并同步账户认证状态。
   /// Reads and synchronizes account authentication state from App Server.
-  Future<void> refreshAccount() async {
+  Future<void> refreshAccount({int? expectedEpoch}) async {
     if (!_server.isRunning) return;
     authStatus = AuthStatus.checking;
     try {
       final accountResult = await _server.readAccount();
+      if (expectedEpoch != null &&
+          !_isCurrentRuntimeConnection(expectedEpoch)) {
+        return;
+      }
       _updateAccount(accountResult);
     } catch (error) {
+      if (expectedEpoch != null &&
+          !_isCurrentRuntimeConnection(expectedEpoch)) {
+        return;
+      }
       authStatus = AuthStatus.signedOut;
       lastError = _messageOf(error);
     }
@@ -5472,6 +5536,17 @@ class CodexController extends ChangeNotifier {
     String? completionId,
   }) async {
     try {
+      // Workspace switching intentionally does not await history persistence.
+      // A completion for the workspace being left must still serialize after
+      // that workspace's captured snapshot, otherwise the older `active`
+      // snapshot can finish last and overwrite this terminal state. Do not
+      // await unrelated writes from the newly active workspace.
+      final previousWorkspaceSave = _historySavesByWorkspace[workspace];
+      try {
+        await previousWorkspaceSave;
+      } catch (_) {
+        // Continue from the latest readable snapshot after a failed save.
+      }
       final historyKey = _historyKeyFor(workspace);
       var snapshot = _workspaceHistorySnapshots[historyKey];
       snapshot ??= await _conversationHistoryStore.read(historyKey);
@@ -5646,6 +5721,14 @@ class CodexController extends ChangeNotifier {
       eventCompletionStatus,
     ),
   );
+
+  @visibleForTesting
+  Future<void> waitForBackgroundCompletionPersistenceForTesting() async {
+    await _workspaceSwitchQueue;
+    await Future.wait(
+      List<Future<void>>.of(_inactiveWorkspaceCompletionQueues.values),
+    );
+  }
 
   Future<void> _reconcileUnidentifiedCompletionAcrossWorkspacesNow(
     String eventCompletionStatus,
@@ -7149,10 +7232,16 @@ class CodexController extends ChangeNotifier {
   /// 从任务完成项中提取并记录文件变更。
   /// Extracts and records file changes from a completed-turn item.
   void _recordCompletedFileChange(Object? rawItem) {
-    if (rawItem is! Map || rawItem['type']?.toString() != 'fileChange') {
+    if (rawItem is! Map) return;
+    // Compatible App Server builds have emitted the completed item either
+    // directly or under an `item` envelope, and a few used snake_case for the
+    // discriminator. Accept both shapes so a valid file change is not lost.
+    final item = rawItem['item'] is Map ? rawItem['item'] as Map : rawItem;
+    final type = item['type']?.toString().replaceAll('_', '').toLowerCase();
+    if (type != 'filechange') {
       return;
     }
-    _recordFileChanges(rawItem['changes']);
+    _recordFileChanges(item['changes'] ?? item['fileChanges']);
   }
 
   /// 合并服务器文件变更，供摘要、审查和右侧检查器使用。
@@ -7459,9 +7548,13 @@ class CodexController extends ChangeNotifier {
 
   /// 从模型列表刷新可用推理强度，并降级失效的已保存选择。
   /// Refreshes available reasoning efforts from models and downgrades an invalid saved choice.
-  Future<void> _refreshReasoningEffortCapabilities() async {
+  Future<void> _refreshReasoningEffortCapabilities({int? expectedEpoch}) async {
     try {
       final models = await _server.listModels();
+      if (expectedEpoch != null &&
+          !_isCurrentRuntimeConnection(expectedEpoch)) {
+        return;
+      }
       final capabilities = <String, Set<ReasoningEffort>>{};
       final optionsById = <String, CodexModelOption>{};
       String? defaultModelId;
@@ -7524,6 +7617,10 @@ class CodexController extends ChangeNotifier {
         }
       }
     } catch (error) {
+      if (expectedEpoch != null &&
+          !_isCurrentRuntimeConnection(expectedEpoch)) {
+        return;
+      }
       _reasoningEffortsByModel = const {};
       modelOptions = const [];
       _catalogDefaultModelId = null;
@@ -8124,6 +8221,7 @@ class CodexController extends ChangeNotifier {
       );
     }();
     _historySave = nextSave;
+    _historySavesByWorkspace[workspace] = nextSave;
     try {
       await nextSave;
       _historySaveFailed = false;
@@ -8134,6 +8232,10 @@ class CodexController extends ChangeNotifier {
         notifyListeners();
       }
       if (rethrowOnFailure) rethrow;
+    } finally {
+      if (identical(_historySavesByWorkspace[workspace], nextSave)) {
+        _historySavesByWorkspace.remove(workspace);
+      }
     }
   }
 

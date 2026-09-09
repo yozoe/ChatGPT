@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:chatgpt/src/presentation/files/workspace_file_preview.dart';
 
+/// 解析工作区安全边界及符号链接后，读取受大小限制的 UTF-8 文件预览。
 /// Reads a bounded UTF-8 preview after resolving the workspace security
 /// boundary and any symbolic links.
 class WorkspaceFilePreviewReader {

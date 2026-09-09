@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 export 'yeknom_workbench_theme.dart';
 
+/// 项目内维护的主题实现，用于替代原外部 UI Kit，同时保持既有公开名称兼容。
 /// Project-owned replacement for the former external UI kit theme.
 ///
 /// The public names are kept so persisted preferences and the existing

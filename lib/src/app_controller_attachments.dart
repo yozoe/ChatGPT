@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:chatgpt/src/services/clipboard_file_reader.dart';
 import 'package:chatgpt/src/services/conversation_attachment_store.dart';
 
+/// 管理 Composer 临时附件的生命周期，并负责图片持久化及引用计数。
 /// Owns temporary-composer attachment lifetime and durable-image persistence.
 class CodexAttachmentCoordinator {
   CodexAttachmentCoordinator({

@@ -1,5 +1,6 @@
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 
+/// 创建使用同一时间戳边界的持久时间线条目，保证排序和恢复结果稳定。
 /// Creates durable timeline entries with one consistent timestamp boundary.
 class CodexTimelineEntryFactory {
   TimelineEntry create(

@@ -34,6 +34,7 @@ class FakeCodexAppServer extends CodexAppServer {
   String? configReadDirectory;
   bool queueListRequests = false;
   Object? resumeError;
+  Object? listThreadsError;
   JsonMap resumeResult = {
     'thread': {'turns': <JsonMap>[]},
   };
@@ -85,6 +86,7 @@ class FakeCodexAppServer extends CodexAppServer {
   String? renamedThreadName;
   String? unarchivedThreadId;
   int unarchiveCalls = 0;
+  int listThreadsCalls = 0;
   Completer<void>? unarchiveCompleter;
   final archivedThreadIds = <String>[];
   int archiveCalls = 0;
@@ -107,6 +109,8 @@ class FakeCodexAppServer extends CodexAppServer {
     bool archived = false,
   }) {
     if (archived) return Future.value(archivedListResponse);
+    listThreadsCalls++;
+    if (listThreadsError case final error?) return Future.error(error);
     final directoryResponse = listResponsesByDirectory[workingDirectory];
     if (directoryResponse != null) return Future.value(directoryResponse);
     if (!queueListRequests) return Future.value(listResponse);

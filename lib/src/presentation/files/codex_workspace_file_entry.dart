@@ -1,5 +1,6 @@
 import 'dart:io';
 
+/// 工作区文件树中展示的单个文件系统项目。
 /// A single filesystem item shown in the workspace file tree.
 class CodexWorkspaceFileEntry {
   const CodexWorkspaceFileEntry({

@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:chatgpt/src/services/app_storage_scope.dart';
 
+/// 保存必须在剪贴板和 Flutter 运行时生命周期之外继续存在的图片附件。
 /// Stores images that must outlive the clipboard and the Flutter runtime.
 class ConversationAttachmentStore {
   ConversationAttachmentStore({Directory? directory}) : _directory = directory;
@@ -10,11 +11,13 @@ class ConversationAttachmentStore {
   final Directory? _directory;
   final Set<String> _createdPaths = <String>{};
 
+  /// 图片字节保持明文，以便 Flutter 通过持久路径渲染；历史加密信封只保存路径。
   /// Image bytes remain plaintext so Flutter can render the durable path with
   /// `Image.file`. The encrypted conversation-history envelope stores only
   /// that path; this is deliberately a separate storage boundary.
   static const bool storesImageBytesEncryptedAtRest = false;
 
+  /// 将 [paths] 复制到应用管理的持久目录，并返回新路径及本次创建的文件。
   /// Copies [paths] to application-managed storage and returns their new paths
   /// together with the files created for this attempt. Repeated source paths
   /// share one durable copy within the same request. If any copy fails, every
@@ -52,6 +55,7 @@ class ConversationAttachmentStore {
     return (paths: copies, createdPaths: createdPaths);
   }
 
+  /// 删除本存储创建、但关联提交未被接受的持久文件；只允许删除本实例拥有的路径。
   /// Deletes durable files made by this store when the associated submission
   /// was never accepted. Only paths created by this instance can be removed.
   Future<void> delete(Iterable<String> paths) async {
@@ -66,6 +70,7 @@ class ConversationAttachmentStore {
     }
   }
 
+  /// 删除本地会话不再引用的持久副本，并将删除范围限制在受管目录内。
   /// Deletes durable copies that are no longer referenced by any local
   /// conversation. Unlike [delete], this also works for files created by a
   /// previous controller process (for example after a hot restart), while

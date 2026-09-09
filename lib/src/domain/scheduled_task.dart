@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+/// 在本地持久化、由 Codex Desk 于指定时间派发的提示任务。
 /// A locally persisted prompt that Codex Desk dispatches at a chosen time.
 ///
 /// Scheduled prompts only execute while Codex Desk is open. The schedule is

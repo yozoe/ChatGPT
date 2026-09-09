@@ -28,7 +28,10 @@ class WorkspaceSwitchingController extends CodexController {
       );
 
   @override
-  Future<bool> selectWorkspaceAndReconnect(String path) async {
+  Future<bool> selectWorkspaceAndReconnect(
+    String path, {
+    bool restoreLastThread = true,
+  }) async {
     workspacePath = path;
     status = RuntimeStatus.ready;
     return true;

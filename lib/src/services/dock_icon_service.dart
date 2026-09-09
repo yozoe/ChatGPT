@@ -1,5 +1,6 @@
 import 'package:flutter/services.dart';
 
+/// 向桌面宿主请求立即更新 macOS Dock 图标及完成徽标。
 /// Requests immediate macOS Dock-icon changes from the desktop host.
 class DockIconService {
   DockIconService({MethodChannel? channel})

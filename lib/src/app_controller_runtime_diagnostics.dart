@@ -5,6 +5,7 @@ import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:flutter/foundation.dart';
 import 'app_controller_support.dart';
 
+/// 构建并管理仅保存在内存中的运行时诊断界面数据。
 /// Builds and manages the in-memory runtime diagnostics surface.
 class CodexRuntimeDiagnostics extends ChangeNotifier {
   CodexRuntimeDiagnostics({

@@ -5483,6 +5483,22 @@ void main() {
     },
   );
 
+  test(
+    'does not roll back an accepted goal turn when list refresh fails',
+    () async {
+      final server = _FakeCodexAppServer()
+        ..listThreadsError = StateError('list unavailable');
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+
+      expect(await controller.sendPrompt('执行目标', goal: '完成目标'), isTrue);
+      expect(controller.isThreadRunning('new-thread'), isTrue);
+      expect(server.startedTurnPrompt, '执行目标');
+      controller.dispose();
+    },
+  );
+
   testWidgets('rebuilds when an explicitly injected controller changes', (
     tester,
   ) async {

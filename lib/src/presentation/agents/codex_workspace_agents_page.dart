@@ -3,6 +3,7 @@ import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_subag
 import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 import 'package:flutter/material.dart';
 
+/// 当前任务子智能体的 Codex 风格专注目录页，支持打开只读详情。
 /// A focused Codex-style directory of the current task's subagents.
 class AgentsPage extends StatelessWidget {
   const AgentsPage({

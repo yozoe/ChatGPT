@@ -6,6 +6,7 @@ import 'package:chatgpt/src/presentation/files/workspace_source_file_preview.dar
 import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 import 'package:flutter/material.dart';
 
+/// 管理单个工作区 Tab 的受限文件读取与语法高亮状态。
 /// Owns bounded file loading and syntax highlighting for one workspace tab.
 class WorkspaceSourceFilePreviewState
     extends State<WorkspaceSourceFilePreview> {

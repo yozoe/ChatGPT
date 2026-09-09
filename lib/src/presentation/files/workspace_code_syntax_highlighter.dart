@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+/// 为常见工作区源码和配置文件生成轻量、可选择的语法高亮文本片段。
 /// Produces a lightweight, selectable syntax-highlighted span for common
 /// workspace source and configuration files.
 class WorkspaceCodeSyntaxHighlighter {

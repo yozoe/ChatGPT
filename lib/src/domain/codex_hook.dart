@@ -1,3 +1,4 @@
+/// 由正在运行的 Codex App Server 发现的钩子定义及其信任状态。
 /// A hook discovered by the running Codex App Server.
 class CodexHook {
   const CodexHook({

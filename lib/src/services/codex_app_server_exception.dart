@@ -1,3 +1,4 @@
+/// Codex App Server 请求返回的结构化错误，可直接转换为用户可读信息。
 /// Structured, user-displayable error returned by a Codex App Server request.
 class CodexAppServerException implements Exception {
   const CodexAppServerException({required this.message, this.code, this.type});

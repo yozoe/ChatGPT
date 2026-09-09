@@ -16,6 +16,7 @@ final workspaceFileTabsProvider = NotifierProvider.family
 
 String workspaceFileTabId(String path) => 'file:$path';
 
+/// 协调单个工作区工作台中保活的项目文件 Tab。
 /// Coordinates retained project-file tabs for one workspace workbench.
 class WorkspaceFileTabsNotifier extends Notifier<WorkspaceFileTabsState> {
   WorkspaceFileTabsNotifier(this.initialWorkspacePath);

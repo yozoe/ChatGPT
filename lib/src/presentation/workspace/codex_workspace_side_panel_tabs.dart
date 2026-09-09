@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 
+/// 供审查与子智能体面板共用的右侧工作台 Tab 容器。
 /// Shared right-side workbench for review and subagent panes.
 class WorkspaceSidePanelTabs extends StatelessWidget {
   const WorkspaceSidePanelTabs({

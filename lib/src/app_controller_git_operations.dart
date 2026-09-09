@@ -4,7 +4,9 @@ import 'dart:math' as math;
 import 'package:chatgpt/src/domain/git_project_status.dart';
 import 'package:chatgpt/src/services/git_project_service.dart';
 
-/// Encapsulates Git workspace operations used by [CodexController].
+/// 封装 [CodexController] 使用的 Git 工作区操作，并隔离异步请求竞态。
+/// Encapsulates Git workspace operations used by [CodexController] and isolates
+/// asynchronous request races.
 ///
 /// The callbacks deliberately keep ownership of controller state in the
 /// controller while moving the asynchronous Git workflow out of the main

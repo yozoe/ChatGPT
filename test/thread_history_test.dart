@@ -133,7 +133,8 @@ void main() {
   });
 
   test('restores a previously opened task view from memory', () async {
-    final controller = await historyController(FakeCodexAppServer());
+    final server = FakeCodexAppServer();
+    final controller = await historyController(server);
     final first = historyThread('first-thread');
     final second = historyThread('second-thread');
 
@@ -160,6 +161,9 @@ void main() {
 
     expect(controller.entries.single.detail, 'first cached page');
     expect(controller.hasCachedActiveThreadView, isTrue);
+    // Returning to a task whose timeline is already cached must not trigger
+    // another full sidebar thread-list refresh.
+    expect(server.listThreadsCalls, 2);
     controller.dispose();
   });
 

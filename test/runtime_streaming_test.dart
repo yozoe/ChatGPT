@@ -6,6 +6,35 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('accepts wrapped and snake_case file-change completion items', () {
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'item': {
+              'type': 'file_change',
+              'fileChanges': [
+                {'path': 'lib/main.dart', 'kind': 'modified'},
+              ],
+            },
+          },
+        },
+      ),
+    );
+
+    expect(controller.fileChanges.single.path, 'lib/main.dart');
+    controller.dispose();
+  });
+
   test('coalesces agent deltas into one timeline entry', () async {
     final controller = CodexController(server: CodexAppServer());
 

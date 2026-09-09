@@ -1,3 +1,4 @@
+/// 规范化 App Server 线程生命周期值，供控制器判断运行中与终态。
 /// Normalizes App Server thread lifecycle values for controller decisions.
 class CodexThreadLifecycle {
   bool isTerminalStatus(String? status) {
