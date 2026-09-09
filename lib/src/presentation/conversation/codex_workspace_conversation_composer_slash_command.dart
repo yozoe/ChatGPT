@@ -9,6 +9,13 @@ enum ComposerSlashCommandKind {
   recordSkill,
   mcpStatus,
   codeReview,
+  sideChat,
+  forkChat,
+  compact,
+  feedback,
+  archive,
+  reasoning,
+  model,
   newChat,
 }
 
@@ -20,6 +27,7 @@ class ComposerSlashCommand {
     required this.description,
     required this.icon,
     this.aliases = const [],
+    this.enabled = true,
   });
 
   final ComposerSlashCommandKind kind;
@@ -27,6 +35,7 @@ class ComposerSlashCommand {
   final String description;
   final IconData icon;
   final List<String> aliases;
+  final bool enabled;
 
   bool matches(String query) {
     final normalized = query.trim().toLowerCase();

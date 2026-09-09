@@ -71,11 +71,28 @@ class ComposerPanelState extends State<ComposerPanel> {
       )
       .toList(growable: false);
 
+  CodexThread? get _activeComposerThread {
+    final activeId = controller.activeThreadId;
+    if (activeId == null) return null;
+    for (final thread in controller.threads) {
+      if (thread.id == activeId) return thread;
+    }
+    return null;
+  }
+
+  bool get _canArchiveActiveThread {
+    final thread = _activeComposerThread;
+    return thread != null &&
+        controller.workspacePath != null &&
+        !controller.isThreadExecutionActive(thread) &&
+        !controller.isUpdatingThread(thread.id);
+  }
+
   List<CodexSkill> get _slashSkills =>
       controller.skills.where((skill) => skill.enabled).toList(growable: false);
 
-  List<CodexSkill> get _filteredSlashSkills {
-    final query = _currentSlashQuery?.trim().toLowerCase();
+  List<CodexSkill> get _filteredMentionSkills {
+    final query = _currentMentionQuery?.trim().toLowerCase();
     if (query == null || query.isEmpty) return _slashSkills;
     return _slashSkills
         .where(
@@ -175,21 +192,28 @@ class ComposerPanelState extends State<ComposerPanel> {
   /// new send after the platform has already cleared the composing range.
   void _handleComposerEditingChanged() {
     final slashQuery = _currentSlashQuery;
+    final mentionQuery = _currentMentionQuery;
+    final triggerQuery = slashQuery != null
+        ? '/$slashQuery'
+        : mentionQuery != null
+        ? '@$mentionQuery'
+        : '';
     if (!_settingReviewPrompt && _reviewSubmissionPending) {
       _reviewSubmissionPending = false;
       _reviewSubmissionInFlight = false;
     }
-    if (slashQuery != _slashMenuQuery) {
-      _slashMenuQuery = slashQuery ?? '';
+    if (triggerQuery != _slashMenuQuery) {
+      _slashMenuQuery = triggerQuery;
       _slashMenuDismissed = false;
       _slashMenuSelectedIndex = 0;
     }
-    if (slashQuery != null &&
+    if (mentionQuery != null &&
         controller.skills.isEmpty &&
         !controller.skillsLoading) {
       unawaited(controller.refreshSkills());
     }
-    if (!_settingReviewPrompt && slashQuery != '') {
+    if (!_settingReviewPrompt &&
+        ((slashQuery?.isNotEmpty ?? false) || mentionQuery != null)) {
       _mcpStatusVisible = false;
       _codeReviewOptionsVisible = false;
     }
@@ -220,60 +244,126 @@ class ComposerPanelState extends State<ComposerPanel> {
     return query;
   }
 
+  String? get _currentMentionQuery {
+    final text = composer.text;
+    if (!text.startsWith('@') || text.contains('\n')) return null;
+    final query = text.substring(1);
+    if (query.contains(RegExp(r'\s'))) return null;
+    return query;
+  }
+
   bool get _showSlashMenu => _currentSlashQuery != null && !_slashMenuDismissed;
 
-  bool get _showSlashSkills => _currentSlashQuery != null;
+  bool get _showMentionMenu =>
+      _currentMentionQuery != null && !_slashMenuDismissed;
 
-  List<ComposerSlashCommand> get _slashCommands => const [
-    ComposerSlashCommand(
+  bool get _showComposerMenu => _showSlashMenu || _showMentionMenu;
+
+  List<ComposerSlashCommand> get _slashCommands => [
+    const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.workspaceContext,
       label: 'IDE 上下文',
-      description: '附加当前项目作为本次任务的上下文',
+      description: '包含当前选择、打开的文件以及其他来自你的 IDE 的上下文',
       icon: Icons.auto_awesome_outlined,
     ),
-    ComposerSlashCommand(
+    const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.mcpStatus,
       label: 'MCP',
-      description: '检查当前 MCP 服务器状态',
+      description: '显示 MCP 服务器状态',
       icon: Icons.hub_outlined,
     ),
-    ComposerSlashCommand(
+    const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.codeReview,
       label: '代码审查',
-      description: '审查当前未提交的更改',
+      description: '审查未提交的更改，或与某个分支进行比较',
       icon: Icons.fact_check_outlined,
     ),
+    const ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.sideChat,
+      label: '侧边',
+      description: '发起临时侧边聊天',
+      icon: Icons.add_circle_outline,
+    ),
+    const ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.forkChat,
+      label: '创建聊天分支',
+      description: '在当前工作空间或新工作树中创建此聊天的分支',
+      icon: Icons.call_split_outlined,
+    ),
     ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.compact,
+      label: '压缩',
+      description:
+          '压缩此聊天的上下文（已使用 ${((_contextUsage.used / _contextUsage.maximum) * 100).floor()}%）',
+      icon: Icons.circle_outlined,
+    ),
+    const ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.feedback,
+      label: '反馈',
+      description: '发送有关此聊天的反馈',
+      icon: Icons.chat_bubble_outline,
+    ),
+    ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.archive,
+      label: '归档',
+      description: '归档当前聊天',
+      icon: Icons.archive_outlined,
+      enabled: _canArchiveActiveThread,
+    ),
+    ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.reasoning,
+      label: '推理',
+      description: controller.reasoningEffort.label,
+      icon: Icons.psychology_outlined,
+      enabled: controller.canSelectReasoningEffort,
+    ),
+    const ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.newChat,
+      label: '新聊天',
+      description: '在同一工作空间中开启空白聊天',
+      icon: Icons.add_comment_outlined,
+    ),
+    ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.model,
+      label: '模型',
+      description: controller.newTaskModelLabel,
+      icon: Icons.view_in_ar_outlined,
+      enabled: controller.canSelectModel,
+    ),
+  ];
+
+  List<ComposerSlashCommand> get _mentionCommands => [
+    const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.files,
       label: '文件和文件夹',
-      description: '为本次任务添加文件或目录',
+      description: '',
       icon: Icons.attach_file,
     ),
     ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.workspaceContext,
+      label:
+          '附加 ${controller.workspacePath == null ? '当前项目' : _pathLabel(controller.workspacePath!)}',
+      description: '',
+      icon: Icons.terminal_outlined,
+    ),
+    const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.goal,
       label: '目标',
-      description: '设置需要持续追求的任务结果',
+      description: '设置要持续追求的目标',
       icon: Icons.track_changes_outlined,
-      aliases: ['goal'],
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.planMode,
       label: '计划模式',
-      description: '让 Codex 先整理实施计划',
+      description: controller.canSteer ? '任务运行时不可用' : '开启计划模式',
       icon: Icons.lightbulb_outline,
-      aliases: ['plan'],
+      enabled: !controller.canSteer,
     ),
-    ComposerSlashCommand(
+    const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.recordSkill,
       label: '录制技能',
-      description: '将这次流程整理成可复用技能',
+      description: '',
       icon: Icons.radio_button_checked,
-    ),
-    ComposerSlashCommand(
-      kind: ComposerSlashCommandKind.newChat,
-      label: '新聊天',
-      description: '清空当前输入并开始一个新任务',
-      icon: Icons.add_comment_outlined,
     ),
   ];
 
@@ -281,27 +371,41 @@ class ComposerPanelState extends State<ComposerPanel> {
     final query = _currentSlashQuery;
     if (query == null) return const [];
     return _slashCommands
-        .where(
-          (command) =>
-              command.kind != ComposerSlashCommandKind.planMode ||
-              !controller.canSteer,
-        )
+        .where((command) => command.matches(query))
+        .toList(growable: false);
+  }
+
+  List<ComposerSlashCommand> get _filteredMentionCommands {
+    final query = _currentMentionQuery;
+    if (query == null) return const [];
+    return _mentionCommands
         .where((command) => command.matches(query))
         .toList(growable: false);
   }
 
   void _moveSlashMenuSelection(int delta) {
-    final itemCount = _showSlashSkills
-        ? _filteredSlashSkills.length + _filteredSlashCommands.length
+    final itemCount = _showMentionMenu
+        ? _filteredMentionSkills.length + _filteredMentionCommands.length
         : _filteredSlashCommands.length;
     if (itemCount == 0) return;
-    setState(() {
-      _slashMenuSelectedIndex = (_slashMenuSelectedIndex + delta).clamp(
-        0,
-        itemCount - 1,
-      );
-    });
+    var nextIndex = _slashMenuSelectedIndex;
+    do {
+      final candidate = (nextIndex + delta).clamp(0, itemCount - 1);
+      if (candidate == nextIndex) return;
+      nextIndex = candidate;
+    } while (!_composerMenuItemEnabled(nextIndex));
+    setState(() => _slashMenuSelectedIndex = nextIndex);
     _scrollFocusedSlashMenuItemIntoView();
+  }
+
+  bool _composerMenuItemEnabled(int index) {
+    if (_showMentionMenu) {
+      final commands = _filteredMentionCommands;
+      if (index < commands.length) return commands[index].enabled;
+      return index < commands.length + _filteredMentionSkills.length;
+    }
+    final commands = _filteredSlashCommands;
+    return index < commands.length && commands[index].enabled;
   }
 
   void _scrollFocusedSlashMenuItemIntoView() {
@@ -322,9 +426,11 @@ class ComposerPanelState extends State<ComposerPanel> {
   }
 
   GlobalKey? get _focusedSlashMenuItemKey {
-    final commands = _filteredSlashCommands;
-    if (_showSlashSkills) {
-      final skills = _filteredSlashSkills;
+    final commands = _showMentionMenu
+        ? _filteredMentionCommands
+        : _filteredSlashCommands;
+    if (_showMentionMenu) {
+      final skills = _filteredMentionSkills;
       final index = _slashMenuSelectedIndex.clamp(
         0,
         commands.length + skills.length - 1,
@@ -347,16 +453,17 @@ class ComposerPanelState extends State<ComposerPanel> {
       _slashSkillScrollKeys.putIfAbsent(path, GlobalKey.new);
 
   void _selectFocusedSlashCommand() {
-    if (_showSlashSkills) {
-      final skills = _filteredSlashSkills;
-      final commands = _filteredSlashCommands;
+    if (_showMentionMenu) {
+      final skills = _filteredMentionSkills;
+      final commands = _filteredMentionCommands;
       if (skills.isEmpty && commands.isEmpty) return;
       final index = _slashMenuSelectedIndex.clamp(
         0,
         skills.length + commands.length - 1,
       );
       if (index < commands.length) {
-        unawaited(_selectSlashCommand(commands[index]));
+        if (!commands[index].enabled) return;
+        unawaited(_selectMentionCommand(commands[index]));
         return;
       }
       if (skills.isEmpty) return;
@@ -366,6 +473,7 @@ class ComposerPanelState extends State<ComposerPanel> {
     final commands = _filteredSlashCommands;
     if (commands.isEmpty) return;
     final index = _slashMenuSelectedIndex.clamp(0, commands.length - 1);
+    if (!commands[index].enabled) return;
     unawaited(_selectSlashCommand(commands[index]));
   }
 
@@ -375,6 +483,36 @@ class ComposerPanelState extends State<ComposerPanel> {
       _slashMenuDismissed = true;
     });
     composer.clear();
+  }
+
+  Future<void> _selectMentionCommand(ComposerSlashCommand command) async {
+    composer.clear();
+    setState(() => _slashMenuDismissed = true);
+    switch (command.kind) {
+      case ComposerSlashCommandKind.files:
+        await _showAttachmentPicker();
+      case ComposerSlashCommandKind.workspaceContext:
+        if (controller.workspacePath != null) {
+          setState(() => _includeWorkspace = true);
+        }
+      case ComposerSlashCommandKind.goal:
+        _enterGoalMode();
+      case ComposerSlashCommandKind.planMode:
+        if (!controller.canSteer) _togglePlanMode();
+      case ComposerSlashCommandKind.recordSkill:
+        setState(() => _recordSkill = !_recordSkill);
+      case ComposerSlashCommandKind.mcpStatus ||
+          ComposerSlashCommandKind.codeReview ||
+          ComposerSlashCommandKind.sideChat ||
+          ComposerSlashCommandKind.forkChat ||
+          ComposerSlashCommandKind.compact ||
+          ComposerSlashCommandKind.feedback ||
+          ComposerSlashCommandKind.archive ||
+          ComposerSlashCommandKind.reasoning ||
+          ComposerSlashCommandKind.model ||
+          ComposerSlashCommandKind.newChat:
+        return;
+    }
   }
 
   Future<String> _readSkillContent(CodexSkill skill) async {
@@ -402,12 +540,12 @@ class ComposerPanelState extends State<ComposerPanel> {
   }
 
   void _dismissSlashMenu() {
-    if (!_showSlashMenu) return;
+    if (!_showComposerMenu) return;
     setState(() => _slashMenuDismissed = true);
   }
 
   void _handleEscape() {
-    if (_showSlashMenu) {
+    if (_showComposerMenu) {
       _dismissSlashMenu();
       return;
     }
@@ -474,9 +612,137 @@ class ComposerPanelState extends State<ComposerPanel> {
           _mcpStatusVisible = false;
         });
         unawaited(_showCodeReviewOptions());
+      case ComposerSlashCommandKind.sideChat:
+        composer.clear();
+        _showUnavailableSlashCommand('侧边聊天');
+      case ComposerSlashCommandKind.forkChat:
+        composer.clear();
+        _showUnavailableSlashCommand('聊天分支');
+      case ComposerSlashCommandKind.compact:
+        composer.clear();
+        _showUnavailableSlashCommand('上下文压缩');
+      case ComposerSlashCommandKind.feedback:
+        composer.clear();
+        _showUnavailableSlashCommand('反馈');
+      case ComposerSlashCommandKind.archive:
+        composer.clear();
+        await _archiveCurrentThread();
+      case ComposerSlashCommandKind.reasoning:
+        composer.clear();
+        await _showReasoningPicker();
+      case ComposerSlashCommandKind.model:
+        composer.clear();
+        await _showModelPicker();
       case ComposerSlashCommandKind.newChat:
         composer.clear();
         controller.createThread();
+    }
+  }
+
+  void _showUnavailableSlashCommand(String label) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('$label 尚未由当前 Codex App Server 提供。')),
+    );
+  }
+
+  Future<void> _archiveCurrentThread() async {
+    final targetController = controller;
+    final activeThread = _activeComposerThread;
+    if (activeThread == null) {
+      _showArchiveFeedback('当前没有可归档的聊天。');
+      return;
+    }
+    final result = await targetController.archiveThread(activeThread);
+    if (!mounted || controller != targetController) return;
+    if (result.archivedIds.contains(activeThread.id)) return;
+    if (result.runningThreadIds.contains(activeThread.id)) {
+      _showArchiveFeedback('当前聊天仍在运行，请先停止任务。');
+    } else if (result.updatingThreadIds.contains(activeThread.id)) {
+      _showArchiveFeedback('当前聊天正在更新，请稍后重试。');
+    } else if (result.unavailableThreadIds.contains(activeThread.id)) {
+      _showArchiveFeedback('Codex 运行时当前不可用，无法归档聊天。');
+    } else {
+      _showArchiveFeedback('当前聊天未能归档，请稍后重试。');
+    }
+  }
+
+  void _showArchiveFeedback(String message) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _showReasoningPicker() async {
+    if (!controller.canSelectReasoningEffort) return;
+    final selected = await showDialog<ReasoningEffort>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        key: const Key('composer-reasoning-dialog'),
+        title: const Text('推理'),
+        children: [
+          for (final effort in controller.reasoningEffortOptions)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(dialogContext, effort),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 28,
+                    child: controller.reasoningEffort == effort
+                        ? const Icon(Icons.check, size: 17)
+                        : null,
+                  ),
+                  Text(effort.label),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+    if (selected != null) await controller.setReasoningEffort(selected);
+  }
+
+  Future<void> _showModelPicker() async {
+    if (!controller.canSelectModel) return;
+    final selected = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        key: const Key('composer-model-dialog'),
+        title: const Text('模型'),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(dialogContext, ''),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 28,
+                  child: controller.selectedModelId == null
+                      ? const Icon(Icons.check, size: 17)
+                      : null,
+                ),
+                const Text('默认'),
+              ],
+            ),
+          ),
+          for (final option in controller.modelOptions)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(dialogContext, option.id),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 28,
+                    child: controller.selectedModelId == option.id
+                        ? const Icon(Icons.check, size: 17)
+                        : null,
+                  ),
+                  Text(option.displayName),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+    if (selected != null) {
+      await controller.setModel(selected.isEmpty ? null : selected);
     }
   }
 
@@ -1169,32 +1435,46 @@ class ComposerPanelState extends State<ComposerPanel> {
               onDiscard: (pending) =>
                   controller.discardPendingTurnSteer(pending),
             ),
-          if (_showSlashMenu) ...[
+          if (_showComposerMenu) ...[
             ComposerSlashCommandMenu(
-              commands: _filteredSlashCommands,
-              skills: _filteredSlashSkills,
-              showSkills: _showSlashSkills,
+              commands: _showMentionMenu
+                  ? _filteredMentionCommands
+                  : _filteredSlashCommands,
+              skills: _showMentionMenu ? _filteredMentionSkills : const [],
+              showSkills: _showMentionMenu,
               skillsLoading: controller.skillsLoading,
               skillsError: controller.skillsError,
-              searchQuery: _currentSlashQuery ?? '',
+              searchQuery: _currentMentionQuery ?? _currentSlashQuery ?? '',
               commandScrollKeys: _slashCommandScrollKeys,
               skillScrollKeys: _slashSkillScrollKeys,
               selectedIndex: _slashMenuSelectedIndex.clamp(
                 0,
                 math.max(
                   0,
-                  (_showSlashSkills
-                              ? _filteredSlashSkills
+                  (_showMentionMenu
+                              ? _filteredMentionSkills
                               : _filteredSlashCommands)
                           .length +
-                      (_showSlashSkills ? _filteredSlashCommands.length : 0) -
+                      (_showMentionMenu ? _filteredMentionCommands.length : 0) -
                       1,
                 ),
               ),
               onSelected: (command) {
-                unawaited(_selectSlashCommand(command));
+                unawaited(
+                  _showMentionMenu
+                      ? _selectMentionCommand(command)
+                      : _selectSlashCommand(command),
+                );
               },
               onSkillSelected: _selectSlashSkill,
+              menuKey: _showMentionMenu
+                  ? const Key('composer-mention-menu')
+                  : const Key('composer-slash-menu'),
+              semanticLabel: _showMentionMenu ? '添加上下文与插件' : '快捷指令',
+              commandSectionLabel: '添加',
+              skillSectionLabel: '插件',
+              showSkillScope: false,
+              emptyResultLabel: _showMentionMenu ? '没有匹配的添加项或插件' : null,
             ),
             const SizedBox(height: 8),
           ],
@@ -1344,21 +1624,21 @@ class ComposerPanelState extends State<ComposerPanel> {
                                     composing.isValid && !composing.isCollapsed;
                                 return CallbackShortcuts(
                                   bindings: {
-                                    if (_showSlashMenu)
+                                    if (_showComposerMenu)
                                       const SingleActivator(
                                         LogicalKeyboardKey.arrowDown,
                                       ): () =>
                                           _moveSlashMenuSelection(1),
-                                    if (_showSlashMenu)
+                                    if (_showComposerMenu)
                                       const SingleActivator(
                                         LogicalKeyboardKey.arrowUp,
                                       ): () =>
                                           _moveSlashMenuSelection(-1),
-                                    if (_showSlashMenu)
+                                    if (_showComposerMenu)
                                       const SingleActivator(
                                         LogicalKeyboardKey.tab,
                                       ): _selectFocusedSlashCommand,
-                                    if (!_showSlashMenu &&
+                                    if (!_showComposerMenu &&
                                         !controller.canSteer &&
                                         !_goalMode)
                                       const SingleActivator(
@@ -1386,13 +1666,13 @@ class ComposerPanelState extends State<ComposerPanel> {
                                         LogicalKeyboardKey.enter,
                                       ): _dismissMcpStatus,
                                     if (!imeIsComposing &&
-                                        !_showSlashMenu &&
+                                        !_showComposerMenu &&
                                         !_codeReviewOptionsVisible &&
                                         !_mcpStatusVisible)
                                       const SingleActivator(
                                         LogicalKeyboardKey.enter,
                                       ): _submitFromKeyboard,
-                                    if (!imeIsComposing && _showSlashMenu)
+                                    if (!imeIsComposing && _showComposerMenu)
                                       const SingleActivator(
                                         LogicalKeyboardKey.enter,
                                       ): _selectFocusedSlashCommand,

@@ -2712,6 +2712,16 @@ void main() {
               displayName: 'OpenAI Docs',
               shortDescription: '查询 Codex 文档',
             ),
+            CodexSkill(
+              name: 'long-plugin',
+              path: '/skills/long-plugin',
+              description: '用于验证长插件名称不会破坏菜单布局',
+              enabled: true,
+              scope: 'system',
+              displayName:
+                  'Plugin with an intentionally very long display name that must truncate',
+              shortDescription: '验证动态插件名称的宽度约束',
+            ),
           ];
     await tester.pumpWidget(
       MaterialApp(home: CodexWorkspace(controller: controller)),
@@ -2722,18 +2732,45 @@ void main() {
     await tester.pump();
 
     expect(find.byKey(const Key('composer-slash-menu')), findsOneWidget);
-    expect(find.byKey(const Key('composer-slash-skill-list')), findsOneWidget);
+    expect(
+      find.byKey(const Key('composer-slash-command-list')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('composer-slash-skill-list')), findsNothing);
     expect(
       find.byKey(const ValueKey('composer-slash-command-codeReview')),
       findsOneWidget,
+    );
+    for (final kind in [
+      'sideChat',
+      'forkChat',
+      'compact',
+      'feedback',
+      'archive',
+      'reasoning',
+      'newChat',
+      'model',
+    ]) {
+      expect(
+        find.byKey(ValueKey('composer-slash-command-$kind')),
+        findsOneWidget,
+      );
+    }
+    expect(
+      tester
+          .widget<InkWell>(
+            find.byKey(const ValueKey('composer-slash-command-archive')),
+          )
+          .onTap,
+      isNull,
     );
 
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
     expect(find.byKey(const Key('composer-workspace-chip')), findsOneWidget);
-    await tester.enterText(field, '/bro');
+    await tester.enterText(field, '@bro');
     await tester.pump();
-    expect(find.byKey(const Key('composer-slash-menu')), findsOneWidget);
+    expect(find.byKey(const Key('composer-mention-menu')), findsOneWidget);
     expect(
       find.byKey(const ValueKey('composer-slash-skill-browser')),
       findsOneWidget,
@@ -2742,17 +2779,23 @@ void main() {
       find.byKey(const ValueKey('composer-slash-command-codeReview')),
       findsNothing,
     );
-    await tester.enterText(field, '/');
+    await tester.enterText(field, '@');
     await tester.pump();
     final browserSkill = find.byKey(
       const ValueKey('composer-slash-skill-browser'),
     );
-    for (var index = 0; index < 8; index++) {
+    for (var index = 0; index < 5; index++) {
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pump(const Duration(milliseconds: 140));
     }
     expect(browserSkill, findsOneWidget);
-    expect(find.text('个人'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('composer-mention-menu')),
+        matching: find.text('插件'),
+      ),
+      findsOneWidget,
+    );
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
     expect(
@@ -2775,7 +2818,7 @@ void main() {
       findsNothing,
     );
 
-    await tester.enterText(field, '/目标');
+    await tester.enterText(field, '@目标');
     await tester.pump();
     await tester.tap(find.byKey(const ValueKey('composer-slash-command-goal')));
     await tester.pump();
@@ -2881,6 +2924,41 @@ void main() {
       isTrue,
     );
     expect(find.byKey(const Key('code-review-panel')), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('keeps unavailable mention actions visible and skips them', (
+    tester,
+  ) async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'running-thread'
+      ..activeTurnId = 'running-turn';
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final field = find.byKey(const Key('composer-field'));
+    await tester.enterText(field, '@');
+    await tester.pump();
+
+    final plan = find.byKey(const ValueKey('composer-slash-command-planMode'));
+    expect(plan, findsOneWidget);
+    expect(tester.widget<InkWell>(plan).onTap, isNull);
+    expect(find.text('任务运行时不可用'), findsOneWidget);
+
+    for (var index = 0; index < 3; index++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+    }
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+
+    expect(find.byKey(const Key('composer-plan-mode-chip')), findsNothing);
+    expect(find.byKey(const Key('composer-record-skill-chip')), findsOneWidget);
+    expect(tester.takeException(), isNull);
 
     await tester.pumpWidget(const SizedBox());
   });

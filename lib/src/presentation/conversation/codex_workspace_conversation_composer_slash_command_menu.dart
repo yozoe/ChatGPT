@@ -18,6 +18,12 @@ class ComposerSlashCommandMenu extends StatelessWidget {
     required this.selectedIndex,
     required this.onSelected,
     required this.onSkillSelected,
+    this.menuKey = const Key('composer-slash-menu'),
+    this.semanticLabel,
+    this.commandSectionLabel = '快捷指令',
+    this.skillSectionLabel = '技能',
+    this.showSkillScope = true,
+    this.emptyResultLabel,
   });
 
   final List<ComposerSlashCommand> commands;
@@ -31,15 +37,21 @@ class ComposerSlashCommandMenu extends StatelessWidget {
   final int selectedIndex;
   final ValueChanged<ComposerSlashCommand> onSelected;
   final ValueChanged<CodexSkill> onSkillSelected;
+  final Key menuKey;
+  final String? semanticLabel;
+  final String commandSectionLabel;
+  final String skillSectionLabel;
+  final bool showSkillScope;
+  final String? emptyResultLabel;
 
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
     return Semantics(
       container: true,
-      label: showSkills ? '技能与快捷指令' : '快捷指令',
+      label: semanticLabel ?? (showSkills ? '添加上下文与插件' : '快捷指令'),
       child: Material(
-        key: const Key('composer-slash-menu'),
+        key: menuKey,
         color: Colors.transparent,
         child: Container(
           constraints: const BoxConstraints(maxHeight: 300),
@@ -83,7 +95,7 @@ class ComposerSlashCommandMenu extends StatelessWidget {
       return Padding(
         padding: const EdgeInsets.all(16),
         child: Text(
-          '没有匹配的技能或快捷指令',
+          emptyResultLabel ?? '没有匹配的技能或快捷指令',
           style: Theme.of(
             context,
           ).textTheme.bodySmall?.copyWith(color: palette.muted),
@@ -101,7 +113,7 @@ class ComposerSlashCommandMenu extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(9, 4, 9, 5),
               child: Text(
-                '快捷指令',
+                commandSectionLabel,
                 style: TextStyle(color: palette.muted, fontSize: 12),
               ),
             ),
@@ -113,7 +125,7 @@ class ComposerSlashCommandMenu extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(9, 4, 9, 5),
               child: Text(
-                '技能',
+                skillSectionLabel,
                 style: TextStyle(color: palette.muted, fontSize: 12),
               ),
             ),
@@ -179,7 +191,7 @@ class ComposerSlashCommandMenu extends StatelessWidget {
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 120),
             curve: Curves.easeOut,
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             decoration: BoxDecoration(
               color: selected ? palette.raised : Colors.transparent,
               borderRadius: BorderRadius.circular(10),
@@ -187,13 +199,13 @@ class ComposerSlashCommandMenu extends StatelessWidget {
             child: Row(
               children: [
                 Icon(
-                  Icons.hub_outlined,
+                  _skillIcon(skill.name),
                   size: 16,
                   color: selected ? palette.trace : palette.muted,
                 ),
                 const SizedBox(width: 9),
-                SizedBox(
-                  width: 138,
+                Flexible(
+                  flex: 2,
                   child: Text(
                     skill.label,
                     maxLines: 1,
@@ -203,19 +215,22 @@ class ComposerSlashCommandMenu extends StatelessWidget {
                 ),
                 const SizedBox(width: 10),
                 Expanded(
+                  flex: 3,
                   child: Text(
                     skill.summary,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.right,
+                    textAlign: TextAlign.left,
                     style: TextStyle(color: palette.muted, fontSize: 12),
                   ),
                 ),
-                const SizedBox(width: 8),
-                Text(
-                  _scopeLabel(skill.scope),
-                  style: TextStyle(color: palette.muted, fontSize: 12),
-                ),
+                if (showSkillScope) ...[
+                  const SizedBox(width: 8),
+                  Text(
+                    _scopeLabel(skill.scope),
+                    style: TextStyle(color: palette.muted, fontSize: 12),
+                  ),
+                ],
               ],
             ),
           ),
@@ -235,18 +250,21 @@ class ComposerSlashCommandMenu extends StatelessWidget {
       key: commandScrollKeys[command.kind],
       child: Semantics(
         button: true,
-        selected: selected,
+        enabled: command.enabled,
+        selected: selected && command.enabled,
         label: '${command.label}，${command.description}',
         child: InkWell(
           key: ValueKey('composer-slash-command-${command.kind.name}'),
           borderRadius: BorderRadius.circular(12),
-          onTap: () => onSelected(command),
+          onTap: command.enabled ? () => onSelected(command) : null,
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 120),
             curve: Curves.easeOut,
-            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
             decoration: BoxDecoration(
-              color: selected ? palette.raised : Colors.transparent,
+              color: selected && command.enabled
+                  ? palette.raised
+                  : Colors.transparent,
               borderRadius: BorderRadius.circular(12),
             ),
             child: Row(
@@ -254,31 +272,40 @@ class ComposerSlashCommandMenu extends StatelessWidget {
                 Icon(
                   command.icon,
                   size: 18,
-                  color: selected ? palette.trace : palette.muted,
+                  color: command.enabled
+                      ? selected
+                            ? palette.trace
+                            : palette.muted
+                      : palette.muted.withValues(alpha: 0.55),
                 ),
                 const SizedBox(width: 10),
-                SizedBox(
-                  width: 96,
+                Flexible(
+                  flex: 2,
                   child: Text(
                     command.label,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: palette.trace,
-                      fontWeight: FontWeight.w600,
+                      color: command.enabled
+                          ? palette.trace
+                          : palette.muted.withValues(alpha: 0.7),
+                      fontWeight: FontWeight.w500,
                     ),
                   ),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 9),
                 Expanded(
+                  flex: 3,
                   child: Text(
                     command.description,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.right,
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodySmall?.copyWith(color: palette.muted),
+                    textAlign: TextAlign.left,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: command.enabled
+                          ? palette.muted
+                          : palette.muted.withValues(alpha: 0.55),
+                    ),
                   ),
                 ),
               ],
@@ -295,4 +322,19 @@ class ComposerSlashCommandMenu extends StatelessWidget {
     'system' => '系统',
     _ => scope,
   };
+
+  IconData _skillIcon(String name) {
+    final lower = name.toLowerCase();
+    if (lower.contains('pdf')) return Icons.picture_as_pdf_outlined;
+    if (lower.contains('sheet') || lower.contains('excel')) {
+      return Icons.table_chart_outlined;
+    }
+    if (lower.contains('presentation') || lower.contains('slide')) {
+      return Icons.slideshow_outlined;
+    }
+    if (lower.contains('document') || lower.contains('doc')) {
+      return Icons.description_outlined;
+    }
+    return Icons.auto_awesome_outlined;
+  }
 }
