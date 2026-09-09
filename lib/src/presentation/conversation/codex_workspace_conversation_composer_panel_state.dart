@@ -252,8 +252,8 @@ class ComposerPanelState extends State<ComposerPanel> {
   List<ComposerSlashCommand> get _slashCommands => [
     const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.workspaceContext,
-      label: 'IDE 上下文',
-      description: '包含当前选择、打开的文件以及其他来自你的 IDE 的上下文',
+      label: '当前项目上下文',
+      description: '附加当前项目路径；IDE 选区和打开文件尚未连接',
       icon: Icons.auto_awesome_outlined,
     ),
     const ComposerSlashCommand(
