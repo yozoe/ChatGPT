@@ -1192,85 +1192,113 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     final nameController = TextEditingController(
       text: configuration.name ?? workspaceDirectoryName(primary),
     );
-    try {
-      await showDialog<void>(
-        context: context,
-        barrierColor: Colors.black.withValues(alpha: 0.62),
-        builder: (dialogContext) => ControllerBuilder(
-          overrideController: widget.controller,
-          builder: (context, controller) {
-            final currentPrimary = primary;
-            final currentConfiguration = controller.workspaceConfigurations
-                .firstWhere(
-                  (candidate) => candidate.primaryPath == currentPrimary,
-                  orElse: () =>
-                      WorkspaceConfiguration(primaryPath: currentPrimary),
-                );
-            final additional = currentConfiguration.additionalPaths;
-            final palette = YeknomPalette.of(context);
-            return KeyedSubtree(
-              // 保留旧的管理入口 key，便于嵌入方平滑迁移到新的编辑器。
-              key: const Key('workspace-directories-dialog'),
-              child: Dialog(
-                key: const Key('workspace-edit-dialog'),
-                insetPadding: const EdgeInsets.symmetric(
-                  horizontal: 24,
-                  vertical: 24,
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final themes = InheritedTheme.capture(from: context, to: navigator.context);
+    final dialogRoute = DialogRoute<void>(
+      context: context,
+      themes: themes,
+      barrierColor: Colors.black.withValues(alpha: 0.62),
+      builder: (dialogContext) => ControllerBuilder(
+        overrideController: widget.controller,
+        builder: (context, controller) {
+          final currentPrimary = primary;
+          final currentConfiguration = controller.workspaceConfigurations
+              .firstWhere(
+                (candidate) => candidate.primaryPath == currentPrimary,
+                orElse: () =>
+                    WorkspaceConfiguration(primaryPath: currentPrimary),
+              );
+          final additional = currentConfiguration.additionalPaths;
+          final palette = YeknomPalette.of(context);
+          return KeyedSubtree(
+            // 保留旧的管理入口 key，便于嵌入方平滑迁移到新的编辑器。
+            key: const Key('workspace-directories-dialog'),
+            child: Dialog(
+              key: const Key('workspace-edit-dialog'),
+              insetPadding: const EdgeInsets.symmetric(
+                horizontal: 24,
+                vertical: 24,
+              ),
+              backgroundColor: palette.module,
+              surfaceTintColor: Colors.transparent,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(30),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(
+                  maxWidth: 960,
+                  maxHeight: 680,
                 ),
-                backgroundColor: palette.module,
-                surfaceTintColor: Colors.transparent,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(30),
-                ),
-                clipBehavior: Clip.antiAlias,
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(
-                    maxWidth: 960,
-                    maxHeight: 680,
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(40, 34, 40, 30),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                '编辑项目',
-                                style: Theme.of(context).textTheme.headlineSmall
-                                    ?.copyWith(
-                                      fontWeight: FontWeight.w700,
-                                      letterSpacing: -0.5,
-                                    ),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(40, 34, 40, 30),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '编辑项目',
+                              style: Theme.of(context).textTheme.headlineSmall
+                                  ?.copyWith(
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: -0.5,
+                                  ),
+                            ),
+                          ),
+                          IconButton(
+                            key: const Key('close-workspace-edit-dialog'),
+                            tooltip: '关闭',
+                            onPressed: () => Navigator.of(dialogContext).pop(),
+                            icon: const Icon(Icons.close, size: 25),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 26),
+                      WorkspaceNameField(controller: nameController),
+                      const SizedBox(height: 28),
+                      Text(
+                        '源文件夹',
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 16),
+                      Expanded(
+                        child: WorkspaceSourcesCard(
+                          primary: currentConfiguration.isUnrooted
+                              ? null
+                              : currentPrimary,
+                          additional: additional,
+                          onRemovePrimary: controller.canChangePrimaryWorkspace
+                              ? () async {
+                                  final removed =
+                                      currentPrimary == controller.workspacePath
+                                      ? await controller
+                                            .removeCurrentWorkspace()
+                                      : await _forgetInactiveWorkspace(
+                                          currentPrimary,
+                                        );
+                                  if (removed && dialogContext.mounted) {
+                                    Navigator.of(dialogContext).pop();
+                                  }
+                                }
+                              : null,
+                          onRemoveAdditional: (path) =>
+                              controller.removeWorkspaceRootFromWorkspace(
+                                currentPrimary,
+                                path,
                               ),
-                            ),
-                            IconButton(
-                              key: const Key('close-workspace-edit-dialog'),
-                              tooltip: '关闭',
-                              onPressed: () =>
-                                  Navigator.of(dialogContext).pop(),
-                              icon: const Icon(Icons.close, size: 25),
-                            ),
-                          ],
+                          onAdd: () =>
+                              _addWorkspaceDirectoryFor(currentPrimary),
                         ),
-                        const SizedBox(height: 26),
-                        WorkspaceNameField(controller: nameController),
-                        const SizedBox(height: 28),
-                        Text(
-                          '源文件夹',
-                          style: Theme.of(context).textTheme.titleMedium
-                              ?.copyWith(fontWeight: FontWeight.w700),
-                        ),
-                        const SizedBox(height: 16),
-                        Expanded(
-                          child: WorkspaceSourcesCard(
-                            primary: currentConfiguration.isUnrooted
-                                ? null
-                                : currentPrimary,
-                            additional: additional,
-                            onRemovePrimary:
-                                controller.canChangePrimaryWorkspace
+                      ),
+                      const SizedBox(height: 24),
+                      Row(
+                        children: [
+                          TextButton(
+                            key: const Key('remove-local-workspace-button'),
+                            onPressed: controller.canChangePrimaryWorkspace
                                 ? () async {
                                     final removed =
                                         currentPrimary ==
@@ -1285,130 +1313,103 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                     }
                                   }
                                 : null,
-                            onRemoveAdditional: (path) =>
-                                controller.removeWorkspaceRootFromWorkspace(
-                                  currentPrimary,
-                                  path,
-                                ),
-                            onAdd: () =>
-                                _addWorkspaceDirectoryFor(currentPrimary),
+                            style: TextButton.styleFrom(
+                              foregroundColor: palette.fault,
+                              backgroundColor: palette.fault.withValues(
+                                alpha: 0.14,
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 22,
+                                vertical: 15,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(15),
+                              ),
+                            ),
+                            child: const Text(
+                              '移除本地项目',
+                              style: TextStyle(fontWeight: FontWeight.w700),
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 24),
-                        Row(
-                          children: [
-                            TextButton(
-                              key: const Key('remove-local-workspace-button'),
-                              onPressed: controller.canChangePrimaryWorkspace
-                                  ? () async {
-                                      final removed =
-                                          currentPrimary ==
-                                              controller.workspacePath
-                                          ? await controller
-                                                .removeCurrentWorkspace()
-                                          : await _forgetInactiveWorkspace(
-                                              currentPrimary,
-                                            );
-                                      if (removed && dialogContext.mounted) {
-                                        Navigator.of(dialogContext).pop();
-                                      }
-                                    }
-                                  : null,
-                              style: TextButton.styleFrom(
-                                foregroundColor: palette.fault,
-                                backgroundColor: palette.fault.withValues(
-                                  alpha: 0.14,
-                                ),
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 22,
-                                  vertical: 15,
-                                ),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(15),
-                                ),
-                              ),
-                              child: const Text(
-                                '移除本地项目',
-                                style: TextStyle(fontWeight: FontWeight.w700),
-                              ),
-                            ),
-                            const Spacer(),
-                            Stack(
-                              alignment: Alignment.center,
-                              children: [
-                                TextButton(
-                                  key: const Key('cancel-workspace-edit'),
-                                  onPressed: () =>
-                                      Navigator.of(dialogContext).pop(),
-                                  style: TextButton.styleFrom(
-                                    foregroundColor: palette.muted,
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 20,
-                                      vertical: 15,
-                                    ),
-                                  ),
-                                  child: const Text(
-                                    '取消',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.w700,
-                                    ),
+                          const Spacer(),
+                          Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              TextButton(
+                                key: const Key('cancel-workspace-edit'),
+                                onPressed: () =>
+                                    Navigator.of(dialogContext).pop(),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: palette.muted,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 20,
+                                    vertical: 15,
                                   ),
                                 ),
-                                // 兼容旧版调用方仍查找“关闭”文本；视觉上完全隐藏。
-                                Positioned.fill(
-                                  child: Opacity(
-                                    opacity: 0,
-                                    child: TextButton(
-                                      onPressed: () =>
-                                          Navigator.of(dialogContext).pop(),
-                                      child: const Text('关闭'),
-                                    ),
+                                child: const Text(
+                                  '取消',
+                                  style: TextStyle(fontWeight: FontWeight.w700),
+                                ),
+                              ),
+                              // 兼容旧版调用方仍查找“关闭”文本；视觉上完全隐藏。
+                              Positioned.fill(
+                                child: Opacity(
+                                  opacity: 0,
+                                  child: TextButton(
+                                    onPressed: () =>
+                                        Navigator.of(dialogContext).pop(),
+                                    child: const Text('关闭'),
                                   ),
                                 ),
-                              ],
-                            ),
-                            const SizedBox(width: 20),
-                            FilledButton(
-                              key: const Key('save-workspace-edit'),
-                              onPressed: () async {
-                                await controller.renameWorkspace(
-                                  currentPrimary,
-                                  nameController.text,
-                                );
-                                if (dialogContext.mounted) {
-                                  Navigator.of(dialogContext).pop();
-                                }
-                              },
-                              style: FilledButton.styleFrom(
-                                foregroundColor: Colors.black,
-                                backgroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 30,
-                                  vertical: 15,
-                                ),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(15),
-                                ),
                               ),
-                              child: const Text(
-                                '保存',
-                                style: TextStyle(fontWeight: FontWeight.w700),
+                            ],
+                          ),
+                          const SizedBox(width: 20),
+                          FilledButton(
+                            key: const Key('save-workspace-edit'),
+                            onPressed: () async {
+                              await controller.renameWorkspace(
+                                currentPrimary,
+                                nameController.text,
+                              );
+                              if (dialogContext.mounted) {
+                                Navigator.of(dialogContext).pop();
+                              }
+                            },
+                            style: FilledButton.styleFrom(
+                              foregroundColor: Colors.black,
+                              backgroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 30,
+                                vertical: 15,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(15),
                               ),
                             ),
-                          ],
-                        ),
-                      ],
-                    ),
+                            child: const Text(
+                              '保存',
+                              style: TextStyle(fontWeight: FontWeight.w700),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
                 ),
               ),
-            );
-          },
-        ),
-      );
-    } finally {
-      nameController.dispose();
-    }
+            ),
+          );
+        },
+      ),
+    );
+    await navigator.push(dialogRoute);
+    // `push` completes when the route is popped, before its reverse
+    // transition has finished. Keep the controller alive until the dialog
+    // subtree is fully removed so TextField cannot reattach to a disposed
+    // controller during that transition.
+    await dialogRoute.completed;
+    nameController.dispose();
   }
 
   /// 读取输入框内容、清空编辑器并发送非空任务。
