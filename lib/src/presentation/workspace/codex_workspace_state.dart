@@ -3062,6 +3062,12 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                                                 _submitEditedUserMessage,
                                                             onOpenSideChat:
                                                                 _openSideChat,
+                                                            sideChatEnabled:
+                                                                !_reviewOpen &&
+                                                                _sideChatSession ==
+                                                                    null &&
+                                                                controller
+                                                                    .canOpenSideChat,
                                                           ),
                                                         ),
                                                         if (_threadHistoryLoading)

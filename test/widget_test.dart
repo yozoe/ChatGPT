@@ -3081,6 +3081,42 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('opens an independent side chat panel from Composer', (
+    tester,
+  ) async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'source-thread'
+      ..activeTurnId = 'turn-1';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'source-thread',
+          'turn': {'id': 'turn-1', 'status': 'completed'},
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.enterText(find.byKey(const Key('composer-field')), '/侧边');
+    await tester.pump();
+    await tester.tap(
+      find.byKey(const ValueKey('composer-slash-command-sideChat')),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(server.forkedEphemeral, isTrue);
+    expect(find.byKey(const Key('side-chat-panel-header')), findsOneWidget);
+    expect(find.byKey(const Key('composer-field')), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('labels cached MCP rows when refresh fails', (tester) async {
     final pluginStore = _MemoryCodexPluginStore()
       ..mcpServers.add(

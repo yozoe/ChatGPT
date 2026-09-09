@@ -1275,6 +1275,8 @@ class CodexController extends ChangeNotifier {
   /// Whether the current idle thread can enter App Server review mode.
   bool get canStartCodeReview => canSend && _server.isRunning;
   bool get serverIsRunning => _server.isRunning;
+  bool get canOpenSideChat =>
+      activeThreadId != null && workspacePath != null && _server.isRunning;
 
   /// Opens an independent ephemeral fork for a side chat. The main thread is
   /// never switched; callers own and dispose the returned session.

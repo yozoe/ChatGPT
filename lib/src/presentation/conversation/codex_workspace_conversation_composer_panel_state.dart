@@ -277,7 +277,8 @@ class ComposerPanelState extends State<ComposerPanel> {
       enabled:
           controller.activeThreadId != null &&
           controller.workspacePath != null &&
-          controller.serverIsRunning,
+          controller.serverIsRunning &&
+          widget.sideChatEnabled,
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.forkChat,

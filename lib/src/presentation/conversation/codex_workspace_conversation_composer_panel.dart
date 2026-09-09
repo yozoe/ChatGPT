@@ -12,6 +12,7 @@ class ComposerPanel extends StatefulWidget {
     required this.onSend,
     required this.onQueueSteer,
     this.onOpenSideChat,
+    this.sideChatEnabled = true,
   });
 
   final CodexController controller;
@@ -20,6 +21,7 @@ class ComposerPanel extends StatefulWidget {
   final Future<bool> Function(ComposerSubmission submission) onSend;
   final Future<bool> Function(ComposerSubmission submission) onQueueSteer;
   final Future<void> Function()? onOpenSideChat;
+  final bool sideChatEnabled;
 
   @override
   State<ComposerPanel> createState() => ComposerPanelState();

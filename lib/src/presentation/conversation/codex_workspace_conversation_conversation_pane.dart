@@ -39,6 +39,7 @@ class ConversationPane extends StatelessWidget {
     required this.onOpenSubagent,
     required this.onSubmitUserMessageEdit,
     this.onOpenSideChat,
+    this.sideChatEnabled = true,
   });
 
   final CodexController controller;
@@ -77,6 +78,7 @@ class ConversationPane extends StatelessWidget {
   final Future<bool> Function(TimelineEntry entry, String text)
   onSubmitUserMessageEdit;
   final Future<void> Function()? onOpenSideChat;
+  final bool sideChatEnabled;
 
   /// 构建时间线、审批提示和任务输入区域。
   /// Builds the timeline, approval prompt, and task composer area.
@@ -205,6 +207,7 @@ class ConversationPane extends StatelessWidget {
                   onSend: onSend,
                   onQueueSteer: onQueueSteer,
                   onOpenSideChat: onOpenSideChat,
+                  sideChatEnabled: sideChatEnabled,
                 ),
               ],
             ),
