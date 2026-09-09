@@ -326,6 +326,7 @@ class CodexController extends ChangeNotifier {
   // (for example after the user opens New chat) may submit independently while
   // the previous task is still finishing its App Server startup handshake.
   final Set<int> _sendPromptInFlightRevisions = {};
+  Future<void> _turnStartOrdering = Future<void>.value();
   // Owning workspace for every thread that is still executing on the shared
   // App Server. This lets the foreground project change without losing the
   // background task's routing or completion reminder.
@@ -2119,7 +2120,7 @@ class CodexController extends ChangeNotifier {
           _selectPreferredThreadForWorkspace(preferredThread);
         }
         await startRuntime(
-          waitForWorkspaceData: false,
+          waitForWorkspaceData: true,
           restoreLastThread: preferredThread == null && restoreLastThread,
         );
       }
@@ -2145,7 +2146,7 @@ class CodexController extends ChangeNotifier {
     if (!reuseRuntime &&
         (status == RuntimeStatus.stopped || status == RuntimeStatus.failed)) {
       await startRuntime(
-        waitForWorkspaceData: false,
+        waitForWorkspaceData: true,
         restoreLastThread: preferredThread == null && restoreLastThread,
       );
     } else if (reuseRuntime) {
@@ -2156,8 +2157,9 @@ class CodexController extends ChangeNotifier {
       await _refreshReasoningEffortCapabilities();
       if (!isCurrentSelection()) return false;
       if (preferredThread != null) {
-        await _resumeRestoredThreadIfNeeded();
-        if (!isCurrentSelection()) return false;
+        // The caller supplied an explicit task selection (for example via
+        // openWorkspaceThread) and will resume it after the workspace switch.
+        // Do not also restore the project's cached last task here.
         unawaited(refreshArchivedThreads());
         unawaited(refreshSkills(notify: false));
       } else {
@@ -3222,15 +3224,33 @@ class CodexController extends ChangeNotifier {
       // From this point onward even an ID-less compatible-server event can
       // belong to the requested turn. Before the request is issued, any turn
       // event is necessarily stale and must not enter the new timeline.
-      _preparingTurnStart = false;
       _forgetUnidentifiedTurnCompletion(threadId);
-      await _server.startTurn(
+      // Refresh the authoritative server list alongside turn/start. Skip
+      // local-session fallback here so this handshake remains bounded and does
+      // not scan disk before starting the turn.
+      final sidebarRefresh = refreshThreads(allowLocalSessionFallback: false);
+      final previousTurnStart = _turnStartOrdering;
+      final turnStartGate = Completer<void>();
+      _turnStartOrdering = turnStartGate.future;
+      await previousTurnStart;
+      // A newer conversation view may be submitted while this task is still
+      // waiting for its list snapshot. Keep the newer turn independent rather
+      // than serializing two user-visible sends behind the older refresh.
+      if (_sendPromptInFlightRevisions.length <= 1) {
+        await sidebarRefresh;
+      } else {
+        unawaited(sidebarRefresh);
+      }
+      final turnStart = _server.startTurn(
         threadId: threadId,
         prompt: text,
         workingDirectory: workspace,
         additionalInput: persistedAdditionalInput,
         collaborationMode: collaborationMode,
       );
+      turnStartGate.complete();
+      _preparingTurnStart = false;
+      await turnStart;
       // Keep the turn-start handshake contiguous. Refreshing the entire task
       // list before setting the goal/startTurn introduced a long await where
       // switching tasks could detach the new turn before it was registered as
@@ -3238,7 +3258,6 @@ class CodexController extends ChangeNotifier {
       // so task switching can safely retain it in the background. This sync is
       // deliberately non-blocking: a list-read failure must never roll back a
       // turn that App Server has already accepted.
-      unawaited(refreshThreads());
       notifyListeners();
       return true;
     } catch (error) {
