@@ -26,6 +26,7 @@ export 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 export 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_activity_pill.dart';
 export 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_file_change_pill.dart';
 export 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_panel.dart';
+export 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_side_chat_panel.dart';
 export 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_panel_state.dart';
 export 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_add_menu_action.dart';
 export 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_attachment.dart';

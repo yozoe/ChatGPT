@@ -272,9 +272,12 @@ class ComposerPanelState extends State<ComposerPanel> {
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.sideChat,
       label: '侧边',
-      description: '侧边聊天面板尚未完成',
+      description: '打开不会中断主任务的临时聊天',
       icon: Icons.add_circle_outline,
-      enabled: false,
+      enabled:
+          controller.activeThreadId != null &&
+          controller.workspacePath != null &&
+          controller.serverIsRunning,
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.forkChat,
@@ -608,7 +611,7 @@ class ComposerPanelState extends State<ComposerPanel> {
         unawaited(_showCodeReviewOptions());
       case ComposerSlashCommandKind.sideChat:
         composer.clear();
-        await _forkActiveThread(ephemeral: true);
+        await widget.onOpenSideChat?.call();
       case ComposerSlashCommandKind.forkChat:
         composer.clear();
         await _forkActiveThread();

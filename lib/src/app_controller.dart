@@ -12,3 +12,4 @@ export 'app_controller_codex_model_option.dart';
 export 'app_controller_codex_controller_notifier.dart';
 export 'app_controller_codex_controller.dart';
 export 'app_controller_support.dart';
+export 'side_chat/codex_side_chat_session.dart';

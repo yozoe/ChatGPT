@@ -414,6 +414,32 @@ void main() {
     },
   );
 
+  test(
+    'opens side chat as an ephemeral fork without switching main thread',
+    () async {
+      final server = FakeCodexAppServer();
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      );
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready
+        ..activeThreadId = 'source-thread';
+
+      final sideChat = await controller.openSideChat();
+
+      expect(sideChat, isNotNull);
+      expect(server.forkedSourceThreadId, 'source-thread');
+      expect(server.forkedEphemeral, isTrue);
+      expect(server.forkedExcludeTurns, isTrue);
+      expect(controller.activeThreadId, 'source-thread');
+      sideChat!.dispose();
+      controller.dispose();
+    },
+  );
+
   test('starts compaction as a real active App Server turn', () async {
     final server = FakeCodexAppServer();
     final controller = CodexController(

@@ -51,6 +51,7 @@ import 'app_controller_thread_lifecycle.dart';
 import 'app_controller_configuration_values.dart';
 import 'app_controller_runtime_connection.dart';
 import 'app_controller_scheduled_task_coordinator.dart';
+import 'side_chat/codex_side_chat_session.dart';
 
 /// 协调工作区运行时、会话历史、时间线和用户审批的核心控制器。
 /// Coordinates the workspace runtime, persisted history, timeline, and user approvals.
@@ -1273,6 +1274,36 @@ class CodexController extends ChangeNotifier {
 
   /// Whether the current idle thread can enter App Server review mode.
   bool get canStartCodeReview => canSend && _server.isRunning;
+  bool get serverIsRunning => _server.isRunning;
+
+  /// Opens an independent ephemeral fork for a side chat. The main thread is
+  /// never switched; callers own and dispose the returned session.
+  Future<CodexSideChatSession?> openSideChat() async {
+    final parentThreadId = activeThreadId;
+    final workspace = workspacePath;
+    if (parentThreadId == null || workspace == null || !_server.isRunning) {
+      return null;
+    }
+    try {
+      final result = await _server.forkThread(
+        threadId: parentThreadId,
+        ephemeral: true,
+        excludeTurns: true,
+      );
+      final rawThread = result['thread'];
+      if (rawThread is! Map) return null;
+      final sideThreadId = rawThread['id']?.toString().trim();
+      if (sideThreadId == null || sideThreadId.isEmpty) return null;
+      return CodexSideChatSession(
+        server: _server,
+        parentThreadId: parentThreadId,
+        threadId: sideThreadId,
+        workingDirectory: workspace,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
 
   /// Whether another task in the current project can be opened. Switching
   /// keeps a running task connected in the background rather than stopping it.

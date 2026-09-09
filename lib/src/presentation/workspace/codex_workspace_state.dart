@@ -81,6 +81,29 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   late CodexController _controller;
   double? _settingsReturnTimelineOffset;
   bool _appWasInactive = false;
+  CodexSideChatSession? _sideChatSession;
+
+  Future<void> _openSideChat() async {
+    if (_sideChatSession != null) return;
+    final session = await _controller.openSideChat();
+    if (!mounted || session == null) return;
+    setState(() {
+      _sideChatSession = session;
+      _activeSidePanelTab = 'side-chat';
+      _sidePanelCollapsed = false;
+    });
+  }
+
+  void _closeSideChat() {
+    final session = _sideChatSession;
+    if (session == null) return;
+    session.dispose();
+    setState(() {
+      _sideChatSession = null;
+      _activeSidePanelTab = _fallbackSidePanelTab() ?? '';
+      if (_activeSidePanelTab.isEmpty) _sidePanelCollapsed = true;
+    });
+  }
 
   bool get _threadHistoryLoading =>
       _threadHistoryLoadingKey == _displayedThreadKey;
@@ -198,6 +221,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       _workspaceFileTabsContainer.dispose();
     }
     _composer.dispose();
+    _sideChatSession?.dispose();
     _recordSkillRequest.dispose();
     _pendingTimelineAboveLatest.clear();
     for (final controller in _timelineScrollControllers.values.toSet()) {
@@ -2714,9 +2738,13 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                   _filesPageMounted ||
                   openedWorkspaceFiles.isNotEmpty ||
                   _openedSubagentThreadIds.isNotEmpty;
-              final sidePanelOpen = sidePanelExpanded && hasSidePanelContents;
+              final hasSideChat = _sideChatSession != null;
+              final hasSidePanelContentsWithChat =
+                  hasSidePanelContents || hasSideChat;
+              final sidePanelOpen =
+                  sidePanelExpanded && hasSidePanelContentsWithChat;
               final showSidePanelLauncher =
-                  sidePanelExpanded && !hasSidePanelContents;
+                  sidePanelExpanded && !hasSidePanelContentsWithChat;
               final auxiliaryFullHeight = sidePanelOpen && !compact;
               final reviewMaximum = auxiliaryFullHeight
                   ? (workbenchWidth -
@@ -2771,6 +2799,11 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                     fallbackTitle: _subagentTitles[id] ?? '子智能体',
                     onOpenSubagent: _openSubagentInspector,
                   ),
+                if (_sideChatSession != null)
+                  'side-chat': SideChatPanel(
+                    session: _sideChatSession!,
+                    onClose: _closeSideChat,
+                  ),
               };
               final sidePanelLabels = <String, String>{
                 if (_reviewOpen) 'review': '审查',
@@ -2780,6 +2813,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                   entry.key: _workspaceFileName(entry.value),
                 for (final id in _openedSubagentThreadIds)
                   'subagent:$id': _subagentTitles[id] ?? '子智能体',
+                if (_sideChatSession != null) 'side-chat': '侧边聊天',
               };
               final sidePanelTabs = WorkspaceSidePanelTabs(
                 key: const ValueKey('full-height-side-panel'),
@@ -3026,6 +3060,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                                                 _openSubagentInspector,
                                                             onSubmitUserMessageEdit:
                                                                 _submitEditedUserMessage,
+                                                            onOpenSideChat:
+                                                                _openSideChat,
                                                           ),
                                                         ),
                                                         if (_threadHistoryLoading)
@@ -3047,7 +3083,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                                             ),
                                                           ),
                                                         if (compact &&
-                                                            hasSidePanelContents)
+                                                            hasSidePanelContentsWithChat)
                                                           ExcludeFocus(
                                                             excluding:
                                                                 !sidePanelOpen,

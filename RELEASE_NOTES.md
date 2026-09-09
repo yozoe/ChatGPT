@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Composer 的代码审查、聊天分支、主动压缩和反馈不再使用普通提示词或“不支持”占位：代码审查通过 App Server `review/start` 发送结构化审查目标，聊天分支通过 `thread/fork` 创建并切换到服务端返回的线程，压缩通过 `thread/compact/start` 进入真实 `contextCompaction` 生命周期，反馈通过明确对话框调用 `feedback/upload`，诊断日志默认不上传且只在用户勾选后包含。侧边聊天的独立 ephemeral fork 面板仍未交付，会继续明确提示不可用。
+- Composer 的代码审查、聊天分支、主动压缩和反馈不再使用普通提示词或“不支持”占位：代码审查通过 App Server `review/start` 发送结构化审查目标，聊天分支通过 `thread/fork` 创建并切换到服务端返回的线程，压缩通过 `thread/compact/start` 进入真实 `contextCompaction` 生命周期，反馈通过明确对话框调用 `feedback/upload`，诊断日志默认不上传且只在用户勾选后包含。侧边聊天现在通过 `thread/fork` 的 ephemeral fork 打开独立面板，主聊天保持可见且不切换。
 - 修复关闭项目编辑器时名称输入框在退出动画期间访问已释放 `TextEditingController` 的异常；现在会等对话框完全退出后再释放控制器。
 - Composer 已对齐新版 Codex 的入口分工：输入 `@` 显示“添加 / 插件”菜单，文件、项目上下文、目标、计划模式、录制技能和 Skill 均从这里选择；输入 `/` 改为纯客户端命令列表并采用更紧凑的左对齐行布局，Skill 不再混入其中。两类菜单都支持连续筛选、方向键、Enter/Tab、自动滚动与 Esc；超长插件名不会再挤出菜单。运行中的计划模式及当前状态不可执行的真实命令会保留为禁用行并由键盘跳过，归档竞态会给出具体反馈。MCP、代码审查、聊天分支、主动压缩、反馈、归档、推理、模型和新聊天执行真实 App Server 或客户端动作；侧边聊天独立面板及真实 IDE 上下文仍会明确提示当前限制。
 - 完整复刻 Codex 的 Goal/Plan mode：目标文字现在同时作为首轮提示与完成条件，任务恢复时读取持久目标，并在 Composer 上方显示真实状态、token 预算、已用时间及暂停、恢复、编辑、清除操作；目标操作的忙碌和错误状态按线程隔离。计划模式支持 `Shift+Tab`，运行中的 turn 会禁用菜单、快捷键和标签关闭入口，模型尚未解析时会明确拒绝而不是静默降级；App Server 完成的最终 `plan` item 会立即显示且不会因事件重放重复。
