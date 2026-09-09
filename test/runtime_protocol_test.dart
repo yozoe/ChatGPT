@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:chatgpt/src/app_controller.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
+import 'package:chatgpt/src/services/codex_app_server_server_event.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'widget_test_fakes.dart';
@@ -436,6 +437,51 @@ void main() {
       expect(server.forkedExcludeTurns, isTrue);
       expect(controller.activeThreadId, 'source-thread');
       sideChat!.dispose();
+      controller.dispose();
+    },
+  );
+
+  test(
+    'keeps side-chat turns isolated and renders attributed events',
+    () async {
+      final server = FakeCodexAppServer();
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      );
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready
+        ..activeThreadId = 'source-thread';
+      final sideChat = await controller.openSideChat();
+      expect(sideChat, isNotNull);
+
+      expect(await sideChat!.send('给我一个状态摘要'), isTrue);
+      sideChat.handleServerEvent(
+        const ServerEvent(
+          method: 'turn/started',
+          params: {
+            'threadId': 'forked-thread',
+            'turn': {'id': 'side-turn'},
+          },
+        ),
+      );
+      sideChat.handleServerEvent(
+        const ServerEvent(
+          method: 'item/agentMessage/delta',
+          params: {
+            'threadId': 'forked-thread',
+            'turnId': 'side-turn',
+            'itemId': 'side-answer',
+            'delta': '主聊天仍未切换。',
+          },
+        ),
+      );
+
+      expect(controller.activeThreadId, 'source-thread');
+      expect(sideChat.entries.last.detail, '主聊天仍未切换。');
+      sideChat.dispose();
       controller.dispose();
     },
   );
