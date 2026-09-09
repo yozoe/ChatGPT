@@ -34,6 +34,21 @@ class ProtocolCaptureCodexAppServer extends CodexAppServer {
         'result': {'turnId': 'turn-1'},
       };
     }
+    if (method == 'thread/fork') {
+      return {
+        'result': {
+          'thread': {'id': 'forked-thread'},
+        },
+      };
+    }
+    if (method == 'review/start') {
+      return {
+        'result': {
+          'turn': {'id': 'review-turn', 'status': 'inProgress'},
+          'reviewThreadId': 'thread-1',
+        },
+      };
+    }
     return {
       'result': {
         'thread': {'id': 'thread-with-roots'},

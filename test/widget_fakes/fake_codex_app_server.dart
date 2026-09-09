@@ -100,6 +100,25 @@ class FakeCodexAppServer extends CodexAppServer {
   final archiveErrorsById = <String, Object>{};
   final deletedThreadIds = <String>[];
   final archiveFailureIds = <String>{};
+  JsonMap? startedReviewTarget;
+  String? startedReviewThreadId;
+  String startedReviewDelivery = 'inline';
+  Object? startReviewError;
+  Completer<void>? startReviewCompleter;
+  String? feedbackClassification;
+  bool? feedbackIncludeLogs;
+  String? feedbackReason;
+  String? feedbackThreadId;
+  Object? feedbackError;
+  String? forkedSourceThreadId;
+  bool? forkedEphemeral;
+  bool? forkedExcludeTurns;
+  Object? forkThreadError;
+  Completer<void>? forkThreadCompleter;
+  int forkThreadCalls = 0;
+  String? compactedThreadId;
+  Object? compactThreadError;
+  Completer<void>? compactThreadCompleter;
 
   /// 始终报告运行中，模拟已连接的 App Server。
   /// Always reports running, simulating a connected App Server.
@@ -199,6 +218,70 @@ class FakeCodexAppServer extends CodexAppServer {
     startedTurnCollaborationMode = collaborationMode;
     if (startTurnCompleter case final completer?) await completer.future;
     if (startTurnError case final error?) throw error;
+  }
+
+  @override
+  Future<JsonMap> startReview({
+    required String threadId,
+    required JsonMap target,
+    String delivery = 'inline',
+  }) async {
+    if (startReviewCompleter case final completer?) await completer.future;
+    if (startReviewError case final error?) throw error;
+    startedReviewThreadId = threadId;
+    startedReviewTarget = JsonMap.from(target);
+    startedReviewDelivery = delivery;
+    return {
+      'turn': {'id': 'review-turn', 'status': 'inProgress'},
+      'reviewThreadId': threadId,
+    };
+  }
+
+  @override
+  Future<JsonMap> forkThread({
+    required String threadId,
+    String? lastTurnId,
+    bool ephemeral = false,
+    bool excludeTurns = false,
+  }) async {
+    forkThreadCalls++;
+    if (forkThreadCompleter case final completer?) await completer.future;
+    if (forkThreadError case final error?) throw error;
+    forkedSourceThreadId = threadId;
+    forkedEphemeral = ephemeral;
+    forkedExcludeTurns = excludeTurns;
+    return {
+      'thread': {
+        'id': 'forked-thread',
+        'preview': 'Forked chat',
+        'createdAt': 10,
+        'updatedAt': 11,
+        'turns': <JsonMap>[],
+      },
+    };
+  }
+
+  @override
+  Future<void> compactThread({required String threadId}) async {
+    compactedThreadId = threadId;
+    if (compactThreadCompleter case final completer?) await completer.future;
+    if (compactThreadError case final error?) throw error;
+  }
+
+  @override
+  Future<void> uploadFeedback({
+    required String classification,
+    required bool includeLogs,
+    String? reason,
+    String? threadId,
+    List<String>? extraLogFiles,
+    Map<String, String>? tags,
+  }) async {
+    if (feedbackError case final error?) throw error;
+    feedbackClassification = classification;
+    feedbackIncludeLogs = includeLogs;
+    feedbackReason = reason;
+    feedbackThreadId = threadId;
   }
 
   @override

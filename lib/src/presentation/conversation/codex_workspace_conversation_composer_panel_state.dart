@@ -45,8 +45,6 @@ class ComposerPanelState extends State<ComposerPanel> {
   bool _codeReviewOptionsVisible = false;
   bool _codeReviewBranchesLoading = false;
   bool _reviewSubmissionPending = false;
-  bool _reviewSubmissionInFlight = false;
-  bool _settingReviewPrompt = false;
   String? _codeReviewBranchesError;
   List<String> _codeReviewBaseBranches = const [];
   int _codeReviewBranchRequest = 0;
@@ -182,9 +180,6 @@ class ComposerPanelState extends State<ComposerPanel> {
     if (controller.status != RuntimeStatus.running) {
       _releaseDetachedAttachmentResources();
     }
-    if (_reviewSubmissionPending) {
-      unawaited(_submitPendingReviewWhenPossible());
-    }
   }
 
   /// 在平台已清除组合范围后，仍将确认输入法候选的 Enter 视为输入法操作。
@@ -198,10 +193,6 @@ class ComposerPanelState extends State<ComposerPanel> {
         : mentionQuery != null
         ? '@$mentionQuery'
         : '';
-    if (!_settingReviewPrompt && _reviewSubmissionPending) {
-      _reviewSubmissionPending = false;
-      _reviewSubmissionInFlight = false;
-    }
     if (triggerQuery != _slashMenuQuery) {
       _slashMenuQuery = triggerQuery;
       _slashMenuDismissed = false;
@@ -212,8 +203,7 @@ class ComposerPanelState extends State<ComposerPanel> {
         !controller.skillsLoading) {
       unawaited(controller.refreshSkills());
     }
-    if (!_settingReviewPrompt &&
-        ((slashQuery?.isNotEmpty ?? false) || mentionQuery != null)) {
+    if ((slashQuery?.isNotEmpty ?? false) || mentionQuery != null) {
       _mcpStatusVisible = false;
       _codeReviewOptionsVisible = false;
     }
@@ -272,23 +262,26 @@ class ComposerPanelState extends State<ComposerPanel> {
       description: '显示 MCP 服务器状态',
       icon: Icons.hub_outlined,
     ),
-    const ComposerSlashCommand(
+    ComposerSlashCommand(
       kind: ComposerSlashCommandKind.codeReview,
       label: '代码审查',
       description: '审查未提交的更改，或与某个分支进行比较',
       icon: Icons.fact_check_outlined,
+      enabled: controller.canStartCodeReview,
     ),
-    const ComposerSlashCommand(
+    ComposerSlashCommand(
       kind: ComposerSlashCommandKind.sideChat,
       label: '侧边',
-      description: '发起临时侧边聊天',
+      description: '侧边聊天面板尚未完成',
       icon: Icons.add_circle_outline,
+      enabled: false,
     ),
-    const ComposerSlashCommand(
+    ComposerSlashCommand(
       kind: ComposerSlashCommandKind.forkChat,
       label: '创建聊天分支',
       description: '在当前工作空间或新工作树中创建此聊天的分支',
       icon: Icons.call_split_outlined,
+      enabled: controller.canForkActiveThread,
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.compact,
@@ -296,6 +289,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       description:
           '压缩此聊天的上下文（已使用 ${((_contextUsage.used / _contextUsage.maximum) * 100).floor()}%）',
       icon: Icons.circle_outlined,
+      enabled: controller.canCompactActiveThread,
     ),
     const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.feedback,
@@ -614,16 +608,16 @@ class ComposerPanelState extends State<ComposerPanel> {
         unawaited(_showCodeReviewOptions());
       case ComposerSlashCommandKind.sideChat:
         composer.clear();
-        _showUnavailableSlashCommand('侧边聊天');
+        await _forkActiveThread(ephemeral: true);
       case ComposerSlashCommandKind.forkChat:
         composer.clear();
-        _showUnavailableSlashCommand('聊天分支');
+        await _forkActiveThread();
       case ComposerSlashCommandKind.compact:
         composer.clear();
-        _showUnavailableSlashCommand('上下文压缩');
+        await _confirmAndCompactThread();
       case ComposerSlashCommandKind.feedback:
         composer.clear();
-        _showUnavailableSlashCommand('反馈');
+        await _showFeedbackDialog();
       case ComposerSlashCommandKind.archive:
         composer.clear();
         await _archiveCurrentThread();
@@ -642,6 +636,141 @@ class ComposerPanelState extends State<ComposerPanel> {
   void _showUnavailableSlashCommand(String label) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('$label 尚未由当前 Codex App Server 提供。')),
+    );
+  }
+
+  Future<void> _forkActiveThread({bool ephemeral = false}) async {
+    final sourceThreadId = controller.activeThreadId;
+    if (sourceThreadId == null || !controller.canForkActiveThread) {
+      _showArchiveFeedback('当前没有可创建分支的聊天。');
+      return;
+    }
+    if (ephemeral) {
+      _showUnavailableSlashCommand('侧边聊天界面');
+      return;
+    }
+    await controller.forkActiveThread();
+  }
+
+  Future<void> _confirmAndCompactThread() async {
+    if (!controller.canCompactActiveThread) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        key: const Key('composer-compact-dialog'),
+        title: const Text('压缩此聊天？'),
+        content: const Text('Codex 会用一份简洁摘要替换较早的对话内容，以释放上下文空间。'),
+        actions: [
+          TextButton(
+            key: const Key('composer-compact-cancel'),
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const Key('composer-compact-confirm'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('压缩'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) {
+      await controller.compactActiveThread();
+    }
+  }
+
+  Future<void> _showFeedbackDialog() async {
+    final reason = TextEditingController();
+    var classification = 'bug';
+    var includeLogs = false;
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final themes = InheritedTheme.capture(from: context, to: navigator.context);
+    final route =
+        DialogRoute<({String classification, bool includeLogs, String reason})>(
+          context: context,
+          themes: themes,
+          builder: (dialogContext) => StatefulBuilder(
+            builder: (context, setDialogState) => AlertDialog(
+              key: const Key('composer-feedback-dialog'),
+              title: const Text('发送反馈'),
+              content: SizedBox(
+                width: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    DropdownButtonFormField<String>(
+                      key: const Key('composer-feedback-classification'),
+                      initialValue: classification,
+                      decoration: const InputDecoration(labelText: '反馈类型'),
+                      items: const [
+                        DropdownMenuItem(value: 'bug', child: Text('问题')),
+                        DropdownMenuItem(value: 'feature', child: Text('功能建议')),
+                        DropdownMenuItem(value: 'other', child: Text('其他')),
+                      ],
+                      onChanged: (value) {
+                        if (value != null) {
+                          setDialogState(() => classification = value);
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      key: const Key('composer-feedback-reason'),
+                      controller: reason,
+                      autofocus: true,
+                      minLines: 3,
+                      maxLines: 6,
+                      decoration: const InputDecoration(
+                        labelText: '反馈内容（可选）',
+                        alignLabelWithHint: true,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    CheckboxListTile(
+                      key: const Key('composer-feedback-include-logs'),
+                      contentPadding: EdgeInsets.zero,
+                      value: includeLogs,
+                      title: const Text('包含诊断日志'),
+                      subtitle: const Text('仅在勾选后随反馈上传运行时诊断信息'),
+                      controlAffinity: ListTileControlAffinity.leading,
+                      onChanged: (value) =>
+                          setDialogState(() => includeLogs = value ?? false),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  key: const Key('composer-feedback-cancel'),
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  key: const Key('composer-feedback-submit'),
+                  onPressed: () => Navigator.of(dialogContext).pop((
+                    classification: classification,
+                    includeLogs: includeLogs,
+                    reason: reason.text,
+                  )),
+                  child: const Text('发送'),
+                ),
+              ],
+            ),
+          ),
+        );
+    final result = await navigator.push(route);
+    await route.completed;
+    reason.dispose();
+    if (result == null || !mounted) return;
+    final submitted = await controller.submitFeedback(
+      classification: result.classification,
+      includeLogs: result.includeLogs,
+      reason: result.reason,
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(submitted ? '反馈已发送。' : '反馈发送失败，请稍后重试。')),
     );
   }
 
@@ -787,38 +916,35 @@ class ComposerPanelState extends State<ComposerPanel> {
 
   Future<void> _reviewUncommittedChanges() async {
     if (_reviewSubmissionPending) return;
-    _settingReviewPrompt = true;
-    composer.value = const TextEditingValue(
-      text: '审查当前未提交的更改。',
-      selection: TextSelection.collapsed(offset: 11),
-    );
-    _settingReviewPrompt = false;
     setState(() => _reviewSubmissionPending = true);
-    await _submitPendingReviewWhenPossible();
-  }
-
-  Future<void> _submitPendingReviewWhenPossible() async {
-    if (!_reviewSubmissionPending || _reviewSubmissionInFlight) return;
-    if (!controller.canSend && !controller.canSteer) return;
-    setState(() => _reviewSubmissionInFlight = true);
-    final submitted = await _submit();
+    final submitted = await controller.startCodeReview(const {
+      'type': 'uncommittedChanges',
+    });
     if (!mounted) return;
     setState(() {
-      _reviewSubmissionInFlight = false;
-      if (submitted) {
-        _reviewSubmissionPending = false;
-        _codeReviewOptionsVisible = false;
-      }
+      _reviewSubmissionPending = false;
+      _codeReviewOptionsVisible = !submitted;
     });
   }
 
   void _reviewAgainstBaseBranch(String branch) {
-    final prompt = '审查当前分支相对于 $branch 的更改。';
-    setState(() => _codeReviewOptionsVisible = false);
-    composer.value = TextEditingValue(
-      text: prompt,
-      selection: TextSelection.collapsed(offset: prompt.length),
-    );
+    setState(() {
+      _codeReviewOptionsVisible = false;
+      _reviewSubmissionPending = true;
+    });
+    unawaited(_startBranchReview(branch));
+  }
+
+  Future<void> _startBranchReview(String branch) async {
+    final submitted = await controller.startCodeReview({
+      'type': 'baseBranch',
+      'branch': branch,
+    });
+    if (!mounted) return;
+    setState(() {
+      _reviewSubmissionPending = false;
+      _codeReviewOptionsVisible = !submitted;
+    });
   }
 
   void _releaseDetachedAttachmentResources() {

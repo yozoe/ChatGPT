@@ -276,6 +276,7 @@ class CodexController extends ChangeNotifier {
   final Set<String> _unarchivingThreadIds = {};
   final Set<String> _archivingThreadIds = {};
   final Set<String> _deletingThreadIds = {};
+  final Set<String> _forkingThreadIds = {};
   static const _maximumRuntimeLogEntries = 200;
   static const _maximumThreadViewCacheEntries = 8;
   static const _maximumSubagentThreadViewCacheEntries = 8;
@@ -1251,6 +1252,27 @@ class CodexController extends ChangeNotifier {
       workspacePath != null &&
       (status == RuntimeStatus.ready ||
           (status == RuntimeStatus.running && activeThreadId != null));
+
+  /// Whether the current App Server thread can be forked into a new chat.
+  bool get canForkActiveThread =>
+      activeThreadId != null &&
+      workspacePath != null &&
+      _server.isRunning &&
+      !_resumingThread &&
+      !_forkingThreadIds.contains(activeThreadId) &&
+      !isUpdatingThread(activeThreadId!);
+
+  /// Whether the current idle thread can start manual context compaction.
+  bool get canCompactActiveThread =>
+      activeThreadId != null &&
+      status == RuntimeStatus.ready &&
+      _activeThreadAttached &&
+      _server.isRunning &&
+      !isThreadRunning(activeThreadId!) &&
+      !isUpdatingThread(activeThreadId!);
+
+  /// Whether the current idle thread can enter App Server review mode.
+  bool get canStartCodeReview => canSend && _server.isRunning;
 
   /// Whether another task in the current project can be opened. Switching
   /// keeps a running task connected in the background rather than stopping it.
@@ -2643,6 +2665,223 @@ class CodexController extends ChangeNotifier {
     // the new-task surface look like an existing conversation.
     _entries.clear();
     notifyListeners();
+  }
+
+  /// Forks the active App Server thread and switches the workspace to it.
+  Future<bool> forkActiveThread() async {
+    final sourceThreadId = activeThreadId;
+    final workspace = workspacePath;
+    if (!canForkActiveThread || sourceThreadId == null || workspace == null) {
+      return false;
+    }
+    final source = _cachedThread(sourceThreadId);
+    _forkingThreadIds.add(sourceThreadId);
+    notifyListeners();
+    try {
+      final result = await _server.forkThread(threadId: sourceThreadId);
+      if (_disposed ||
+          activeThreadId != sourceThreadId ||
+          workspacePath != workspace) {
+        return false;
+      }
+      final rawThread = result['thread'];
+      if (rawThread is! Map) {
+        throw const FormatException(
+          'App Server did not return the forked thread.',
+        );
+      }
+      final threadPayload = JsonMap.from(rawThread);
+      threadPayload.putIfAbsent('preview', () => source?.title ?? '聊天分支');
+      threadPayload.putIfAbsent(
+        'createdAt',
+        () => DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      );
+      threadPayload.putIfAbsent(
+        'updatedAt',
+        () => DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      );
+      final forkedThread = CodexThread.fromJson(threadPayload);
+
+      _cacheActiveThreadView();
+      if (isThreadRunning(sourceThreadId)) {
+        _runningThreadIds.add(sourceThreadId);
+        _threadWorkspaceById[sourceThreadId] = workspace;
+        _removeCachedThreadView(sourceThreadId, workspace: workspace);
+      }
+      activeThreadId = forkedThread.id;
+      _activeThreadAttached = true;
+      activeTurnId = null;
+      status = RuntimeStatus.ready;
+      lastError = null;
+      _clearStreamingState();
+      _entries.clear();
+      _clearFileChanges();
+      final history = await _loadThreadHistory(
+        threadId: forkedThread.id,
+        resumeResult: result,
+      );
+      if (_disposed ||
+          activeThreadId != forkedThread.id ||
+          workspacePath != workspace) {
+        return false;
+      }
+      _appendThreadHistory(history);
+      _add(
+        TimelineKind.system,
+        '已创建聊天分支',
+        '源任务：${source?.title ?? sourceThreadId}',
+      );
+      threads = [
+        forkedThread,
+        ...threads.where((thread) => thread.id != forkedThread.id),
+      ];
+      _ownedThreadIds.add(forkedThread.id);
+      _threadHistoryInitialized = true;
+      _cacheActiveThreadView();
+      _scheduleConversationHistorySave();
+      unawaited(refreshThreads());
+      notifyListeners();
+      return true;
+    } catch (error) {
+      if (_disposed ||
+          activeThreadId != sourceThreadId ||
+          workspacePath != workspace) {
+        return false;
+      }
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '创建聊天分支失败', lastError!);
+      notifyListeners();
+      return false;
+    } finally {
+      _forkingThreadIds.remove(sourceThreadId);
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  /// Starts a manual App Server context-compaction turn for the active chat.
+  Future<bool> compactActiveThread() async {
+    final threadId = activeThreadId;
+    if (!canCompactActiveThread || threadId == null) return false;
+    status = RuntimeStatus.running;
+    lastError = null;
+    _activeTurnStartedAt = DateTime.now();
+    _runningThreadIds.add(threadId);
+    _threadWorkspaceById[threadId] = workspacePath!;
+    _updateThreadStatus(threadId, 'active');
+    notifyListeners();
+    try {
+      await _server.compactThread(threadId: threadId);
+      return true;
+    } catch (error) {
+      _runningThreadIds.remove(threadId);
+      _threadWorkspaceById.remove(threadId);
+      _updateThreadStatus(threadId, 'idle');
+      if (_disposed || activeThreadId != threadId) {
+        if (!_disposed) notifyListeners();
+        return false;
+      }
+      status = RuntimeStatus.ready;
+      _activeTurnStartedAt = null;
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '无法压缩对话上下文', lastError!);
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// Starts an inline App Server code review for the active thread.
+  Future<bool> startCodeReview(JsonMap target) async {
+    final originalThreadId = activeThreadId;
+    final workspace = workspacePath;
+    if (!canStartCodeReview || workspace == null) return false;
+    String? threadId = originalThreadId;
+    status = RuntimeStatus.running;
+    lastError = null;
+    _activeTurnStartedAt = DateTime.now();
+    notifyListeners();
+    try {
+      threadId ??= await _server.startThread(
+        workingDirectory: workspace,
+        runtimeWorkspaceRoots: workspaceRoots.length > 1
+            ? workspaceRoots
+            : null,
+        modelProvider: null,
+        model: _modelOverrideForNewThread,
+        config: _newThreadConfig(),
+      );
+      if (_disposed ||
+          activeThreadId != originalThreadId ||
+          workspacePath != workspace) {
+        return false;
+      }
+      activeThreadId = threadId;
+      _activeThreadAttached = true;
+      _ownedThreadIds.add(threadId);
+      _threadHistoryInitialized = true;
+      _ensureActiveThreadVisible(threadId, '代码审查');
+      _runningThreadIds.add(threadId);
+      _threadWorkspaceById[threadId] = workspace;
+      _updateThreadStatus(threadId, 'active');
+      final result = await _server.startReview(
+        threadId: threadId,
+        target: target,
+      );
+      if (_disposed ||
+          activeThreadId != threadId ||
+          workspacePath != workspace) {
+        return false;
+      }
+      final turn = result['turn'];
+      final turnId = turn is Map ? turn['id']?.toString().trim() : null;
+      activeTurnId = turnId?.isEmpty == true ? null : turnId;
+      if (activeTurnId != null) {
+        _runningTurnIdsByThread[threadId] = activeTurnId!;
+      }
+      notifyListeners();
+      return true;
+    } catch (error) {
+      _runningThreadIds.remove(threadId);
+      _runningTurnIdsByThread.remove(threadId);
+      _threadWorkspaceById.remove(threadId);
+      _updateThreadStatus(threadId, 'idle');
+      if (_disposed ||
+          activeThreadId != threadId ||
+          workspacePath != workspace) {
+        if (!_disposed) notifyListeners();
+        return false;
+      }
+      status = RuntimeStatus.ready;
+      activeTurnId = null;
+      _activeTurnStartedAt = null;
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '无法启动代码审查', lastError!);
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// Submits an explicitly confirmed feedback report through App Server.
+  Future<bool> submitFeedback({
+    required String classification,
+    required bool includeLogs,
+    String? reason,
+  }) async {
+    if (!_server.isRunning || classification.trim().isEmpty) return false;
+    try {
+      await _server.uploadFeedback(
+        classification: classification.trim(),
+        includeLogs: includeLogs,
+        reason: reason?.trim().isEmpty == true ? null : reason?.trim(),
+        threadId: activeThreadId,
+        tags: const {'surface': 'composer'},
+      );
+      return true;
+    } catch (error) {
+      if (_disposed) return false;
+      lastError = _messageOf(error);
+      notifyListeners();
+      return false;
+    }
   }
 
   /// Queues a prompt for the current project. The task reconnects to its saved

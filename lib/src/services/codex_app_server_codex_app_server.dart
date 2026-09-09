@@ -536,6 +536,77 @@ class CodexAppServer {
     return JsonMap.from(result);
   }
 
+  /// Forks a stored thread and returns the complete App Server result.
+  Future<JsonMap> forkThread({
+    required String threadId,
+    String? lastTurnId,
+    bool ephemeral = false,
+    bool excludeTurns = false,
+  }) async {
+    final response = await request('thread/fork', {
+      'threadId': threadId,
+      'lastTurnId': ?lastTurnId,
+      if (ephemeral) 'ephemeral': true,
+      if (excludeTurns) 'excludeTurns': true,
+    });
+    _throwIfError(response);
+    final result = response['result'];
+    final thread = result is Map ? result['thread'] : null;
+    if (thread is! Map || thread['id']?.toString().trim().isEmpty != false) {
+      throw const FormatException(
+        'App Server did not return the forked thread.',
+      );
+    }
+    return JsonMap.from(result);
+  }
+
+  /// Starts manual context compaction for an existing thread.
+  Future<void> compactThread({required String threadId}) async {
+    final response = await request('thread/compact/start', {
+      'threadId': threadId,
+    });
+    _throwIfError(response);
+  }
+
+  /// Starts the App Server reviewer and returns its turn metadata.
+  Future<JsonMap> startReview({
+    required String threadId,
+    required JsonMap target,
+    String delivery = 'inline',
+  }) async {
+    final response = await request('review/start', {
+      'threadId': threadId,
+      'delivery': delivery,
+      'target': target,
+    });
+    _throwIfError(response);
+    final result = response['result'];
+    if (result is! Map || result['turn'] is! Map) {
+      throw const FormatException('App Server did not return the review turn.');
+    }
+    return JsonMap.from(result);
+  }
+
+  /// Uploads a user-authorized feedback report to the Codex maintainers.
+  Future<void> uploadFeedback({
+    required String classification,
+    required bool includeLogs,
+    String? reason,
+    String? threadId,
+    List<String>? extraLogFiles,
+    Map<String, String>? tags,
+  }) async {
+    final response = await request('feedback/upload', {
+      'classification': classification,
+      'includeLogs': includeLogs,
+      'reason': ?reason,
+      'threadId': ?threadId,
+      'extraLogFiles': ?extraLogFiles,
+      'tags': ?tags,
+    });
+    _throwIfError(response);
+  }
+
   /// 获取线程历史 turn 的一页完整视图数据。
   /// Fetches one full-view page of historic turns for a thread.
   Future<JsonMap> listThreadTurns({

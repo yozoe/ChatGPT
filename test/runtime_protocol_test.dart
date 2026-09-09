@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:chatgpt/src/app_controller.dart';
@@ -290,6 +291,254 @@ void main() {
     await server.clearThreadGoal(threadId: 'thread-1');
     expect(server.requestedMethod, 'thread/goal/clear');
     expect(server.requestedParams, {'threadId': 'thread-1'});
+  });
+
+  test('encodes durable and ephemeral thread forks', () async {
+    final server = ProtocolCaptureCodexAppServer();
+
+    await server.forkThread(threadId: 'thread-1', lastTurnId: 'turn-4');
+    expect(server.requestedMethod, 'thread/fork');
+    expect(server.requestedParams, {
+      'threadId': 'thread-1',
+      'lastTurnId': 'turn-4',
+    });
+
+    await server.forkThread(
+      threadId: 'thread-1',
+      ephemeral: true,
+      excludeTurns: true,
+    );
+    expect(server.requestedMethod, 'thread/fork');
+    expect(server.requestedParams, {
+      'threadId': 'thread-1',
+      'ephemeral': true,
+      'excludeTurns': true,
+    });
+  });
+
+  test('encodes manual thread compaction', () async {
+    final server = ProtocolCaptureCodexAppServer();
+
+    await server.compactThread(threadId: 'thread-1');
+
+    expect(server.requestedMethod, 'thread/compact/start');
+    expect(server.requestedParams, {'threadId': 'thread-1'});
+  });
+
+  test('encodes structured App Server reviews', () async {
+    final server = ProtocolCaptureCodexAppServer();
+
+    await server.startReview(
+      threadId: 'thread-1',
+      target: const {'type': 'baseBranch', 'branch': 'origin/main'},
+    );
+
+    expect(server.requestedMethod, 'review/start');
+    expect(server.requestedParams, {
+      'threadId': 'thread-1',
+      'delivery': 'inline',
+      'target': {'type': 'baseBranch', 'branch': 'origin/main'},
+    });
+  });
+
+  test('encodes feedback with explicit diagnostics consent', () async {
+    final server = ProtocolCaptureCodexAppServer();
+
+    await server.uploadFeedback(
+      classification: 'bug',
+      includeLogs: true,
+      reason: 'The composer menu closed unexpectedly.',
+      threadId: 'thread-1',
+      extraLogFiles: const ['/tmp/codex.log'],
+      tags: const {'surface': 'composer'},
+    );
+
+    expect(server.requestedMethod, 'feedback/upload');
+    expect(server.requestedParams, {
+      'classification': 'bug',
+      'includeLogs': true,
+      'reason': 'The composer menu closed unexpectedly.',
+      'threadId': 'thread-1',
+      'extraLogFiles': ['/tmp/codex.log'],
+      'tags': {'surface': 'composer'},
+    });
+  });
+
+  test('forks the active thread and switches to the returned branch', () async {
+    final server = FakeCodexAppServer();
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..activeThreadId = 'source-thread'
+      ..threads = [protocolThread(id: 'source-thread')];
+
+    expect(await controller.forkActiveThread(), isTrue);
+
+    expect(server.forkedSourceThreadId, 'source-thread');
+    expect(controller.activeThreadId, 'forked-thread');
+    expect(controller.threads.first.id, 'forked-thread');
+    controller.dispose();
+  });
+
+  test(
+    'prevents duplicate thread forks while the request is pending',
+    () async {
+      final completer = Completer<void>();
+      final server = FakeCodexAppServer()..forkThreadCompleter = completer;
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      );
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready
+        ..activeThreadId = 'source-thread'
+        ..threads = [protocolThread(id: 'source-thread')];
+
+      final firstFork = controller.forkActiveThread();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.canForkActiveThread, isFalse);
+      expect(await controller.forkActiveThread(), isFalse);
+      expect(server.forkThreadCalls, 1);
+
+      completer.complete();
+      expect(await firstFork, isTrue);
+      controller.dispose();
+    },
+  );
+
+  test('starts compaction as a real active App Server turn', () async {
+    final server = FakeCodexAppServer();
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await controller.resumeThread(protocolThread(id: 'thread-1'));
+
+    expect(await controller.compactActiveThread(), isTrue);
+
+    expect(server.compactedThreadId, 'thread-1');
+    expect(controller.status, RuntimeStatus.running);
+    controller.dispose();
+  });
+
+  test('cleans up failed compaction after switching tasks', () async {
+    final completer = Completer<void>();
+    final server = FakeCodexAppServer()..compactThreadCompleter = completer;
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..threads = [
+        protocolThread(id: 'thread-1'),
+        protocolThread(id: 'thread-2'),
+      ];
+    await controller.resumeThread(controller.threads.first);
+
+    final compaction = controller.compactActiveThread();
+    await Future<void>.delayed(Duration.zero);
+    await controller.resumeThread(protocolThread(id: 'thread-2'));
+    server.compactThreadError = StateError('compaction failed');
+    completer.complete();
+
+    expect(await compaction, isFalse);
+    expect(controller.activeThreadId, 'thread-2');
+    expect(controller.isThreadRunning('thread-1'), isFalse);
+    expect(controller.status, RuntimeStatus.ready);
+    controller.dispose();
+  });
+
+  test('starts a structured review from a blank workspace chat', () async {
+    final server = FakeCodexAppServer();
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+
+    expect(
+      await controller.startCodeReview(const {'type': 'uncommittedChanges'}),
+      isTrue,
+    );
+
+    expect(controller.activeThreadId, 'new-thread');
+    expect(server.startedReviewThreadId, 'new-thread');
+    expect(server.startedReviewTarget, {'type': 'uncommittedChanges'});
+    expect(controller.activeTurnId, 'review-turn');
+    controller.dispose();
+  });
+
+  test('cleans up a failed review after switching tasks', () async {
+    final completer = Completer<void>();
+    final server = FakeCodexAppServer()..startReviewCompleter = completer;
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..threads = [
+        protocolThread(id: 'thread-1'),
+        protocolThread(id: 'thread-2'),
+      ];
+    await controller.resumeThread(controller.threads.first);
+
+    final review = controller.startCodeReview(const {
+      'type': 'uncommittedChanges',
+    });
+    await Future<void>.delayed(Duration.zero);
+    await controller.resumeThread(protocolThread(id: 'thread-2'));
+    server.startReviewError = StateError('review failed');
+    completer.complete();
+
+    expect(await review, isFalse);
+    expect(controller.activeThreadId, 'thread-2');
+    expect(controller.isThreadRunning('thread-1'), isFalse);
+    expect(controller.status, RuntimeStatus.ready);
+    controller.dispose();
+  });
+
+  test('submits feedback only with the selected log preference', () async {
+    final server = FakeCodexAppServer();
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    )..activeThreadId = 'thread-1';
+
+    expect(
+      await controller.submitFeedback(
+        classification: 'bug',
+        includeLogs: false,
+        reason: 'Composer issue',
+      ),
+      isTrue,
+    );
+
+    expect(server.feedbackClassification, 'bug');
+    expect(server.feedbackIncludeLogs, isFalse);
+    expect(server.feedbackReason, 'Composer issue');
+    expect(server.feedbackThreadId, 'thread-1');
+    controller.dispose();
   });
 
   test('opts into experimental App Server fields during initialize', () async {

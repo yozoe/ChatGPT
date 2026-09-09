@@ -2685,9 +2685,10 @@ void main() {
       ]);
     final git = _FakeGitProjectService()
       ..reviewBaseBranches = const ['origin/main', 'release/1.0'];
+    final server = _FakeCodexAppServer();
     final controller =
         CodexController(
-            server: _FakeCodexAppServer(),
+            server: server,
             pluginStore: pluginStore,
             gitProjectService: git,
           )
@@ -2899,30 +2900,35 @@ void main() {
       find.byKey(const ValueKey('composer-code-review-base-origin/main')),
     );
     await tester.pump();
-    expect(
-      tester.widget<TextField>(field).controller!.text,
-      '审查当前分支相对于 origin/main 的更改。',
-    );
+    expect(server.startedReviewThreadId, 'new-thread');
+    expect(server.startedReviewTarget, {
+      'type': 'baseBranch',
+      'branch': 'origin/main',
+    });
     expect(
       find.byKey(const Key('composer-code-review-options-panel')),
       findsNothing,
     );
 
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'turn': {'id': 'review-turn', 'status': 'completed'},
+        },
+      ),
+    );
+    await tester.pump();
     await tester.enterText(field, '/代码');
     await tester.pump();
     await tester.tap(
       find.byKey(const ValueKey('composer-slash-command-codeReview')),
     );
     await tester.pumpAndSettle();
-    await tester.tap(field);
+    await tester.tap(find.byKey(const Key('composer-code-review-uncommitted')));
     await tester.pump();
-    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-    await tester.pump();
-    await tester.pump();
-    expect(
-      controller.entries.any((entry) => entry.detail.contains('审查当前未提交的更改。')),
-      isTrue,
-    );
+    expect(server.startedReviewThreadId, 'new-thread');
+    expect(server.startedReviewTarget, {'type': 'uncommittedChanges'});
     expect(find.byKey(const Key('code-review-panel')), findsNothing);
 
     await tester.pumpWidget(const SizedBox());
@@ -2960,6 +2966,118 @@ void main() {
     expect(find.byKey(const Key('composer-record-skill-chip')), findsOneWidget);
     expect(tester.takeException(), isNull);
 
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('submits Composer feedback through the App Server dialog', (
+    tester,
+  ) async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final field = find.byKey(const Key('composer-field'));
+    await tester.enterText(field, '/反馈');
+    await tester.pump();
+    await tester.tap(
+      find.byKey(const ValueKey('composer-slash-command-feedback')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('composer-feedback-dialog')), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const Key('composer-feedback-reason')),
+      '菜单意外关闭',
+    );
+    await tester.tap(find.byKey(const Key('composer-feedback-include-logs')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('composer-feedback-submit')));
+    await tester.pumpAndSettle();
+
+    expect(server.feedbackClassification, 'bug');
+    expect(server.feedbackIncludeLogs, isTrue);
+    expect(server.feedbackReason, '菜单意外关闭');
+    expect(find.text('反馈已发送。'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('confirms and starts Composer context compaction', (
+    tester,
+  ) async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'thread-1'
+      ..activeTurnId = 'turn-1';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'thread-1',
+          'turn': {'id': 'turn-1', 'status': 'completed'},
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final field = find.byKey(const Key('composer-field'));
+    await tester.enterText(field, '/压缩');
+    await tester.pump();
+    await tester.tap(
+      find.byKey(const ValueKey('composer-slash-command-compact')),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byKey(const Key('composer-compact-dialog')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('composer-compact-confirm')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(server.compactedThreadId, 'thread-1');
+    expect(controller.status, RuntimeStatus.running);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('forks a chat through the Composer slash command', (
+    tester,
+  ) async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'source-thread'
+      ..activeTurnId = 'turn-1';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'source-thread',
+          'turn': {'id': 'turn-1', 'status': 'completed'},
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final field = find.byKey(const Key('composer-field'));
+    await tester.enterText(field, '/创建聊天分支');
+    await tester.pump();
+    await tester.tap(
+      find.byKey(const ValueKey('composer-slash-command-forkChat')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(server.forkedSourceThreadId, 'source-thread');
+    expect(controller.activeThreadId, 'forked-thread');
     await tester.pumpWidget(const SizedBox());
   });
 
