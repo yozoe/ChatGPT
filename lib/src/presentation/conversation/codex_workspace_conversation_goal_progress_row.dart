@@ -171,11 +171,11 @@ class GoalProgressRow extends StatelessWidget {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 ),
               )
-            else if (!goal.isTerminal)
+            else if (!goal.isTerminal || goal.isBlocked)
               IconButton(
                 key: const Key('goal-pause-resume-button'),
-                tooltip: goal.isPaused ? '恢复目标' : '暂停目标',
-                onPressed: goal.isPaused
+                tooltip: goal.canResume ? '恢复目标' : '暂停目标',
+                onPressed: goal.canResume
                     ? controller.resumeActiveGoal
                     : controller.pauseActiveGoal,
                 icon: Icon(

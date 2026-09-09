@@ -117,6 +117,36 @@ void main() {
     controller.dispose();
   });
 
+  test('resumes a blocked goal before sending a follow-up prompt', () async {
+    final server = FakeCodexAppServer()
+      ..threadGoalResponse = {
+        'threadId': 'blocked-thread',
+        'objective': '等待用户继续',
+        'status': 'blocked',
+      };
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..activeThreadId = 'blocked-thread';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'thread/goal/updated',
+        params: {
+          'threadId': 'blocked-thread',
+          'goal': {
+            'threadId': 'blocked-thread',
+            'objective': '等待用户继续',
+            'status': 'blocked',
+          },
+        },
+      ),
+    );
+    expect(controller.activeThreadGoal?.canResume, isTrue);
+    expect(await controller.resumeActiveGoal(), isTrue);
+    expect(server.threadGoalStatus, 'active');
+    controller.dispose();
+  });
+
   test(
     'does not silently downgrade plan mode without a resolved model',
     () async {

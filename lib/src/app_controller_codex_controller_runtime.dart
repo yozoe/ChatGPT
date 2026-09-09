@@ -3105,6 +3105,14 @@ class CodexController extends ChangeNotifier {
       notifyListeners();
       return false;
     }
+    // A blocked goal is waiting for the user to provide the next direction.
+    // Resume it before sending that direction so the persisted goal state and
+    // the new turn do not diverge.
+    if (requestThread != null &&
+        _threadGoalsById[requestThread]?.isBlocked == true) {
+      final resumed = await _updateActiveGoal(status: 'active');
+      if (!resumed) return false;
+    }
     late ({
       List<String> imagePaths,
       List<JsonMap> additionalInput,

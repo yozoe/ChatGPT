@@ -38,11 +38,12 @@ class CodexThreadGoal {
   final int timeUsedSeconds;
 
   bool get isPaused => status == 'paused';
+  bool get isBlocked => status == 'blocked';
+  bool get canResume => isPaused || isBlocked;
   bool get isActive => status == 'active';
   bool get isTerminal =>
       status == 'complete' ||
       status == 'completed' ||
-      status == 'blocked' ||
       status == 'usageLimited' ||
       status == 'budgetLimited';
 
