@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:chatgpt/src/domain/codex_thread.dart';
+import 'package:chatgpt/src/domain/codex_file_change.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/services/codex_keychain_storage.dart';
 import 'package:chatgpt/src/services/conversation_history_store.dart';
@@ -144,6 +145,39 @@ void main() {
       ))!.userMessageEntriesByThreadId['inactive-thread']!.single.imagePaths,
       entry.imagePaths,
     );
+  });
+
+  test('round-trips per-thread file summaries and diffs', () async {
+    final store = createStore();
+    final value = ConversationHistorySnapshot(
+      threads: const [],
+      archivedThreads: const [],
+      entries: const [],
+      fileChanges: const [],
+      fileChangesByThreadId: {
+        'thread-a': const [
+          CodexFileChange(path: 'lib/a.dart', kind: 'modified', diff: '+a'),
+        ],
+        'thread-b': const [
+          CodexFileChange(path: 'README.md', kind: 'added', diff: '+docs'),
+        ],
+      },
+      turnDiffByThreadId: const {
+        'thread-a': 'diff --git a/lib/a.dart b/lib/a.dart',
+        'thread-b': null,
+      },
+    );
+
+    await store.save(workspace: 'project-a', snapshot: value);
+    final restored = await store.read('project-a');
+
+    expect(
+      restored!.fileChangesByThreadId['thread-a']!.single.path,
+      'lib/a.dart',
+    );
+    expect(restored.fileChangesByThreadId['thread-b']!.single.kind, 'added');
+    expect(restored.turnDiffByThreadId['thread-a'], contains('lib/a.dart'));
+    expect(restored.turnDiffByThreadId['thread-b'], isNull);
   });
 
   test('restored local message metadata remains appendable', () async {
