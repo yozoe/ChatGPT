@@ -344,6 +344,7 @@ class CodexAppServer {
     required String prompt,
     required String workingDirectory,
     List<JsonMap> additionalInput = const [],
+    JsonMap? additionalContext,
     JsonMap? collaborationMode,
   }) async {
     final response = await request('turn/start', {
@@ -353,6 +354,7 @@ class CodexAppServer {
         {'type': 'text', 'text': prompt},
         ...additionalInput,
       ],
+      'additionalContext': ?additionalContext,
       'collaborationMode': ?collaborationMode,
     });
     _throwIfError(response);

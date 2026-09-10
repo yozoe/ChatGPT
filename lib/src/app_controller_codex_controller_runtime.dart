@@ -3174,6 +3174,7 @@ class CodexController extends ChangeNotifier {
   Future<bool> sendPrompt(
     String prompt, {
     List<JsonMap> additionalInput = const [],
+    JsonMap? additionalContext,
     String? goal,
     bool planMode = false,
     List<String> imagePaths = const [],
@@ -3185,6 +3186,7 @@ class CodexController extends ChangeNotifier {
       return await _sendPromptInternal(
         prompt,
         additionalInput: additionalInput,
+        additionalContext: additionalContext,
         goal: goal,
         planMode: planMode,
         imagePaths: imagePaths,
@@ -3200,6 +3202,7 @@ class CodexController extends ChangeNotifier {
   Future<bool> _sendPromptInternal(
     String prompt, {
     List<JsonMap> additionalInput = const [],
+    JsonMap? additionalContext,
     String? goal,
     bool planMode = false,
     List<String> imagePaths = const [],
@@ -3316,6 +3319,7 @@ class CodexController extends ChangeNotifier {
         threadId: threadId,
         prompt: text,
         additionalInput: persistedAdditionalInput,
+        additionalContext: additionalContext,
         goal: objective == null || objective.isEmpty ? null : objective,
         collaborationMode: collaborationMode,
         imagePaths: persistedImagePaths,
@@ -3368,6 +3372,7 @@ class CodexController extends ChangeNotifier {
         prompt: text,
         workingDirectory: workspace,
         additionalInput: persistedAdditionalInput,
+        additionalContext: submission.additionalContext,
         collaborationMode: collaborationMode,
       );
       _preparingTurnStart = false;
@@ -3460,6 +3465,7 @@ class CodexController extends ChangeNotifier {
         prompt: submission.prompt,
         workingDirectory: submission.workspace,
         additionalInput: submission.additionalInput,
+        additionalContext: submission.additionalContext,
         collaborationMode: submission.collaborationMode,
       );
       _failedTurnRetries.remove(threadId);

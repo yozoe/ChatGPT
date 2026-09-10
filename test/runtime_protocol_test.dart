@@ -357,6 +357,12 @@ void main() {
           'path': '/skills/documents/SKILL.md',
         },
       ],
+      additionalContext: const {
+        'vscode': {
+          'kind': 'application',
+          'value': '{"activeFile":"/workspace/lib/main.dart"}',
+        },
+      },
       collaborationMode: const {
         'mode': 'plan',
         'settings': {
@@ -380,6 +386,12 @@ void main() {
           'path': '/skills/documents/SKILL.md',
         },
       ],
+      'additionalContext': {
+        'vscode': {
+          'kind': 'application',
+          'value': '{"activeFile":"/workspace/lib/main.dart"}',
+        },
+      },
       'collaborationMode': {
         'mode': 'plan',
         'settings': {

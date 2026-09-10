@@ -8,12 +8,16 @@ class TurnSubmission {
     required this.threadId,
     required this.prompt,
     required List<JsonMap> additionalInput,
+    required JsonMap? additionalContext,
     required this.goal,
     required JsonMap? collaborationMode,
     required List<String> imagePaths,
   }) : additionalInput = List.unmodifiable(
          additionalInput.map((item) => cloneJsonMap(item)),
        ),
+       additionalContext = additionalContext == null
+           ? null
+           : cloneJsonMap(additionalContext),
        collaborationMode = collaborationMode == null
            ? null
            : cloneJsonMap(collaborationMode),
@@ -23,6 +27,7 @@ class TurnSubmission {
   final String threadId;
   final String prompt;
   final List<JsonMap> additionalInput;
+  final JsonMap? additionalContext;
   final String? goal;
   final JsonMap? collaborationMode;
   final List<String> imagePaths;

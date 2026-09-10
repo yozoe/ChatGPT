@@ -75,6 +75,7 @@ class FakeCodexAppServer extends CodexAppServer {
   final List<String> startedTurnThreadIds = [];
   final List<String> startThreadResponseIds = [];
   List<JsonMap> startedTurnAdditionalInput = <JsonMap>[];
+  JsonMap? startedTurnAdditionalContext;
   JsonMap? startedTurnCollaborationMode;
   Object? startTurnError;
   Completer<void>? startTurnCompleter;
@@ -233,6 +234,7 @@ class FakeCodexAppServer extends CodexAppServer {
     required String prompt,
     required String workingDirectory,
     List<JsonMap> additionalInput = const [],
+    JsonMap? additionalContext,
     JsonMap? collaborationMode,
   }) async {
     startedTurnDirectory = workingDirectory;
@@ -241,6 +243,9 @@ class FakeCodexAppServer extends CodexAppServer {
     startedTurnPrompt = prompt;
     startedTurnPrompts.add(prompt);
     startedTurnAdditionalInput = List.of(additionalInput);
+    startedTurnAdditionalContext = additionalContext == null
+        ? null
+        : JsonMap.from(additionalContext);
     startedTurnCollaborationMode = collaborationMode;
     if (startTurnCompleter case final completer?) await completer.future;
     if (startTurnError case final error?) throw error;

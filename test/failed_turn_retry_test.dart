@@ -140,11 +140,18 @@ void main() {
       },
       {'type': 'localImage', 'path': '/tmp/reference.png'},
     ];
+    const additionalContext = {
+      'vscode': {
+        'kind': 'application',
+        'value': '{"activeFile":"/workspace/lib/main.dart"}',
+      },
+    };
 
     expect(
       await controller.sendPrompt(
         '修复断网重试',
         additionalInput: additionalInput,
+        additionalContext: additionalContext,
         goal: '完成可靠重试',
         planMode: true,
         imagePaths: const ['/tmp/reference.png'],
@@ -169,6 +176,7 @@ void main() {
     expect(await controller.retryFailedTurn(), isTrue);
     expect(server.startedTurnPrompts, ['修复断网重试', '修复断网重试']);
     expect(server.startedTurnAdditionalInput, additionalInput);
+    expect(server.startedTurnAdditionalContext, additionalContext);
     expect(server.startedTurnCollaborationMode?['mode'], 'plan');
     expect(server.threadGoal, '完成可靠重试');
     expect(
