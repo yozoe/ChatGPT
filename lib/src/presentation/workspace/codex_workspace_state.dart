@@ -2519,14 +2519,9 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   }
 
   void _recordSkillWithCodex() {
-    _startNewConversation();
-    _composer.clear();
-    // The composer is mounted after the destination changes. Deferring the
-    // request makes this behave exactly like choosing "录制技能" from its
-    // own context menu, including the structured skill input on send.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _recordSkillRequest.value++;
-    });
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('当前运行时未提供技能录制协议。')));
   }
 
   /// 输入或选择一个本地/远程 marketplace 来源并交给控制器注册。

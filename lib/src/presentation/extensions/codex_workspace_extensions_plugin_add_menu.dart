@@ -52,6 +52,7 @@ class PluginAddMenu extends StatelessWidget {
         PopupMenuDivider(),
         PopupMenuItem(
           value: PluginAddAction.recordSkill,
+          enabled: false,
           child: PluginAddMenuRow(
             icon: Icons.radio_button_unchecked,
             label: '录制技能',
