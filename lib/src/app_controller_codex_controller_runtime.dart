@@ -473,6 +473,8 @@ class CodexController extends ChangeNotifier {
   final Map<String, CodexThreadGoal> _threadGoalsById = {};
   final Map<String, int> _threadGoalRevisions = {};
   final Map<String, String> _lastGoalTimelineStatusByThread = {};
+  final Map<String, List<CodexFileChange>> _persistedFileChangesByThreadId = {};
+  final Map<String, String?> _persistedTurnDiffByThreadId = {};
   final Set<String> _goalOperationThreadIds = {};
   final Map<String, String> _goalOperationErrorsByThread = {};
 
@@ -4490,8 +4492,12 @@ class CodexController extends ChangeNotifier {
         : const <TimelineEntry>[];
     final localFileChanges = previousThreadId == thread.id
         ? List<CodexFileChange>.of(fileChanges)
-        : const <CodexFileChange>[];
-    final localTurnDiff = previousThreadId == thread.id ? turnDiff : null;
+        : List<CodexFileChange>.of(
+            _persistedFileChangesByThreadId[thread.id] ?? const [],
+          );
+    final localTurnDiff = previousThreadId == thread.id
+        ? turnDiff
+        : _persistedTurnDiffByThreadId[thread.id];
     var viewLoaded = cachedView != null;
     activeThreadId = thread.id;
     _activeThreadAttached = false;
@@ -4539,9 +4545,7 @@ class CodexController extends ChangeNotifier {
           // snapshot before reattaching to App Server. Older servers may
           // return turns without file-change items; retain that durable local
           // summary instead of blanking the task panel during reattach.
-          if (previousThreadId == thread.id &&
-              localFileChanges.isNotEmpty &&
-              fileChanges.isEmpty) {
+          if (localFileChanges.isNotEmpty && fileChanges.isEmpty) {
             _replaceFileChanges(localFileChanges, localTurnDiff);
           }
           _restoreMissingCompletedCommands(localTimelineEntries);
@@ -8650,6 +8654,20 @@ class CodexController extends ChangeNotifier {
           snapshot.fileChanges.map((change) => MapEntry(change.path, change)),
         );
       turnDiff = snapshot.turnDiff;
+      _persistedFileChangesByThreadId
+        ..clear()
+        ..addAll({
+          for (final entry in snapshot.fileChangesByThreadId.entries)
+            entry.key: List<CodexFileChange>.of(entry.value),
+        });
+      _persistedTurnDiffByThreadId
+        ..clear()
+        ..addAll(snapshot.turnDiffByThreadId);
+      if (activeThreadId != null && fileChanges.isNotEmpty) {
+        _persistedFileChangesByThreadId[activeThreadId!] =
+            List<CodexFileChange>.of(fileChanges);
+        _persistedTurnDiffByThreadId[activeThreadId!] = turnDiff;
+      }
       _recordRestoredUserMessages(activeThreadId, _entries);
       _ownedThreadIds
         ..clear()
@@ -8926,6 +8944,19 @@ class CodexController extends ChangeNotifier {
   /// Captures current workspace tasks, pins, timeline, and file changes for persistence or export.
   ConversationHistorySnapshot _conversationHistorySnapshot() {
     _recordRestoredUserMessages(activeThreadId, _entries);
+    final fileChangesByThreadId = <String, List<CodexFileChange>>{
+      for (final entry in _persistedFileChangesByThreadId.entries)
+        entry.key: List<CodexFileChange>.of(entry.value),
+    };
+    final turnDiffByThreadId = <String, String?>{
+      ..._persistedTurnDiffByThreadId,
+    };
+    if (activeThreadId != null && fileChanges.isNotEmpty) {
+      fileChangesByThreadId[activeThreadId!] = List<CodexFileChange>.of(
+        fileChanges,
+      );
+      turnDiffByThreadId[activeThreadId!] = turnDiff;
+    }
     return ConversationHistorySnapshot(
       threads: List.of(threads),
       archivedThreads: List.of(archivedThreads),
@@ -8941,6 +8972,8 @@ class CodexController extends ChangeNotifier {
         for (final entry in _userMessageEntriesByThreadId.entries)
           entry.key: List<TimelineEntry>.of(entry.value),
       },
+      fileChangesByThreadId: fileChangesByThreadId,
+      turnDiffByThreadId: turnDiffByThreadId,
     );
   }
 
@@ -8951,6 +8984,11 @@ class CodexController extends ChangeNotifier {
     _turnDiffDerivedFileChangePaths.clear();
     turnDiff = null;
     fileChangeUndoError = null;
+    final threadId = activeThreadId;
+    if (threadId != null) {
+      _persistedFileChangesByThreadId.remove(threadId);
+      _persistedTurnDiffByThreadId.remove(threadId);
+    }
   }
 
   /// 用一轮任务的文件集合替换当前摘要；用于启动失败时恢复上一轮状态。
@@ -8977,6 +9015,15 @@ class CodexController extends ChangeNotifier {
     _threadViewCache
       ..remove(key)
       ..[key] = _currentThreadViewSnapshot();
+    if (fileChanges.isNotEmpty) {
+      _persistedFileChangesByThreadId[id] = List<CodexFileChange>.of(
+        fileChanges,
+      );
+      _persistedTurnDiffByThreadId[id] = turnDiff;
+    } else {
+      _persistedFileChangesByThreadId.remove(id);
+      _persistedTurnDiffByThreadId.remove(id);
+    }
     while (_threadViewCache.length > _maximumThreadViewCacheEntries) {
       _threadViewCache.remove(_threadViewCache.keys.first);
     }

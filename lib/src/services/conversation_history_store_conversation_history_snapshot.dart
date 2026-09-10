@@ -16,6 +16,8 @@ class ConversationHistorySnapshot {
     this.ownedThreadIds = const {},
     this.historyInitialized = false,
     this.userMessageEntriesByThreadId = const {},
+    this.fileChangesByThreadId = const {},
+    this.turnDiffByThreadId = const {},
   });
 
   final List<CodexThread> threads;
@@ -42,6 +44,8 @@ class ConversationHistorySnapshot {
   /// retain local preview paths, so this preserves durable image attachments
   /// when an inactive thread is reopened after a restart.
   final Map<String, List<TimelineEntry>> userMessageEntriesByThreadId;
+  final Map<String, List<CodexFileChange>> fileChangesByThreadId;
+  final Map<String, String?> turnDiffByThreadId;
 
   /// 将当前工作区快照转换为可持久化的 JSON。
   /// Converts the current workspace snapshot to persistable JSON.
@@ -64,6 +68,11 @@ class ConversationHistorySnapshot {
       for (final entry in userMessageEntriesByThreadId.entries)
         entry.key: entry.value.map((item) => item.toJson()).toList(),
     },
+    'fileChangesByThreadId': {
+      for (final entry in fileChangesByThreadId.entries)
+        entry.key: entry.value.map((item) => item.toJson()).toList(),
+    },
+    'turnDiffByThreadId': turnDiffByThreadId,
   };
 
   /// 从持久化 JSON 恢复当前工作区快照。
@@ -109,6 +118,29 @@ class ConversationHistorySnapshot {
             .toList(growable: true);
       }
     }
+    final fileChangesByThreadId = <String, List<CodexFileChange>>{};
+    final rawFileChangesByThreadId = value['fileChangesByThreadId'];
+    if (rawFileChangesByThreadId is Map) {
+      for (final entry in rawFileChangesByThreadId.entries) {
+        final threadId = entry.key.toString().trim();
+        if (threadId.isEmpty || entry.value is! Iterable) continue;
+        fileChangesByThreadId[threadId] = (entry.value as Iterable)
+            .whereType<Map>()
+            .map(CodexFileChange.fromJson)
+            .where((item) => item.path.isNotEmpty)
+            .toList(growable: false);
+      }
+    }
+    final turnDiffByThreadId = <String, String?>{};
+    final rawTurnDiffByThreadId = value['turnDiffByThreadId'];
+    if (rawTurnDiffByThreadId is Map) {
+      for (final entry in rawTurnDiffByThreadId.entries) {
+        final threadId = entry.key.toString().trim();
+        if (threadId.isNotEmpty) {
+          turnDiffByThreadId[threadId] = entry.value?.toString();
+        }
+      }
+    }
     // Older snapshots did not have an ownership field; their visible threads
     // are the safest migration source.
     final owned = <String>{
@@ -144,6 +176,8 @@ class ConversationHistorySnapshot {
       historyInitialized:
           value['historyInitialized'] == true || owned.isNotEmpty,
       userMessageEntriesByThreadId: userMessageEntriesByThreadId,
+      fileChangesByThreadId: fileChangesByThreadId,
+      turnDiffByThreadId: turnDiffByThreadId,
     );
   }
 }
