@@ -1,4 +1,4 @@
-import 'package:chatgpt/src/domain/codex_mcp_server.dart';
+import 'package:chatgpt/src/domain/codex_mcp_runtime_status.dart';
 import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 import 'package:flutter/material.dart';
 
@@ -11,21 +11,37 @@ class ComposerMcpStatusPanel extends StatelessWidget {
     required this.error,
   });
 
-  final List<CodexMcpServer> servers;
+  final List<CodexMcpRuntimeStatus> servers;
   final bool loading;
   final String? error;
 
-  String _authLabel(CodexMcpServer server) {
-    final rawStatus = server.authStatus?.trim();
-    final status = rawStatus?.toLowerCase();
+  String _authLabel(CodexMcpRuntimeStatus server) {
+    final rawStatus = server.authStatus.trim();
+    final status = rawStatus.toLowerCase();
     return switch (status) {
-      'authenticated' || 'connected' => '已验证',
-      'required' || 'requires_auth' || 'needs_auth' => '需要身份验证',
+      'authenticated' || 'connected' || 'bearertoken' || 'oauth' => '已验证',
+      'required' ||
+      'requires_auth' ||
+      'needs_auth' ||
+      'notloggedin' => '需要身份验证',
       'unsupported' || 'not_supported' => '不支持身份验证',
-      null || '' || 'unknown' => '认证状态未知',
+      '' || 'unknown' => '认证状态未知',
       _ => '认证状态：$rawStatus',
     };
   }
+
+  String _runtimeLabel(CodexMcpRuntimeStatus server) =>
+      switch (server.runtimeStatus?.trim().toLowerCase()) {
+        'connected' => '已连接',
+        'starting' => '正在连接',
+        'authenticationrequired' => '等待认证',
+        'failed' => '连接失败',
+        'cancelled' => '已取消',
+        'disabled' => '已禁用',
+        'notstarted' => '尚未启动',
+        null || '' => '连接状态未知',
+        final value => '状态：$value',
+      };
 
   @override
   Widget build(BuildContext context) {
@@ -88,7 +104,7 @@ class ComposerMcpStatusPanel extends StatelessWidget {
                         final server = servers[index];
                         return Semantics(
                           label:
-                              '${server.name}，${_authLabel(server)}，${server.enabled ? '已启用' : '已禁用'}',
+                              '${server.displayName}，${_authLabel(server)}，${_runtimeLabel(server)}',
                           child: Padding(
                             padding: const EdgeInsets.symmetric(vertical: 5),
                             child: Row(
@@ -101,7 +117,7 @@ class ComposerMcpStatusPanel extends StatelessWidget {
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
                                       Text(
-                                        server.name,
+                                        server.displayName,
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                         style: TextStyle(
@@ -124,7 +140,7 @@ class ComposerMcpStatusPanel extends StatelessWidget {
                                 ),
                                 const SizedBox(width: 16),
                                 Text(
-                                  server.enabled ? '已启用' : '已禁用',
+                                  _runtimeLabel(server),
                                   style: TextStyle(
                                     color: palette.muted,
                                     fontSize: 12,

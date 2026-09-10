@@ -11,6 +11,7 @@ import 'package:chatgpt/src/domain/codex_plugin.dart';
 import 'package:chatgpt/src/domain/codex_skill.dart';
 import 'package:chatgpt/src/domain/codex_marketplace.dart';
 import 'package:chatgpt/src/domain/codex_mcp_server.dart';
+import 'package:chatgpt/src/domain/codex_mcp_runtime_status.dart';
 import 'package:chatgpt/src/domain/codex_file_change.dart';
 import 'package:chatgpt/src/domain/git_project_status.dart';
 import 'package:chatgpt/src/domain/pending_approval.dart';
@@ -269,6 +270,7 @@ class CodexController extends ChangeNotifier {
   int _threadRefreshRequest = 0;
   int _archivedThreadRefreshRequest = 0;
   int _mcpServerRefreshRequest = 0;
+  int _runtimeMcpStatusRefreshRequest = 0;
   int _pluginRefreshRequest = 0;
   int _marketplaceRefreshRequest = 0;
   int _gitProjectRefreshRequest = 0;
@@ -799,6 +801,10 @@ class CodexController extends ChangeNotifier {
   List<CodexMcpServer> mcpServers = const [];
   bool mcpServersLoading = false;
   String? mcpServersError;
+  List<CodexMcpRuntimeStatus> runtimeMcpServerStatuses = const [];
+  bool runtimeMcpServerStatusesLoading = false;
+  String? runtimeMcpServerStatusesError;
+  String? _runtimeMcpServerStatusesThreadId;
   List<CodexSkill> skills = const [];
   bool skillsLoading = false;
   String? skillsError;
@@ -4248,14 +4254,73 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// Reads the live MCP inventory from App Server for the selected task.
+  Future<void> refreshRuntimeMcpServerStatuses() async {
+    final workspace = workspacePath;
+    final threadId = activeThreadId;
+    final request = ++_runtimeMcpStatusRefreshRequest;
+    if (_runtimeMcpServerStatusesThreadId != threadId) {
+      runtimeMcpServerStatuses = const [];
+      _runtimeMcpServerStatusesThreadId = threadId;
+    }
+    runtimeMcpServerStatusesLoading = true;
+    runtimeMcpServerStatusesError = null;
+    if (!_disposed) notifyListeners();
+    try {
+      final statuses = <CodexMcpRuntimeStatus>[];
+      String? cursor;
+      for (var page = 0; page < 20; page++) {
+        final response = await _server.listMcpServerStatuses(
+          threadId: threadId,
+          cursor: cursor,
+        );
+        if (_disposed ||
+            request != _runtimeMcpStatusRefreshRequest ||
+            workspacePath != workspace ||
+            activeThreadId != threadId) {
+          return;
+        }
+        final data = response['data'];
+        if (data is Iterable) {
+          for (final raw in data.whereType<Map>()) {
+            final status = CodexMcpRuntimeStatus.fromJson(raw);
+            if (status != null) statuses.add(status);
+          }
+        }
+        final nextCursor = response['nextCursor']?.toString().trim();
+        if (nextCursor == null || nextCursor.isEmpty) break;
+        cursor = nextCursor;
+      }
+      runtimeMcpServerStatuses = List.unmodifiable(statuses);
+    } catch (error) {
+      if (_disposed ||
+          request != _runtimeMcpStatusRefreshRequest ||
+          workspacePath != workspace ||
+          activeThreadId != threadId) {
+        return;
+      }
+      runtimeMcpServerStatusesError = _messageOf(error);
+    } finally {
+      if (!_disposed && request == _runtimeMcpStatusRefreshRequest) {
+        runtimeMcpServerStatusesLoading = false;
+        notifyListeners();
+      }
+    }
+  }
+
   /// Invalidates workspace-scoped MCP reads and clears rows that belonged to
   /// the previously selected project.
   /// 使旧项目的 MCP 读取失效，并清除不再属于当前项目的列表状态。
   void _resetMcpServersForWorkspaceChange() {
     _mcpServerRefreshRequest++;
+    _runtimeMcpStatusRefreshRequest++;
     mcpServers = const [];
     mcpServersLoading = false;
     mcpServersError = null;
+    runtimeMcpServerStatuses = const [];
+    runtimeMcpServerStatusesLoading = false;
+    runtimeMcpServerStatusesError = null;
+    _runtimeMcpServerStatusesThreadId = null;
   }
 
   /// 从本机 Codex CLI 刷新 marketplace 来源列表。
@@ -5451,6 +5516,8 @@ class CodexController extends ChangeNotifier {
         _applyThreadGoalCleared(event.params);
       case 'thread/tokenUsage/updated':
         _applyThreadTokenUsageUpdated(event.params);
+      case 'mcpServerStatus/updated':
+        _applyMcpServerStatusUpdated(event.params);
       case 'item/completed':
         if (_isEventForActiveTurn(event.params)) {
           _recordCompletedLiveActivity(event.params);
@@ -5967,6 +6034,29 @@ class CodexController extends ChangeNotifier {
         : _runningTurnIdsByThread[usage.threadId];
     if (expectedTurnId != null && usage.turnId != expectedTurnId) return;
     _threadTokenUsageById[usage.threadId] = usage;
+  }
+
+  void _applyMcpServerStatusUpdated(JsonMap params) {
+    final eventThreadId = _threadIdFromEvent(params);
+    if (eventThreadId != null && eventThreadId != activeThreadId) return;
+    if (_runtimeMcpServerStatusesThreadId != activeThreadId) return;
+    final name = params['name']?.toString().trim() ?? '';
+    if (name.isEmpty) return;
+    final runtimeStatus = switch (params['status']?.toString()) {
+      'ready' => 'connected',
+      'starting' => 'starting',
+      'failed' => 'failed',
+      'cancelled' => 'cancelled',
+      final status? => status,
+      null => null,
+    };
+    final index = runtimeMcpServerStatuses.indexWhere(
+      (status) => status.name == name,
+    );
+    if (index < 0) return;
+    final next = List<CodexMcpRuntimeStatus>.of(runtimeMcpServerStatuses);
+    next[index] = next[index].copyWith(runtimeStatus: runtimeStatus);
+    runtimeMcpServerStatuses = List.unmodifiable(next);
   }
 
   void _appendGoalLifecycleFeedback(

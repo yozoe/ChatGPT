@@ -58,6 +58,10 @@ class FakeCodexAppServer extends CodexAppServer {
   String? startedModel;
   JsonMap? startedConfig;
   List<JsonMap> skillListResponse = <JsonMap>[];
+  List<JsonMap> mcpServerStatusResponse = <JsonMap>[];
+  Object? mcpServerStatusError;
+  String? mcpServerStatusThreadId;
+  Completer<JsonMap>? mcpServerStatusCompleter;
   String? startedTurnPrompt;
   String? startedTurnDirectory;
   final List<String> startedTurnPrompts = [];
@@ -379,6 +383,20 @@ class FakeCodexAppServer extends CodexAppServer {
     required String workingDirectory,
     bool forceReload = false,
   }) async => List.of(skillListResponse);
+
+  @override
+  Future<JsonMap> listMcpServerStatuses({
+    String? threadId,
+    String? cursor,
+    int limit = 100,
+  }) async {
+    mcpServerStatusThreadId = threadId;
+    if (mcpServerStatusCompleter case final completer?) {
+      return completer.future;
+    }
+    if (mcpServerStatusError case final error?) throw error;
+    return {'data': List<JsonMap>.of(mcpServerStatusResponse)};
+  }
 
   /// 返回预设 turn 页面并记录使用的游标。
   /// Returns a preset turn page and records the cursor used.

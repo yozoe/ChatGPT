@@ -460,6 +460,28 @@ class CodexAppServer {
     return const [];
   }
 
+  /// Lists live MCP status for the selected thread runtime.
+  Future<JsonMap> listMcpServerStatuses({
+    String? threadId,
+    String? cursor,
+    int limit = 100,
+  }) async {
+    final response = await request('mcpServerStatus/list', {
+      'threadId': ?threadId,
+      'cursor': ?cursor,
+      'limit': limit,
+      'detail': 'toolsAndAuthOnly',
+    });
+    _throwIfError(response);
+    final result = response['result'];
+    if (result is! Map || result['data'] is! Iterable) {
+      throw const FormatException(
+        'App Server did not return MCP server status.',
+      );
+    }
+    return JsonMap.from(result);
+  }
+
   /// 请求中断指定线程正在执行的任务。
   /// Requests interruption of the executing task in a thread.
   Future<void> interruptTurn({

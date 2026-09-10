@@ -2721,7 +2721,21 @@ void main() {
       ]);
     final git = _FakeGitProjectService()
       ..reviewBaseBranches = const ['origin/main', 'release/1.0'];
-    final server = _FakeCodexAppServer();
+    final server = _FakeCodexAppServer()
+      ..mcpServerStatusResponse = [
+        {
+          'name': 'codex_app',
+          'authStatus': 'unsupported',
+          'runtimeStatus': 'connected',
+          'tools': <String, Object?>{},
+        },
+        {
+          'name': 'computer-use',
+          'authStatus': 'unsupported',
+          'runtimeStatus': 'disabled',
+          'tools': <String, Object?>{},
+        },
+      ];
     final controller =
         CodexController(
             server: server,
@@ -2893,7 +2907,7 @@ void main() {
     expect(find.text('codex_app'), findsOneWidget);
     expect(find.text('computer-use'), findsOneWidget);
     expect(find.text('不支持身份验证'), findsNWidgets(2));
-    expect(find.text('已启用'), findsOneWidget);
+    expect(find.text('已连接'), findsOneWidget);
     expect(find.text('已禁用'), findsOneWidget);
     final entryCountBeforeMcpEnter = controller.entries.length;
     await tester.tap(field);
@@ -3238,20 +3252,19 @@ void main() {
   });
 
   testWidgets('labels cached MCP rows when refresh fails', (tester) async {
-    final pluginStore = _MemoryCodexPluginStore()
-      ..mcpServers.add(
-        const CodexMcpServer(
+    final server = _FakeCodexAppServer()
+      ..mcpServerStatusError = StateError('连接失败');
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready
+      ..runtimeMcpServerStatuses = const [
+        CodexMcpRuntimeStatus(
           name: 'cached-server',
-          enabled: true,
-          transportLabel: 'HTTP',
+          authStatus: 'unknown',
+          runtimeStatus: 'connected',
+          toolCount: 0,
         ),
-      )
-      ..mcpListError = StateError('连接失败');
-    final controller =
-        CodexController(server: _FakeCodexAppServer(), pluginStore: pluginStore)
-          ..workspacePath = '/workspace'
-          ..status = RuntimeStatus.ready
-          ..mcpServers = List.of(pluginStore.mcpServers);
+      ];
     await tester.pumpWidget(
       MaterialApp(home: CodexWorkspace(controller: controller)),
     );

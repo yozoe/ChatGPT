@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:chatgpt/src/app_controller.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
-import 'package:chatgpt/src/services/codex_app_server_server_event.dart';
+import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'widget_test_fakes.dart';
@@ -515,6 +515,104 @@ void main() {
       'extraLogFiles': ['/tmp/codex.log'],
       'tags': {'surface': 'composer'},
     });
+  });
+
+  test('encodes live MCP status for the selected thread', () async {
+    final server = ProtocolCaptureCodexAppServer();
+
+    await server.listMcpServerStatuses(threadId: 'thread-1');
+
+    expect(server.requestedMethod, 'mcpServerStatus/list');
+    expect(server.requestedParams, {
+      'threadId': 'thread-1',
+      'limit': 100,
+      'detail': 'toolsAndAuthOnly',
+    });
+  });
+
+  test('keeps live MCP status scoped to the selected thread', () async {
+    final server = FakeCodexAppServer()
+      ..mcpServerStatusResponse = [
+        {
+          'name': 'filesystem',
+          'authStatus': 'oAuth',
+          'runtimeStatus': 'starting',
+          'tools': {
+            'read_file': {'name': 'read_file'},
+          },
+        },
+      ];
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..activeThreadId = 'thread-1';
+
+    await controller.refreshRuntimeMcpServerStatuses();
+
+    expect(server.mcpServerStatusThreadId, 'thread-1');
+    expect(controller.runtimeMcpServerStatuses.single.name, 'filesystem');
+    expect(controller.runtimeMcpServerStatuses.single.toolCount, 1);
+    expect(
+      controller.runtimeMcpServerStatuses.single.runtimeStatus,
+      'starting',
+    );
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'mcpServerStatus/updated',
+        params: {
+          'threadId': 'other-thread',
+          'name': 'filesystem',
+          'status': 'ready',
+        },
+      ),
+    );
+    expect(
+      controller.runtimeMcpServerStatuses.single.runtimeStatus,
+      'starting',
+    );
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'mcpServerStatus/updated',
+        params: {
+          'threadId': 'thread-1',
+          'name': 'filesystem',
+          'status': 'ready',
+        },
+      ),
+    );
+    expect(
+      controller.runtimeMcpServerStatuses.single.runtimeStatus,
+      'connected',
+    );
+    controller.dispose();
+  });
+
+  test('releases stale MCP loading after switching threads', () async {
+    final pending = Completer<JsonMap>();
+    final server = FakeCodexAppServer()..mcpServerStatusCompleter = pending;
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..activeThreadId = 'thread-a';
+
+    final refresh = controller.refreshRuntimeMcpServerStatuses();
+    expect(controller.runtimeMcpServerStatusesLoading, isTrue);
+    controller.activeThreadId = 'thread-b';
+    pending.complete({
+      'data': [
+        {
+          'name': 'stale-server',
+          'authStatus': 'unknown',
+          'runtimeStatus': 'connected',
+          'tools': <String, Object?>{},
+        },
+      ],
+    });
+    await refresh;
+
+    expect(controller.runtimeMcpServerStatuses, isEmpty);
+    expect(controller.runtimeMcpServerStatusesLoading, isFalse);
+    controller.dispose();
   });
 
   test('forks the active thread and switches to the returned branch', () async {

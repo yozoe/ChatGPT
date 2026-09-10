@@ -612,7 +612,7 @@ class ComposerPanelState extends State<ComposerPanel> {
           _mcpStatusVisible = true;
           _codeReviewOptionsVisible = false;
         });
-        unawaited(controller.refreshMcpServers());
+        unawaited(controller.refreshRuntimeMcpServerStatuses());
       case ComposerSlashCommandKind.codeReview:
         composer.value = const TextEditingValue(
           text: '/',
@@ -1628,9 +1628,9 @@ class ComposerPanelState extends State<ComposerPanel> {
           ],
           if (_mcpStatusVisible) ...[
             ComposerMcpStatusPanel(
-              servers: controller.mcpServers,
-              loading: controller.mcpServersLoading,
-              error: controller.mcpServersError,
+              servers: controller.runtimeMcpServerStatuses,
+              loading: controller.runtimeMcpServerStatusesLoading,
+              error: controller.runtimeMcpServerStatusesError,
             ),
             const SizedBox(height: 8),
           ],

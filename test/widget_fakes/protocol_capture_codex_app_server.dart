@@ -49,6 +49,11 @@ class ProtocolCaptureCodexAppServer extends CodexAppServer {
         },
       };
     }
+    if (method == 'mcpServerStatus/list') {
+      return {
+        'result': {'data': <JsonMap>[]},
+      };
+    }
     return {
       'result': {
         'thread': {'id': 'thread-with-roots'},

@@ -13,4 +13,5 @@ export 'app_controller_codex_controller_notifier.dart';
 export 'app_controller_codex_controller.dart';
 export 'app_controller_support.dart';
 export 'domain/codex_thread_token_usage.dart';
+export 'domain/codex_mcp_runtime_status.dart';
 export 'side_chat/codex_side_chat_session.dart';
