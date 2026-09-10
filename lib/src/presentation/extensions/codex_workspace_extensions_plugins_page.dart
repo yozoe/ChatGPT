@@ -9,14 +9,12 @@ class PluginsPage extends StatefulWidget {
     required this.onAddMarketplace,
     required this.onOpenSettings,
     required this.onCreatePlugin,
-    required this.onRecordSkill,
   });
 
   final CodexController controller;
   final Future<void> Function() onAddMarketplace;
   final Future<void> Function() onOpenSettings;
   final VoidCallback onCreatePlugin;
-  final VoidCallback onRecordSkill;
 
   @override
   State<PluginsPage> createState() => PluginsPageState();

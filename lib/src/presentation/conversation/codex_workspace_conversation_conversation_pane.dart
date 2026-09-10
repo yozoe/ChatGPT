@@ -19,7 +19,6 @@ class ConversationPane extends StatelessWidget {
     super.key,
     required this.controller,
     required this.composer,
-    required this.recordSkillRequest,
     required this.timelinePages,
     required this.timelineScrollControllers,
     required this.activeTimelinePageKey,
@@ -44,7 +43,6 @@ class ConversationPane extends StatelessWidget {
 
   final CodexController controller;
   final TextEditingController composer;
-  final ValueListenable<int> recordSkillRequest;
   final Map<ThreadViewportKey, TimelinePageData> timelinePages;
   final Map<ThreadViewportKey, ScrollController> timelineScrollControllers;
   final ThreadViewportKey activeTimelinePageKey;
@@ -203,7 +201,6 @@ class ConversationPane extends StatelessWidget {
                   key: const Key('composer-panel'),
                   controller: controller,
                   composer: composer,
-                  recordSkillRequest: recordSkillRequest,
                   onSend: onSend,
                   onQueueSteer: onQueueSteer,
                   onOpenSideChat: onOpenSideChat,

@@ -24,7 +24,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     with WidgetsBindingObserver {
   final GlobalKey<SidebarState> _sidebarKey = GlobalKey<SidebarState>();
   final TextEditingController _composer = TextEditingController();
-  final ValueNotifier<int> _recordSkillRequest = ValueNotifier(0);
   final Map<ThreadViewportKey, ScrollController> _timelineScrollControllers =
       {};
   final Map<ThreadViewportKey, bool> _timelineFollowsLatest = {};
@@ -222,7 +221,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     }
     _composer.dispose();
     _sideChatSession?.dispose();
-    _recordSkillRequest.dispose();
     _pendingTimelineAboveLatest.clear();
     for (final controller in _timelineScrollControllers.values.toSet()) {
       controller.dispose();
@@ -1511,7 +1509,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       includeWorkspace: false,
       goal: null,
       planMode: false,
-      recordSkill: false,
       skills: const [],
     );
     return _controller.canSteer
@@ -1535,7 +1532,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
         submission.includeWorkspace ||
         submission.goal?.trim().isNotEmpty == true ||
         submission.planMode ||
-        submission.recordSkill ||
         submission.skills.isNotEmpty;
     if (rawPrompt.isEmpty && !hasSubmittedContext) return false;
     final contextLines = <String>[];
@@ -2504,12 +2500,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     );
   }
 
-  void _recordSkillWithCodex() {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('当前运行时未提供技能录制协议。')));
-  }
-
   /// 输入或选择一个本地/远程 marketplace 来源并交给控制器注册。
   /// Enters or chooses a local/remote marketplace source and registers it.
   Future<void> _showAddMarketplace() async {
@@ -2901,7 +2891,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                     onAddMarketplace: _showAddMarketplace,
                                     onOpenSettings: _showPlugins,
                                     onCreatePlugin: _createPluginWithCodex,
-                                    onRecordSkill: _recordSkillWithCodex,
                                   )
                                 : _destination == WorkspaceDestination.agents
                                 ? AgentsPage(
@@ -2986,8 +2975,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                                             controller:
                                                                 controller,
                                                             composer: _composer,
-                                                            recordSkillRequest:
-                                                                _recordSkillRequest,
                                                             timelinePages:
                                                                 _timelinePages,
                                                             timelineScrollControllers:

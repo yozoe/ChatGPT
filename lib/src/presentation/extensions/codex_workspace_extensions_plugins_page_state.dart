@@ -71,7 +71,6 @@ class PluginsPageState extends State<PluginsPage> {
           createControl: PluginAddMenu(
             onCreatePlugin: widget.onCreatePlugin,
             onAddMarketplace: widget.onAddMarketplace,
-            onRecordSkill: widget.onRecordSkill,
           ),
           actions: [
             IconButton(

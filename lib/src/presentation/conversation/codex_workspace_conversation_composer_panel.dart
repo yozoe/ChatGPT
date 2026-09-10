@@ -8,7 +8,6 @@ class ComposerPanel extends StatefulWidget {
     super.key,
     required this.controller,
     required this.composer,
-    required this.recordSkillRequest,
     required this.onSend,
     required this.onQueueSteer,
     this.onOpenSideChat,
@@ -17,7 +16,6 @@ class ComposerPanel extends StatefulWidget {
 
   final CodexController controller;
   final TextEditingController composer;
-  final ValueListenable<int> recordSkillRequest;
   final Future<bool> Function(ComposerSubmission submission) onSend;
   final Future<bool> Function(ComposerSubmission submission) onQueueSteer;
   final Future<void> Function()? onOpenSideChat;

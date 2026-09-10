@@ -39,7 +39,6 @@ class ComposerPanelState extends State<ComposerPanel> {
   bool _draggingFiles = false;
   bool _includeWorkspace = false;
   bool _planMode = false;
-  bool _recordSkill = false;
   bool _goalMode = false;
   bool _mcpStatusVisible = false;
   bool _codeReviewOptionsVisible = false;
@@ -55,7 +54,6 @@ class ComposerPanelState extends State<ComposerPanel> {
   int _nextPastedTextId = 0;
   String _slashMenuQuery = '';
   Timer? _imeCompositionDeferral;
-  late int _handledRecordSkillRequest;
   String? _draftBeforeGoalMode;
   String? _goal;
   String? _goalBeforeGoalMode;
@@ -123,16 +121,13 @@ class ComposerPanelState extends State<ComposerPanel> {
       _includeWorkspace ||
       _goal?.isNotEmpty == true ||
       _planMode ||
-      _recordSkill ||
       _selectedSkillPaths.isNotEmpty;
 
   @override
   void initState() {
     super.initState();
-    _handledRecordSkillRequest = widget.recordSkillRequest.value;
     controller.addListener(_handleControllerChanged);
     composer.addListener(_handleComposerEditingChanged);
-    widget.recordSkillRequest.addListener(_handleRecordSkillRequest);
   }
 
   @override
@@ -146,29 +141,15 @@ class ComposerPanelState extends State<ComposerPanel> {
       controller.addListener(_handleControllerChanged);
       _releaseDetachedAttachmentResources();
     }
-    if (oldWidget.recordSkillRequest != widget.recordSkillRequest) {
-      oldWidget.recordSkillRequest.removeListener(_handleRecordSkillRequest);
-      _handledRecordSkillRequest = widget.recordSkillRequest.value;
-      widget.recordSkillRequest.addListener(_handleRecordSkillRequest);
-    }
   }
 
   @override
   void dispose() {
     controller.removeListener(_handleControllerChanged);
     composer.removeListener(_handleComposerEditingChanged);
-    widget.recordSkillRequest.removeListener(_handleRecordSkillRequest);
     _imeCompositionDeferral?.cancel();
     _releaseAllAttachmentResources();
     super.dispose();
-  }
-
-  void _handleRecordSkillRequest() {
-    if (_handledRecordSkillRequest == widget.recordSkillRequest.value) return;
-    _handledRecordSkillRequest = widget.recordSkillRequest.value;
-    // The host may still emit this legacy request while the plugin page is
-    // mounted, but no public recording protocol exists. Consume it without
-    // changing composer state or implying that recording started.
   }
 
   void _handleControllerChanged() {
@@ -1124,7 +1105,6 @@ class ComposerPanelState extends State<ComposerPanel> {
       includeWorkspace: _includeWorkspace,
       goal: goalText,
       planMode: _planMode,
-      recordSkill: _recordSkill,
       skills: _selectedSkills,
     );
     final submitted = controller.canSteer
@@ -1141,7 +1121,6 @@ class ComposerPanelState extends State<ComposerPanel> {
       _pastedTexts.clear();
       _selectedSkillPaths.clear();
       _includeWorkspace = false;
-      _recordSkill = false;
       // A goal is persisted on the thread by the successful submission.  It
       // belongs to that task from here on, rather than remaining as a draft
       // context chip for every later composer submission.
@@ -1518,7 +1497,7 @@ class ComposerPanelState extends State<ComposerPanel> {
         icon: Icons.radio_button_checked,
         label: '录制技能',
         description: '当前运行时未提供技能录制协议',
-        selected: _recordSkill,
+        selected: false,
         enabled: false,
       ),
       AddMenuHeader(label: '插件', palette: palette),

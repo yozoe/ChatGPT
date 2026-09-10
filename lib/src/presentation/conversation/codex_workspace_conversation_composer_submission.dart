@@ -10,7 +10,6 @@ class ComposerSubmission {
     required this.includeWorkspace,
     required this.goal,
     required this.planMode,
-    required this.recordSkill,
     required this.skills,
   });
 
@@ -21,7 +20,6 @@ class ComposerSubmission {
   final bool includeWorkspace;
   final String? goal;
   final bool planMode;
-  final bool recordSkill;
   final List<CodexSkill> skills;
 
   bool get hasContext =>
@@ -30,6 +28,5 @@ class ComposerSubmission {
       includeWorkspace ||
       goal?.isNotEmpty == true ||
       planMode ||
-      recordSkill ||
       skills.isNotEmpty;
 }

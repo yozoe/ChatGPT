@@ -4944,11 +4944,9 @@ void main() {
         ),
       ];
     final composer = TextEditingController();
-    final recordSkillRequest = ValueNotifier(0);
     ComposerSubmission? submitted;
     addTearDown(() {
       composer.dispose();
-      recordSkillRequest.dispose();
       controller.dispose();
     });
 
@@ -4958,7 +4956,6 @@ void main() {
           body: ComposerPanel(
             controller: controller,
             composer: composer,
-            recordSkillRequest: recordSkillRequest,
             onSend: (submission) async {
               submitted = submission;
               return true;
@@ -4990,11 +4987,9 @@ void main() {
       ..workspacePath = '/workspace'
       ..status = RuntimeStatus.ready;
     final composer = TextEditingController();
-    final recordSkillRequest = ValueNotifier(0);
     ComposerSubmission? submitted;
     addTearDown(() {
       composer.dispose();
-      recordSkillRequest.dispose();
       controller.dispose();
     });
 
@@ -5004,7 +4999,6 @@ void main() {
           body: ComposerPanel(
             controller: controller,
             composer: composer,
-            recordSkillRequest: recordSkillRequest,
             onSend: (submission) async {
               submitted = submission;
               return true;

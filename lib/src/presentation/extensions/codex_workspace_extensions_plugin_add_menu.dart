@@ -8,12 +8,10 @@ class PluginAddMenu extends StatelessWidget {
     super.key,
     required this.onCreatePlugin,
     required this.onAddMarketplace,
-    required this.onRecordSkill,
   });
 
   final VoidCallback onCreatePlugin;
   final Future<void> Function() onAddMarketplace;
-  final VoidCallback onRecordSkill;
 
   @override
   Widget build(BuildContext context) {
@@ -34,7 +32,7 @@ class PluginAddMenu extends StatelessWidget {
           case PluginAddAction.addMarketplace:
             unawaited(onAddMarketplace());
           case PluginAddAction.recordSkill:
-            onRecordSkill();
+            return;
         }
       },
       itemBuilder: (context) => const [
