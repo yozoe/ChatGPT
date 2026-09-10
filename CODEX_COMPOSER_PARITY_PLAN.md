@@ -365,6 +365,8 @@ Codex 桌面客户端的私有源码和内部实现不可作为可验证目标�
 
 反馈载体应与官方一致，不能统一使用 Snackbar 替代面板错误、行内错误或禁用说明。
 
+上下文用量已改为消费 App Server 0.153.4 的 `thread/tokenUsage/updated`：使用 `last.totalTokens / modelContextWindow` 展示最近一次模型上下文占比，按 thread/turn 隔离迟到与后台通知；缺少有效窗口时明确等待服务端数据，不再以字符数或固定 258k 估算。
+
 ## 阶段七：对齐任务文件生命周期
 
 ### 7.1 根据官方证据选择数据范围
@@ -426,6 +428,7 @@ Codex 桌面客户端的私有源码和内部实现不可作为可验证目标�
 - 线程和 turn 标识。
 - 成功、失败和重试行为。
 - `fileChange` 与 `turn/diff/updated` 在多轮对话中的归属和恢复。
+- `thread/tokenUsage/updated` 的 thread/turn 归属、最近请求用量、缺失窗口与无效数据降级。
 
 ### 8.3 生命周期测试
 

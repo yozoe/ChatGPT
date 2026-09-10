@@ -366,3 +366,4 @@ Initial macOS release.
 - Support Developer ID signing, notarization, stapling, and Gatekeeper assessment in `build_dmg.sh` when release credentials are supplied.
 - Align local development and CI on Flutter 3.47.1 / Dart 3.13.1 and migrate the macOS project to the Flutter-supported macOS 12.0 deployment target.
 - 修复部分 App Server 文件变更事件因使用 `item` 包装或 `file_change` 类型别名而未进入会话记录的问题；有效文件路径现在会继续显示在会话摘要、任务文件和审查入口中。
+- Composer 上下文用量改为使用 Codex App Server `thread/tokenUsage/updated` 的真实最近请求 token 统计，并按任务与回合隔离；服务端尚未返回有效窗口数据时显示等待提示，不再展示字符数估算或固定 258k 上限。

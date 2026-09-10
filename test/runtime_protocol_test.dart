@@ -21,8 +21,95 @@ CodexThread protocolThread({
   model: model,
 );
 
+ServerEvent tokenUsageEvent({
+  required String threadId,
+  required String turnId,
+  required int usedTokens,
+  required int totalTokens,
+  Object? maximumTokens = 100000,
+}) => ServerEvent(
+  method: 'thread/tokenUsage/updated',
+  params: {
+    'threadId': threadId,
+    'turnId': turnId,
+    'tokenUsage': {
+      'last': {'totalTokens': usedTokens},
+      'total': {'totalTokens': totalTokens},
+      'modelContextWindow': maximumTokens,
+    },
+  },
+);
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('keeps authoritative context usage scoped to its thread and turn', () {
+    final controller = CodexController(server: FakeCodexAppServer())
+      ..activeThreadId = 'thread-a'
+      ..activeTurnId = 'turn-a2';
+
+    controller.handleServerEventForTesting(
+      tokenUsageEvent(
+        threadId: 'thread-a',
+        turnId: 'turn-a1',
+        usedTokens: 90000,
+        totalTokens: 120000,
+      ),
+    );
+    expect(controller.activeThreadTokenUsage, isNull);
+
+    controller.handleServerEventForTesting(
+      tokenUsageEvent(
+        threadId: 'thread-a',
+        turnId: 'turn-a2',
+        usedTokens: 24000,
+        totalTokens: 64000,
+      ),
+    );
+    expect(controller.activeThreadTokenUsage?.usedTokens, 24000);
+    expect(controller.activeThreadTokenUsage?.totalTokens, 64000);
+    expect(controller.activeThreadTokenUsage?.maximumTokens, 100000);
+
+    controller.handleServerEventForTesting(
+      tokenUsageEvent(
+        threadId: 'thread-b',
+        turnId: 'turn-b1',
+        usedTokens: 12000,
+        totalTokens: 12000,
+      ),
+    );
+    expect(controller.activeThreadTokenUsage?.usedTokens, 24000);
+
+    controller
+      ..activeThreadId = 'thread-b'
+      ..activeTurnId = 'turn-b1';
+    expect(controller.activeThreadTokenUsage?.usedTokens, 12000);
+
+    controller
+      ..activeThreadId = 'thread-a'
+      ..activeTurnId = 'turn-a2';
+    expect(controller.activeThreadTokenUsage?.usedTokens, 24000);
+    controller.dispose();
+  });
+
+  test('rejects invalid context windows instead of inventing a fallback', () {
+    final controller = CodexController(server: FakeCodexAppServer())
+      ..activeThreadId = 'thread-a'
+      ..activeTurnId = 'turn-a';
+
+    controller.handleServerEventForTesting(
+      tokenUsageEvent(
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        usedTokens: 1000,
+        totalTokens: 1000,
+        maximumTokens: 0,
+      ),
+    );
+
+    expect(controller.activeThreadTokenUsage, isNull);
+    controller.dispose();
+  });
 
   test('preserves the historical provider when resuming a thread', () async {
     final server = FakeCodexAppServer();

@@ -104,25 +104,18 @@ class ComposerPanelState extends State<ComposerPanel> {
         .toList(growable: false);
   }
 
-  ({int used, int maximum}) get _contextUsage {
-    // App Server does not currently expose token accounting in the client
-    // protocol. Keep a conservative local estimate so the affordance remains
-    // useful and updates as history, tool output, and the draft change.
-    var characters = 1000; // system instructions and protocol envelope
-    for (final entry in controller.entries) {
-      characters += entry.title.runes.length + entry.detail.runes.length;
-    }
-    characters += composer.text.runes.length;
-    for (final pastedText in _pastedTexts) {
-      characters += pastedText.text.runes.length;
-    }
-    for (final attachment in _attachments) {
-      characters += attachment.path.runes.length + 256;
-    }
-    for (final skill in _selectedSkills) {
-      characters += skill.name.runes.length + skill.description.runes.length;
-    }
-    return (used: (characters / 4).ceil(), maximum: 258000);
+  ({int used, int maximum})? get _contextUsage {
+    final usage = controller.activeThreadTokenUsage;
+    final maximum = usage?.maximumTokens;
+    if (usage == null || maximum == null) return null;
+    return (used: usage.usedTokens, maximum: maximum);
+  }
+
+  String get _compactDescription {
+    final usage = _contextUsage;
+    if (usage == null) return '压缩此聊天的上下文';
+    final percent = ((usage.used / usage.maximum) * 100).clamp(0, 100).floor();
+    return '压缩此聊天的上下文（已使用 $percent%）';
   }
 
   bool get _hasComposerChips =>
@@ -304,8 +297,7 @@ class ComposerPanelState extends State<ComposerPanel> {
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.compact,
       label: '压缩',
-      description:
-          '压缩此聊天的上下文（已使用 ${((_contextUsage.used / _contextUsage.maximum) * 100).floor()}%）',
+      description: _compactDescription,
       icon: Icons.circle_outlined,
       enabled: controller.canCompactActiveThread,
     ),
@@ -2095,8 +2087,8 @@ class ComposerPanelState extends State<ComposerPanel> {
                                       builder: (context) {
                                         final usage = _contextUsage;
                                         return ComposerContextUsageButton(
-                                          usedTokens: usage.used,
-                                          maximumTokens: usage.maximum,
+                                          usedTokens: usage?.used,
+                                          maximumTokens: usage?.maximum,
                                         );
                                       },
                                     ),

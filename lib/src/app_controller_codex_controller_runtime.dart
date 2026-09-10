@@ -6,6 +6,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
 import 'package:chatgpt/src/domain/codex_thread_goal.dart';
+import 'package:chatgpt/src/domain/codex_thread_token_usage.dart';
 import 'package:chatgpt/src/domain/codex_plugin.dart';
 import 'package:chatgpt/src/domain/codex_skill.dart';
 import 'package:chatgpt/src/domain/codex_marketplace.dart';
@@ -473,6 +474,7 @@ class CodexController extends ChangeNotifier {
   final Map<String, CodexThreadGoal> _threadGoalsById = {};
   final Map<String, int> _threadGoalRevisions = {};
   final Map<String, String> _lastGoalTimelineStatusByThread = {};
+  final Map<String, CodexThreadTokenUsage> _threadTokenUsageById = {};
   final Map<String, List<CodexFileChange>> _persistedFileChangesByThreadId = {};
   final Map<String, String?> _persistedTurnDiffByThreadId = {};
   final Set<String> _goalOperationThreadIds = {};
@@ -481,6 +483,12 @@ class CodexController extends ChangeNotifier {
   CodexThreadGoal? get activeThreadGoal {
     final threadId = activeThreadId;
     return threadId == null ? null : _threadGoalsById[threadId];
+  }
+
+  /// Latest authoritative context-window usage for the selected task.
+  CodexThreadTokenUsage? get activeThreadTokenUsage {
+    final threadId = activeThreadId;
+    return threadId == null ? null : _threadTokenUsageById[threadId];
   }
 
   bool get goalOperationInProgress {
@@ -4872,6 +4880,7 @@ class CodexController extends ChangeNotifier {
       _userMessageEntriesByThreadId.remove(thread.id);
       _persistedFileChangesByThreadId.remove(thread.id);
       _persistedTurnDiffByThreadId.remove(thread.id);
+      _threadTokenUsageById.remove(thread.id);
       _runningTurnIdsByThread.remove(thread.id);
       _pendingNetworkRetryEntriesByThread.remove(thread.id);
       _runningTurnSubmissions.remove(thread.id);
@@ -5440,6 +5449,8 @@ class CodexController extends ChangeNotifier {
         _applyThreadGoalUpdated(event.params);
       case 'thread/goal/cleared':
         _applyThreadGoalCleared(event.params);
+      case 'thread/tokenUsage/updated':
+        _applyThreadTokenUsageUpdated(event.params);
       case 'item/completed':
         if (_isEventForActiveTurn(event.params)) {
           _recordCompletedLiveActivity(event.params);
@@ -5551,6 +5562,7 @@ class CodexController extends ChangeNotifier {
         final deletedThreadId = _threadIdFromEvent(event.params);
         if (deletedThreadId != null) {
           _threadGoalsById.remove(deletedThreadId);
+          _threadTokenUsageById.remove(deletedThreadId);
           _threadGoalRevisions.remove(deletedThreadId);
           _goalOperationThreadIds.remove(deletedThreadId);
           _goalOperationErrorsByThread.remove(deletedThreadId);
@@ -5734,6 +5746,7 @@ class CodexController extends ChangeNotifier {
       method.startsWith('item/') ||
       method == 'turn/plan/updated' ||
       method == 'turn/diff/updated' ||
+      method == 'thread/tokenUsage/updated' ||
       method == 'turn/completed';
 
   String? _turnIdFromEvent(JsonMap params) {
@@ -5944,6 +5957,16 @@ class CodexController extends ChangeNotifier {
       previousStatus: _lastGoalTimelineStatusByThread[threadId],
       status: 'cleared',
     );
+  }
+
+  void _applyThreadTokenUsageUpdated(JsonMap params) {
+    final usage = CodexThreadTokenUsage.fromNotification(params);
+    if (usage == null) return;
+    final expectedTurnId = usage.threadId == activeThreadId
+        ? activeTurnId
+        : _runningTurnIdsByThread[usage.threadId];
+    if (expectedTurnId != null && usage.turnId != expectedTurnId) return;
+    _threadTokenUsageById[usage.threadId] = usage;
   }
 
   void _appendGoalLifecycleFeedback(

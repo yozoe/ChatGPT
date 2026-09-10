@@ -2574,8 +2574,9 @@ void main() {
     );
     await tester.tap(find.byKey(const Key('composer-context-usage-button')));
     await tester.pumpAndSettle();
-    expect(find.text('背景信息窗口（估算）：'), findsOneWidget);
-    expect(find.textContaining('共约 258k'), findsOneWidget);
+    expect(find.text('背景信息窗口：'), findsOneWidget);
+    expect(find.text('正在等待 Codex 返回上下文用量'), findsOneWidget);
+    expect(find.textContaining('发送任务后，此处会显示运行时报告的真实用量。'), findsOneWidget);
     await tester.tapAt(Offset.zero);
     await tester.pump();
     final composerField = tester.widget<TextField>(
@@ -2616,6 +2617,41 @@ void main() {
     expect(find.text('低'), findsOneWidget);
     expect(find.text('新任务推理强度：低'), findsNothing);
     expect(find.text('高'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('shows App Server context usage without a local estimate', (
+    tester,
+  ) async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..activeThreadId = 'usage-thread'
+      ..activeTurnId = 'usage-turn';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'thread/tokenUsage/updated',
+        params: {
+          'threadId': 'usage-thread',
+          'turnId': 'usage-turn',
+          'tokenUsage': {
+            'last': {'totalTokens': 25000},
+            'total': {'totalTokens': 80000},
+            'modelContextWindow': 100000,
+          },
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('composer-context-usage-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('25% 已用（剩余 75%）'), findsOneWidget);
+    expect(find.text('已用 25k 标记，共 100k'), findsOneWidget);
+    expect(find.textContaining('估算'), findsNothing);
 
     await tester.pumpWidget(const SizedBox());
   });

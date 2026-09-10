@@ -9,8 +9,8 @@ class ComposerContextUsageButton extends StatelessWidget {
     required this.maximumTokens,
   });
 
-  final int usedTokens;
-  final int maximumTokens;
+  final int? usedTokens;
+  final int? maximumTokens;
 
   String _compactTokenCount(int value) {
     if (value >= 1000) {
@@ -23,9 +23,10 @@ class ComposerContextUsageButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
-    final ratio = maximumTokens <= 0
-        ? 0.0
-        : (usedTokens / maximumTokens).clamp(0.0, 1.0);
+    final hasUsage = usedTokens != null && maximumTokens != null;
+    final ratio = hasUsage
+        ? (usedTokens! / maximumTokens!).clamp(0.0, 1.0)
+        : 0.0;
     final percent = (ratio * 100).round();
     final remaining = 100 - percent;
     final warning = ratio >= 0.85;
@@ -50,23 +51,35 @@ class ComposerContextUsageButton extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '背景信息窗口（估算）：',
+                  '背景信息窗口：',
                   style: TextStyle(color: palette.muted, fontSize: 12),
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  '约 $percent% 已用（剩余约 $remaining%）',
-                  style: TextStyle(color: palette.trace, fontSize: 13),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  '估算已用 ${_compactTokenCount(usedTokens)} 标记，共约 ${_compactTokenCount(maximumTokens)}',
-                  style: TextStyle(color: palette.trace, fontSize: 13),
-                ),
+                if (hasUsage) ...[
+                  Text(
+                    '$percent% 已用（剩余 $remaining%）',
+                    style: TextStyle(color: palette.trace, fontSize: 13),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    '已用 ${_compactTokenCount(usedTokens!)} 标记，共 ${_compactTokenCount(maximumTokens!)}',
+                    style: TextStyle(color: palette.trace, fontSize: 13),
+                  ),
+                ] else ...[
+                  Text(
+                    '正在等待 Codex 返回上下文用量',
+                    style: TextStyle(color: palette.trace, fontSize: 13),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    '发送任务后，此处会显示运行时报告的真实用量。',
+                    style: TextStyle(color: palette.trace, fontSize: 11),
+                  ),
+                ],
                 if (warning) ...[
                   const SizedBox(height: 8),
                   Text(
-                    '本地估算接近上限；Codex 可能压缩较早的对话内容，或建议开启新任务。',
+                    '上下文接近上限；Codex 可能压缩较早的对话内容，或建议开启新任务。',
                     style: TextStyle(color: palette.warning, fontSize: 11),
                   ),
                 ],

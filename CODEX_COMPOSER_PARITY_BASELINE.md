@@ -45,6 +45,10 @@
 | Plan | 官方文档确认 `/plan` 和 collaboration mode | 官方桌面端 `@` 入口及运行中状态 |
 | 录制技能 | 客户端存在技能创建/录制相关产品入口；尚无证据证明本地“附加 skill-creator + 提示词”完全等价 | 精确名称、采集过程、保存与失败生命周期；当前入口按未知协议禁用 |
 
+### 上下文用量协议（Codex 0.153.4）
+
+App Server Schema 明确提供 `thread/tokenUsage/updated`，通知包含 `threadId`、`turnId`、`tokenUsage.last`、`tokenUsage.total` 和可空的 `modelContextWindow`。Composer 使用 `last.totalTokens` 作为最近一次模型上下文占用，并按 thread/turn 严格归属；`total.totalTokens` 仅保留为累计统计，不用于上下文百分比。缺少有效窗口或 usage 时显示等待状态，不使用字符数估算或固定窗口值。
+
 ## 任务文件专项基线
 
 App Server 已确认：
