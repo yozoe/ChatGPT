@@ -149,7 +149,13 @@ class ConversationViewportState extends State<ConversationViewport> {
                 !entry.createdAt.isBefore(activeTurnStartedAt),
           )
         : false;
-    final thinkingLabel = hasRecentCommand ? '正在整理命令结果' : '正在思考';
+    final activeGoal = widget.controller.activeThreadGoal;
+    final goalLabel =
+        activeGoal?.status == 'active' &&
+            activeGoal!.objective.trim().isNotEmpty
+        ? '正在推进目标：${_compactGoalLabel(activeGoal.objective)}'
+        : null;
+    final thinkingLabel = hasRecentCommand ? '正在整理命令结果' : goalLabel ?? '正在思考';
     final activePageIndex = pages.indexWhere(
       (page) => page.key == widget.activeTimelinePageKey,
     );
@@ -426,5 +432,11 @@ class ConversationViewportState extends State<ConversationViewport> {
         },
       ),
     );
+  }
+
+  String _compactGoalLabel(String objective) {
+    final value = objective.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (value.runes.length <= 36) return value;
+    return '${String.fromCharCodes(value.runes.take(36))}…';
   }
 }

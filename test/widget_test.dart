@@ -7208,6 +7208,19 @@ void main() {
           ),
         ),
       );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'thread/goal/updated',
+        params: {
+          'threadId': 'thread-1',
+          'goal': {
+            'threadId': 'thread-1',
+            'objective': '完成当前目标',
+            'status': 'active',
+          },
+        },
+      ),
+    );
 
     await tester.pumpWidget(
       MaterialApp(home: CodexWorkspace(controller: controller)),
@@ -7218,6 +7231,7 @@ void main() {
     expect(find.byKey(const Key('composer-activity-pill')), findsNothing);
     expect(find.text('正在处理任务'), findsNothing);
     expect(find.text('正在思考'), findsNothing);
+    expect(find.text('正在推进目标：完成当前目标'), findsOneWidget);
     final dots = List<Finder>.generate(
       3,
       (index) => find.byKey(ValueKey('live-thinking-dot-$index')),
