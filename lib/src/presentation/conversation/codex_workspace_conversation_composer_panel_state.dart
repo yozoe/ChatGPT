@@ -179,6 +179,17 @@ class ComposerPanelState extends State<ComposerPanel> {
   }
 
   void _handleControllerChanged() {
+    final enabledSkillPaths = controller.skills
+        .where((skill) => skill.enabled && skill.path.trim().isNotEmpty)
+        .map((skill) => skill.path)
+        .toSet();
+    final staleSkillPaths = _selectedSkillPaths
+        .where((path) => !enabledSkillPaths.contains(path))
+        .toList(growable: false);
+    if (staleSkillPaths.isNotEmpty) {
+      _selectedSkillPaths.removeAll(staleSkillPaths);
+      if (mounted) setState(() {});
+    }
     if (controller.status != RuntimeStatus.running) {
       _releaseDetachedAttachmentResources();
     }
