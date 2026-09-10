@@ -12861,6 +12861,75 @@ void main() {
     },
   );
 
+  test(
+    'clears persisted task files when switching tasks during undo',
+    () async {
+      final pendingUndo = Completer<void>();
+      final git = _FakeGitProjectService()..reverseCompleter = pendingUndo;
+      final history = _MemoryConversationHistoryStore();
+      final server = _FakeCodexAppServer();
+      final controller =
+          CodexController(
+              server: server,
+              gitProjectService: git,
+              conversationHistoryStore: history,
+            )
+            ..workspacePath = '/workspace'
+            ..status = RuntimeStatus.ready;
+      const taskDiff =
+          'diff --git a/lib/main.dart b/lib/main.dart\n'
+          '--- a/lib/main.dart\n'
+          '+++ b/lib/main.dart\n'
+          '@@ -1 +1 @@\n'
+          '-old\n'
+          '+new';
+
+      await controller.resumeThread(_thread(id: 'task-a'));
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'threadId': 'task-a',
+            'item': {
+              'type': 'fileChange',
+              'changes': [
+                {
+                  'path': 'lib/main.dart',
+                  'kind': 'modified',
+                  'diff': '@@ -1 +1 @@\n-old\n+new',
+                },
+              ],
+            },
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/diff/updated',
+          params: {'threadId': 'task-a', 'diff': taskDiff},
+        ),
+      );
+
+      final undo = controller.undoFileChanges();
+      await Future<void>.delayed(Duration.zero);
+      await controller.resumeThread(_thread(id: 'task-b'));
+      expect(controller.activeThreadId, 'task-b');
+
+      pendingUndo.complete();
+      expect(await undo, isTrue);
+      await controller.saveConversationHistoryForTesting();
+
+      final snapshot = history.snapshots['/workspace']!;
+      expect(snapshot.fileChangesByThreadId, isNot(contains('task-a')));
+      expect(snapshot.turnDiffByThreadId, isNot(contains('task-a')));
+
+      await controller.resumeThread(_thread(id: 'task-a'));
+      expect(controller.fileChanges, isEmpty);
+      expect(controller.turnDiff, isNull);
+      controller.dispose();
+    },
+  );
+
   testWidgets('keeps the file summary when undo cannot be applied safely', (
     tester,
   ) async {

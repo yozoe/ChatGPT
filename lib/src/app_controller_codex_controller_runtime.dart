@@ -8027,15 +8027,23 @@ class CodexController extends ChangeNotifier {
       } else if (workspacePath == workspace && threadId != null) {
         final cacheKey = (workspace: workspace, threadId: threadId);
         final cached = _threadViewCache.remove(cacheKey);
+        var detachedSnapshotCleared = false;
         if (cached != null && cached.turnDiff == diff) {
           _threadViewCache[cacheKey] = ThreadViewSnapshot(
             entries: cached.entries,
             fileChanges: const [],
             turnDiff: null,
           );
+          detachedSnapshotCleared = true;
         } else if (cached != null) {
           _threadViewCache[cacheKey] = cached;
         }
+        if (_persistedTurnDiffByThreadId[threadId] == diff) {
+          _persistedFileChangesByThreadId.remove(threadId);
+          _persistedTurnDiffByThreadId.remove(threadId);
+          detachedSnapshotCleared = true;
+        }
+        if (detachedSnapshotCleared) _scheduleConversationHistorySave();
       }
       if (workspacePath == workspace) await refreshGitProject();
       return true;
