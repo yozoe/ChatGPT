@@ -7905,6 +7905,10 @@ class CodexController extends ChangeNotifier {
       // App Server 有时只提供文件路径和变更类型，Diff 会由工作区状态补齐。
       // App Server sometimes sends only the path and change kind; hydrate the Diff from the workspace.
       unawaited(_hydrateMissingFileChangeDiffs());
+      // File-change notifications can arrive before turn/completed (or while
+      // a turn is still running). Persist the summary at this boundary so an
+      // app restart cannot lose the latest task-file count.
+      _scheduleConversationHistorySave();
     }
   }
 
@@ -8065,7 +8069,10 @@ class CodexController extends ChangeNotifier {
       _fileChangesByPath.remove(path);
     }
     _turnDiffDerivedFileChangePaths.clear();
-    if (diff.isEmpty) return;
+    if (diff.isEmpty) {
+      _scheduleConversationHistorySave();
+      return;
+    }
 
     // Some App Server versions send only a turn-level patch. Derive the
     // per-file task snapshot from its Git headers so the environment card,
@@ -8080,6 +8087,7 @@ class CodexController extends ChangeNotifier {
         _turnDiffDerivedFileChangePaths.add(change.path);
       }
     }
+    _scheduleConversationHistorySave();
   }
 
   /// 根据账户读取结果更新认证方式与账户显示信息。
