@@ -85,7 +85,11 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   Future<void> _openSideChat() async {
     if (_sideChatSession != null) return;
     final session = await _controller.openSideChat();
-    if (!mounted || session == null) return;
+    if (session == null) return;
+    if (!mounted || _reviewOpen || _sideChatSession != null) {
+      session.dispose();
+      return;
+    }
     setState(() {
       _sideChatSession = session;
       _activeSidePanelTab = 'side-chat';

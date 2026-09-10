@@ -692,6 +692,48 @@ void main() {
   );
 
   test(
+    'prevents duplicate side-chat forks while creation is pending',
+    () async {
+      final pending = Completer<void>();
+      final server = FakeCodexAppServer()..forkThreadCompleter = pending;
+      final controller = CodexController(server: server)
+        ..workspacePath = '/workspace'
+        ..activeThreadId = 'thread-1';
+
+      final first = controller.openSideChat();
+      final duplicate = await controller.openSideChat();
+
+      expect(duplicate, isNull);
+      expect(server.forkThreadCalls, 1);
+      expect(controller.canOpenSideChat, isFalse);
+
+      pending.complete();
+      final session = await first;
+      expect(session, isNotNull);
+      expect(controller.canOpenSideChat, isTrue);
+      session?.dispose();
+      controller.dispose();
+    },
+  );
+
+  test('discards a side-chat fork after switching tasks', () async {
+    final pending = Completer<void>();
+    final server = FakeCodexAppServer()..forkThreadCompleter = pending;
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..activeThreadId = 'thread-1';
+
+    final opening = controller.openSideChat();
+    controller.activeThreadId = 'thread-2';
+    pending.complete();
+
+    expect(await opening, isNull);
+    expect(controller.activeThreadId, 'thread-2');
+    expect(controller.canOpenSideChat, isTrue);
+    controller.dispose();
+  });
+
+  test(
     'keeps side-chat turns isolated and renders attributed events',
     () async {
       final server = FakeCodexAppServer();

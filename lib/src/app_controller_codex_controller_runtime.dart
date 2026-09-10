@@ -325,6 +325,7 @@ class CodexController extends ChangeNotifier {
   final Set<String> _runningThreadIds = {};
   bool _preparingTurnStart = false;
   bool _turnStartAwaitingAcceptance = false;
+  bool _openingSideChat = false;
   // Prevent two submissions from the same conversation view from both
   // persisting attachments and racing to create/attach a thread. A newer view
   // (for example after the user opens New chat) may submit independently while
@@ -1294,16 +1295,24 @@ class CodexController extends ChangeNotifier {
   bool get canStartCodeReview => canSend && _server.isRunning;
   bool get serverIsRunning => _server.isRunning;
   bool get canOpenSideChat =>
-      activeThreadId != null && workspacePath != null && _server.isRunning;
+      activeThreadId != null &&
+      workspacePath != null &&
+      _server.isRunning &&
+      !_openingSideChat;
 
   /// Opens an independent ephemeral fork for a side chat. The main thread is
   /// never switched; callers own and dispose the returned session.
   Future<CodexSideChatSession?> openSideChat() async {
     final parentThreadId = activeThreadId;
     final workspace = workspacePath;
-    if (parentThreadId == null || workspace == null || !_server.isRunning) {
+    if (parentThreadId == null ||
+        workspace == null ||
+        !_server.isRunning ||
+        _openingSideChat) {
       return null;
     }
+    _openingSideChat = true;
+    if (!_disposed) notifyListeners();
     try {
       final result = await _server.forkThread(
         threadId: parentThreadId,
@@ -1314,6 +1323,11 @@ class CodexController extends ChangeNotifier {
       if (rawThread is! Map) return null;
       final sideThreadId = rawThread['id']?.toString().trim();
       if (sideThreadId == null || sideThreadId.isEmpty) return null;
+      if (_disposed ||
+          activeThreadId != parentThreadId ||
+          workspacePath != workspace) {
+        return null;
+      }
       return CodexSideChatSession(
         server: _server,
         parentThreadId: parentThreadId,
@@ -1322,6 +1336,9 @@ class CodexController extends ChangeNotifier {
       );
     } catch (_) {
       return null;
+    } finally {
+      _openingSideChat = false;
+      if (!_disposed) notifyListeners();
     }
   }
 
