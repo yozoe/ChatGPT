@@ -321,12 +321,12 @@ class CodexController extends ChangeNotifier {
   // is currently open in the workbench.
   final Set<String> _runningThreadIds = {};
   bool _preparingTurnStart = false;
+  bool _turnStartAwaitingAcceptance = false;
   // Prevent two submissions from the same conversation view from both
   // persisting attachments and racing to create/attach a thread. A newer view
   // (for example after the user opens New chat) may submit independently while
   // the previous task is still finishing its App Server startup handshake.
   final Set<int> _sendPromptInFlightRevisions = {};
-  Future<void> _turnStartOrdering = Future<void>.value();
   // Owning workspace for every thread that is still executing on the shared
   // App Server. This lets the foreground project change without losing the
   // background task's routing or completion reminder.
@@ -3236,19 +3236,11 @@ class CodexController extends ChangeNotifier {
       // Refresh the authoritative server list alongside turn/start. Skip
       // local-session fallback here so this handshake remains bounded and does
       // not scan disk before starting the turn.
+      // Refresh the sidebar in the background. It must never block turn/start:
+      // a slow or unavailable list request otherwise leaves the Composer
+      // looking idle even though the user already submitted the task.
       final sidebarRefresh = refreshThreads(allowLocalSessionFallback: false);
-      final previousTurnStart = _turnStartOrdering;
-      final turnStartGate = Completer<void>();
-      _turnStartOrdering = turnStartGate.future;
-      await previousTurnStart;
-      // A newer conversation view may be submitted while this task is still
-      // waiting for its list snapshot. Keep the newer turn independent rather
-      // than serializing two user-visible sends behind the older refresh.
-      if (_sendPromptInFlightRevisions.length <= 1) {
-        await sidebarRefresh;
-      } else {
-        unawaited(sidebarRefresh);
-      }
+      _turnStartAwaitingAcceptance = true;
       final turnStart = _server.startTurn(
         threadId: threadId,
         prompt: text,
@@ -3256,20 +3248,19 @@ class CodexController extends ChangeNotifier {
         additionalInput: persistedAdditionalInput,
         collaborationMode: collaborationMode,
       );
-      turnStartGate.complete();
       _preparingTurnStart = false;
       await turnStart;
-      // Keep the turn-start handshake contiguous. Refreshing the entire task
-      // list before setting the goal/startTurn introduced a long await where
-      // switching tasks could detach the new turn before it was registered as
-      // a background-running task. Refresh after the server accepted the turn
-      // so task switching can safely retain it in the background. This sync is
-      // deliberately non-blocking: a list-read failure must never roll back a
-      // turn that App Server has already accepted.
+      _turnStartAwaitingAcceptance = false;
+      unawaited(sidebarRefresh);
+      // The list refresh is deliberately non-blocking: a slow read must never
+      // leave the Composer idle, and a list-read failure must never roll back
+      // a turn that App Server has already accepted. Its result remains
+      // request/epoch guarded by refreshThreads.
       notifyListeners();
       return true;
     } catch (error) {
       _preparingTurnStart = false;
+      _turnStartAwaitingAcceptance = false;
       _runningThreadIds.remove(requestedThreadId);
       if (requestedThreadId != null) {
         _threadWorkspaceById.remove(requestedThreadId);
@@ -5419,7 +5410,7 @@ class CodexController extends ChangeNotifier {
         final currentThreadId = activeThreadId;
         final eventThreadId = _threadIdFromEvent(event.params);
         final eventTurnId = _turnIdFromEvent(event.params);
-        if (_preparingTurnStart &&
+        if ((_preparingTurnStart || _turnStartAwaitingAcceptance) &&
             (eventThreadId == null || eventThreadId == currentThreadId)) {
           // A new turn has not been requested yet. A late completion for the
           // thread being reused must not finish the optimistic new task.

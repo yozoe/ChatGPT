@@ -9366,18 +9366,15 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       expect(server.listRequests, hasLength(1));
 
-      // The new turn has not been requested while the sidebar refresh is in
-      // flight, so even a same-thread or ID-less reply must still be stale.
+      // turn/start is issued without waiting for the sidebar refresh, so a
+      // compatible reply can already belong to the new turn.
       controller.handleServerEventForTesting(
         const ServerEvent(
           method: 'item/agentMessage/delta',
           params: {'itemId': 'startup-reply', 'delta': '提前到达的回复'},
         ),
       );
-      expect(
-        controller.entries.map((entry) => entry.title),
-        isNot(contains('Codex')),
-      );
+      expect(controller.entries.map((entry) => entry.title), contains('Codex'));
       controller.handleServerEventForTesting(
         const ServerEvent(
           method: 'turn/completed',
