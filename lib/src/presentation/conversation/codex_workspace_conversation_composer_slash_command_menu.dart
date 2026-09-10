@@ -18,6 +18,7 @@ class ComposerSlashCommandMenu extends StatelessWidget {
     required this.selectedIndex,
     required this.onSelected,
     required this.onSkillSelected,
+    required this.onItemHovered,
     this.menuKey = const Key('composer-slash-menu'),
     this.semanticLabel,
     this.commandSectionLabel = '快捷指令',
@@ -37,6 +38,7 @@ class ComposerSlashCommandMenu extends StatelessWidget {
   final int selectedIndex;
   final ValueChanged<ComposerSlashCommand> onSelected;
   final ValueChanged<CodexSkill> onSkillSelected;
+  final ValueChanged<int> onItemHovered;
   final Key menuKey;
   final String? semanticLabel;
   final String commandSectionLabel;
@@ -187,6 +189,9 @@ class ComposerSlashCommandMenu extends StatelessWidget {
         child: InkWell(
           key: ValueKey('composer-slash-skill-${skill.name}'),
           borderRadius: BorderRadius.circular(10),
+          onHover: (hovering) {
+            if (hovering) onItemHovered(index);
+          },
           onTap: () => onSkillSelected(skill),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 120),
@@ -256,6 +261,11 @@ class ComposerSlashCommandMenu extends StatelessWidget {
         child: InkWell(
           key: ValueKey('composer-slash-command-${command.kind.name}'),
           borderRadius: BorderRadius.circular(12),
+          onHover: command.enabled
+              ? (hovering) {
+                  if (hovering) onItemHovered(index);
+                }
+              : null,
           onTap: command.enabled ? () => onSelected(command) : null,
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 120),

@@ -2967,6 +2967,52 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets(
+    'focuses the first enabled slash command and follows mouse hover',
+    (tester) async {
+      final server = _FakeCodexAppServer();
+      final controller =
+          CodexController(
+              server: server,
+              pluginStore: _MemoryCodexPluginStore(),
+            )
+            ..workspacePath = '/workspace'
+            ..status = RuntimeStatus.ready;
+      await tester.pumpWidget(
+        MaterialApp(home: CodexWorkspace(controller: controller)),
+      );
+
+      final field = find.byKey(const Key('composer-field'));
+      await tester.enterText(field, '/');
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+
+      expect(
+        find.byKey(const Key('composer-mcp-status-panel')),
+        findsOneWidget,
+      );
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      await tester.enterText(field, '/');
+      await tester.pump();
+      final feedback = find.byKey(
+        const ValueKey('composer-slash-command-feedback'),
+      );
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: tester.getCenter(feedback));
+      await mouse.moveTo(tester.getCenter(feedback));
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('composer-feedback-dialog')), findsOneWidget);
+      await mouse.removePointer();
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets('submits Composer feedback through the App Server dialog', (
     tester,
   ) async {

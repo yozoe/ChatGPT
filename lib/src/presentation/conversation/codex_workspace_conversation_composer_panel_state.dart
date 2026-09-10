@@ -209,7 +209,7 @@ class ComposerPanelState extends State<ComposerPanel> {
     if (triggerQuery != _slashMenuQuery) {
       _slashMenuQuery = triggerQuery;
       _slashMenuDismissed = false;
-      _slashMenuSelectedIndex = 0;
+      _slashMenuSelectedIndex = _firstEnabledComposerMenuIndex();
     }
     if (mentionQuery != null &&
         controller.skills.isEmpty &&
@@ -394,6 +394,26 @@ class ComposerPanelState extends State<ComposerPanel> {
     return _mentionCommands
         .where((command) => command.matches(query))
         .toList(growable: false);
+  }
+
+  int _firstEnabledComposerMenuIndex() {
+    final commands = _showMentionMenu
+        ? _filteredMentionCommands
+        : _filteredSlashCommands;
+    for (var index = 0; index < commands.length; index++) {
+      if (commands[index].enabled) return index;
+    }
+    if (_showMentionMenu && _filteredMentionSkills.isNotEmpty) {
+      return commands.length;
+    }
+    return 0;
+  }
+
+  void _hoverComposerMenuItem(int index) {
+    if (index == _slashMenuSelectedIndex || !_composerMenuItemEnabled(index)) {
+      return;
+    }
+    setState(() => _slashMenuSelectedIndex = index);
   }
 
   void _moveSlashMenuSelection(int delta) {
@@ -1622,6 +1642,7 @@ class ComposerPanelState extends State<ComposerPanel> {
                 );
               },
               onSkillSelected: _selectSlashSkill,
+              onItemHovered: _hoverComposerMenuItem,
               menuKey: _showMentionMenu
                   ? const Key('composer-mention-menu')
                   : const Key('composer-slash-menu'),
