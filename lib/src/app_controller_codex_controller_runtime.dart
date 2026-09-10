@@ -472,6 +472,7 @@ class CodexController extends ChangeNotifier {
   TaskPlan? activeTaskPlan;
   final Map<String, CodexThreadGoal> _threadGoalsById = {};
   final Map<String, int> _threadGoalRevisions = {};
+  final Map<String, String> _lastGoalTimelineStatusByThread = {};
   final Set<String> _goalOperationThreadIds = {};
   final Map<String, String> _goalOperationErrorsByThread = {};
 
@@ -3718,11 +3719,17 @@ class CodexController extends ChangeNotifier {
       objective: objective,
     );
     if (_threadGoalRevisions[threadId] != revision) return;
+    final previous = _threadGoalsById[threadId];
     _threadGoalsById[threadId] = _normalizedThreadGoal(
       rawGoal,
       threadId: threadId,
       objective: objective,
       status: 'active',
+    );
+    _appendGoalLifecycleFeedback(
+      threadId,
+      previousStatus: previous?.status,
+      status: _threadGoalsById[threadId]!.status,
     );
   }
 
@@ -3749,6 +3756,11 @@ class CodexController extends ChangeNotifier {
           );
           changed = !_sameThreadGoal(previous, normalized);
           _threadGoalsById[threadId] = normalized;
+          _appendGoalLifecycleFeedback(
+            threadId,
+            previousStatus: previous?.status,
+            status: normalized.status,
+          );
         }
       }
       if (changed && activeThreadId == threadId) notifyListeners();
@@ -3818,7 +3830,7 @@ class CodexController extends ChangeNotifier {
         status: status,
       );
       if (_threadGoalRevisions[threadId] == revision) {
-        _threadGoalsById[threadId] = _normalizedThreadGoal(
+        final updated = _normalizedThreadGoal(
           rawGoal,
           threadId: threadId,
           objective: objective ?? goal.objective,
@@ -3826,6 +3838,12 @@ class CodexController extends ChangeNotifier {
           tokenBudget: goal.tokenBudget,
           tokensUsed: goal.tokensUsed,
           timeUsedSeconds: goal.timeUsedSeconds,
+        );
+        _threadGoalsById[threadId] = updated;
+        _appendGoalLifecycleFeedback(
+          threadId,
+          previousStatus: goal.status,
+          status: updated.status,
         );
       }
       return true;
@@ -3853,6 +3871,11 @@ class CodexController extends ChangeNotifier {
       await _server.clearThreadGoal(threadId: threadId);
       if (_threadGoalRevisions[threadId] == revision) {
         _threadGoalsById.remove(threadId);
+        _appendGoalLifecycleFeedback(
+          threadId,
+          previousStatus: _lastGoalTimelineStatusByThread[threadId],
+          status: 'cleared',
+        );
       }
       return true;
     } catch (error) {
@@ -4465,6 +4488,10 @@ class CodexController extends ChangeNotifier {
     final localTimelineEntries = previousThreadId == thread.id
         ? List<TimelineEntry>.of(_entries)
         : const <TimelineEntry>[];
+    final localFileChanges = previousThreadId == thread.id
+        ? List<CodexFileChange>.of(fileChanges)
+        : const <CodexFileChange>[];
+    final localTurnDiff = previousThreadId == thread.id ? turnDiff : null;
     var viewLoaded = cachedView != null;
     activeThreadId = thread.id;
     _activeThreadAttached = false;
@@ -4508,6 +4535,15 @@ class CodexController extends ChangeNotifier {
                 );
           _resetConversationTimeline();
           _appendThreadHistory(history);
+          // A restarted app restores the last task view from its local
+          // snapshot before reattaching to App Server. Older servers may
+          // return turns without file-change items; retain that durable local
+          // summary instead of blanking the task panel during reattach.
+          if (previousThreadId == thread.id &&
+              localFileChanges.isNotEmpty &&
+              fileChanges.isEmpty) {
+            _replaceFileChanges(localFileChanges, localTurnDiff);
+          }
           _restoreMissingCompletedCommands(localTimelineEntries);
           viewLoaded = true;
           if (openingRunningThread) {
@@ -5868,6 +5904,7 @@ class CodexController extends ChangeNotifier {
         ? parsed.threadId
         : _threadIdFromEvent(params);
     if (threadId == null || parsed.objective.isEmpty) return;
+    final previous = _threadGoalsById[threadId];
     _nextThreadGoalRevision(threadId);
     _threadGoalsById[threadId] = parsed.threadId.isEmpty
         ? CodexThreadGoal(
@@ -5880,6 +5917,11 @@ class CodexController extends ChangeNotifier {
           )
         : parsed;
     _goalOperationErrorsByThread.remove(threadId);
+    _appendGoalLifecycleFeedback(
+      threadId,
+      previousStatus: previous?.status,
+      status: _threadGoalsById[threadId]!.status,
+    );
   }
 
   void _applyThreadGoalCleared(JsonMap params) {
@@ -5888,6 +5930,35 @@ class CodexController extends ChangeNotifier {
     _nextThreadGoalRevision(threadId);
     _threadGoalsById.remove(threadId);
     _goalOperationErrorsByThread.remove(threadId);
+    _appendGoalLifecycleFeedback(
+      threadId,
+      previousStatus: _lastGoalTimelineStatusByThread[threadId],
+      status: 'cleared',
+    );
+  }
+
+  void _appendGoalLifecycleFeedback(
+    String threadId, {
+    required String? previousStatus,
+    required String status,
+  }) {
+    if (threadId != activeThreadId ||
+        previousStatus == status ||
+        _lastGoalTimelineStatusByThread[threadId] == status) {
+      return;
+    }
+    _lastGoalTimelineStatusByThread[threadId] = status;
+    final detail = switch (status) {
+      'active' => previousStatus == null ? '目标已启动，正在继续' : '目标已恢复，正在继续',
+      'blocked' => '目标需要你的输入',
+      'paused' => '目标已暂停',
+      'complete' || 'completed' => '目标已完成',
+      'usageLimited' => '目标因用量限制暂停',
+      'budgetLimited' => '目标因预算耗尽暂停',
+      'cleared' => '目标已清除',
+      _ => null,
+    };
+    if (detail != null) _add(TimelineKind.system, '目标状态', detail);
   }
 
   /// 处理任务结束事件，并采集其中的文件变更与统一 Diff。

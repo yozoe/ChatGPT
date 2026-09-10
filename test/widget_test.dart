@@ -761,7 +761,7 @@ void main() {
     await tester.tap(find.text('录制技能'));
     await tester.pump();
     await tester.pump();
-    expect(find.byKey(const Key('composer-record-skill-chip')), findsOneWidget);
+    expect(find.byKey(const Key('composer-record-skill-chip')), findsNothing);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -2785,7 +2785,7 @@ void main() {
     final browserSkill = find.byKey(
       const ValueKey('composer-slash-skill-browser'),
     );
-    for (var index = 0; index < 5; index++) {
+    for (var index = 0; index < 4; index++) {
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pump(const Duration(milliseconds: 140));
     }
@@ -2961,7 +2961,7 @@ void main() {
     await tester.pump();
 
     expect(find.byKey(const Key('composer-plan-mode-chip')), findsNothing);
-    expect(find.byKey(const Key('composer-record-skill-chip')), findsOneWidget);
+    expect(find.byKey(const Key('composer-record-skill-chip')), findsNothing);
     expect(tester.takeException(), isNull);
 
     await tester.pumpWidget(const SizedBox());
@@ -4605,7 +4605,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('record-skill-menu-item')));
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('composer-record-skill-chip')), findsOneWidget);
+    expect(find.byKey(const Key('composer-record-skill-chip')), findsNothing);
 
     await tester.pumpWidget(const SizedBox());
   });

@@ -148,6 +148,41 @@ void main() {
   });
 
   test(
+    'shows goal lifecycle feedback in the active conversation timeline',
+    () async {
+      final controller = CodexController(server: FakeCodexAppServer())
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready
+        ..activeThreadId = 'goal-feedback-thread';
+
+      void publish(String status) {
+        controller.handleServerEventForTesting(
+          ServerEvent(
+            method: 'thread/goal/updated',
+            params: {
+              'threadId': 'goal-feedback-thread',
+              'goal': {
+                'threadId': 'goal-feedback-thread',
+                'objective': '完成反馈展示',
+                'status': status,
+              },
+            },
+          ),
+        );
+      }
+
+      publish('active');
+      publish('blocked');
+
+      expect(
+        controller.entries.map((entry) => entry.detail),
+        containsAll(['目标已启动，正在继续', '目标需要你的输入']),
+      );
+      controller.dispose();
+    },
+  );
+
+  test(
     'does not silently downgrade plan mode without a resolved model',
     () async {
       final server = FakeCodexAppServer();

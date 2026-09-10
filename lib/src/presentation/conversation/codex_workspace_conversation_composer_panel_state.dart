@@ -361,8 +361,9 @@ class ComposerPanelState extends State<ComposerPanel> {
     const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.recordSkill,
       label: '录制技能',
-      description: '',
+      description: '当前运行时未提供技能录制协议',
       icon: Icons.radio_button_checked,
+      enabled: false,
     ),
   ];
 
@@ -499,7 +500,10 @@ class ComposerPanelState extends State<ComposerPanel> {
       case ComposerSlashCommandKind.planMode:
         if (!controller.canSteer) _togglePlanMode();
       case ComposerSlashCommandKind.recordSkill:
-        setState(() => _recordSkill = !_recordSkill);
+        // The current App Server has no public recording protocol. Keep the
+        // command visible as a disabled parity row, but never create a local
+        // chip that would imply a recording was started.
+        return;
       case ComposerSlashCommandKind.mcpStatus ||
           ComposerSlashCommandKind.codeReview ||
           ComposerSlashCommandKind.sideChat ||
@@ -1150,7 +1154,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       case AddMenuActionKind.plan:
         if (!controller.canSteer) _togglePlanMode();
       case AddMenuActionKind.recordSkill:
-        setState(() => _recordSkill = !_recordSkill);
+        return;
       case AddMenuActionKind.skill:
         final path = action.value;
         if (path == null) return;
@@ -1482,8 +1486,9 @@ class ComposerPanelState extends State<ComposerPanel> {
         value: const AddMenuAction(AddMenuActionKind.recordSkill),
         icon: Icons.radio_button_checked,
         label: '录制技能',
-        description: _recordSkill ? '将本次流程整理为技能' : null,
+        description: '当前运行时未提供技能录制协议',
         selected: _recordSkill,
+        enabled: false,
       ),
       AddMenuHeader(label: '插件', palette: palette),
     ];
@@ -1888,16 +1893,6 @@ class ComposerPanelState extends State<ComposerPanel> {
                                       onRemove: controller.canSteer
                                           ? null
                                           : _togglePlanMode,
-                                    ),
-                                  if (_recordSkill)
-                                    ComposerContextChip(
-                                      key: const Key(
-                                        'composer-record-skill-chip',
-                                      ),
-                                      icon: Icons.radio_button_checked,
-                                      label: '录制技能',
-                                      onRemove: () =>
-                                          setState(() => _recordSkill = false),
                                     ),
                                   for (final skill in _selectedSkills)
                                     ComposerSelectedSkillChip(
