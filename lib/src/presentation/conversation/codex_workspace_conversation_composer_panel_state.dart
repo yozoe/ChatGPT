@@ -618,7 +618,12 @@ class ComposerPanelState extends State<ComposerPanel> {
         unawaited(_showCodeReviewOptions());
       case ComposerSlashCommandKind.sideChat:
         composer.clear();
-        await widget.onOpenSideChat?.call();
+        final openSideChat = widget.onOpenSideChat;
+        if (openSideChat == null) {
+          _showUnavailableSlashCommand('侧边聊天界面');
+          return;
+        }
+        await openSideChat();
       case ComposerSlashCommandKind.forkChat:
         composer.clear();
         await _forkActiveThread();
