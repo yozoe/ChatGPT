@@ -208,6 +208,7 @@ class CodexController extends ChangeNotifier {
   final Map<String, int> _composerTemporaryAttachmentRetains = {};
   final Map<String, CodexFileChange> _fileChangesByPath = {};
   final Set<String> _turnDiffDerivedFileChangePaths = {};
+  final Set<String> _turnExplicitFileChangePaths = {};
   final Set<String> _pinnedThreadIds = {};
   final Set<String> _acknowledgedCompletedThreadIds = {};
   // This is intentionally app-session scoped. The Dock badge indicates work
@@ -1177,12 +1178,33 @@ class CodexController extends ChangeNotifier {
   /// Undo is available only for a complete turn diff with file headers, never for stats-only or hunk-only data.
   bool get canUndoFileChanges {
     final diff = turnDiff?.trim();
-    return workspacePath != null &&
-        !hasRunningTasks &&
+    final workspace = workspacePath;
+    if (workspace == null || diff == null || diff.isEmpty) return false;
+    final diffChanges = codexFileChangesFromUnifiedDiff(diff);
+    final diffCoversTaskSummary =
+        diffChanges.isNotEmpty &&
+        fileChanges.every(
+          (taskChange) => diffChanges.any(
+            (diffChange) => _sameWorkspaceChangePath(
+              taskChange.path,
+              diffChange.path,
+              workspace,
+            ),
+          ),
+        ) &&
+        diffChanges.every(
+          (diffChange) => fileChanges.any(
+            (taskChange) => _sameWorkspaceChangePath(
+              taskChange.path,
+              diffChange.path,
+              workspace,
+            ),
+          ),
+        );
+    return !hasRunningTasks &&
         !fileChangeUndoRunning &&
         fileChanges.isNotEmpty &&
-        diff != null &&
-        diff.isNotEmpty &&
+        diffCoversTaskSummary &&
         !diff.contains(GitProjectService.truncatedDiffMarker) &&
         (diff.contains('diff --git ') ||
             ((diff.startsWith('--- ') || diff.contains('\n--- ')) &&
@@ -3246,8 +3268,13 @@ class CodexController extends ChangeNotifier {
     final previousTurnDiff = turnDiff;
     if (activeThreadId == null) {
       _resetConversationTimeline();
+    } else {
+      // Task files belong to the thread, not only to the most recently sent
+      // turn. Keep the last confirmed summary visible while a follow-up is
+      // running; a turn with no file events must not erase it or its durable
+      // restart snapshot.
+      _beginFileChangeTurn();
     }
-    _clearFileChanges();
     status = RuntimeStatus.running;
     lastError = null;
     _clearStreamingState();
@@ -3413,7 +3440,10 @@ class CodexController extends ChangeNotifier {
     _threadWorkspaceById[threadId] = submission.workspace;
     status = RuntimeStatus.running;
     lastError = null;
-    _clearFileChanges();
+    // A retry continues the same thread-level task-file lifecycle. Retaining
+    // the confirmed summary also avoids a failed retry deleting its persisted
+    // restart snapshot before App Server accepts the request.
+    _beginFileChangeTurn();
     _clearStreamingState();
     _activeTurnStartedAt = DateTime.now();
     _acknowledgedCompletedThreadIds.remove(threadId);
@@ -8097,6 +8127,7 @@ class CodexController extends ChangeNotifier {
         _fileChangesByPath[change.path] = previous.copyWith(kind: change.kind);
       } else {
         _turnDiffDerivedFileChangePaths.remove(change.path);
+        _turnExplicitFileChangePaths.add(change.path);
         _fileChangesByPath[change.path] = change;
       }
       changed = true;
@@ -8287,7 +8318,10 @@ class CodexController extends ChangeNotifier {
     // timeline summary, and review panel do not disagree about this turn.
     for (final change in codexFileChangesFromUnifiedDiff(diff)) {
       final previous = _fileChangesByPath[change.path];
-      final patchIsDerived = previous == null || previous.diff.trim().isEmpty;
+      final patchIsDerived =
+          previous == null ||
+          previous.diff.trim().isEmpty ||
+          !_turnExplicitFileChangePaths.contains(change.path);
       _fileChangesByPath[change.path] = patchIsDerived
           ? previous?.copyWith(diff: change.diff) ?? change
           : previous;
@@ -9195,6 +9229,7 @@ class CodexController extends ChangeNotifier {
   void _clearFileChanges() {
     _fileChangesByPath.clear();
     _turnDiffDerivedFileChangePaths.clear();
+    _turnExplicitFileChangePaths.clear();
     turnDiff = null;
     fileChangeUndoError = null;
     final threadId = activeThreadId;
@@ -9202,6 +9237,13 @@ class CodexController extends ChangeNotifier {
       _persistedFileChangesByThreadId.remove(threadId);
       _persistedTurnDiffByThreadId.remove(threadId);
     }
+  }
+
+  /// Starts a new turn without discarding the thread-level task-file summary.
+  void _beginFileChangeTurn() {
+    _turnDiffDerivedFileChangePaths.clear();
+    _turnExplicitFileChangePaths.clear();
+    fileChangeUndoError = null;
   }
 
   /// 用一轮任务的文件集合替换当前摘要；用于启动失败时恢复上一轮状态。

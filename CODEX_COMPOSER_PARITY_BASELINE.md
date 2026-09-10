@@ -22,7 +22,7 @@
 
 | 能力 | 官方证据 | App Server 协议 | 当前实现状态 |
 | --- | --- | --- | --- |
-| IDE 上下文 | 已确认（文档）：`/ide-context` 切换自动 IDE 上下文；CLI `/ide` 包含打开文件和当前选区 | 需继续确认宿主向 App Server 注入上下文的公开输入格式 | 未连接 IDE 宿主时 `/` 项禁用；当前项目路径从 `@`/添加菜单单独提供 |
+| IDE 上下文 | 已确认（文档）：`/ide-context` 切换自动 IDE 上下文；CLI `/ide` 包含打开文件和当前选区 | App Server 0.153.4 的 `turn/start.additionalContext` 可携带按不透明来源键组织的 `{kind: untrusted/application, value}` 文本片段；官方文档仍未给出 IDE 宿主连接、来源键和序列化格式 | 未连接 IDE 宿主时 `/` 项禁用；当前项目路径从 `@`/添加菜单单独提供 |
 | MCP | 已确认（文档） | `mcpServerStatus/list`、`mcpServerStatus/updated` | 已接入当前线程实时连接、认证与工具状态；待桌面实测 |
 | 代码审查 | 已确认（文档）：未提交改动或相对基础分支 | `review/start`，目标支持 `uncommittedChanges`、`baseBranch`、`commit`、`custom` | 已改用结构化 `review/start` |
 | 侧边聊天 | 已确认（文档）：临时聊天，不中断主聊天；审查模式和嵌套侧边聊天中不可用 | `thread/fork` + `ephemeral: true`；分页线程使用 `excludeTurns: true` | 已接入独立侧栏 UI，审查/嵌套/重复创建均禁用，迟到结果按任务丢弃；精确布局仍待桌面实测 |
@@ -39,7 +39,7 @@
 | 能力 | 已确认内容 | 尚待确认 |
 | --- | --- | --- |
 | 文件和文件夹 | 官方文档确认 `@` 可搜索工作区文件并把路径加入提示；App Server 0.153.4 Schema 明确提供 `fuzzyFileSearch {query, roots, cancellationToken}` 和带文件/目录类型、根目录、分数与匹配索引的结果，并支持 `mention {name, path}` | 已接入 Schema 证明的实时工作区搜索和结构化提交，保留系统选择器作为浏览更多入口；桌面端精确分组、排序和视觉仍待实测 |
-| IDE 上下文 | 官方文档确认 IDE 可提供打开文件、当前选区及其他编辑器上下文 | 桌面端精确字段、宿主桥接协议、断连降级 |
+| IDE 上下文 | 官方文档确认 IDE 可提供打开文件、当前选区及其他编辑器上下文；App Server Schema 确认 `turn/start.additionalContext` 是公开的客户端上下文载体 | 桌面端精确字段、宿主桥接与来源格式、断连降级；不得依赖未公开的扩展 IPC |
 | Skill | App Server 文档确认文本中的 `$skill-name` 应与结构化 `skill` 输入同时发送 | 官方桌面端是否把 Skill 放在 `@` 菜单、分组与排序 |
 | Goal | App Server 提供持久目标生命周期 | 官方桌面端 `@` 入口、徽标和草稿恢复细节 |
 | Plan | 官方文档确认 `/plan` 和 collaboration mode | 官方桌面端 `@` 入口及运行中状态 |
@@ -73,7 +73,7 @@ App Server 已确认：
 | 切换聊天后返回 | 待实测 |
 | 重启客户端后恢复 | 待实测 |
 
-在这些结果完成前，不改变现有“最新 turn”文件摘要的数据模型，也不宣称其与官方桌面端一致。
+在这些结果完成前，本地采用防止用户数据消失的保守过渡语义：同一 thread 的后续回合保留既有任务文件摘要，无文件事件的追问不会清空；同一 turn 内的 Diff 更新仍按 turn 替换，跨轮累计摘要没有完整任务级 Diff 时禁用撤销。该行为不得宣称已与官方桌面端一致，最终范围仍以专项实测结果为准。
 
 ## 桌面实测清单
 

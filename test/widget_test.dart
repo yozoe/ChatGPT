@@ -12592,7 +12592,7 @@ void main() {
   });
 
   test(
-    'scopes the file summary to one turn and restores it when the next turn fails',
+    'keeps the task file summary across follow-up turns and failed starts',
     () async {
       final server = _FakeCodexAppServer();
       final git = _FakeGitProjectService();
@@ -12646,8 +12646,8 @@ void main() {
 
       server.startTurnError = null;
       expect(await controller.sendPrompt('second turn'), isTrue);
-      expect(controller.fileChanges, isEmpty);
-      expect(controller.turnDiff, isNull);
+      expect(controller.fileChanges.single.path, 'first.txt');
+      expect(controller.turnDiff, firstDiff);
       controller.handleServerEventForTesting(
         const ServerEvent(
           method: 'item/completed',
@@ -12676,13 +12676,86 @@ void main() {
         ),
       );
 
-      expect(controller.fileChanges.single.path, 'second.txt');
-      expect(await controller.undoFileChanges(), isTrue);
-      expect(git.reversedDiff, secondDiff);
-      expect(git.reversedExpectedPaths, ['second.txt']);
+      expect(controller.fileChanges.map((change) => change.path), [
+        'first.txt',
+        'second.txt',
+      ]);
+      expect(controller.turnDiff, secondDiff);
+      // The latest turn Diff does not cover the earlier thread-level file,
+      // so the safe undo guard must not present it as a complete task undo.
+      expect(controller.canUndoFileChanges, isFalse);
+      expect(await controller.undoFileChanges(), isFalse);
+      expect(git.reversedDiff, isNull);
       controller.dispose();
     },
   );
+
+  test('restores task files after a follow-up with no file changes', () async {
+    final workspaceDirectory = await Directory.systemTemp.createTemp(
+      'codex-desk-thread-files-follow-up-',
+    );
+    addTearDown(() => workspaceDirectory.delete(recursive: true));
+    final runtimeStore = _FakeRuntimeConfigurationStore();
+    final firstServer = _FakeCodexAppServer();
+    final firstController = CodexController(
+      server: firstServer,
+      runtimeConfigurationStore: runtimeStore,
+      conversationHistoryStore: historyStore,
+    );
+    await firstController.selectWorkspace(workspaceDirectory.path);
+    firstController.status = RuntimeStatus.ready;
+    expect(await firstController.sendPrompt('make a file change'), isTrue);
+    firstController.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {
+                'path': 'lib/main.dart',
+                'kind': 'modified',
+                'diff': '+thread change',
+              },
+            ],
+          },
+        },
+      ),
+    );
+    firstController.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'turn': {'status': 'completed'},
+        },
+      ),
+    );
+
+    expect(await firstController.sendPrompt('only explain the change'), isTrue);
+    firstController.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'turn': {'status': 'completed'},
+        },
+      ),
+    );
+    expect(firstController.fileChanges.single.path, 'lib/main.dart');
+    await firstController.saveConversationHistoryForTesting();
+    firstController.dispose();
+
+    final restoredController = CodexController(
+      server: CodexAppServer(),
+      runtimeConfigurationStore: runtimeStore,
+      conversationHistoryStore: historyStore,
+    );
+    await restoredController.waitForInitialConfiguration();
+
+    expect(restoredController.activeThreadId, 'new-thread');
+    expect(restoredController.fileChanges.single.path, 'lib/main.dart');
+    expect(restoredController.fileChanges.single.diff, '+thread change');
+    restoredController.dispose();
+  });
 
   testWidgets('hides legacy per-file change records from the conversation', (
     tester,
