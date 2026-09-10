@@ -1556,6 +1556,16 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
         imagePaths.add(attachment.path);
         additionalInput.add({'type': 'localImage', 'path': attachment.path});
       } else {
+        additionalInput.add({
+          'type': 'mention',
+          'name': attachment.path
+              .split('/')
+              .lastWhere(
+                (segment) => segment.isNotEmpty,
+                orElse: () => attachment.path,
+              ),
+          'path': attachment.path,
+        });
         contextLines.add('附加路径：${attachment.path}');
       }
     }

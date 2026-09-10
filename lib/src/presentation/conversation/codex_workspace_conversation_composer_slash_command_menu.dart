@@ -1,4 +1,5 @@
 import 'package:chatgpt/src/domain/codex_skill.dart';
+import 'package:chatgpt/src/domain/codex_file_search_result.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_slash_command.dart';
 import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 import 'package:flutter/material.dart';
@@ -9,15 +10,20 @@ class ComposerSlashCommandMenu extends StatelessWidget {
     super.key,
     required this.commands,
     required this.skills,
+    required this.files,
     required this.showSkills,
     required this.skillsLoading,
     required this.skillsError,
+    required this.filesLoading,
+    required this.filesError,
     required this.searchQuery,
     required this.commandScrollKeys,
     required this.skillScrollKeys,
+    required this.fileScrollKeys,
     required this.selectedIndex,
     required this.onSelected,
     required this.onSkillSelected,
+    required this.onFileSelected,
     required this.onItemHovered,
     this.menuKey = const Key('composer-slash-menu'),
     this.semanticLabel,
@@ -29,15 +35,20 @@ class ComposerSlashCommandMenu extends StatelessWidget {
 
   final List<ComposerSlashCommand> commands;
   final List<CodexSkill> skills;
+  final List<CodexFileSearchResult> files;
   final bool showSkills;
   final bool skillsLoading;
   final String? skillsError;
+  final bool filesLoading;
+  final String? filesError;
   final String searchQuery;
   final Map<ComposerSlashCommandKind, GlobalKey> commandScrollKeys;
   final Map<String, GlobalKey> skillScrollKeys;
+  final Map<String, GlobalKey> fileScrollKeys;
   final int selectedIndex;
   final ValueChanged<ComposerSlashCommand> onSelected;
   final ValueChanged<CodexSkill> onSkillSelected;
+  final ValueChanged<CodexFileSearchResult> onFileSelected;
   final ValueChanged<int> onItemHovered;
   final Key menuKey;
   final String? semanticLabel;
@@ -93,6 +104,9 @@ class ComposerSlashCommandMenu extends StatelessWidget {
         skillsError == null &&
         hasSearchQuery &&
         commands.isEmpty &&
+        files.isEmpty &&
+        !filesLoading &&
+        filesError == null &&
         skills.isEmpty) {
       return Padding(
         padding: const EdgeInsets.all(16),
@@ -121,8 +135,48 @@ class ComposerSlashCommandMenu extends StatelessWidget {
             ),
           for (var index = 0; index < commands.length; index++)
             _buildCommandRow(context, palette, commands[index], index),
-          if (commands.isNotEmpty && (skills.isNotEmpty || skillsLoading))
+          if (commands.isNotEmpty &&
+              (files.isNotEmpty ||
+                  filesLoading ||
+                  filesError != null ||
+                  skills.isNotEmpty ||
+                  skillsLoading))
             const SizedBox(height: 5),
+          if (files.isNotEmpty || filesLoading || filesError != null) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(9, 4, 9, 5),
+              child: Text(
+                '文件',
+                style: TextStyle(color: palette.muted, fontSize: 12),
+              ),
+            ),
+            if (filesLoading && files.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(12),
+                child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+              )
+            else if (filesError != null && files.isEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
+                child: Text(
+                  filesError!,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodySmall?.copyWith(color: palette.fault),
+                ),
+              )
+            else
+              for (var index = 0; index < files.length; index++)
+                _buildFileRow(
+                  context,
+                  palette,
+                  files[index],
+                  commands.length + index,
+                ),
+            if (skills.isNotEmpty || skillsLoading) const SizedBox(height: 5),
+          ],
           if (skills.isNotEmpty || skillsLoading || !hasSearchQuery)
             Padding(
               padding: const EdgeInsets.fromLTRB(9, 4, 9, 5),
@@ -152,7 +206,7 @@ class ComposerSlashCommandMenu extends StatelessWidget {
                 context,
                 palette,
                 skills[index],
-                commands.length + index,
+                commands.length + files.length + index,
               ),
         ],
       ),
@@ -236,6 +290,81 @@ class ComposerSlashCommandMenu extends StatelessWidget {
                     style: TextStyle(color: palette.muted, fontSize: 12),
                   ),
                 ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFileRow(
+    BuildContext context,
+    YeknomPalette palette,
+    CodexFileSearchResult file,
+    int index,
+  ) {
+    final selected = index == selectedIndex;
+    final relativePath = file.path.startsWith(file.root)
+        ? file.path
+              .substring(file.root.length)
+              .replaceFirst(RegExp(r'^[/\\]'), '')
+        : file.path;
+    final lastSeparator = relativePath.lastIndexOf(RegExp(r'[/\\]'));
+    final locationLabel = lastSeparator > 0
+        ? relativePath.substring(0, lastSeparator)
+        : file.root;
+    final identity = '${file.root}\u0000${file.path}';
+    return KeyedSubtree(
+      key: fileScrollKeys[identity],
+      child: Semantics(
+        button: true,
+        selected: selected,
+        label: '${file.fileName}，$relativePath',
+        child: InkWell(
+          key: ValueKey('composer-file-search-result-$identity'),
+          borderRadius: BorderRadius.circular(10),
+          onHover: (hovering) {
+            if (hovering) onItemHovered(index);
+          },
+          onTap: () => onFileSelected(file),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            curve: Curves.easeOut,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: selected ? palette.raised : Colors.transparent,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  file.isDirectory
+                      ? Icons.folder_outlined
+                      : Icons.insert_drive_file_outlined,
+                  size: 16,
+                  color: selected ? palette.trace : palette.muted,
+                ),
+                const SizedBox(width: 9),
+                Flexible(
+                  flex: 2,
+                  child: Text(
+                    file.fileName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: palette.trace, fontSize: 13),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  flex: 3,
+                  child: Text(
+                    locationLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: palette.muted, fontSize: 12),
+                  ),
+                ),
               ],
             ),
           ),

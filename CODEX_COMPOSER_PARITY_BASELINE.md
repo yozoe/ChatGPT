@@ -38,7 +38,7 @@
 
 | 能力 | 已确认内容 | 尚待确认 |
 | --- | --- | --- |
-| 文件和文件夹 | 官方文档确认 `@` 可搜索工作区文件并把路径加入提示；App Server Schema 明确支持 `mention {name, path}`，图片使用 `localImage`，Skill 使用结构化输入 | 桌面端是否使用文件搜索菜单、系统选择器或两者；文件搜索排序和精确选择交互 |
+| 文件和文件夹 | 官方文档确认 `@` 可搜索工作区文件并把路径加入提示；App Server 0.153.4 Schema 明确提供 `fuzzyFileSearch {query, roots, cancellationToken}` 和带文件/目录类型、根目录、分数与匹配索引的结果，并支持 `mention {name, path}` | 已接入 Schema 证明的实时工作区搜索和结构化提交，保留系统选择器作为浏览更多入口；桌面端精确分组、排序和视觉仍待实测 |
 | IDE 上下文 | 官方文档确认 IDE 可提供打开文件、当前选区及其他编辑器上下文 | 桌面端精确字段、宿主桥接协议、断连降级 |
 | Skill | App Server 文档确认文本中的 `$skill-name` 应与结构化 `skill` 输入同时发送 | 官方桌面端是否把 Skill 放在 `@` 菜单、分组与排序 |
 | Goal | App Server 提供持久目标生命周期 | 官方桌面端 `@` 入口、徽标和草稿恢复细节 |
@@ -48,6 +48,10 @@
 ### 上下文用量协议（Codex 0.153.4）
 
 App Server Schema 明确提供 `thread/tokenUsage/updated`，通知包含 `threadId`、`turnId`、`tokenUsage.last`、`tokenUsage.total` 和可空的 `modelContextWindow`。Composer 使用 `last.totalTokens` 作为最近一次模型上下文占用，并按 thread/turn 严格归属；`total.totalTokens` 仅保留为累计统计，不用于上下文百分比。缺少有效窗口或 usage 时显示等待状态，不使用字符数估算或固定窗口值。
+
+### 文件搜索协议（Codex 0.153.4）
+
+App Server Schema 明确提供一次性 `fuzzyFileSearch`，请求包含查询词、按顺序传入的工作区根目录和可选取消令牌，响应区分文件与目录并返回所属根目录、路径、分数和匹配索引。当前 Composer 只在非空 `@` 查询且运行时可用时调用该接口；查询或工作区变化会使旧结果失效，返回路径还会经过存在性、符号链接和所属根目录校验。Schema 不能证明官方桌面端的精确分组、行高、排序二次处理或是否同时保留系统选择器，这些仍属于桌面实测项。
 
 ## 任务文件专项基线
 

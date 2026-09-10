@@ -54,6 +54,11 @@ class ProtocolCaptureCodexAppServer extends CodexAppServer {
         'result': {'data': <JsonMap>[]},
       };
     }
+    if (method == 'fuzzyFileSearch') {
+      return {
+        'result': {'files': <JsonMap>[]},
+      };
+    }
     return {
       'result': {
         'thread': {'id': 'thread-with-roots'},

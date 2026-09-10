@@ -23,3 +23,4 @@ export 'widget_fakes/delayed_start_runtime_fake_server.dart';
 export 'widget_fakes/memory_theme_preferences_store.dart';
 export 'widget_fakes/protocol_capture_codex_app_server.dart';
 export 'widget_fakes/injected_codex_controller_notifier.dart';
+export 'widget_fakes/workspace_file_search_controller.dart';

@@ -36,6 +36,10 @@ class ComposerPanelState extends State<ComposerPanel> {
   final Set<String> _temporaryAttachmentPaths = {};
   final Map<ComposerSlashCommandKind, GlobalKey> _slashCommandScrollKeys = {};
   final Map<String, GlobalKey> _slashSkillScrollKeys = {};
+  final Map<String, GlobalKey> _fileSearchScrollKeys = {};
+  List<CodexFileSearchResult> _fileSearchResults = const [];
+  bool _fileSearchLoading = false;
+  String? _fileSearchError;
   bool _draggingFiles = false;
   bool _includeWorkspace = false;
   bool _planMode = false;
@@ -54,6 +58,9 @@ class ComposerPanelState extends State<ComposerPanel> {
   int _nextPastedTextId = 0;
   String _slashMenuQuery = '';
   Timer? _imeCompositionDeferral;
+  Timer? _fileSearchDebounce;
+  int _fileSearchRequest = 0;
+  String _fileSearchWorkspaceKey = '';
   String? _draftBeforeGoalMode;
   String? _goal;
   String? _goalBeforeGoalMode;
@@ -126,6 +133,7 @@ class ComposerPanelState extends State<ComposerPanel> {
   @override
   void initState() {
     super.initState();
+    _fileSearchWorkspaceKey = _currentFileSearchWorkspaceKey;
     controller.addListener(_handleControllerChanged);
     composer.addListener(_handleComposerEditingChanged);
   }
@@ -134,11 +142,14 @@ class ComposerPanelState extends State<ComposerPanel> {
   void didUpdateWidget(covariant ComposerPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.controller != controller) {
+      _invalidateFileSearch();
       oldWidget.controller.removeListener(_handleControllerChanged);
       for (final path in _temporaryAttachmentPaths) {
         oldWidget.controller.transferTemporaryAttachmentTo(path, controller);
       }
       controller.addListener(_handleControllerChanged);
+      _fileSearchWorkspaceKey = _currentFileSearchWorkspaceKey;
+      _scheduleFileSearch(_currentMentionQuery);
       _releaseDetachedAttachmentResources();
     }
   }
@@ -148,11 +159,18 @@ class ComposerPanelState extends State<ComposerPanel> {
     controller.removeListener(_handleControllerChanged);
     composer.removeListener(_handleComposerEditingChanged);
     _imeCompositionDeferral?.cancel();
+    _fileSearchDebounce?.cancel();
+    _fileSearchRequest++;
     _releaseAllAttachmentResources();
     super.dispose();
   }
 
   void _handleControllerChanged() {
+    final fileSearchWorkspaceKey = _currentFileSearchWorkspaceKey;
+    if (_fileSearchWorkspaceKey != fileSearchWorkspaceKey) {
+      _fileSearchWorkspaceKey = fileSearchWorkspaceKey;
+      _scheduleFileSearch(_currentMentionQuery);
+    }
     final enabledSkillPaths = controller.skills
         .where((skill) => skill.enabled && skill.path.trim().isNotEmpty)
         .map((skill) => skill.path)
@@ -183,6 +201,7 @@ class ComposerPanelState extends State<ComposerPanel> {
     if (triggerQuery != _slashMenuQuery) {
       _slashMenuQuery = triggerQuery;
       _slashMenuDismissed = false;
+      _scheduleFileSearch(mentionQuery);
       _slashMenuSelectedIndex = _firstEnabledComposerMenuIndex();
     }
     if (mentionQuery != null &&
@@ -211,6 +230,71 @@ class ComposerPanelState extends State<ComposerPanel> {
       const Duration(milliseconds: 16),
       () => _imeCompositionJustEnded = false,
     );
+  }
+
+  String get _currentFileSearchWorkspaceKey => [
+    controller.serverIsRunning ? 'running' : 'stopped',
+    ...controller.workspaceRoots,
+  ].join('\u0000');
+
+  void _invalidateFileSearch() {
+    _fileSearchDebounce?.cancel();
+    _fileSearchDebounce = null;
+    _fileSearchRequest++;
+    _fileSearchResults = const [];
+    _fileSearchLoading = false;
+    _fileSearchError = null;
+  }
+
+  void _scheduleFileSearch(String? rawQuery) {
+    _invalidateFileSearch();
+    final query = rawQuery?.trim() ?? '';
+    if (query.isEmpty ||
+        controller.workspaceRoots.isEmpty ||
+        !controller.serverIsRunning) {
+      return;
+    }
+    final request = _fileSearchRequest;
+    final workspaceKey = _currentFileSearchWorkspaceKey;
+    _fileSearchLoading = true;
+    _fileSearchDebounce = Timer(
+      const Duration(milliseconds: 120),
+      () => unawaited(_runFileSearch(query, workspaceKey, request)),
+    );
+  }
+
+  Future<void> _runFileSearch(
+    String query,
+    String workspaceKey,
+    int request,
+  ) async {
+    try {
+      final results = await controller.searchWorkspaceFiles(
+        query,
+        cancellationToken: 'composer-$request',
+      );
+      if (!mounted ||
+          request != _fileSearchRequest ||
+          workspaceKey != _currentFileSearchWorkspaceKey ||
+          _currentMentionQuery?.trim() != query) {
+        return;
+      }
+      setState(() => _fileSearchResults = results);
+    } catch (_) {
+      if (!mounted ||
+          request != _fileSearchRequest ||
+          workspaceKey != _currentFileSearchWorkspaceKey ||
+          _currentMentionQuery?.trim() != query) {
+        return;
+      }
+      setState(() => _fileSearchError = '无法搜索项目文件，请重试。');
+    } finally {
+      if (mounted &&
+          request == _fileSearchRequest &&
+          workspaceKey == _currentFileSearchWorkspaceKey) {
+        setState(() => _fileSearchLoading = false);
+      }
+    }
   }
 
   String? get _currentSlashQuery {
@@ -377,8 +461,11 @@ class ComposerPanelState extends State<ComposerPanel> {
     for (var index = 0; index < commands.length; index++) {
       if (commands[index].enabled) return index;
     }
-    if (_showMentionMenu && _filteredMentionSkills.isNotEmpty) {
+    if (_showMentionMenu && _fileSearchResults.isNotEmpty) {
       return commands.length;
+    }
+    if (_showMentionMenu && _filteredMentionSkills.isNotEmpty) {
+      return commands.length + _fileSearchResults.length;
     }
     return 0;
   }
@@ -392,7 +479,9 @@ class ComposerPanelState extends State<ComposerPanel> {
 
   void _moveSlashMenuSelection(int delta) {
     final itemCount = _showMentionMenu
-        ? _filteredMentionSkills.length + _filteredMentionCommands.length
+        ? _filteredMentionSkills.length +
+              _fileSearchResults.length +
+              _filteredMentionCommands.length
         : _filteredSlashCommands.length;
     if (itemCount == 0) return;
     var nextIndex = _slashMenuSelectedIndex;
@@ -409,7 +498,10 @@ class ComposerPanelState extends State<ComposerPanel> {
     if (_showMentionMenu) {
       final commands = _filteredMentionCommands;
       if (index < commands.length) return commands[index].enabled;
-      return index < commands.length + _filteredMentionSkills.length;
+      return index <
+          commands.length +
+              _fileSearchResults.length +
+              _filteredMentionSkills.length;
     }
     final commands = _filteredSlashCommands;
     return index < commands.length && commands[index].enabled;
@@ -440,13 +532,19 @@ class ComposerPanelState extends State<ComposerPanel> {
       final skills = _filteredMentionSkills;
       final index = _slashMenuSelectedIndex.clamp(
         0,
-        commands.length + skills.length - 1,
+        commands.length + _fileSearchResults.length + skills.length - 1,
       );
       if (index < commands.length) {
         return _scrollKeyForSlashCommand(commands[index].kind);
       }
+      final fileIndex = index - commands.length;
+      if (fileIndex < _fileSearchResults.length) {
+        return _scrollKeyForFileSearchResult(_fileSearchResults[fileIndex]);
+      }
       if (skills.isEmpty) return null;
-      return _scrollKeyForSlashSkill(skills[index - commands.length].path);
+      return _scrollKeyForSlashSkill(
+        skills[index - commands.length - _fileSearchResults.length].path,
+      );
     }
     if (commands.isEmpty) return null;
     final index = _slashMenuSelectedIndex.clamp(0, commands.length - 1);
@@ -459,22 +557,40 @@ class ComposerPanelState extends State<ComposerPanel> {
   GlobalKey _scrollKeyForSlashSkill(String path) =>
       _slashSkillScrollKeys.putIfAbsent(path, GlobalKey.new);
 
+  String _fileSearchIdentity(CodexFileSearchResult result) =>
+      '${result.root}\u0000${result.path}';
+
+  GlobalKey _scrollKeyForFileSearchResult(CodexFileSearchResult result) =>
+      _fileSearchScrollKeys.putIfAbsent(
+        _fileSearchIdentity(result),
+        GlobalKey.new,
+      );
+
   void _selectFocusedSlashCommand() {
     if (_showMentionMenu) {
       final skills = _filteredMentionSkills;
       final commands = _filteredMentionCommands;
-      if (skills.isEmpty && commands.isEmpty) return;
+      if (skills.isEmpty && commands.isEmpty && _fileSearchResults.isEmpty) {
+        return;
+      }
       final index = _slashMenuSelectedIndex.clamp(
         0,
-        skills.length + commands.length - 1,
+        skills.length + _fileSearchResults.length + commands.length - 1,
       );
       if (index < commands.length) {
         if (!commands[index].enabled) return;
         unawaited(_selectMentionCommand(commands[index]));
         return;
       }
+      final fileIndex = index - commands.length;
+      if (fileIndex < _fileSearchResults.length) {
+        _selectFileSearchResult(_fileSearchResults[fileIndex]);
+        return;
+      }
       if (skills.isEmpty) return;
-      _selectSlashSkill(skills[index - commands.length]);
+      _selectSlashSkill(
+        skills[index - commands.length - _fileSearchResults.length],
+      );
       return;
     }
     final commands = _filteredSlashCommands;
@@ -490,6 +606,14 @@ class ComposerPanelState extends State<ComposerPanel> {
       _slashMenuDismissed = true;
     });
     composer.clear();
+  }
+
+  void _selectFileSearchResult(CodexFileSearchResult result) {
+    composer.clear();
+    setState(() => _slashMenuDismissed = true);
+    _addAttachments([
+      ComposerAttachment(path: result.path, isDirectory: result.isDirectory),
+    ]);
   }
 
   Future<void> _selectMentionCommand(ComposerSlashCommand command) async {
@@ -1588,12 +1712,16 @@ class ComposerPanelState extends State<ComposerPanel> {
                   ? _filteredMentionCommands
                   : _filteredSlashCommands,
               skills: _showMentionMenu ? _filteredMentionSkills : const [],
+              files: _showMentionMenu ? _fileSearchResults : const [],
               showSkills: _showMentionMenu,
               skillsLoading: controller.skillsLoading,
               skillsError: controller.skillsError,
+              filesLoading: _showMentionMenu && _fileSearchLoading,
+              filesError: _showMentionMenu ? _fileSearchError : null,
               searchQuery: _currentMentionQuery ?? _currentSlashQuery ?? '',
               commandScrollKeys: _slashCommandScrollKeys,
               skillScrollKeys: _slashSkillScrollKeys,
+              fileScrollKeys: _fileSearchScrollKeys,
               selectedIndex: _slashMenuSelectedIndex.clamp(
                 0,
                 math.max(
@@ -1602,6 +1730,7 @@ class ComposerPanelState extends State<ComposerPanel> {
                               ? _filteredMentionSkills
                               : _filteredSlashCommands)
                           .length +
+                      (_showMentionMenu ? _fileSearchResults.length : 0) +
                       (_showMentionMenu ? _filteredMentionCommands.length : 0) -
                       1,
                 ),
@@ -1614,6 +1743,7 @@ class ComposerPanelState extends State<ComposerPanel> {
                 );
               },
               onSkillSelected: _selectSlashSkill,
+              onFileSelected: _selectFileSearchResult,
               onItemHovered: _hoverComposerMenuItem,
               menuKey: _showMentionMenu
                   ? const Key('composer-mention-menu')

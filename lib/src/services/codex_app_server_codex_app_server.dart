@@ -460,6 +460,30 @@ class CodexAppServer {
     return const [];
   }
 
+  /// Searches files and directories under the ordered workspace roots.
+  Future<List<JsonMap>> fuzzyFileSearch({
+    required String query,
+    required List<String> roots,
+    String? cancellationToken,
+  }) async {
+    final response = await request('fuzzyFileSearch', {
+      'query': query,
+      'roots': roots,
+      'cancellationToken': ?cancellationToken,
+    });
+    _throwIfError(response);
+    final result = response['result'];
+    if (result is! Map || result['files'] is! Iterable) {
+      throw const FormatException(
+        'App Server did not return fuzzy file search results.',
+      );
+    }
+    return (result['files'] as Iterable)
+        .whereType<Map>()
+        .map(JsonMap.from)
+        .toList(growable: false);
+  }
+
   /// Lists live MCP status for the selected thread runtime.
   Future<JsonMap> listMcpServerStatuses({
     String? threadId,

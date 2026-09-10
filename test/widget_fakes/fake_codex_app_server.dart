@@ -62,6 +62,12 @@ class FakeCodexAppServer extends CodexAppServer {
   Object? mcpServerStatusError;
   String? mcpServerStatusThreadId;
   Completer<JsonMap>? mcpServerStatusCompleter;
+  List<JsonMap> fuzzyFileSearchResponse = <JsonMap>[];
+  Object? fuzzyFileSearchError;
+  final List<String> fuzzyFileSearchQueries = [];
+  final List<List<String>> fuzzyFileSearchRoots = [];
+  final List<String?> fuzzyFileSearchCancellationTokens = [];
+  final List<Completer<List<JsonMap>>> fuzzyFileSearchCompleters = [];
   String? startedTurnPrompt;
   String? startedTurnDirectory;
   final List<String> startedTurnPrompts = [];
@@ -128,6 +134,22 @@ class FakeCodexAppServer extends CodexAppServer {
   /// Always reports running, simulating a connected App Server.
   @override
   bool get isRunning => true;
+
+  @override
+  Future<List<JsonMap>> fuzzyFileSearch({
+    required String query,
+    required List<String> roots,
+    String? cancellationToken,
+  }) {
+    fuzzyFileSearchQueries.add(query);
+    fuzzyFileSearchRoots.add(List.of(roots));
+    fuzzyFileSearchCancellationTokens.add(cancellationToken);
+    if (fuzzyFileSearchError case final error?) return Future.error(error);
+    if (fuzzyFileSearchCompleters.isNotEmpty) {
+      return fuzzyFileSearchCompleters.removeAt(0).future;
+    }
+    return Future.value(fuzzyFileSearchResponse);
+  }
 
   /// 返回预设线程列表，或排队请求以控制刷新竞争测试。
   /// Returns preset threads or queues requests to control refresh-race tests.

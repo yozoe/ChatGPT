@@ -530,6 +530,85 @@ void main() {
     });
   });
 
+  test('encodes fuzzy file search with ordered workspace roots', () async {
+    final server = ProtocolCaptureCodexAppServer();
+
+    final results = await server.fuzzyFileSearch(
+      query: 'main',
+      roots: const ['/primary', '/shared'],
+      cancellationToken: 'composer-7',
+    );
+
+    expect(results, isEmpty);
+    expect(server.requestedMethod, 'fuzzyFileSearch');
+    expect(server.requestedParams, {
+      'query': 'main',
+      'roots': ['/primary', '/shared'],
+      'cancellationToken': 'composer-7',
+    });
+  });
+
+  test('rejects fuzzy file results outside the active workspace', () async {
+    final temporary = await Directory.systemTemp.createTemp(
+      'codex-desk-file-search-',
+    );
+    addTearDown(() => temporary.delete(recursive: true));
+    final workspace = await Directory(
+      '${temporary.path}/workspace',
+    ).create(recursive: true);
+    final source = File('${workspace.path}/lib/main.dart');
+    await source.parent.create(recursive: true);
+    await source.writeAsString('void main() {}');
+    final outside = File('${temporary.path}/secret.txt');
+    await outside.writeAsString('secret');
+    final canonicalWorkspace = await workspace.resolveSymbolicLinks();
+    final server = FakeCodexAppServer()
+      ..fuzzyFileSearchResponse = [
+        {
+          'file_name': 'main.dart',
+          'match_type': 'file',
+          'path': 'lib/main.dart',
+          'root': canonicalWorkspace,
+          'score': 50,
+          'indices': [0, 1],
+        },
+        {
+          'file_name': 'lib',
+          'match_type': 'directory',
+          'path': 'lib',
+          'root': canonicalWorkspace,
+          'score': 45,
+        },
+        {
+          'file_name': 'secret.txt',
+          'match_type': 'file',
+          'path': outside.path,
+          'root': canonicalWorkspace,
+          'score': 40,
+        },
+        {
+          'file_name': 'unknown.txt',
+          'match_type': 'file',
+          'path': outside.path,
+          'root': '${temporary.path}/unknown',
+          'score': 30,
+        },
+      ];
+    final controller = CodexController(server: server)
+      ..workspacePath = canonicalWorkspace;
+    addTearDown(controller.dispose);
+
+    final results = await controller.searchWorkspaceFiles('main');
+
+    expect(server.fuzzyFileSearchRoots.single, [canonicalWorkspace]);
+    expect(results, hasLength(2));
+    expect(results.first.fileName, 'main.dart');
+    expect(results.first.path, await source.resolveSymbolicLinks());
+    expect(results.first.indices, [0, 1]);
+    expect(results.last.fileName, 'lib');
+    expect(results.last.isDirectory, isTrue);
+  });
+
   test('keeps live MCP status scoped to the selected thread', () async {
     final server = FakeCodexAppServer()
       ..mcpServerStatusResponse = [

@@ -13,6 +13,7 @@ import 'package:chatgpt/src/domain/codex_marketplace.dart';
 import 'package:chatgpt/src/domain/codex_mcp_server.dart';
 import 'package:chatgpt/src/domain/codex_mcp_runtime_status.dart';
 import 'package:chatgpt/src/domain/codex_file_change.dart';
+import 'package:chatgpt/src/domain/codex_file_search_result.dart';
 import 'package:chatgpt/src/domain/git_project_status.dart';
 import 'package:chatgpt/src/domain/pending_approval.dart';
 import 'package:chatgpt/src/domain/pending_elicitation.dart';
@@ -963,6 +964,66 @@ class CodexController extends ChangeNotifier {
     ?workspacePath,
     ..._additionalWorkspacePaths,
   ];
+
+  /// Searches the current ordered workspace roots through App Server and
+  /// rejects stale, missing, or out-of-root paths before they reach Composer.
+  Future<List<CodexFileSearchResult>> searchWorkspaceFiles(
+    String query, {
+    String? cancellationToken,
+  }) async {
+    final normalizedQuery = query.trim();
+    final roots = List<String>.of(workspaceRoots);
+    if (normalizedQuery.isEmpty || roots.isEmpty || !_server.isRunning) {
+      return const [];
+    }
+    final canonicalRoots = <String, String>{};
+    for (final root in roots) {
+      try {
+        canonicalRoots[root] = await Directory(root).resolveSymbolicLinks();
+      } on FileSystemException {
+        // A removed workspace root cannot safely own a search result.
+      }
+    }
+    if (canonicalRoots.isEmpty) return const [];
+    final rawResults = await _server.fuzzyFileSearch(
+      query: normalizedQuery,
+      roots: roots,
+      cancellationToken: cancellationToken,
+    );
+    final results = <CodexFileSearchResult>[];
+    for (final raw in rawResults) {
+      CodexFileSearchResult result;
+      try {
+        result = CodexFileSearchResult.fromJson(raw);
+      } on FormatException {
+        continue;
+      }
+      final canonicalRoot = canonicalRoots[result.root];
+      if (canonicalRoot == null) continue;
+      try {
+        final entity = result.isDirectory
+            ? Directory(result.candidatePath)
+            : File(result.candidatePath);
+        if (!await entity.exists()) continue;
+        final canonicalPath = await entity.resolveSymbolicLinks();
+        if (!_isPathWithinWorkspaceRoot(canonicalRoot, canonicalPath)) {
+          continue;
+        }
+        results.add(result.withPath(canonicalPath));
+      } on FileSystemException {
+        // Search can race with file deletion or permission changes.
+      }
+    }
+    return List.unmodifiable(results);
+  }
+
+  bool _isPathWithinWorkspaceRoot(String root, String path) {
+    if (path == root) return true;
+    final prefix = root.endsWith(Platform.pathSeparator)
+        ? root
+        : '$root${Platform.pathSeparator}';
+    return path.startsWith(prefix);
+  }
 
   /// 返回不可修改的当前时间线副本视图。
   /// Returns an unmodifiable view of the current timeline.
