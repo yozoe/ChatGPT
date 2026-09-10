@@ -173,7 +173,9 @@ class ComposerPanelState extends State<ComposerPanel> {
   void _handleRecordSkillRequest() {
     if (_handledRecordSkillRequest == widget.recordSkillRequest.value) return;
     _handledRecordSkillRequest = widget.recordSkillRequest.value;
-    if (mounted) setState(() => _recordSkill = true);
+    // The host may still emit this legacy request while the plugin page is
+    // mounted, but no public recording protocol exists. Consume it without
+    // changing composer state or implying that recording started.
   }
 
   void _handleControllerChanged() {

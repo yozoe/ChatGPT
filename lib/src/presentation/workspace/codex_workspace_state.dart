@@ -1452,13 +1452,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     final imagePaths = <String>[];
     final skillNames = <String>{};
     final selectedSkills = [...submission.skills];
-    if (submission.recordSkill) {
-      final creator = _controller.skills
-          .where((skill) => skill.enabled && skill.name == 'skill-creator')
-          .firstOrNull;
-      if (creator != null) selectedSkills.add(creator);
-      contextLines.add('请把本次任务的有效流程整理成一个可复用的 Codex 技能。');
-    }
     for (final skill in selectedSkills) {
       if (!skillNames.add(skill.name)) continue;
       additionalInput.add({
@@ -1550,13 +1543,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     final imagePaths = <String>[];
     final selectedSkills = [...submission.skills];
     final skillNames = <String>{};
-    if (submission.recordSkill) {
-      final creator = _controller.skills
-          .where((skill) => skill.enabled && skill.name == 'skill-creator')
-          .firstOrNull;
-      if (creator != null) selectedSkills.add(creator);
-      contextLines.add('请把本次调整的有效流程整理成一个可复用的 Codex 技能。');
-    }
     for (final skill in selectedSkills) {
       if (!skillNames.add(skill.name)) continue;
       additionalInput.add({
