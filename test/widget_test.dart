@@ -3003,6 +3003,46 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('does not execute project context without a selected project', (
+    tester,
+  ) async {
+    final controller = CodexController(server: _FakeCodexAppServer());
+    final composer = TextEditingController();
+    addTearDown(() {
+      composer.dispose();
+      controller.dispose();
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ComposerPanel(
+            controller: controller,
+            composer: composer,
+            onSend: (_) async => true,
+            onQueueSteer: (_) async => true,
+          ),
+        ),
+      ),
+    );
+
+    final field = find.byKey(const Key('composer-field'));
+    composer.text = '@当前';
+    await tester.pump();
+
+    final projectContext = find.byKey(
+      const ValueKey('composer-slash-command-workspaceContext'),
+    );
+    expect(projectContext, findsOneWidget);
+    expect(tester.widget<InkWell>(projectContext).onTap, isNull);
+    expect(find.text('请先选择项目'), findsOneWidget);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(tester.widget<TextField>(field).controller!.text, '@当前');
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'focuses the first enabled slash command and follows mouse hover',
     (tester) async {

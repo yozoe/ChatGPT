@@ -328,8 +328,9 @@ class ComposerPanelState extends State<ComposerPanel> {
       kind: ComposerSlashCommandKind.workspaceContext,
       label:
           '附加 ${controller.workspacePath == null ? '当前项目' : _pathLabel(controller.workspacePath!)}',
-      description: '',
+      description: controller.workspacePath == null ? '请先选择项目' : '',
       icon: Icons.terminal_outlined,
+      enabled: controller.workspacePath != null,
     ),
     const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.goal,
