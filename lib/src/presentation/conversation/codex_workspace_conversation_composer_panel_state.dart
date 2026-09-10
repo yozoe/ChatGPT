@@ -592,8 +592,9 @@ class ComposerPanelState extends State<ComposerPanel> {
         _togglePlanMode();
         composer.clear();
       case ComposerSlashCommandKind.recordSkill:
-        setState(() => _recordSkill = !_recordSkill);
-        composer.clear();
+        // No public App Server recording protocol is available. The row is
+        // intentionally disabled and must never create a local success chip.
+        return;
       case ComposerSlashCommandKind.mcpStatus:
         composer.value = const TextEditingValue(
           text: '/',
