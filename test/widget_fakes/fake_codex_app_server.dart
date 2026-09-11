@@ -83,6 +83,7 @@ class FakeCodexAppServer extends CodexAppServer {
   String? steeredTurnId;
   String? steeredTurnPrompt;
   List<JsonMap> steeredTurnAdditionalInput = <JsonMap>[];
+  JsonMap? steeredTurnAdditionalContext;
   String? steerResponseTurnId;
   Object? steerTurnError;
   Completer<String>? steerCompleter;
@@ -321,11 +322,15 @@ class FakeCodexAppServer extends CodexAppServer {
     required String expectedTurnId,
     required String prompt,
     List<JsonMap> additionalInput = const [],
+    JsonMap? additionalContext,
   }) async {
     steeredTurnThreadId = threadId;
     steeredTurnId = expectedTurnId;
     steeredTurnPrompt = prompt;
     steeredTurnAdditionalInput = List.of(additionalInput);
+    steeredTurnAdditionalContext = additionalContext == null
+        ? null
+        : JsonMap.from(additionalContext);
     if (!steerEntered.isCompleted) steerEntered.complete();
     if (steerTurnError case final error?) throw error;
     if (steerCompleter case final completer?) return completer.future;

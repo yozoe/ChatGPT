@@ -367,6 +367,7 @@ class CodexAppServer {
     required String expectedTurnId,
     required String prompt,
     List<JsonMap> additionalInput = const [],
+    JsonMap? additionalContext,
   }) async {
     final response = await request('turn/steer', {
       'threadId': threadId,
@@ -375,6 +376,7 @@ class CodexAppServer {
         {'type': 'text', 'text': prompt},
         ...additionalInput,
       ],
+      'additionalContext': ?additionalContext,
     });
     _throwIfError(response);
     final result = response['result'];

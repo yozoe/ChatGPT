@@ -413,6 +413,12 @@ void main() {
       additionalInput: const [
         {'type': 'localImage', 'path': '/tmp/steer.png'},
       ],
+      additionalContext: const {
+        'ide': {
+          'kind': 'application',
+          'value': '{"activeFile":{"path":"/workspace/lib/main.dart"}}',
+        },
+      },
     );
 
     expect(server.requestedMethod, 'turn/steer');
@@ -423,6 +429,12 @@ void main() {
         {'type': 'text', 'text': '改成灰色'},
         {'type': 'localImage', 'path': '/tmp/steer.png'},
       ],
+      'additionalContext': {
+        'ide': {
+          'kind': 'application',
+          'value': '{"activeFile":{"path":"/workspace/lib/main.dart"}}',
+        },
+      },
     });
   });
 

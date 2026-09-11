@@ -1493,6 +1493,9 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     final sent = await _controller.sendPrompt(
       promptParts.join(' ').trim(),
       additionalInput: additionalInput,
+      additionalContext: submission.includeIdeContext
+          ? _controller.ideAdditionalContext
+          : null,
       goal: submission.goal,
       planMode: submission.planMode,
       imagePaths: imagePaths,
@@ -1511,6 +1514,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       prompt: text.trim(),
       attachments: const [],
       includeWorkspace: false,
+      includeIdeContext: false,
       goal: null,
       planMode: false,
       skills: const [],
@@ -1534,6 +1538,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
         submission.attachments.isNotEmpty ||
         submission.pastedTexts.isNotEmpty ||
         submission.includeWorkspace ||
+        submission.includeIdeContext ||
         submission.goal?.trim().isNotEmpty == true ||
         submission.planMode ||
         submission.skills.isNotEmpty;
@@ -1589,6 +1594,9 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
         planMode: submission.planMode,
         additionalInput: List.unmodifiable(additionalInput),
         imagePaths: List.unmodifiable(imagePaths),
+        additionalContext: submission.includeIdeContext
+            ? _controller.ideAdditionalContext
+            : null,
       ),
     );
   }

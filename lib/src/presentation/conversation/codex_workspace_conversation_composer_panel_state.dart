@@ -42,6 +42,8 @@ class ComposerPanelState extends State<ComposerPanel> {
   String? _fileSearchError;
   bool _draggingFiles = false;
   bool _includeWorkspace = false;
+  bool _includeIdeContext = false;
+  String? _ideContextWorkspacePath;
   bool _planMode = false;
   bool _goalMode = false;
   bool _mcpStatusVisible = false;
@@ -126,6 +128,7 @@ class ComposerPanelState extends State<ComposerPanel> {
   bool get _hasComposerChips =>
       _attachments.isNotEmpty ||
       _includeWorkspace ||
+      _includeIdeContext ||
       _goal?.isNotEmpty == true ||
       _planMode ||
       _selectedSkillPaths.isNotEmpty;
@@ -166,6 +169,14 @@ class ComposerPanelState extends State<ComposerPanel> {
   }
 
   void _handleControllerChanged() {
+    final disconnectedSelectedIdeContext =
+        _includeIdeContext &&
+        (!controller.hasIdeContext ||
+            _ideContextWorkspacePath != controller.workspacePath);
+    if (disconnectedSelectedIdeContext) {
+      _includeIdeContext = false;
+      _ideContextWorkspacePath = null;
+    }
     final fileSearchWorkspaceKey = _currentFileSearchWorkspaceKey;
     if (_fileSearchWorkspaceKey != fileSearchWorkspaceKey) {
       _fileSearchWorkspaceKey = fileSearchWorkspaceKey;
@@ -178,7 +189,7 @@ class ComposerPanelState extends State<ComposerPanel> {
     final staleSkillPaths = _selectedSkillPaths
         .where((path) => !enabledSkillPaths.contains(path))
         .toList(growable: false);
-    if (staleSkillPaths.isNotEmpty) {
+    if (staleSkillPaths.isNotEmpty || disconnectedSelectedIdeContext) {
       _selectedSkillPaths.removeAll(staleSkillPaths);
       if (mounted) setState(() {});
     }
@@ -321,12 +332,14 @@ class ComposerPanelState extends State<ComposerPanel> {
   bool get _showComposerMenu => _showSlashMenu || _showMentionMenu;
 
   List<ComposerSlashCommand> get _slashCommands => [
-    const ComposerSlashCommand(
+    ComposerSlashCommand(
       kind: ComposerSlashCommandKind.workspaceContext,
       label: 'IDE 上下文',
-      description: '未连接 IDE 宿主，当前不可用',
+      description: controller.hasIdeContext
+          ? '附加当前 IDE 文件、选区和打开标签'
+          : '未连接 IDE 宿主，当前不可用',
       icon: Icons.auto_awesome_outlined,
-      enabled: false,
+      enabled: controller.hasIdeContext,
     ),
     const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.mcpStatus,
@@ -623,8 +636,11 @@ class ComposerPanelState extends State<ComposerPanel> {
       case ComposerSlashCommandKind.files:
         await _showAttachmentPicker();
       case ComposerSlashCommandKind.workspaceContext:
-        if (controller.workspacePath != null) {
-          setState(() => _includeWorkspace = true);
+        if (controller.hasIdeContext) {
+          setState(() {
+            _includeIdeContext = true;
+            _ideContextWorkspacePath = controller.workspacePath;
+          });
         }
       case ComposerSlashCommandKind.goal:
         _enterGoalMode();
@@ -709,8 +725,11 @@ class ComposerPanelState extends State<ComposerPanel> {
     setState(() => _slashMenuDismissed = true);
     switch (command.kind) {
       case ComposerSlashCommandKind.workspaceContext:
-        if (controller.workspacePath != null) {
-          setState(() => _includeWorkspace = true);
+        if (controller.hasIdeContext) {
+          setState(() {
+            _includeIdeContext = true;
+            _ideContextWorkspacePath = controller.workspacePath;
+          });
         }
         composer.clear();
       case ComposerSlashCommandKind.files:
@@ -1228,6 +1247,7 @@ class ComposerPanelState extends State<ComposerPanel> {
         _pastedTexts.map((pastedText) => pastedText.text),
       ),
       includeWorkspace: _includeWorkspace,
+      includeIdeContext: _includeIdeContext,
       goal: goalText,
       planMode: _planMode,
       skills: _selectedSkills,
@@ -1246,6 +1266,8 @@ class ComposerPanelState extends State<ComposerPanel> {
       _pastedTexts.clear();
       _selectedSkillPaths.clear();
       _includeWorkspace = false;
+      _includeIdeContext = false;
+      _ideContextWorkspacePath = null;
       // A goal is persisted on the thread by the successful submission.  It
       // belongs to that task from here on, rather than remaining as a draft
       // context chip for every later composer submission.
@@ -2018,6 +2040,18 @@ class ComposerPanelState extends State<ComposerPanel> {
                                       onRemove: () => setState(
                                         () => _includeWorkspace = false,
                                       ),
+                                    ),
+                                  if (_includeIdeContext)
+                                    ComposerContextChip(
+                                      key: const Key(
+                                        'composer-ide-context-chip',
+                                      ),
+                                      icon: Icons.auto_awesome_outlined,
+                                      label: 'IDE 上下文',
+                                      onRemove: () => setState(() {
+                                        _includeIdeContext = false;
+                                        _ideContextWorkspacePath = null;
+                                      }),
                                     ),
                                   if (_goal case final goal?)
                                     ComposerContextChip(

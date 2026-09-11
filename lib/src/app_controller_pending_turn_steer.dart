@@ -13,6 +13,7 @@ class PendingTurnSteer {
     this.goal,
     this.planMode = false,
     this.additionalInput = const [],
+    this.additionalContext,
     this.imagePaths = const [],
   });
 
@@ -21,5 +22,6 @@ class PendingTurnSteer {
   final String? goal;
   final bool planMode;
   final List<JsonMap> additionalInput;
+  final JsonMap? additionalContext;
   final List<String> imagePaths;
 }

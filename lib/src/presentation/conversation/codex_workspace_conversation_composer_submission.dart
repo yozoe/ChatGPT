@@ -8,6 +8,7 @@ class ComposerSubmission {
     required this.attachments,
     this.pastedTexts = const [],
     required this.includeWorkspace,
+    this.includeIdeContext = false,
     required this.goal,
     required this.planMode,
     required this.skills,
@@ -18,6 +19,7 @@ class ComposerSubmission {
   final List<ComposerAttachment> attachments;
   final List<String> pastedTexts;
   final bool includeWorkspace;
+  final bool includeIdeContext;
   final String? goal;
   final bool planMode;
   final List<CodexSkill> skills;
@@ -26,6 +28,7 @@ class ComposerSubmission {
       attachments.isNotEmpty ||
       pastedTexts.isNotEmpty ||
       includeWorkspace ||
+      includeIdeContext ||
       goal?.isNotEmpty == true ||
       planMode ||
       skills.isNotEmpty;

@@ -22,7 +22,7 @@
 
 | 能力 | 官方证据 | App Server 协议 | 当前实现状态 |
 | --- | --- | --- | --- |
-| IDE 上下文 | 已确认（文档）：`/ide-context` 切换自动 IDE 上下文；CLI `/ide` 包含打开文件和当前选区 | App Server 0.153.4 的 `turn/start.additionalContext` 可携带按不透明来源键组织的 `{kind: untrusted/application, value}` 文本片段；官方文档仍未给出 IDE 宿主连接、来源键和序列化格式 | 未连接 IDE 宿主时 `/` 项禁用；当前项目路径从 `@`/添加菜单单独提供 |
+| IDE 上下文 | 已确认（文档）：`/ide-context` 切换自动 IDE 上下文；CLI `/ide` 包含打开文件和当前选区 | App Server 0.153.4 的 `turn/start.additionalContext` 与 `turn/steer.additionalContext` 可携带按不透明来源键组织的 `{kind: untrusted/application, value: string}` 文本片段；官方文档仍未给出 IDE 宿主连接、来源键和序列化格式 | 已提供 `codex_desk/ide_context` 通用宿主通道并接入当前文件、选区、打开标签；有效快照到达后入口启用，显式选择后以 JSON 字符串发送，断连/切换项目清除选择。仓库没有具体 IDE 插件端，独立运行时仍禁用；当前项目路径从 `@`/添加菜单单独提供 |
 | MCP | 已确认（文档） | `mcpServerStatus/list`、`mcpServerStatus/updated` | 已接入当前线程实时连接、认证与工具状态；待桌面实测 |
 | 代码审查 | 已确认（文档）：未提交改动或相对基础分支 | `review/start`，目标支持 `uncommittedChanges`、`baseBranch`、`commit`、`custom` | 已改用结构化 `review/start` |
 | 侧边聊天 | 已确认（文档）：临时聊天，不中断主聊天；审查模式和嵌套侧边聊天中不可用 | `thread/fork` + `ephemeral: true`；分页线程使用 `excludeTurns: true` | 已接入独立侧栏 UI，审查/嵌套/重复创建均禁用，迟到结果按任务丢弃；精确布局仍待桌面实测 |

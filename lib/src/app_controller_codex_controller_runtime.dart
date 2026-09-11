@@ -14,6 +14,7 @@ import 'package:chatgpt/src/domain/codex_mcp_server.dart';
 import 'package:chatgpt/src/domain/codex_mcp_runtime_status.dart';
 import 'package:chatgpt/src/domain/codex_file_change.dart';
 import 'package:chatgpt/src/domain/codex_file_search_result.dart';
+import 'package:chatgpt/src/domain/codex_ide_context.dart';
 import 'package:chatgpt/src/domain/git_project_status.dart';
 import 'package:chatgpt/src/domain/pending_approval.dart';
 import 'package:chatgpt/src/domain/pending_elicitation.dart';
@@ -55,6 +56,7 @@ import 'app_controller_configuration_values.dart';
 import 'app_controller_runtime_connection.dart';
 import 'app_controller_scheduled_task_coordinator.dart';
 import 'side_chat/codex_side_chat_session.dart';
+import 'package:chatgpt/src/services/codex_ide_context_bridge.dart';
 
 /// 协调工作区运行时、会话历史、时间线和用户审批的核心控制器。
 /// Coordinates the workspace runtime, persisted history, timeline, and user approvals.
@@ -73,6 +75,7 @@ class CodexController extends ChangeNotifier {
     GitProjectService? gitProjectService,
     TaskCompletionNotifier? taskCompletionNotifier,
     CodexClock? clock,
+    CodexIdeContextBridge? ideContextBridge,
   }) : _server = server ?? CodexAppServer(),
        _runtimeConfigurationStore =
            runtimeConfigurationStore ??
@@ -87,6 +90,8 @@ class CodexController extends ChangeNotifier {
        _localSessionThreadStore =
            localSessionThreadStore ?? LocalSessionThreadStore(),
        _gitProjectService = gitProjectService ?? GitProjectService(),
+       _ideContextBridge = ideContextBridge ?? CodexIdeContextBridge(),
+       _ownsIdeContextBridge = ideContextBridge == null,
        _taskCompletionNotifier =
            taskCompletionNotifier ?? TaskCompletionNotifier(),
        _clock = clock ?? CodexClock() {
@@ -174,6 +179,7 @@ class CodexController extends ChangeNotifier {
         pluginStore ??
         CodexPluginStore(executableProvider: _server.resolveExecutable);
     _entries.add(_entry(TimelineKind.system, _welcomeTitle, _welcomeDetail));
+    _ideContextBridge.addListener(notifyListeners);
     _runtimeLoad = _loadRuntimeConfiguration();
     _workspaceLoad = _loadWorkspace();
     _historyLoad = _loadConversationHistory();
@@ -190,6 +196,8 @@ class CodexController extends ChangeNotifier {
   final ConversationAttachmentStore _conversationAttachmentStore;
   final LocalSessionThreadStore _localSessionThreadStore;
   final GitProjectService _gitProjectService;
+  final CodexIdeContextBridge _ideContextBridge;
+  final bool _ownsIdeContextBridge;
   final TaskCompletionNotifier _taskCompletionNotifier;
   final CodexClock _clock;
   late final CodexGitOperations _gitOperations;
@@ -205,6 +213,11 @@ class CodexController extends ChangeNotifier {
   StreamSubscription<ServerEvent>? _eventSubscription;
   final List<TimelineEntry> _entries = [];
   final Set<String> _temporaryAttachmentPaths = {};
+
+  CodexIdeContext get ideContext => _ideContextBridge.context;
+  bool get hasIdeContext => _ideContextBridge.isConnected;
+  Map<String, dynamic>? get ideAdditionalContext =>
+      _ideContextBridge.additionalContext;
   final Map<String, int> _composerTemporaryAttachmentRetains = {};
   final Map<String, CodexFileChange> _fileChangesByPath = {};
   final Set<String> _turnDiffDerivedFileChangePaths = {};
@@ -3597,6 +3610,7 @@ class CodexController extends ChangeNotifier {
   Future<bool> steerCurrentTurn(
     String prompt, {
     List<JsonMap> additionalInput = const [],
+    JsonMap? additionalContext,
     List<String> imagePaths = const [],
   }) async {
     final text = prompt.trim();
@@ -3659,6 +3673,7 @@ class CodexController extends ChangeNotifier {
         expectedTurnId: turnId,
         prompt: text,
         additionalInput: persistedAdditionalInput,
+        additionalContext: additionalContext,
       );
       final stillSameConversation =
           !_disposed &&
@@ -3743,6 +3758,7 @@ class CodexController extends ChangeNotifier {
       final sent = await steerCurrentTurn(
         pending.prompt,
         additionalInput: pending.additionalInput,
+        additionalContext: pending.additionalContext,
         imagePaths: pending.imagePaths,
       );
       if (sent) {
@@ -3790,6 +3806,7 @@ class CodexController extends ChangeNotifier {
     final sent = await sendPrompt(
       pending.prompt,
       additionalInput: pending.additionalInput,
+      additionalContext: pending.additionalContext,
       goal: pending.goal,
       planMode: pending.planMode,
       imagePaths: pending.imagePaths,
@@ -9646,6 +9663,8 @@ class CodexController extends ChangeNotifier {
     _releaseAllTemporaryAttachments();
     _clearStreamingState();
     unawaited(_eventSubscription?.cancel());
+    _ideContextBridge.removeListener(notifyListeners);
+    if (_ownsIdeContextBridge) _ideContextBridge.dispose();
     unawaited(_server.dispose());
     super.dispose();
   }
