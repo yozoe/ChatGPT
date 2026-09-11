@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 收敛 Composer 一致性开发目标：仓库内已实现并测试的能力归入 `CODEX_COMPOSER_PARITY_PLAN.md`，官方客户端实测、视觉并排、任务文件最终范围和具体 IDE 插件迁移到独立的 `CODEX_COMPOSER_PARITY_FOLLOWUP.md`，便于后续单独验收。
+
 - Composer 新增 IDE 宿主上下文接入口：宿主通过 `codex_desk/ide_context` 提供当前文件、选区和打开标签后，`/IDE 上下文` 会变为可用；只有用户明确选择时，首轮任务和运行中方向调整才会通过 App Server `additionalContext` 携带字符串化 JSON。宿主断连或切换项目会清除选择，避免把旧项目编辑器状态发送到新任务。当前版本尚未内置具体 IDE 插件，独立运行时入口仍保持禁用。
 - 新增 `IDE_CONTEXT_HOST_PROTOCOL.md`，供 VS Code、Xcode 或其他 IDE 宿主实现 `codex_desk/ide_context` 时使用，并明确断连、项目边界和隐私责任。
 - IDE 上下文桥接增加大小边界：最多保留 64 个打开标签，选区最多 64,000 字符，避免误发送整文件或异常数组。

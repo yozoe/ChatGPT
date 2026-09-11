@@ -2,7 +2,7 @@
 
 一个以 Flutter 构建的本地优先 Codex 桌面客户端。首个目标平台是 macOS。
 
-后续开发任务、优先级与发布前置条件见 [ROADMAP.md](ROADMAP.md)；每项工作完成后会同步更新该清单和本文档。本地工作树的产品边界、任务执行目录、Git 生命周期、增量 Handoff、历史恢复、事务回滚、安全清理和测试方案见 [LOCAL_WORKTREE_DEVELOPMENT.md](LOCAL_WORKTREE_DEVELOPMENT.md)。
+后续开发任务、优先级与发布前置条件见 [ROADMAP.md](ROADMAP.md)；每项工作完成后会同步更新该清单和本文档。Composer 当前开发目标见 [CODEX_COMPOSER_PARITY_PLAN.md](CODEX_COMPOSER_PARITY_PLAN.md)，官方客户端实测、视觉并排、任务文件最终范围和具体 IDE 插件等后续验收见 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](CODEX_COMPOSER_PARITY_FOLLOWUP.md)。本地工作树的产品边界、任务执行目录、Git 生命周期、增量 Handoff、历史恢复、事务回滚、安全清理和测试方案见 [LOCAL_WORKTREE_DEVELOPMENT.md](LOCAL_WORKTREE_DEVELOPMENT.md)。
 
 已完成任务提醒的已查看状态会随对应工作区的加密历史缓存持久化；应用重启或侧栏重建后不会重复提醒，同一任务再次成功完成时会重新进入未查看状态。未查看的成功结果以任务行尾部的小蓝点提醒，包括完成时仍在当前会话中的任务；停止或取消的任务不会显示蓝点。当前会话已经位于时间线底部，或用户随后滚动到底部时，会自动确认并隐藏“任务已就绪”和小蓝点；仍停留在上方阅读时会保留提醒，也可点击对应任务行清除。鼠标移入任务行时蓝点暂时隐藏并让位给快捷操作。点击 Dock 图标切回应用时，若右侧仍显示发出完成通知的会话，会自动清除该会话的 Dock 红点；设置、插件等其他工作区不会清除提醒，其他未查看任务继续保留。切换或新建项目时不会带入上一项目的已查看状态。
 
