@@ -65,6 +65,63 @@ void main() {
     expect(context.openTabs, hasLength(CodexIdeContext.maximumOpenTabs));
   });
 
+  test('drops malformed selection ranges without losing file context', () {
+    for (final range in <Object?>[
+      null,
+      'invalid',
+      {1: 'non-string key'},
+      {'start': {}, 'end': {}},
+      {
+        'start': {'line': -1, 'character': 0},
+        'end': {'line': 0, 'character': 0},
+      },
+      {
+        'start': {'line': 2, 'character': 3},
+        'end': {'line': 2, 'character': 2},
+      },
+      {
+        'start': {'line': 2, 'character': 0},
+        'end': {'line': 1, 'character': 9},
+      },
+      {
+        'start': {'line': 0.5, 'character': 0},
+        'end': {'line': 1, 'character': 0},
+      },
+    ]) {
+      final context = CodexIdeContext.fromJson({
+        'activeFile': {
+          'path': '/workspace/main.dart',
+          'selectedText': 'selected',
+          'selectionRange': range,
+        },
+      });
+      expect(context.isAvailable, isTrue);
+      expect(context.activeFile?.selectedText, 'selected');
+      expect(context.activeFile?.selectionRange, isNull);
+      expect(() => jsonEncode(context.toJson()), returnsNormally);
+    }
+  });
+
+  test('copies valid ranges and removes unknown host fields', () {
+    final start = <String, Object?>{'line': 2, 'character': 5};
+    final context = CodexIdeContext.fromJson({
+      'activeFile': {
+        'path': '/workspace/main.dart',
+        'selectionRange': {
+          'start': start,
+          'end': {'line': 3, 'character': 0, 'extra': Object()},
+          1: Object(),
+        },
+      },
+    });
+    start['line'] = 99;
+    expect(context.activeFile?.selectionRange, {
+      'start': {'line': 2, 'character': 5},
+      'end': {'line': 3, 'character': 0},
+    });
+    expect(() => jsonEncode(context.toJson()), returnsNormally);
+  });
+
   test('receives host updates and encodes schema-compatible context', () async {
     const channel = MethodChannel('codex_desk/ide_context_test');
     final bridge = CodexIdeContextBridge(channel: channel);
