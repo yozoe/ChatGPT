@@ -61,7 +61,7 @@ App Server 已确认：
 - `fileChange` item 属于 turn，包含 `{path, kind, diff}`。
 - 历史线程可通过 turn 和 item 分页接口恢复逐轮数据。
 
-以上证据只能证明协议是逐 turn 的，不能证明官方桌面端右侧“任务文件”采用哪种展示范围。以下项目必须桌面实测：
+Schema 进一步确认 `turn/diff/updated` 是“该 turn 内所有 file change 的最新聚合 Diff”，而 thread/read、thread/resume 和 thread/turns/list 返回的历史项仍按 turn 保存 Diff。以上证据只能证明协议是逐 turn 的，不能证明官方桌面端右侧“任务文件”采用哪种展示范围。以下项目必须桌面实测：
 
 | 场景 | 官方桌面结果 |
 | --- | --- |
