@@ -151,7 +151,7 @@ Future<void> _pumpMenu(
                           root: '/workspace',
                           matchType: 'file',
                           score: 100,
-                          indices: const [0, 1, 2],
+                          indices: [0, 1, 2],
                         ),
                       ]
                     : const [],
