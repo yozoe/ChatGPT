@@ -2,6 +2,7 @@ import 'codex_ide_file_context.dart';
 
 /// Context supplied by an attached IDE host for one Composer turn.
 class CodexIdeContext {
+  static const maximumOpenTabs = 64;
   const CodexIdeContext({this.activeFile, this.openTabs = const []});
 
   final CodexIdeFileContext? activeFile;
@@ -15,6 +16,7 @@ class CodexIdeContext {
       activeFile: CodexIdeFileContext.fromJson(value['activeFile']),
       openTabs: (value['openTabs'] is Iterable
           ? (value['openTabs'] as Iterable)
+                .take(maximumOpenTabs)
                 .map(CodexIdeFileContext.fromJson)
                 .whereType<CodexIdeFileContext>()
                 .toList(growable: false)

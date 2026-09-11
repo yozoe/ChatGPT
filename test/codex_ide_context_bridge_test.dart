@@ -45,6 +45,26 @@ void main() {
     );
   });
 
+  test('bounds host-provided tabs and selected text', () {
+    final selectedText = 'x' * 70000;
+    final context = CodexIdeContext.fromJson({
+      'activeFile': {
+        'path': '/workspace/main.dart',
+        'selectedText': selectedText,
+      },
+      'openTabs': List.generate(
+        100,
+        (index) => {'path': '/workspace/$index.dart'},
+      ),
+    });
+
+    expect(
+      context.activeFile?.selectedText,
+      hasLength(CodexIdeFileContext.maximumSelectedTextLength),
+    );
+    expect(context.openTabs, hasLength(CodexIdeContext.maximumOpenTabs));
+  });
+
   test('receives host updates and encodes schema-compatible context', () async {
     const channel = MethodChannel('codex_desk/ide_context_test');
     final bridge = CodexIdeContextBridge(channel: channel);

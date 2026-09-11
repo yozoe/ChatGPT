@@ -230,7 +230,7 @@ Codex 桌面客户端的私有源码和内部实现不可作为可验证目标�
 
 实现时只把官方实测确认的字段列为一致性要求。如果 IDE 未连接或协议没有提供数据，入口的隐藏、禁用和说明应与官方一致。当前仅附加项目路径的行为必须标记为降级，不得在没有证据时宣称等同于官方 IDE 上下文。
 
-当前实现提供公开边界内的通用宿主接口，支持 `activeFile`、`activeSelectionContent` / `selectedText`、`selectionRange` 和 `openTabs`。App Server Schema 要求 `additionalContext` 每项的 `value` 为字符串，因此快照使用 JSON 字符串传入首轮与方向调整请求；宿主连接本身和官方不透明来源格式仍是待完成的集成项。
+当前实现提供公开边界内的通用宿主接口，支持 `activeFile`、`activeSelectionContent` / `selectedText`、`selectionRange` 和 `openTabs`；最多保留 64 个打开标签，选区最多 64,000 字符。App Server Schema 要求 `additionalContext` 每项的 `value` 为字符串，因此快照使用 JSON 字符串传入首轮与方向调整请求；宿主连接本身和官方不透明来源格式仍是待完成的集成项。
 
 宿主接入契约见 [IDE_CONTEXT_HOST_PROTOCOL.md](IDE_CONTEXT_HOST_PROTOCOL.md)，包含 `updateContext` 示例、断连语义、用户选择边界和隐私责任。该契约不表示仓库已经内置某个 IDE 插件。
 

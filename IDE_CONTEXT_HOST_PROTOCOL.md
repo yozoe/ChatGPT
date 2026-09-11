@@ -29,6 +29,8 @@ changes. The arguments must be a JSON-compatible object:
 `activeFile` and each `openTabs` item may use `fsPath` instead of `path`.
 `activeSelectionContent` is accepted as an alias for `selectedText`. Empty or
 malformed files are ignored; an empty object means the host is disconnected.
+The bridge keeps at most 64 open tabs and truncates selected text to 64,000
+characters so an accidental full-file selection cannot make a turn unbounded.
 
 ## Composer behavior
 
