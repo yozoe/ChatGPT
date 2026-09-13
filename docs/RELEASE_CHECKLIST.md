@@ -4,7 +4,7 @@ Run this checklist for every release. The DMG build never launches the applicati
 
 ## Build and package
 
-1. Update `version` in `pubspec.yaml` and add an entry to [RELEASE_NOTES.md](RELEASE_NOTES.md).
+1. Update `version` in `pubspec.yaml` and add an entry to [RELEASE_NOTES.md](../RELEASE_NOTES.md).
 2. Run `dart format .`, `flutter analyze`, `flutter test`, and `flutter build macos --debug`.
 3. Run `./build_dmg.sh`; it produces `dist/Codex-Desk-<version>.dmg`.
 4. Verify the DMG with `hdiutil verify dist/Codex-Desk-<version>.dmg`.
@@ -20,7 +20,8 @@ Use a separate macOS user account or a clean test machine. Do not reuse the deve
 5. Create a second workspace and verify that both entries appear in the sidebar, the current entry is visibly selected, and the other entry switches with one click. Confirm that the runtime reconnects automatically and each workspace restores its own additional directories. Remove a non-active workspace record and confirm that its directory is not deleted.
 6. Quit the app, reopen it, and verify that the selected primary/additional workspaces and window geometry restore correctly and the runtime reconnects automatically.
 7. Complete a task that creates an untracked file and verify the completion card shows the file count and Diff statistics; click “审核” and confirm the read-only review window shows the file and full-task Diff. If the App Server omits a file-level Diff, verify the UI shows a safe workspace fallback or unknown statistics rather than a false `+0 -0`.
-8. Unmount the DMG, remove the test app, and record the macOS version and test result in the release PR.
+8. Open “设置 > 配置” and verify the approval policy and reasoning-effort preferences retain their documented persistence scope. Confirm sandbox, web search, verbosity, and reasoning-summary rows remain explicitly read-only/config-managed when the connected runtime does not expose compatible fields; browser capability settings must not be presented as web-search defaults. Record any runtime version or configuration-source differences in the release PR.
+9. Unmount the DMG, remove the test app, and record the macOS version and test result in the release PR.
 
 ## Signing and notarization (requires release credentials)
 

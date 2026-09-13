@@ -5,7 +5,7 @@
 ## 已完成基线
 
 - `已完成` 新增可接入 IDE 宿主的 `codex_desk/ide_context` 通道，接收当前文件、选区和打开标签；宿主提供有效快照后 `/IDE 上下文` 才启用，且只有用户明确选择的首轮任务或运行中方向调整才通过 App Server `additionalContext` 发送字符串化 JSON。断连和切换项目会清除选中状态，当前项目路径保持独立。仓库尚无具体 IDE 插件端，独立运行时继续禁用该入口。
-- `已完成` 发布 [IDE_CONTEXT_HOST_PROTOCOL.md](IDE_CONTEXT_HOST_PROTOCOL.md) 宿主契约，定义 `updateContext` JSON、字段别名、断连和项目边界，明确插件隐私责任与不依赖私有 IPC 的限制。
+- `已完成` 发布 [IDE_CONTEXT_HOST_PROTOCOL.md](docs/IDE_CONTEXT_HOST_PROTOCOL.md) 宿主契约，定义 `updateContext` JSON、字段别名、断连和项目边界，明确插件隐私责任与不依赖私有 IPC 的限制。
 - `已完成` 修复任务列表读取阻塞新回合的问题：列表刷新与 `turn/start` 并行，慢列表不会让 Composer 停止在发送前；服务端接受回合前仍拒绝迟到完成事件，接受后正常流式接收。工作区首次连接等待恢复收敛，显式任务不会与旧项目自动恢复重复 `thread/resume`。
 - `已完成` 修复 Goal 处于 `blocked`（需要输入）时卡片永久停留且无法继续的问题：blocked 目标现在可恢复，后续发送会先恢复目标，失败则保留输入并展示错误；完成、用量耗尽和预算耗尽仍保持终态。
 - `已完成` 收紧侧边聊天命令的宿主回调边界：能力标记可用但打开回调缺失时显示明确错误，不再静默无响应。
@@ -18,7 +18,7 @@
 - `已完成` 禁用未连接 IDE 宿主时的 `/` IDE 上下文命令；项目路径上下文与 IDE 上下文分开，避免执行入口语义错配。
 - `已完成` 收紧 IDE 宿主选区范围解析：仅接受非负且按文档顺序排列的整数行列，过滤畸形或反向范围并保留其他有效上下文。
 - `已完成` 禁用没有公开录制协议的“录制技能”入口；不再把 `skill-creator` 加提示词的普通任务伪装成录制完成。
-- `已完成` 完整对齐 Codex Goal/Plan mode：目标文字同时作为首轮提示与完成条件，按线程恢复并在 Composer 上方显示状态、token/时间进度以及暂停、恢复、编辑、清除操作；计划模式支持 `Shift+Tab`、运行中禁用所有切换入口，并实时保留 App Server 最终权威 `plan` item。目标与计划的迟到通知、重复完成项、异步切换、跨线程并发和错误状态均有隔离与测试覆盖。
+- `已完成` 接入公开协议支持的 Goal/Plan mode：目标文字同时作为首轮提示与完成条件，按线程恢复并在 Composer 上方显示状态、token/时间进度以及暂停、恢复、编辑、清除操作；计划模式支持 `Shift+Tab`、运行中禁用所有切换入口，并实时保留 App Server 最终权威 `plan` item。目标与计划的迟到通知、重复完成项、异步切换、跨线程并发和错误状态均有隔离与测试覆盖；官方桌面端的精确视觉和生命周期仍待后续验收。
 - `已完成` 兼容仅在 `item/completed` 返回完整助手文本的 App Server：完成事件会回填或校正最终回复，避免用户只看到“任务完成”而没有助手反馈；流式增量仍保持单条消息并由完整文本校正截断内容。
 - `已完成` 消除跨项目任务切换的剩余重路径：任务页面与滚动位置使用跨项目全局 LRU，具体任务可越过目标项目的旧活动任务直接恢复；共享 App Server 在空闲切换时继续复用，连续选择采用最新请求优先。本地历史拆为每项目独立加密文件并缓存内存快照，JSON 编解码移至后台 isolate；长时间线首帧预布局有界，非活动保活页面避免无关重建。
 - `已完成` 修复空 Composer 通过“添加 → 目标”启动任务时的错误兜底提示：目标描述同时作为首轮任务指令发送，不再误导模型分析不存在的附件。
@@ -162,7 +162,7 @@
 ### P0：发布与可靠性
 
 - `已完成` 建立未签名 Release 打包流程：`build_dmg.sh` 会按 `pubspec.yaml` 版本生成 DMG，发布说明见 `RELEASE_NOTES.md`；2026-08-21 已生成并通过 `hdiutil verify` 校验。
-- `待办` 在干净 macOS 用户账户或测试机完成 DMG 安装回归；步骤见 `RELEASE_CHECKLIST.md`，需要人工操作安装后的应用。
+- `待办` 在干净 macOS 用户账户或测试机完成 DMG 安装回归；步骤见 [RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)，需要人工操作安装后的应用。
 - `受阻` 完成首次 Developer ID 签名和 notarization 提交。`build_dmg.sh` 已支持签名应用与 DMG、`notarytool` 提交、staple 和 Gatekeeper 评估；仍需提供 Apple Developer 证书、Keychain notary profile 与发布权限，未具备前只能生成未签名 DMG。
 - `已完成` 为安装脚本增加“仅构建、不安装”和“仅安装、不构建”参数；正常退出请求被取消时会对目标应用进程回退使用 `SIGTERM`，且仅在 `/Applications` 不可写时请求管理员权限。
 - `已完成` 增加 CLI 不可用的启动失败、可复制脱敏诊断和重试回归测试。
@@ -189,15 +189,16 @@
 
 ### P1：核心体验
 
-- `已完成` 按 [IN_APP_BROWSER_DEVELOPMENT.md](IN_APP_BROWSER_DEVELOPMENT.md) 完成 macOS `WKWebView` 阶段 0 技术验证，并保留会话右侧的浏览器工作区 Tab 承载层；设置入口只展示智能体调用能力边界，不手动创建 WebView。
-- `已完成` 将内置浏览器对齐 Codex 客户端：浏览器作为会话右侧工作区的平级 Tab 打开，不替换会话页。右上角菜单可直接创建并打开浏览器，已交付紧凑标签栏、地址搜索、多标签、网页新窗口转标签、页面标题、导航/刷新/停止/外部打开、错误反馈、空状态、Chrome 数据隔离说明和 macOS 常用快捷键。收起右栏、切换工作区 Tab 或进入其他一级页时保留 WebView 和页内标签，隐藏时退出焦点链且不拦截快捷键；展开/收起动画的中间宽度不布局完整浏览器 chrome。每次主框架跳转与重定向都会执行 URL 和 DNS 私网检查；最终重定向 URL 会结束加载状态，同标签用户与智能体导航共享请求版本，迟到回调不会覆盖较新导航。页内标签仅在当前应用生命周期内保活，不承诺跨重启恢复。
+- `待办` 按 [AGENT_DEFAULT_SETTINGS_PLAN.md](docs/development-plans/AGENT_DEFAULT_SETTINGS_PLAN.md) 对齐官方“智能体默认设置”：先读取最终生效配置及来源，再补齐批准策略、沙盒、网页搜索、输出详细程度和推理摘要；未获 App Server 协议支持的字段保持只读，不以提示词模拟设置行为。
+- `已完成` 按 [IN_APP_BROWSER_DEVELOPMENT.md](docs/development-plans/IN_APP_BROWSER_DEVELOPMENT.md) 完成 macOS `WKWebView` 阶段 0 技术验证，并保留会话右侧的浏览器工作区 Tab 承载层；设置入口只展示智能体调用能力边界，不手动创建 WebView。
+- `已完成` 完成内置浏览器基础工作区：浏览器作为会话右侧工作区的平级 Tab 打开，不替换会话页。右上角菜单可直接创建并打开浏览器，已交付紧凑标签栏、地址搜索、多标签、网页新窗口转标签、页面标题、导航/刷新/停止/外部打开、错误反馈、空状态、Chrome 数据隔离说明和 macOS 常用快捷键。收起右栏、切换工作区 Tab 或进入其他一级页时保留 WebView 和页内标签，隐藏时退出焦点链且不拦截快捷键；展开/收起动画的中间宽度不布局完整浏览器 chrome。每次主框架跳转与重定向都会执行 URL 和 DNS 私网检查；最终重定向 URL 会结束加载状态，同标签用户与智能体导航共享请求版本，迟到回调不会覆盖较新导航。页内标签仅在当前应用生命周期内保活，不承诺跨重启恢复。与官方客户端的完整协议、链接路由、下载和视觉行为仍以 [IN_APP_BROWSER_DEVELOPMENT.md](docs/development-plans/IN_APP_BROWSER_DEVELOPMENT.md) 后续验收为准。
 - `已完成` 修复网页 `target="_blank"` / `window.open()` 新窗口竞态：新标签直接绑定 WebView 插件从 WebKit 回调传入的 `windowId`，不再于原生 WebView 尚未就绪时提前加载而显示空页；被安全策略拒绝的弹窗会被消费并释放，不会改导原页，`window.close()` 会关闭对应标签，关闭标签同步释放窗口绑定。智能体导航以标签和 revision 隔离迟到检查，每个标签仅允许与当前获准 URL 匹配的主框架完成或错误回调更新导航状态。
-- `进行中` 按 [IN_APP_BROWSER_DEVELOPMENT.md](IN_APP_BROWSER_DEVELOPMENT.md) 完成智能体按需唤起适配：设置提供持久化总开关，只有可回复的 `browser/open`、`browser/navigate` 请求才显示 Codex 风格底部权限卡片，并在用户允许后打开内置浏览器工作区加载具有主机名的 HTTP/HTTPS 页面；嵌套请求地址会在卡片中完整显示，相同 URL 的每次已批准导航都会重新执行，关闭开关会拒绝并清理等待中的浏览器审批。`browser` / `computer-use` 活动和无 ID 通知不会绕过确认自行导航。完整公开协议接入、链接打开位置偏好、独立浏览数据/历史、下载确认与受控下载路径仍待交付。不共享 Chrome/Safari 登录态，不自动向 Codex 发送页面数据，浏览器受控能力另行进行协议与安全评审。
+- `进行中` 按 [IN_APP_BROWSER_DEVELOPMENT.md](docs/development-plans/IN_APP_BROWSER_DEVELOPMENT.md) 完成智能体按需唤起适配：设置提供持久化总开关，只有可回复的 `browser/open`、`browser/navigate` 请求才显示 Codex 风格底部权限卡片，并在用户允许后打开内置浏览器工作区加载具有主机名的 HTTP/HTTPS 页面；嵌套请求地址会在卡片中完整显示，相同 URL 的每次已批准导航都会重新执行，关闭开关会拒绝并清理等待中的浏览器审批。`browser` / `computer-use` 活动和无 ID 通知不会绕过确认自行导航。完整公开协议接入、链接打开位置偏好、独立浏览数据/历史、下载确认与受控下载路径仍待交付。不共享 Chrome/Safari 登录态，不自动向 Codex 发送页面数据，浏览器受控能力另行进行协议与安全评审。
 - `进行中` 浏览器实际导航前会解析域名并拒绝解析到回环、私网、链路本地或多播地址的主机；重定向继续经过同一策略复核。
 - `已完成` 用户消息气泡保持右侧对齐，内部单行与换行文本维持自然左对齐；超过 16 行的长文本默认省略折叠，支持“显示更多 / 显示较少”原位切换；悬停时在时间旁提供复制和修改入口，修改会原位展开 Codex 风格内联编辑器，支持取消和发送，修订内容作为下一轮任务提交（运行中则排入调整方向），不修改既有会话审计记录。
 - `已完成` 收紧“已运行命令”等活动摘要与展开明细的上下间距，减少时间线活动清单的空白。
-- `已完成` 本次 [CODEX_COMPOSER_PARITY_PLAN.md](CODEX_COMPOSER_PARITY_PLAN.md) 范围内的 Composer 与任务文件开发：`@` / `/` 的真实动作、筛选、键盘、结构化输入、`fuzzyFileSearch`、Goal/Plan/Skill、代码审查、聊天分支、主动压缩、反馈、侧边聊天、上下文用量、IDE 宿主通道、任务文件跨轮持久化、撤销和重启恢复均已接入并通过本地测试。官方桌面菜单与视觉对照、任务文件最终范围及具体 IDE 插件已移至 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](CODEX_COMPOSER_PARITY_FOLLOWUP.md)。
-- `待办` 按 [LOCAL_WORKTREE_DEVELOPMENT.md](LOCAL_WORKTREE_DEVELOPMENT.md) 实现 Codex 风格本地工作树：新任务可在原始本地 checkout 或任务专属 detached worktree 中运行，线程、App Server cwd、审查和 Git 操作绑定同一执行目录；通过可恢复事务安全携带当前本地改动和 `.worktreeinclude` 环境文件，清理后仍保留聊天与快照恢复入口，并以应用外权威所有权记录保护删除边界；支持在工作树创建分支和默认最近 15 个托管工作树清理。基础创建和任务绑定稳定后，再独立交付基于双端检查点的增量 Local ↔ Worktree Handoff、永久工作树、可配置根目录及已安排任务隔离。
+- `已完成` 本次 [CODEX_COMPOSER_PARITY_PLAN.md](docs/development-plans/CODEX_COMPOSER_PARITY_PLAN.md) 范围内的 Composer 与任务文件开发：`@` / `/` 的真实动作、筛选、键盘、结构化输入、`fuzzyFileSearch`、Goal/Plan/Skill、代码审查、聊天分支、主动压缩、反馈、侧边聊天、上下文用量、IDE 宿主通道、任务文件跨轮持久化、撤销和重启恢复均已接入并通过本地测试。官方桌面菜单与视觉对照、任务文件最终范围及具体 IDE 插件已移至 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](docs/development-plans/CODEX_COMPOSER_PARITY_FOLLOWUP.md)。
+- `待办` 按 [LOCAL_WORKTREE_DEVELOPMENT.md](docs/development-plans/LOCAL_WORKTREE_DEVELOPMENT.md) 实现 Codex 风格本地工作树：新任务可在原始本地 checkout 或任务专属 detached worktree 中运行，线程、App Server cwd、审查和 Git 操作绑定同一执行目录；通过可恢复事务安全携带当前本地改动和 `.worktreeinclude` 环境文件，清理后仍保留聊天与快照恢复入口，并以应用外权威所有权记录保护删除边界；支持在工作树创建分支和默认最近 15 个托管工作树清理。基础创建和任务绑定稳定后，再独立交付基于双端检查点的增量 Local ↔ Worktree Handoff、永久工作树、可配置根目录及已安排任务隔离。
 - `已完成` 对齐 Codex 的网络等待与失败轮次恢复：App Server 发出 `error(willRetry: true)` 时，在严格匹配 thread/turn 的对应时间线中逐次保留灰色 Wi-Fi 活动行 `Reconnecting... waiting for network`；当前任务直接显示，后台任务按 thread 暂存并在打开时恢复，不污染当前会话。任务保持运行并由服务端自动续接，出现后续进展或结束后等待记录转为非实时历史语义；迟到通知与 `willRetry: false` 被忽略。只有最终返回 `turn/completed(status: failed)` 后才在输入区上方显示行内错误和“重试”，并在同一线程原样重发文字、Skill/图片输入、目标、计划模式及模型设置；重试期间防止重复提交，再次失败后保留入口。停止/取消、缺少原始内存提交的历史失败和其他任务均不会显示或误用该操作，异步结果也不会污染切换后的任务。
 - `已完成` 将额度耗尽与普通失败分流：App Server 请求异常会保留 `code`、`type` 和脱敏消息，控制器优先识别 usage limit、quota exceeded 等稳定错误标识并以兼容文案兜底；额度提示同时提供“查看用量”和明确的“额度恢复后重试”，因此恢复后仍可原样重放文字、Skill、图片和模型设置。网络、短时速率限制或其他可恢复失败继续使用普通重试，重复失败仍保留入口，并覆盖协议边界、控制器与界面回归测试。
 - `已完成` 当历史任务被另一个 Codex 客户端持有 writer 时，以输入区上方的非阻塞“已在另一个应用中打开”提示说明状态，并提供关闭另一处会话后的重试操作，不再弹出对话框。
@@ -209,7 +210,7 @@
 - `已完成` 修复任务切换与异步列表刷新交错时，已打开任务重新显示旧的完成提醒；打开任务会立即确认提醒。
 - `已完成` 增加线程永久删除与批量归档操作；永久删除会提示 App Server 派生线程影响并移除本地缓存引用，归档无需二次确认且仍可恢复。
 - `已完成` 增加 Diff 文件状态筛选、路径搜索与超大预览截断提示；Git 状态与 Diff 保持只读，文件级暂存、确认后的还原、提交、推送与 PR 创建只会在用户显式触发后执行。
-- `已完成` 按 [CODE_REVIEW_INTERFACE_DEVELOPMENT.md](CODE_REVIEW_INTERFACE_DEVELOPMENT.md) 将模态审查升级为 Codex 风格工作台审查界面：宽窗口与会话并排且可拖动调宽，窄窗口以保持会话生命周期的覆盖页显示；“最新一轮”和“Git 工作区”共用连续多文件 Diff、结构化行号/Hunk、未修改行提示、固定行号栏和画布级横向滚动；目录树支持筛选、折叠、点击跳转和正文滚动联动。Git 工作区以最多 6 路并发分批加载全部文件 Diff，并接入全局互斥且带失败反馈的暂存、确认还原、提交/推送和 PR 操作；复合 patch 行号重置、布局断点、极窄工具栏、宽屏 `Esc`、长文件树定位、草稿/审查状态保留、滚动折叠数量及 Git 操作进度均有回归测试。
+- `已完成` 按 [CODE_REVIEW_INTERFACE_DEVELOPMENT.md](docs/development-plans/CODE_REVIEW_INTERFACE_DEVELOPMENT.md) 将模态审查升级为 Codex 风格工作台审查界面：宽窗口与会话并排且可拖动调宽，窄窗口以保持会话生命周期的覆盖页显示；“最新一轮”和“Git 工作区”共用连续多文件 Diff、结构化行号/Hunk、未修改行提示、固定行号栏和画布级横向滚动；目录树支持筛选、折叠、点击跳转和正文滚动联动。Git 工作区以最多 6 路并发分批加载全部文件 Diff，并接入全局互斥且带失败反馈的暂存、确认还原、提交/推送和 PR 操作；复合 patch 行号重置、布局断点、极窄工具栏、宽屏 `Esc`、长文件树定位、草稿/审查状态保留、滚动折叠数量及 Git 操作进度均有回归测试。
 - `已完成` 修复审查工作区展开动画在极窄中间宽度下的标题栏与工具栏溢出；标题内容会按可用空间逐级隐藏，操作项可横向滚动，完整面板的单像素级过渡宽度已有回归覆盖。
 - `已完成` 修复审查工作区动画把 Diff 画布压到极窄宽度时，固定行号栏与粘性文件标题共同造成的 RenderFlex overflow，并修复 Git 提交与 PR 弹窗退出期间提前销毁输入控制器的生命周期异常；已覆盖完整 Sliver 画布的极窄宽度、弹窗退出动画和异步状态更新。
 - `已完成` 文件变更不再逐条显示在会话中，而以 thread 任务摘要卡片、悬停 Diff 预览和只读审查入口呈现；继续同一聊天不会在新一轮开始时清空摘要，启动失败或无文件变更的追问完成后仍保留，新聊天才清空。“审核”左侧提供 Codex 风格“撤销”，仅在完整、未截断且覆盖当前任务摘要全部文件的 Diff 可用，并且项目没有前台或后台任务运行；由 Git 核对补丁路径、摘要文件列表、暂存区和当前工作树后反向应用原始 Diff。跨轮累计摘要只有最近 turn Diff 时保持禁用；执行中禁止发送任务和重复提交，暂存改动、路径不一致、冲突或后续编辑都会保留文件与摘要而不回退整个工作区。
@@ -239,7 +240,7 @@
 - `已完成` 收紧 macOS Dock 徽标的 MethodChannel 参数边界：兼容旧版 `visible` 与整数 `count`，缺失字段或类型错误会返回明确原生错误而非静默清除徽标，并由 RunnerTests 覆盖。
 - `已完成` 建立 macOS GitHub Actions CI：格式检查、`flutter analyze`、`flutter test`、原生 `RunnerTests` 和 macOS Debug 构建；主题 Token 已迁入项目内维护，不再依赖仓库外本机路径或外部 UI Kit。
 - `进行中` 完善键盘导航、焦点顺序、语义标签和高对比度主题；本阶段新增操作均有文字标签或 tooltip，完整无障碍审计待后续集中执行。
-- `已完成` 评估 Windows / Linux 平台支持；结论和启动前置条件见 `PLATFORM_SUPPORT.md`，在 macOS 发布前不启动实现。
+- `已完成` 评估 Windows / Linux 平台支持；结论和启动前置条件见 [PLATFORM_SUPPORT.md](docs/PLATFORM_SUPPORT.md)，在 macOS 发布前不启动实现。
 
 ## 下一项建议
 

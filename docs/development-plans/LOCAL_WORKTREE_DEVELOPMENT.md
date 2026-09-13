@@ -1,6 +1,6 @@
 # Codex 风格本地工作树开发文档
 
-> 状态：开发规格，尚未实现
+> 状态：待开发。本文档是本地工作树的开发规格，当前能力尚未实现。
 > 适用范围：Codex Desk macOS Flutter 工作台
 > 官方行为基线：[OpenAI Worktrees](https://learn.chatgpt.com/docs/environments/git-worktrees)
 
@@ -70,7 +70,7 @@ $CODEX_HOME/worktrees/codex-desk/<worktree-id>/
 
 `creating` 状态使用独立的恢复授权，因为进程可能在 `git worktree add` 成功后、目录清单写入前退出。只有启动前已提交的 provisional 记录仍为当前 operation、记录中的随机 nonce 和精确 canonical staging path 未变、common directory 匹配，并且启动对账能证明该路径是 operation 开始后新增的唯一 Git worktree 记录时，才允许补写 HMAC 清单或通过 `git worktree remove` 回滚；路径已预先存在、记录不唯一或任一证据不符时仍进入 `foreign`，不得删除。
 
-这一差异只影响内部所有权隔离，用户可见行为保持与 Codex 一致。
+这一差异只影响内部所有权隔离；用户可见行为的 Codex 一致性仍需按本计划的官方行为矩阵和回归清单验证。
 
 ## 4. 功能范围
 

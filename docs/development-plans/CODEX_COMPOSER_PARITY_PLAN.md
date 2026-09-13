@@ -1,6 +1,6 @@
 # Codex Composer 与任务文件一致性改造方案（当前开发目标）
 
-> 本文档当前只覆盖仓库内可实现、可测试并已交付的开发内容。官方客户端精确行为矩阵、视觉并排验收、任务文件最终范围实测和具体 IDE 插件已移至 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](CODEX_COMPOSER_PARITY_FOLLOWUP.md)，不属于本次目标。
+> 本文档描述仓库当前 Composer 与任务文件的实现范围、已交付部分和仍在进行的改造。官方客户端精确行为矩阵、视觉并排验收、任务文件最终范围实测和具体 IDE 插件已移至 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](CODEX_COMPOSER_PARITY_FOLLOWUP.md)；在后续清单完成前，不得将本方案视为与官方客户端完全一致。
 
 ## 目标
 
@@ -235,7 +235,7 @@ Codex 桌面客户端的私有源码和内部实现不可作为可验证目标�
 
 当前实现提供公开边界内的通用宿主接口，支持 `activeFile`、`activeSelectionContent` / `selectedText`、`selectionRange` 和 `openTabs`；最多保留 64 个打开标签，选区最多 64,000 字符。App Server Schema 要求 `additionalContext` 每项的 `value` 为字符串，因此快照使用 JSON 字符串传入首轮与方向调整请求；宿主连接本身和官方不透明来源格式仍是待完成的集成项。
 
-宿主接入契约见 [IDE_CONTEXT_HOST_PROTOCOL.md](IDE_CONTEXT_HOST_PROTOCOL.md)，包含 `updateContext` 示例、断连语义、用户选择边界和隐私责任。该契约不表示仓库已经内置某个 IDE 插件。
+宿主接入契约见 [IDE_CONTEXT_HOST_PROTOCOL.md](../IDE_CONTEXT_HOST_PROTOCOL.md)，包含 `updateContext` 示例、断连语义、用户选择边界和隐私责任。该契约不表示仓库已经内置某个 IDE 插件。
 
 ### 3.4 当前项目
 
@@ -485,7 +485,7 @@ flutter test
 - 更新 `RELEASE_NOTES.md` 未发布版本，记录新增、修复和行为变化。
 - 删除把未实现、提示词模拟或路径降级描述为完整官方能力的文案。
 
-文档只描述最终实现，不记录临时调试过程或尚未交付的设想。
+README、ROADMAP 和 RELEASE_NOTES 只描述当前实现；本开发计划可以保留明确标注状态的待开发项，但不得把它们写成已交付能力。
 
 ## 推荐交付顺序
 
@@ -516,7 +516,7 @@ flutter test
 
 ## 后续文档
 
-官方客户端实测、视觉并排、任务文件最终范围和具体 IDE 插件见 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](CODEX_COMPOSER_PARITY_FOLLOWUP.md)。这些事项不阻塞本次仓库开发目标的完成。
+官方客户端实测、视觉并排、任务文件最终范围和具体 IDE 插件见 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](CODEX_COMPOSER_PARITY_FOLLOWUP.md)。这些事项不阻塞公开协议范围内的代码迭代，但在完成前不得将项目宣称为“与官方客户端完全一致”。
 
 ## 已知边界
 
