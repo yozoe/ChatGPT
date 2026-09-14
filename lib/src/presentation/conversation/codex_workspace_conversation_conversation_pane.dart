@@ -37,6 +37,7 @@ class ConversationPane extends StatelessWidget {
     required this.onUndo,
     required this.onOpenSubagent,
     required this.onSubmitUserMessageEdit,
+    required this.onSetGoal,
     this.onOpenSideChat,
     this.sideChatEnabled = true,
   });
@@ -75,6 +76,7 @@ class ConversationPane extends StatelessWidget {
   final ValueChanged<TimelineEntry> onOpenSubagent;
   final Future<bool> Function(TimelineEntry entry, String text)
   onSubmitUserMessageEdit;
+  final Future<bool> Function(String text) onSetGoal;
   final Future<void> Function()? onOpenSideChat;
   final bool sideChatEnabled;
 
@@ -83,6 +85,7 @@ class ConversationPane extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
+    final goalError = controller.goalOperationError;
     final showElicitation = controller.shouldShowPendingElicitation;
     final pendingElicitation = showElicitation
         ? controller.pendingElicitation
@@ -90,7 +93,9 @@ class ConversationPane extends StatelessWidget {
     final pendingApproval = showElicitation ? null : controller.pendingApproval;
     return Column(
       children: [
-        if (controller.lastError case final error?
+        if ((controller.lastError ??
+                (controller.activeThreadGoal == null ? goalError : null))
+            case final error?
             when !controller.hasThreadWriterConflict &&
                 !controller.hasFailedTurnRetry)
           Align(
@@ -133,6 +138,7 @@ class ConversationPane extends StatelessWidget {
             onUndo: onUndo,
             onOpenSubagent: onOpenSubagent,
             onSubmitUserMessageEdit: onSubmitUserMessageEdit,
+            onSetGoal: onSetGoal,
             composerValue: composer,
             onPromptSuggestionSelected: (prompt) {
               composer.value = TextEditingValue(
@@ -143,7 +149,9 @@ class ConversationPane extends StatelessWidget {
             bottomOverlay: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (controller.activeThreadGoal case final goal?)
+                if (controller.activeThreadGoal case final goal?
+                    when goal.status != 'complete' &&
+                        goal.status != 'completed')
                   GoalProgressRow(controller: controller, goal: goal),
                 if (pendingElicitation case final elicitation?)
                   Flexible(

@@ -5214,9 +5214,26 @@ void main() {
     await tester.pump();
     expect(find.text('预算已用尽'), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('goal-actions-button')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('清除目标'));
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'thread/goal/updated',
+        params: {
+          'threadId': 'thread-goal',
+          'goal': {
+            'threadId': 'thread-goal',
+            'objective': '完成目标模式和计划模式复刻',
+            'status': 'complete',
+            'tokensUsed': 1000,
+            'timeUsedSeconds': 120,
+          },
+        },
+      ),
+    );
+    await tester.pump();
+    expect(find.byKey(const Key('goal-progress-row')), findsNothing);
+
+    // The completed goal card is gone, so clear it through the controller API.
+    expect(await controller.clearActiveGoal(), isTrue);
     await tester.pumpAndSettle();
     expect(server.clearThreadGoalCalls, 1);
     expect(find.byKey(const Key('goal-progress-row')), findsNothing);

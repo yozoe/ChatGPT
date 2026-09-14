@@ -16,6 +16,7 @@ class UserMessageBubbleState extends State<UserMessageBubble> {
   var _hovering = false;
   var _editing = false;
   var _submittingEdit = false;
+  var _settingGoal = false;
   var _expanded = false;
   late TextEditingController _editor;
   String? _collapseMeasurementText;
@@ -90,6 +91,17 @@ class UserMessageBubbleState extends State<UserMessageBubble> {
       _submittingEdit = false;
       if (sent) _editing = false;
     });
+  }
+
+  Future<void> _setGoal() async {
+    final setGoal = widget.onSetGoal;
+    if (setGoal == null || _settingGoal) return;
+    setState(() => _settingGoal = true);
+    try {
+      await setGoal(widget.entry.detail);
+    } finally {
+      if (mounted) setState(() => _settingGoal = false);
+    }
   }
 
   bool _messageExceedsCollapsedHeight(
@@ -226,6 +238,27 @@ class UserMessageBubbleState extends State<UserMessageBubble> {
     ),
   );
 
+  Widget _setGoalButton(YeknomPalette palette) => TextButton.icon(
+    key: ValueKey('timeline-user-message-set-goal-${widget.entry.id}'),
+    onPressed: _settingGoal ? null : () => unawaited(_setGoal()),
+    icon: _settingGoal
+        ? const SizedBox.square(
+            dimension: 13,
+            child: CircularProgressIndicator(strokeWidth: 1.5),
+          )
+        : const Icon(Icons.track_changes_outlined, size: 14),
+    label: const Text('设为目标'),
+    style: TextButton.styleFrom(
+      foregroundColor: palette.muted,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      minimumSize: Size.zero,
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      side: BorderSide(color: palette.controlBorder),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
+      textStyle: const TextStyle(fontSize: 12),
+    ),
+  );
+
   Widget _editorBody(YeknomPalette palette) => Container(
     key: const Key('timeline-user-message-editor'),
     padding: const EdgeInsets.fromLTRB(13, 10, 10, 12),
@@ -336,7 +369,9 @@ class UserMessageBubbleState extends State<UserMessageBubble> {
                       alignment: Alignment.topRight,
                       children: [
                         Padding(
-                          padding: const EdgeInsets.only(bottom: 23),
+                          padding: EdgeInsets.only(
+                            bottom: widget.onSetGoal == null ? 23 : 53,
+                          ),
                           child: _messageBody(
                             palette,
                             collapsible: collapsible,
@@ -385,6 +420,12 @@ class UserMessageBubbleState extends State<UserMessageBubble> {
                                   ),
                               ],
                             ),
+                          ),
+                        if (_hovering && widget.onSetGoal != null)
+                          Positioned(
+                            right: 0,
+                            bottom: 25,
+                            child: _setGoalButton(palette),
                           ),
                       ],
                     ),

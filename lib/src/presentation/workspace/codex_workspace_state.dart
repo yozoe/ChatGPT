@@ -3060,6 +3060,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                                                 _openSubagentInspector,
                                                             onSubmitUserMessageEdit:
                                                                 _submitEditedUserMessage,
+                                                            onSetGoal: controller
+                                                                .setActiveGoalFromMessage,
                                                             onOpenSideChat:
                                                                 _openSideChat,
                                                             sideChatEnabled:

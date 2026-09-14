@@ -97,6 +97,7 @@ class FakeCodexAppServer extends CodexAppServer {
   String threadGoalStatus = 'active';
   JsonMap? threadGoalResponse;
   JsonMap? threadGoalSetResponse;
+  Object? setThreadGoalError;
   final Map<String, Completer<JsonMap?>> threadGoalUpdateCompleters = {};
   int clearThreadGoalCalls = 0;
   String? renamedThreadId;
@@ -353,6 +354,7 @@ class FakeCodexAppServer extends CodexAppServer {
     required String threadId,
     required String objective,
   }) async {
+    if (setThreadGoalError case final error?) throw error;
     threadGoal = objective;
     threadGoalStatus = 'active';
     return threadGoalSetResponse ?? _threadGoalResult(threadId);

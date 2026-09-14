@@ -127,6 +127,7 @@ class ConversationTimeline extends StatelessWidget {
     required this.undoRunning,
     required this.onOpenSubagent,
     this.onSubmitUserMessageEdit,
+    this.onSetGoal,
     super.key,
   });
 
@@ -150,6 +151,7 @@ class ConversationTimeline extends StatelessWidget {
   final ValueChanged<TimelineEntry> onOpenSubagent;
   final Future<bool> Function(TimelineEntry entry, String text)?
   onSubmitUserMessageEdit;
+  final Future<bool> Function(String text)? onSetGoal;
 
   @override
   Widget build(BuildContext context) {
@@ -419,6 +421,7 @@ class ConversationTimeline extends StatelessWidget {
                         onSubmitUserMessageEdit: active
                             ? onSubmitUserMessageEdit
                             : null,
+                        onSetGoal: active ? onSetGoal : null,
                       );
                     },
                   ),

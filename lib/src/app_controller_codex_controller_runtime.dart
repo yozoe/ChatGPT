@@ -3960,6 +3960,60 @@ class CodexController extends ChangeNotifier {
     return _updateActiveGoal(objective: normalized);
   }
 
+  /// Sets the selected user message as the thread's persistent goal.
+  Future<bool> setActiveGoalFromMessage(String objective) async {
+    final threadId = activeThreadId;
+    final normalized = objective.trim();
+    if (threadId == null || normalized.isEmpty || goalOperationInProgress) {
+      return false;
+    }
+    if (normalized.runes.length > 4000) {
+      _goalOperationErrorsByThread[threadId] = '目标不能超过 4000 个字符。';
+      lastError = '设置目标失败：目标不能超过 4000 个字符。';
+      notifyListeners();
+      return false;
+    }
+    final revision = _nextThreadGoalRevision(threadId);
+    _goalOperationThreadIds.add(threadId);
+    _goalOperationErrorsByThread.remove(threadId);
+    lastError = null;
+    notifyListeners();
+    try {
+      final rawGoal = await _server.setThreadGoal(
+        threadId: threadId,
+        objective: normalized,
+      );
+      if (_threadGoalRevisions[threadId] == revision) {
+        final previous = _threadGoalsById[threadId];
+        _threadGoalsById[threadId] = _normalizedThreadGoal(
+          rawGoal,
+          threadId: threadId,
+          objective: normalized,
+          status: 'active',
+        );
+        _appendGoalLifecycleFeedback(
+          threadId,
+          previousStatus: previous?.status,
+          status: _threadGoalsById[threadId]!.status,
+        );
+      }
+      return true;
+    } catch (error) {
+      final message = _messageOf(error);
+      _goalOperationErrorsByThread[threadId] = message;
+      // Keep the global banner scoped to the thread that initiated the
+      // operation; switching conversations while the request is in flight
+      // must not surface the old thread's failure in the new one.
+      if (activeThreadId == threadId) {
+        lastError = '设置目标失败：$message';
+      }
+      return false;
+    } finally {
+      _goalOperationThreadIds.remove(threadId);
+      if (!_disposed) notifyListeners();
+    }
+  }
+
   Future<bool> _updateActiveGoal({String? objective, String? status}) async {
     final threadId = activeThreadId;
     final goal = activeThreadGoal;

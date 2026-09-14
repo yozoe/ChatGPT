@@ -224,6 +224,7 @@ class ConversationViewportState extends State<ConversationViewport> {
               onUndo: widget.onUndo,
               onOpenSubagent: widget.onOpenSubagent,
               onSubmitUserMessageEdit: widget.onSubmitUserMessageEdit,
+              onSetGoal: widget.onSetGoal,
               canUndo: isActive && widget.controller.canUndoFileChanges,
               undoRunning: isActive && widget.controller.fileChangeUndoRunning,
             );

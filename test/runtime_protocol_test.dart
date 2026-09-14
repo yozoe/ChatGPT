@@ -204,6 +204,30 @@ void main() {
     controller.dispose();
   });
 
+  test('sets a goal from a message with busy and error isolation', () async {
+    final server = FakeCodexAppServer();
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await controller.resumeThread(protocolThread(id: 'message-goal-thread'));
+
+    server.setThreadGoalError = StateError('goal write failed');
+    expect(await controller.setActiveGoalFromMessage('目标消息'), isFalse);
+    expect(controller.goalOperationInProgress, isFalse);
+    expect(controller.goalOperationError, contains('goal write failed'));
+    expect(controller.lastError, contains('设置目标失败'));
+
+    server.setThreadGoalError = null;
+    expect(await controller.setActiveGoalFromMessage('目标消息'), isTrue);
+    expect(controller.activeThreadGoal?.objective, '目标消息');
+    controller.dispose();
+  });
+
   test('resumes a blocked goal before sending a follow-up prompt', () async {
     final server = FakeCodexAppServer()
       ..threadGoalResponse = {
