@@ -216,15 +216,17 @@ void main() {
       ..status = RuntimeStatus.ready;
     await controller.resumeThread(protocolThread(id: 'message-goal-thread'));
 
+    controller.lastError = '已有运行时错误';
     server.setThreadGoalError = StateError('goal write failed');
     expect(await controller.setActiveGoalFromMessage('目标消息'), isFalse);
     expect(controller.goalOperationInProgress, isFalse);
     expect(controller.goalOperationError, contains('goal write failed'));
-    expect(controller.lastError, contains('设置目标失败'));
+    expect(controller.lastError, '已有运行时错误');
 
     server.setThreadGoalError = null;
     expect(await controller.setActiveGoalFromMessage('目标消息'), isTrue);
     expect(controller.activeThreadGoal?.objective, '目标消息');
+    expect(controller.lastError, '已有运行时错误');
     controller.dispose();
   });
 

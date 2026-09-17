@@ -17,6 +17,7 @@ class UserMessageBubbleState extends State<UserMessageBubble> {
   var _editing = false;
   var _submittingEdit = false;
   var _settingGoal = false;
+  var _goalRequestGeneration = 0;
   var _expanded = false;
   late TextEditingController _editor;
   String? _collapseMeasurementText;
@@ -44,6 +45,8 @@ class UserMessageBubbleState extends State<UserMessageBubble> {
     if (oldWidget.entry.id != widget.entry.id) {
       _editing = false;
       _submittingEdit = false;
+      _settingGoal = false;
+      _goalRequestGeneration++;
       _expanded = false;
       _editor
         ..text = widget.entry.detail
@@ -96,11 +99,14 @@ class UserMessageBubbleState extends State<UserMessageBubble> {
   Future<void> _setGoal() async {
     final setGoal = widget.onSetGoal;
     if (setGoal == null || _settingGoal) return;
+    final generation = ++_goalRequestGeneration;
     setState(() => _settingGoal = true);
     try {
       await setGoal(widget.entry.detail);
     } finally {
-      if (mounted) setState(() => _settingGoal = false);
+      if (mounted && generation == _goalRequestGeneration) {
+        setState(() => _settingGoal = false);
+      }
     }
   }
 
@@ -238,24 +244,91 @@ class UserMessageBubbleState extends State<UserMessageBubble> {
     ),
   );
 
-  Widget _setGoalButton(YeknomPalette palette) => TextButton.icon(
-    key: ValueKey('timeline-user-message-set-goal-${widget.entry.id}'),
-    onPressed: _settingGoal ? null : () => unawaited(_setGoal()),
-    icon: _settingGoal
-        ? const SizedBox.square(
-            dimension: 13,
-            child: CircularProgressIndicator(strokeWidth: 1.5),
-          )
-        : const Icon(Icons.track_changes_outlined, size: 14),
-    label: const Text('设为目标'),
-    style: TextButton.styleFrom(
-      foregroundColor: palette.muted,
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      minimumSize: Size.zero,
-      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      side: BorderSide(color: palette.controlBorder),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
-      textStyle: const TextStyle(fontSize: 12),
+  Widget _setGoalButton(YeknomPalette palette, {required bool showLabel}) =>
+      Tooltip(
+        message: '设为目标',
+        child: Semantics(
+          button: true,
+          label: '设为目标',
+          child: SizedBox(
+            height: 23,
+            child: TextButton.icon(
+              key: ValueKey(
+                'timeline-user-message-set-goal-${widget.entry.id}',
+              ),
+              onPressed: _settingGoal ? null : () => unawaited(_setGoal()),
+              icon: _settingGoal
+                  ? const SizedBox.square(
+                      dimension: 13,
+                      child: CircularProgressIndicator(strokeWidth: 1.5),
+                    )
+                  : const Icon(Icons.track_changes_outlined, size: 15),
+              label: showLabel ? const Text('设为目标') : const SizedBox.shrink(),
+              style: TextButton.styleFrom(
+                foregroundColor: palette.muted,
+                padding: EdgeInsets.symmetric(horizontal: showLabel ? 7 : 4),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(7),
+                ),
+                textStyle: const TextStyle(fontSize: 12),
+              ),
+            ),
+          ),
+        ),
+      );
+
+  Widget _messageActions(
+    BuildContext context,
+    YeknomPalette palette, {
+    required bool showGoalLabel,
+    required double gap,
+  }) => SizedBox(
+    height: 23,
+    child: Material(
+      type: MaterialType.transparency,
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        alignment: Alignment.centerRight,
+        child: Row(
+          key: const Key('timeline-user-message-actions'),
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              messageTimeLabel(widget.entry.createdAt),
+              key: const Key('timeline-user-message-time'),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: palette.muted,
+                fontSize: 12,
+                height: 1.2,
+              ),
+            ),
+            SizedBox(width: gap),
+            _actionButton(
+              key: ValueKey('timeline-user-message-copy-${widget.entry.id}'),
+              tooltip: '复制消息',
+              icon: Icons.content_copy_outlined,
+              onTap: () => unawaited(
+                Clipboard.setData(ClipboardData(text: widget.entry.detail)),
+              ),
+              palette: palette,
+            ),
+            if (widget.onSubmitEdit != null)
+              _actionButton(
+                key: ValueKey('timeline-user-message-edit-${widget.entry.id}'),
+                tooltip: '修改消息',
+                icon: Icons.edit_outlined,
+                onTap: _startEditing,
+                palette: palette,
+              ),
+            if (widget.onSetGoal != null) ...[
+              SizedBox(width: gap),
+              _setGoalButton(palette, showLabel: showGoalLabel),
+            ],
+          ],
+        ),
+      ),
     ),
   );
 
@@ -352,6 +425,8 @@ class UserMessageBubbleState extends State<UserMessageBubble> {
         final availableWidth = constraints.hasBoundedWidth
             ? math.min(720.0, constraints.maxWidth)
             : 720.0;
+        final showGoalLabel = availableWidth >= 480;
+        final actionGap = availableWidth >= 240 ? 7.0 : 2.0;
         final collapsible =
             !_editing &&
             _messageExceedsCollapsedHeight(context, availableWidth);
@@ -365,68 +440,23 @@ class UserMessageBubbleState extends State<UserMessageBubble> {
               constraints: const BoxConstraints(maxWidth: 720),
               child: _editing
                   ? _editorBody(palette)
-                  : Stack(
-                      alignment: Alignment.topRight,
+                  : Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        Padding(
-                          padding: EdgeInsets.only(
-                            bottom: widget.onSetGoal == null ? 23 : 53,
-                          ),
-                          child: _messageBody(
+                        _messageBody(palette, collapsible: collapsible),
+                        Visibility(
+                          visible: _hovering,
+                          maintainState: true,
+                          maintainAnimation: true,
+                          maintainSize: true,
+                          child: _messageActions(
+                            context,
                             palette,
-                            collapsible: collapsible,
+                            showGoalLabel: showGoalLabel,
+                            gap: actionGap,
                           ),
                         ),
-                        if (_hovering)
-                          Positioned(
-                            right: 0,
-                            bottom: 0,
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  messageTimeLabel(widget.entry.createdAt),
-                                  key: const Key('timeline-user-message-time'),
-                                  style: Theme.of(context).textTheme.bodySmall
-                                      ?.copyWith(
-                                        color: palette.muted,
-                                        fontSize: 12,
-                                        height: 1.2,
-                                      ),
-                                ),
-                                const SizedBox(width: 7),
-                                _actionButton(
-                                  key: ValueKey(
-                                    'timeline-user-message-copy-${widget.entry.id}',
-                                  ),
-                                  tooltip: '复制消息',
-                                  icon: Icons.content_copy_outlined,
-                                  onTap: () => unawaited(
-                                    Clipboard.setData(
-                                      ClipboardData(text: widget.entry.detail),
-                                    ),
-                                  ),
-                                  palette: palette,
-                                ),
-                                if (widget.onSubmitEdit != null)
-                                  _actionButton(
-                                    key: ValueKey(
-                                      'timeline-user-message-edit-${widget.entry.id}',
-                                    ),
-                                    tooltip: '修改消息',
-                                    icon: Icons.edit_outlined,
-                                    onTap: _startEditing,
-                                    palette: palette,
-                                  ),
-                              ],
-                            ),
-                          ),
-                        if (_hovering && widget.onSetGoal != null)
-                          Positioned(
-                            right: 0,
-                            bottom: 25,
-                            child: _setGoalButton(palette),
-                          ),
                       ],
                     ),
             ),

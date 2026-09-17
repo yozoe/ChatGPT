@@ -3969,14 +3969,12 @@ class CodexController extends ChangeNotifier {
     }
     if (normalized.runes.length > 4000) {
       _goalOperationErrorsByThread[threadId] = '目标不能超过 4000 个字符。';
-      lastError = '设置目标失败：目标不能超过 4000 个字符。';
       notifyListeners();
       return false;
     }
     final revision = _nextThreadGoalRevision(threadId);
     _goalOperationThreadIds.add(threadId);
     _goalOperationErrorsByThread.remove(threadId);
-    lastError = null;
     notifyListeners();
     try {
       final rawGoal = await _server.setThreadGoal(
@@ -4001,12 +3999,6 @@ class CodexController extends ChangeNotifier {
     } catch (error) {
       final message = _messageOf(error);
       _goalOperationErrorsByThread[threadId] = message;
-      // Keep the global banner scoped to the thread that initiated the
-      // operation; switching conversations while the request is in flight
-      // must not surface the old thread's failure in the new one.
-      if (activeThreadId == threadId) {
-        lastError = '设置目标失败：$message';
-      }
       return false;
     } finally {
       _goalOperationThreadIds.remove(threadId);

@@ -80,6 +80,28 @@ class ConversationPane extends StatelessWidget {
   final Future<void> Function()? onOpenSideChat;
   final bool sideChatEnabled;
 
+  Widget _errorBanner({
+    required YeknomPalette palette,
+    required Key key,
+    required String error,
+  }) => Align(
+    alignment: Alignment.topCenter,
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: conversationContentMaxWidth),
+      child: Container(
+        key: key,
+        width: double.infinity,
+        margin: const EdgeInsets.fromLTRB(24, 0, 24, 12),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: palette.fault.withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Text(error, style: TextStyle(color: palette.fault)),
+      ),
+    ),
+  );
+
   /// 构建时间线、审批提示和任务输入区域。
   /// Builds the timeline, approval prompt, and task composer area.
   @override
@@ -91,31 +113,22 @@ class ConversationPane extends StatelessWidget {
         ? controller.pendingElicitation
         : null;
     final pendingApproval = showElicitation ? null : controller.pendingApproval;
+    final showErrors =
+        !controller.hasThreadWriterConflict && !controller.hasFailedTurnRetry;
     return Column(
       children: [
-        if ((controller.lastError ??
-                (controller.activeThreadGoal == null ? goalError : null))
-            case final error?
-            when !controller.hasThreadWriterConflict &&
-                !controller.hasFailedTurnRetry)
-          Align(
-            alignment: Alignment.topCenter,
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(
-                maxWidth: conversationContentMaxWidth,
-              ),
-              child: Container(
-                key: const Key('conversation-error-banner'),
-                width: double.infinity,
-                margin: const EdgeInsets.fromLTRB(24, 0, 24, 12),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: palette.fault.withValues(alpha: 0.14),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text(error, style: TextStyle(color: palette.fault)),
-              ),
-            ),
+        if (controller.lastError case final error? when showErrors)
+          _errorBanner(
+            palette: palette,
+            key: const Key('conversation-error-banner'),
+            error: error,
+          ),
+        if (goalError case final error?
+            when showErrors && controller.activeThreadGoal == null)
+          _errorBanner(
+            palette: palette,
+            key: const Key('conversation-goal-error-banner'),
+            error: error,
           ),
         Expanded(
           child: ConversationViewport(
