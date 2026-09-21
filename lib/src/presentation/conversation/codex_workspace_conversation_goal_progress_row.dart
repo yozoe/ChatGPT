@@ -13,14 +13,17 @@ class GoalProgressRow extends StatelessWidget {
   final CodexController controller;
   final CodexThreadGoal goal;
 
-  String get _statusLabel => switch (goal.status) {
-    'paused' => '已暂停',
-    'complete' || 'completed' => '已完成',
-    'blocked' => '需要输入',
-    'usageLimited' => '用量已达上限',
-    'budgetLimited' => '预算已用尽',
-    _ => '进行中',
-  };
+  String _statusLabel(CodexController controller) {
+    if (goal.isBudgetExhausted) return '预算已用尽';
+    return switch (goal.status) {
+      'paused' => '已暂停',
+      'complete' || 'completed' => '已完成',
+      'blocked' => '需要输入',
+      'usageLimited' => '用量已达上限',
+      'budgetLimited' => '预算已用尽',
+      _ => controller.activeGoalIsProgressing ? '进行中' : '等待继续',
+    };
+  }
 
   String get _usageLabel {
     final minutes = goal.timeUsedSeconds ~/ 60;
@@ -80,7 +83,9 @@ class GoalProgressRow extends StatelessWidget {
     final palette = YeknomPalette.of(context);
     final busy = controller.goalOperationInProgress;
     final progress = goal.progress;
-    final error = controller.goalOperationError;
+    final error =
+        controller.goalOperationError ?? controller.activeGoalContinuationError;
+    final waiting = goal.isActive && controller.activeGoalIsWaiting;
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
       child: Container(
@@ -113,9 +118,11 @@ class GoalProgressRow extends StatelessWidget {
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        _statusLabel,
+                        _statusLabel(controller),
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: goal.isPaused
+                          color:
+                              goal.isPaused ||
+                                  !controller.activeGoalIsProgressing
                               ? palette.warning
                               : palette.muted,
                         ),
@@ -174,12 +181,18 @@ class GoalProgressRow extends StatelessWidget {
             else if (!goal.isTerminal || goal.isBlocked)
               IconButton(
                 key: const Key('goal-pause-resume-button'),
-                tooltip: goal.canResume ? '恢复目标' : '暂停目标',
-                onPressed: goal.canResume
+                tooltip: waiting
+                    ? '继续目标'
+                    : goal.canResume
+                    ? '恢复目标'
+                    : '暂停目标',
+                onPressed: waiting
+                    ? controller.continueActiveGoal
+                    : goal.canResume
                     ? controller.resumeActiveGoal
                     : controller.pauseActiveGoal,
                 icon: Icon(
-                  goal.isPaused
+                  goal.isPaused || waiting
                       ? Icons.play_arrow_rounded
                       : Icons.pause_rounded,
                   size: 18,

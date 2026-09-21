@@ -289,11 +289,355 @@ void main() {
 
       expect(
         controller.entries.map((entry) => entry.detail),
-        containsAll(['目标已启动，正在继续', '目标需要你的输入']),
+        containsAll(['目标已启动', '目标需要你的输入']),
       );
       controller.dispose();
     },
   );
+
+  test(
+    'continues an active goal and stops chaining after a tool-free automatic turn',
+    () async {
+      final server = FakeCodexAppServer();
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      );
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await controller.resumeThread(protocolThread(id: 'goal-thread'));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(await controller.sendPrompt('开始执行目标', goal: '完成可靠的目标循环'), isTrue);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/started',
+          params: {
+            'threadId': 'goal-thread',
+            'turn': {'id': 'turn-1'},
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'goal-thread',
+            'turn': {'id': 'turn-1', 'status': 'completed'},
+          },
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(server.startedTurnPrompts, hasLength(2));
+      expect(server.startedTurnPrompts.last, contains('active goal'));
+      expect(controller.status, RuntimeStatus.running);
+      expect(controller.activeGoalIsProgressing, isTrue);
+      expect(controller.hasUnacknowledgedCompletion('goal-thread'), isFalse);
+      expect(
+        controller.entries.where((entry) => entry.title == '任务完成'),
+        isEmpty,
+      );
+      expect(
+        controller.entries.where((entry) => entry.title == '你'),
+        hasLength(1),
+      );
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/started',
+          params: {
+            'threadId': 'goal-thread',
+            'turn': {'id': 'turn-2'},
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'threadId': 'goal-thread',
+            'turnId': 'turn-2',
+            'item': {'id': 'tool-1', 'type': 'commandExecution'},
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'goal-thread',
+            'turn': {'id': 'turn-2', 'status': 'completed'},
+          },
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      expect(server.startedTurnPrompts, hasLength(3));
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/started',
+          params: {
+            'threadId': 'goal-thread',
+            'turn': {'id': 'turn-3'},
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'goal-thread',
+            'turn': {'id': 'turn-3', 'status': 'completed'},
+          },
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(server.startedTurnPrompts, hasLength(3));
+      expect(controller.activeGoalIsProgressing, isFalse);
+      expect(controller.activeGoalIsWaiting, isTrue);
+      controller.dispose();
+    },
+  );
+
+  test('continues an active goal after restoring its thread', () async {
+    final server = FakeCodexAppServer()
+      ..threadGoalResponse = {
+        'threadId': 'goal-thread',
+        'objective': '恢复后继续目标',
+        'status': 'active',
+      };
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+
+    await controller.resumeThread(protocolThread(id: 'goal-thread'));
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(server.startedTurnThreadIds, ['goal-thread']);
+    expect(server.startedTurnPrompt, contains('active goal'));
+    expect(controller.activeGoalIsProgressing, isTrue);
+    controller.dispose();
+  });
+
+  test('continues a goal after its thread moves to the background', () async {
+    final server = FakeCodexAppServer();
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await controller.resumeThread(protocolThread(id: 'goal-thread'));
+    await Future<void>.delayed(Duration.zero);
+    expect(await controller.sendPrompt('执行目标', goal: '后台继续执行'), isTrue);
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/started',
+        params: {
+          'threadId': 'goal-thread',
+          'turn': {'id': 'turn-1'},
+        },
+      ),
+    );
+    controller
+      ..activeThreadId = 'other-thread'
+      ..status = RuntimeStatus.ready;
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'goal-thread',
+          'turn': {'id': 'turn-1', 'status': 'completed'},
+        },
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(server.startedTurnThreadIds, ['goal-thread', 'goal-thread']);
+    expect(controller.activeThreadId, 'other-thread');
+    expect(controller.status, RuntimeStatus.ready);
+    expect(controller.hasUnacknowledgedCompletion('goal-thread'), isFalse);
+    controller.dispose();
+  });
+
+  test('pauses an active goal when its turn is interrupted', () async {
+    final server = FakeCodexAppServer();
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await controller.resumeThread(protocolThread(id: 'goal-thread'));
+    await Future<void>.delayed(Duration.zero);
+    expect(await controller.sendPrompt('执行目标', goal: '保持中断语义一致'), isTrue);
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/started',
+        params: {
+          'threadId': 'goal-thread',
+          'turn': {'id': 'turn-1'},
+        },
+      ),
+    );
+
+    await controller.stopCurrentTurn();
+
+    expect(server.interruptedThreadId, 'goal-thread');
+    expect(server.interruptedTurnId, 'turn-1');
+    expect(controller.activeThreadGoal?.status, 'paused');
+    controller.dispose();
+  });
+
+  test('sends queued user direction before continuing a goal', () async {
+    final server = FakeCodexAppServer();
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await controller.resumeThread(protocolThread(id: 'goal-thread'));
+    await Future<void>.delayed(Duration.zero);
+    expect(await controller.sendPrompt('执行目标', goal: '优先处理用户的新方向'), isTrue);
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/started',
+        params: {
+          'threadId': 'goal-thread',
+          'turn': {'id': 'turn-1'},
+        },
+      ),
+    );
+    expect(
+      controller.queueTurnSteer(
+        const PendingTurnSteer(displayText: '先处理这个方向', prompt: '先处理这个方向'),
+      ),
+      isTrue,
+    );
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'goal-thread',
+          'turn': {'id': 'turn-1', 'status': 'completed'},
+        },
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(server.startedTurnPrompts, ['执行目标', '先处理这个方向']);
+    expect(controller.activeGoalIsProgressing, isTrue);
+    controller.dispose();
+  });
+
+  test(
+    'does not continue an active goal after its budget is exhausted',
+    () async {
+      final server = FakeCodexAppServer();
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      );
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await controller.resumeThread(protocolThread(id: 'goal-thread'));
+      await Future<void>.delayed(Duration.zero);
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'thread/goal/updated',
+          params: {
+            'threadId': 'goal-thread',
+            'goal': {
+              'threadId': 'goal-thread',
+              'objective': '遵守预算',
+              'status': 'active',
+              'tokenBudget': 1000,
+              'tokensUsed': 1000,
+            },
+          },
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(server.startedTurnPrompts, isEmpty);
+      expect(controller.activeGoalIsProgressing, isFalse);
+      controller.dispose();
+    },
+  );
+
+  test('keeps a failed goal continuation recoverable', () async {
+    final server = FakeCodexAppServer();
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await controller.resumeThread(protocolThread(id: 'goal-thread'));
+    await Future<void>.delayed(Duration.zero);
+    expect(await controller.sendPrompt('执行目标', goal: '失败后仍可继续'), isTrue);
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/started',
+        params: {
+          'threadId': 'goal-thread',
+          'turn': {'id': 'turn-1'},
+        },
+      ),
+    );
+    server.startTurnError = StateError('continuation unavailable');
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'goal-thread',
+          'turn': {'id': 'turn-1', 'status': 'completed'},
+        },
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(controller.activeThreadGoal?.status, 'active');
+    expect(controller.activeGoalIsWaiting, isTrue);
+    expect(controller.activeGoalContinuationError, contains('unavailable'));
+
+    server.startTurnError = null;
+    expect(await controller.continueActiveGoal(), isTrue);
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.activeGoalContinuationError, isNull);
+    expect(controller.activeGoalIsProgressing, isTrue);
+    controller.dispose();
+  });
 
   test(
     'does not silently downgrade plan mode without a resolved model',

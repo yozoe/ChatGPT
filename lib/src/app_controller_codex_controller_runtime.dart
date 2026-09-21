@@ -66,6 +66,10 @@ class CodexController extends ChangeNotifier {
   static const _welcomeTitle = '欢迎使用 Codex Desk';
   static const _welcomeDetail =
       '选择本地项目后启动 Codex App Server。模型、Provider 与凭据由 Codex 配置管理。';
+  static const _goalContinuationPrompt =
+      'Continue working on the active goal. Use the available tools to make '
+      'concrete progress. Do not stop until the goal is genuinely complete or '
+      'you need user input.';
 
   CodexController({
     CodexAppServer? server,
@@ -514,6 +518,12 @@ class CodexController extends ChangeNotifier {
   final Map<String, CodexThreadGoal> _threadGoalsById = {};
   final Map<String, int> _threadGoalRevisions = {};
   final Map<String, String> _lastGoalTimelineStatusByThread = {};
+  final Set<String> _goalContinuationPendingThreadIds = {};
+  final Set<String> _goalContinuationAwaitingAcceptanceThreadIds = {};
+  final Set<String> _automaticGoalTurnThreadIds = {};
+  final Set<String> _goalTurnsWithToolCalls = {};
+  final Set<String> _goalContinuationSuppressedThreadIds = {};
+  final Map<String, String> _goalContinuationErrorsByThread = {};
   final Map<String, CodexThreadTokenUsage> _threadTokenUsageById = {};
   final Map<String, List<CodexFileChange>> _persistedFileChangesByThreadId = {};
   final Map<String, String?> _persistedTurnDiffByThreadId = {};
@@ -539,6 +549,26 @@ class CodexController extends ChangeNotifier {
   String? get goalOperationError {
     final threadId = activeThreadId;
     return threadId == null ? null : _goalOperationErrorsByThread[threadId];
+  }
+
+  bool get activeGoalIsProgressing {
+    final threadId = activeThreadId;
+    return threadId != null &&
+        (_goalContinuationPendingThreadIds.contains(threadId) ||
+            _automaticGoalTurnThreadIds.contains(threadId) ||
+            isThreadRunning(threadId));
+  }
+
+  bool get activeGoalIsWaiting {
+    final threadId = activeThreadId;
+    return threadId != null &&
+        (_goalContinuationSuppressedThreadIds.contains(threadId) ||
+            _goalContinuationErrorsByThread.containsKey(threadId));
+  }
+
+  String? get activeGoalContinuationError {
+    final threadId = activeThreadId;
+    return threadId == null ? null : _goalContinuationErrorsByThread[threadId];
   }
 
   String? lastError;
@@ -3403,6 +3433,12 @@ class CodexController extends ChangeNotifier {
     }
     status = RuntimeStatus.running;
     lastError = null;
+    if (requestThread != null) {
+      _automaticGoalTurnThreadIds.remove(requestThread);
+      _goalTurnsWithToolCalls.remove(requestThread);
+      _goalContinuationSuppressedThreadIds.remove(requestThread);
+      _goalContinuationErrorsByThread.remove(requestThread);
+    }
     _clearStreamingState();
     _activeTurnStartedAt = DateTime.now();
     final submittedEntry = _add(
@@ -3683,6 +3719,7 @@ class CodexController extends ChangeNotifier {
       )) {
         return;
       }
+      await _pauseGoalAfterInterruption(threadId);
       _add(TimelineKind.system, '已请求停止', '正在等待 App Server 结束当前任务。');
     } catch (error) {
       if (!_isCurrentTurnRequest(
@@ -3981,6 +4018,8 @@ class CodexController extends ChangeNotifier {
       previousStatus: previous?.status,
       status: _threadGoalsById[threadId]!.status,
     );
+    _goalContinuationSuppressedThreadIds.remove(threadId);
+    _goalContinuationErrorsByThread.remove(threadId);
   }
 
   /// Refreshes the selected thread's persisted goal without delaying its UI.
@@ -3993,10 +4032,12 @@ class CodexController extends ChangeNotifier {
       var changed = false;
       if (rawGoal == null) {
         changed = _threadGoalsById.remove(threadId) != null;
+        _clearGoalContinuationState(threadId);
       } else {
         final goal = CodexThreadGoal.fromJson(rawGoal);
         if (goal.objective.isEmpty) {
           changed = _threadGoalsById.remove(threadId) != null;
+          _clearGoalContinuationState(threadId);
         } else {
           final normalized = _normalizedThreadGoal(
             rawGoal,
@@ -4011,6 +4052,11 @@ class CodexController extends ChangeNotifier {
             previousStatus: previous?.status,
             status: normalized.status,
           );
+          if (normalized.isActive) {
+            _scheduleGoalContinuation(threadId, workspacePath);
+          } else {
+            _clearGoalContinuationState(threadId);
+          }
         }
       }
       if (changed && activeThreadId == threadId) notifyListeners();
@@ -4057,6 +4103,16 @@ class CodexController extends ChangeNotifier {
 
   Future<bool> resumeActiveGoal() => _updateActiveGoal(status: 'active');
 
+  Future<bool> continueActiveGoal() async {
+    final threadId = activeThreadId;
+    if (threadId == null || activeThreadGoal?.isActive != true) return false;
+    _goalContinuationSuppressedThreadIds.remove(threadId);
+    _goalContinuationErrorsByThread.remove(threadId);
+    notifyListeners();
+    _scheduleGoalContinuation(threadId, workspacePath);
+    return true;
+  }
+
   Future<bool> editActiveGoal(String objective) async {
     final normalized = objective.trim();
     if (normalized.isEmpty || normalized.runes.length > 4000) return false;
@@ -4097,6 +4153,9 @@ class CodexController extends ChangeNotifier {
           previousStatus: previous?.status,
           status: _threadGoalsById[threadId]!.status,
         );
+        _goalContinuationSuppressedThreadIds.remove(threadId);
+        _goalContinuationErrorsByThread.remove(threadId);
+        _scheduleGoalContinuation(threadId, workspacePath);
       }
       return true;
     } catch (error) {
@@ -4105,6 +4164,9 @@ class CodexController extends ChangeNotifier {
       return false;
     } finally {
       _goalOperationThreadIds.remove(threadId);
+      if (_threadGoalsById[threadId]?.isActive == true) {
+        _scheduleGoalContinuation(threadId, workspacePath);
+      }
       if (!_disposed) notifyListeners();
     }
   }
@@ -4141,6 +4203,13 @@ class CodexController extends ChangeNotifier {
           previousStatus: goal.status,
           status: updated.status,
         );
+        if (updated.isActive) {
+          _goalContinuationSuppressedThreadIds.remove(threadId);
+          _goalContinuationErrorsByThread.remove(threadId);
+          _scheduleGoalContinuation(threadId, workspacePath);
+        } else {
+          _clearGoalContinuationState(threadId);
+        }
       }
       return true;
     } catch (error) {
@@ -4148,6 +4217,9 @@ class CodexController extends ChangeNotifier {
       return false;
     } finally {
       _goalOperationThreadIds.remove(threadId);
+      if (_threadGoalsById[threadId]?.isActive == true) {
+        _scheduleGoalContinuation(threadId, workspacePath);
+      }
       if (!_disposed) notifyListeners();
     }
   }
@@ -4167,6 +4239,7 @@ class CodexController extends ChangeNotifier {
       await _server.clearThreadGoal(threadId: threadId);
       if (_threadGoalRevisions[threadId] == revision) {
         _threadGoalsById.remove(threadId);
+        _clearGoalContinuationState(threadId);
         _appendGoalLifecycleFeedback(
           threadId,
           previousStatus: _lastGoalTimelineStatusByThread[threadId],
@@ -4181,6 +4254,231 @@ class CodexController extends ChangeNotifier {
       _goalOperationThreadIds.remove(threadId);
       if (!_disposed) notifyListeners();
     }
+  }
+
+  void _clearGoalContinuationState(String threadId) {
+    _goalContinuationPendingThreadIds.remove(threadId);
+    _goalContinuationAwaitingAcceptanceThreadIds.remove(threadId);
+    _automaticGoalTurnThreadIds.remove(threadId);
+    _goalTurnsWithToolCalls.remove(threadId);
+    _goalContinuationSuppressedThreadIds.remove(threadId);
+    _goalContinuationErrorsByThread.remove(threadId);
+  }
+
+  bool _hasPendingGoalWork(String threadId) =>
+      _pendingApprovals.values.any((value) => value.threadId == threadId) ||
+      _pendingElicitations.values.any((value) => value.threadId == threadId) ||
+      _pendingUserInputs.values.any((value) => value.threadId == threadId) ||
+      _pendingPlanImplementations.containsKey(threadId) ||
+      (threadId == activeThreadId &&
+          (pendingTurnSteerSending || _pendingTurnSteers.isNotEmpty));
+
+  bool _canContinueGoal(String threadId, String workspace) {
+    final goal = _threadGoalsById[threadId];
+    final budget = goal?.tokenBudget;
+    return !_disposed &&
+        _server.isRunning &&
+        goal?.isActive == true &&
+        (budget == null || budget <= 0 || goal!.tokensUsed < budget) &&
+        !_goalContinuationSuppressedThreadIds.contains(threadId) &&
+        !_goalContinuationErrorsByThread.containsKey(threadId) &&
+        !_goalOperationThreadIds.contains(threadId) &&
+        (threadId != activeThreadId || !_resumingThread) &&
+        !_runningThreadIds.contains(threadId) &&
+        !(status == RuntimeStatus.running && activeThreadId == threadId) &&
+        !_hasPendingGoalWork(threadId) &&
+        _planModeByThreadId[threadId] != true &&
+        (threadId != activeThreadId ||
+            (workspacePath == workspace &&
+                status == RuntimeStatus.ready &&
+                _activeThreadAttached &&
+                canSend));
+  }
+
+  void _scheduleGoalContinuation(String threadId, String? workspace) {
+    if (workspace == null ||
+        _goalContinuationPendingThreadIds.contains(threadId) ||
+        !_canContinueGoal(threadId, workspace)) {
+      return;
+    }
+    _goalContinuationPendingThreadIds.add(threadId);
+    if (!_disposed) notifyListeners();
+    unawaited(_dispatchGoalContinuation(threadId, workspace));
+  }
+
+  Future<void> _dispatchGoalContinuation(
+    String threadId,
+    String workspace,
+  ) async {
+    // Yield once so queued steer, goal lifecycle and request notifications
+    // from the completed turn can settle before the safe-boundary check.
+    await Future<void>.delayed(Duration.zero);
+    if (!_goalContinuationPendingThreadIds.contains(threadId) ||
+        !_canContinueGoal(threadId, workspace)) {
+      _goalContinuationPendingThreadIds.remove(threadId);
+      if (!_disposed) notifyListeners();
+      return;
+    }
+    if (!await _refreshGoalBeforeContinuation(threadId)) {
+      _goalContinuationPendingThreadIds.remove(threadId);
+      if (!_disposed) notifyListeners();
+      return;
+    }
+    _goalContinuationPendingThreadIds.remove(threadId);
+    if (!_canContinueGoal(threadId, workspace)) {
+      if (!_disposed) notifyListeners();
+      return;
+    }
+
+    _automaticGoalTurnThreadIds.add(threadId);
+    _goalContinuationAwaitingAcceptanceThreadIds.add(threadId);
+    _goalTurnsWithToolCalls.remove(threadId);
+    _runningThreadIds.add(threadId);
+    _threadWorkspaceById[threadId] = workspace;
+    _planModeByThreadId[threadId] = false;
+    _updateThreadStatus(threadId, 'active');
+    if (activeThreadId == threadId && workspacePath == workspace) {
+      status = RuntimeStatus.running;
+      lastError = null;
+      _beginFileChangeTurn();
+      _clearStreamingState(clearPendingTurnSteer: false);
+      _activeTurnStartedAt = DateTime.now();
+    }
+    _forgetUnidentifiedTurnCompletion(threadId);
+    if (!_disposed) notifyListeners();
+
+    try {
+      await _server.startTurn(
+        threadId: threadId,
+        prompt: _goalContinuationPrompt,
+        workingDirectory: workspace,
+        collaborationMode: _collaborationMode(planMode: false),
+      );
+      _goalContinuationAwaitingAcceptanceThreadIds.remove(threadId);
+    } catch (error) {
+      _goalContinuationAwaitingAcceptanceThreadIds.remove(threadId);
+      _automaticGoalTurnThreadIds.remove(threadId);
+      _goalTurnsWithToolCalls.remove(threadId);
+      _runningThreadIds.remove(threadId);
+      _threadWorkspaceById.remove(threadId);
+      final message = _messageOf(error);
+      _goalContinuationErrorsByThread[threadId] = message;
+      _updateThreadStatus(threadId, 'idle');
+      if (activeThreadId == threadId && workspacePath == workspace) {
+        status = _server.isRunning ? RuntimeStatus.ready : RuntimeStatus.failed;
+        _clearStreamingState(clearPendingTurnSteer: false);
+        _add(TimelineKind.error, '目标未能继续', message);
+      } else {
+        _recordRuntimeLog(
+          'Could not continue goal for $threadId: $message',
+          level: RuntimeLogLevel.error,
+        );
+      }
+      if (status == RuntimeStatus.failed) _scheduleRuntimeReconnect();
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  Future<bool> _refreshGoalBeforeContinuation(String threadId) async {
+    final revision = _threadGoalRevisions[threadId] ?? 0;
+    try {
+      final rawGoal = await _server.getThreadGoal(threadId: threadId);
+      if (_disposed) return false;
+      if ((_threadGoalRevisions[threadId] ?? 0) != revision) {
+        return _threadGoalsById[threadId]?.isActive == true;
+      }
+      if (rawGoal == null) {
+        _threadGoalsById.remove(threadId);
+        _clearGoalContinuationState(threadId);
+        return false;
+      }
+      final parsed = CodexThreadGoal.fromJson(rawGoal);
+      if (parsed.objective.isEmpty) {
+        _threadGoalsById.remove(threadId);
+        _clearGoalContinuationState(threadId);
+        return false;
+      }
+      final previous = _threadGoalsById[threadId];
+      final normalized = _normalizedThreadGoal(
+        rawGoal,
+        threadId: threadId,
+        objective: parsed.objective,
+        status: parsed.status,
+      );
+      _threadGoalsById[threadId] = normalized;
+      _appendGoalLifecycleFeedback(
+        threadId,
+        previousStatus: previous?.status,
+        status: normalized.status,
+      );
+      if (!normalized.isActive) _clearGoalContinuationState(threadId);
+      return normalized.isActive;
+    } catch (error) {
+      _goalContinuationErrorsByThread[threadId] = _messageOf(error);
+      return false;
+    }
+  }
+
+  Future<void> _pauseGoalAfterInterruption(String threadId) async {
+    final goal = _threadGoalsById[threadId];
+    if (goal?.isActive != true || _goalOperationThreadIds.contains(threadId)) {
+      return;
+    }
+    final revision = _nextThreadGoalRevision(threadId);
+    _goalOperationThreadIds.add(threadId);
+    try {
+      final rawGoal = await _server.updateThreadGoal(
+        threadId: threadId,
+        status: 'paused',
+      );
+      if (_threadGoalRevisions[threadId] != revision) return;
+      final updated = _normalizedThreadGoal(
+        rawGoal,
+        threadId: threadId,
+        objective: goal!.objective,
+        status: 'paused',
+        tokenBudget: goal.tokenBudget,
+        tokensUsed: goal.tokensUsed,
+        timeUsedSeconds: goal.timeUsedSeconds,
+      );
+      _threadGoalsById[threadId] = updated;
+      _clearGoalContinuationState(threadId);
+      _appendGoalLifecycleFeedback(
+        threadId,
+        previousStatus: goal.status,
+        status: updated.status,
+      );
+    } catch (error) {
+      _goalOperationErrorsByThread[threadId] = _messageOf(error);
+    } finally {
+      _goalOperationThreadIds.remove(threadId);
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  void _finishGoalTurn({
+    required String threadId,
+    required String? workspace,
+    required TurnCompletionOutcome outcome,
+    required bool wasAutomaticContinuation,
+    required bool usedTool,
+    required String failureMessage,
+  }) {
+    if (_threadGoalsById[threadId]?.isActive != true) return;
+    if (outcome == TurnCompletionOutcome.stopped) {
+      unawaited(_pauseGoalAfterInterruption(threadId));
+      return;
+    }
+    if (outcome != TurnCompletionOutcome.succeeded) {
+      _goalContinuationErrorsByThread[threadId] = failureMessage;
+      return;
+    }
+    _goalContinuationErrorsByThread.remove(threadId);
+    if (wasAutomaticContinuation && !usedTool) {
+      _goalContinuationSuppressedThreadIds.add(threadId);
+      return;
+    }
+    _scheduleGoalContinuation(threadId, workspace);
   }
 
   /// 停止 App Server 并重置仅在运行期有效的状态。
@@ -4203,6 +4501,12 @@ class CodexController extends ChangeNotifier {
       _runningTurnSubmissions.clear();
       _failedTurnRetries.clear();
       _retryingFailedTurnThreadId = null;
+      _goalContinuationPendingThreadIds.clear();
+      _goalContinuationAwaitingAcceptanceThreadIds.clear();
+      _automaticGoalTurnThreadIds.clear();
+      _goalTurnsWithToolCalls.clear();
+      _goalContinuationSuppressedThreadIds.clear();
+      _goalContinuationErrorsByThread.clear();
       activeThreadId = null;
       _activeThreadAttached = false;
       _pendingApprovals.clear();
@@ -4990,6 +5294,10 @@ class CodexController extends ChangeNotifier {
       }
     }
     _resumingThread = false;
+    if (activeThreadId == thread.id &&
+        _threadGoalsById[thread.id]?.isActive == true) {
+      _scheduleGoalContinuation(thread.id, workspacePath);
+    }
     notifyListeners();
   }
 
@@ -6103,6 +6411,9 @@ class CodexController extends ChangeNotifier {
         final threadId = _threadIdFromEvent(event.params);
         final turnId = turn is Map ? _label(turn['id']) : '';
         if (threadId != null) _forgetUnidentifiedTurnCompletion(threadId);
+        if (threadId != null) {
+          _goalContinuationAwaitingAcceptanceThreadIds.remove(threadId);
+        }
         if (threadId != null &&
             turnId.isNotEmpty &&
             isThreadRunning(threadId)) {
@@ -6116,6 +6427,7 @@ class CodexController extends ChangeNotifier {
               DateTime.now();
         }
       case 'item/started':
+        _recordGoalToolCall(event.params);
         _recordStartedLiveActivity(event.params);
       case 'item/reasoning/summaryPartAdded':
         if (_isEventForActiveTurn(event.params)) {
@@ -6140,6 +6452,7 @@ class CodexController extends ChangeNotifier {
       case 'mcpServerStatus/updated':
         _applyMcpServerStatusUpdated(event.params);
       case 'item/completed':
+        _recordGoalToolCall(event.params);
         _capturePlanImplementationCandidate(event.params);
         if (_isEventForActiveTurn(event.params)) {
           _recordCompletedLiveActivity(event.params);
@@ -6153,6 +6466,13 @@ class CodexController extends ChangeNotifier {
         final currentThreadId = activeThreadId;
         final eventThreadId = _threadIdFromEvent(event.params);
         final eventTurnId = _turnIdFromEvent(event.params);
+        final completionThreadId = eventThreadId ?? currentThreadId;
+        if (completionThreadId != null &&
+            _goalContinuationAwaitingAcceptanceThreadIds.contains(
+              completionThreadId,
+            )) {
+          return;
+        }
         if ((_preparingTurnStart || _turnStartAwaitingAcceptance) &&
             (eventThreadId == null || eventThreadId == currentThreadId)) {
           // A new turn has not been requested yet. A late completion for the
@@ -6255,6 +6575,7 @@ class CodexController extends ChangeNotifier {
           _threadGoalRevisions.remove(deletedThreadId);
           _goalOperationThreadIds.remove(deletedThreadId);
           _goalOperationErrorsByThread.remove(deletedThreadId);
+          _clearGoalContinuationState(deletedThreadId);
           _persistedFileChangesByThreadId.remove(deletedThreadId);
           _persistedTurnDiffByThreadId.remove(deletedThreadId);
           _planModeByThreadId.remove(deletedThreadId);
@@ -6286,6 +6607,12 @@ class CodexController extends ChangeNotifier {
         status = RuntimeStatus.failed;
         _runningThreadIds.clear();
         _threadWorkspaceById.clear();
+        _goalContinuationPendingThreadIds.clear();
+        _goalContinuationAwaitingAcceptanceThreadIds.clear();
+        _automaticGoalTurnThreadIds.clear();
+        _goalTurnsWithToolCalls.clear();
+        _goalContinuationSuppressedThreadIds.clear();
+        _goalContinuationErrorsByThread.clear();
         // The next runtime process must attach the retained thread again.
         _activeThreadAttached = false;
         lastError = 'Codex runtime 已退出（code ${event.params['code']}）。';
@@ -6455,6 +6782,33 @@ class CodexController extends ChangeNotifier {
       method == 'turn/diff/updated' ||
       method == 'thread/tokenUsage/updated' ||
       method == 'turn/completed';
+
+  void _recordGoalToolCall(JsonMap params) {
+    final threadId = _threadIdFromEvent(params);
+    final rawItem = params['item'];
+    if (threadId == null ||
+        !_automaticGoalTurnThreadIds.contains(threadId) ||
+        rawItem is! Map) {
+      return;
+    }
+    final type = _label(rawItem['type']);
+    if (switch (type) {
+      'commandExecution' ||
+      'fileChange' ||
+      'mcpToolCall' ||
+      'dynamicToolCall' ||
+      'collabToolCall' ||
+      'subAgentActivity' ||
+      'webSearch' ||
+      'imageView' ||
+      'imageGeneration' ||
+      'sleep' ||
+      'skill' => true,
+      _ => false,
+    }) {
+      _goalTurnsWithToolCalls.add(threadId);
+    }
+  }
 
   String? _turnIdFromEvent(JsonMap params) {
     final direct = _label(params['turnId']);
@@ -6651,6 +7005,18 @@ class CodexController extends ChangeNotifier {
       previousStatus: previous?.status,
       status: _threadGoalsById[threadId]!.status,
     );
+    if (_threadGoalsById[threadId]!.isActive) {
+      if (previous?.isActive != true) {
+        _goalContinuationSuppressedThreadIds.remove(threadId);
+        _goalContinuationErrorsByThread.remove(threadId);
+      }
+      _scheduleGoalContinuation(
+        threadId,
+        _threadWorkspaceById[threadId] ?? workspacePath,
+      );
+    } else {
+      _clearGoalContinuationState(threadId);
+    }
   }
 
   void _applyThreadGoalCleared(JsonMap params) {
@@ -6658,6 +7024,7 @@ class CodexController extends ChangeNotifier {
     if (threadId == null) return;
     _nextThreadGoalRevision(threadId);
     _threadGoalsById.remove(threadId);
+    _clearGoalContinuationState(threadId);
     _goalOperationErrorsByThread.remove(threadId);
     _appendGoalLifecycleFeedback(
       threadId,
@@ -6711,7 +7078,7 @@ class CodexController extends ChangeNotifier {
     }
     _lastGoalTimelineStatusByThread[threadId] = status;
     final detail = switch (status) {
-      'active' => previousStatus == null ? '目标已启动，正在继续' : '目标已恢复，正在继续',
+      'active' => previousStatus == null ? '目标已启动' : '目标已恢复',
       'blocked' => '目标需要你的输入',
       'paused' => '目标已暂停',
       'complete' || 'completed' => '目标已完成',
@@ -6793,6 +7160,12 @@ class CodexController extends ChangeNotifier {
     // can still render “任务完成” in that window, so notification and Dock
     // feedback must not be skipped solely because the local focus is empty.
     final completedThreadId = activeThreadId ?? _threadIdFromEvent(params);
+    final wasAutomaticGoalContinuation =
+        completedThreadId != null &&
+        _automaticGoalTurnThreadIds.remove(completedThreadId);
+    final goalTurnUsedTool =
+        completedThreadId != null &&
+        _goalTurnsWithToolCalls.remove(completedThreadId);
     final completionKey = _turnCompletionKey(params, completedThreadId);
     if (completionKey != null &&
         !_handledTurnCompletionKeys.add(completionKey)) {
@@ -6806,6 +7179,9 @@ class CodexController extends ChangeNotifier {
     final failedTurnError = _findText(turnMap['error']).isNotEmpty
         ? _findText(turnMap['error'])
         : 'Codex 未能完成当前任务。';
+    final goalRemainsActive =
+        completedThreadId != null &&
+        _threadGoalsById[completedThreadId]?.isActive == true;
     _recordTurnCompletionRetry(
       completedThreadId,
       completionOutcome,
@@ -6839,14 +7215,18 @@ class CodexController extends ChangeNotifier {
       case TurnCompletionOutcome.succeeded:
         status = RuntimeStatus.ready;
         _updateThreadStatus(activeThreadId, 'idle');
-        // A newly finished task remains identifiable until the user sees the
-        // end of its timeline or explicitly opens its task row.
-        _setCompletionReminder(
-          completedThreadId,
-          visible: true,
-          completionId: _turnIdFromEvent(params),
-        );
-        _add(TimelineKind.system, '任务完成', '你可以继续在同一线程追问。');
+        if (goalRemainsActive) {
+          _setCompletionReminder(completedThreadId, visible: false);
+        } else {
+          // A newly finished task remains identifiable until the user sees the
+          // end of its timeline or explicitly opens its task row.
+          _setCompletionReminder(
+            completedThreadId,
+            visible: true,
+            completionId: _turnIdFromEvent(params),
+          );
+          _add(TimelineKind.system, '任务完成', '你可以继续在同一线程追问。');
+        }
       case TurnCompletionOutcome.unknown:
         status = RuntimeStatus.ready;
         _updateThreadStatus(activeThreadId, 'idle');
@@ -6859,6 +7239,15 @@ class CodexController extends ChangeNotifier {
     _clearStreamingState(clearPendingTurnSteer: false);
     if (pendingDirection != null) {
       unawaited(_sendPendingTurnSteerAfterCompletion(pendingDirection));
+    } else if (completedThreadId != null) {
+      _finishGoalTurn(
+        threadId: completedThreadId,
+        workspace: workspacePath,
+        outcome: completionOutcome,
+        wasAutomaticContinuation: wasAutomaticGoalContinuation,
+        usedTool: goalTurnUsedTool,
+        failureMessage: failedTurnError,
+      );
     }
   }
 
@@ -6869,6 +7258,10 @@ class CodexController extends ChangeNotifier {
     final threadId = _threadIdFromEvent(params);
     if (threadId == null || !_runningThreadIds.remove(threadId)) return;
     final ownerWorkspace = _threadWorkspaceById.remove(threadId);
+    final wasAutomaticGoalContinuation = _automaticGoalTurnThreadIds.remove(
+      threadId,
+    );
+    final goalTurnUsedTool = _goalTurnsWithToolCalls.remove(threadId);
     final completionStatus = _completionStatusFromParams(params);
     final completionOutcome = _turnCompletionOutcome(completionStatus);
     _finishPlanImplementationTurn(
@@ -6897,7 +7290,9 @@ class CodexController extends ChangeNotifier {
     final completedStatus = completionOutcome == TurnCompletionOutcome.failed
         ? 'systemError'
         : 'idle';
-    final showReminder = completionOutcome == TurnCompletionOutcome.succeeded;
+    final showReminder =
+        completionOutcome == TurnCompletionOutcome.succeeded &&
+        _threadGoalsById[threadId]?.isActive != true;
     if (ownerWorkspace != null && ownerWorkspace != workspacePath) {
       if (showReminder) {
         _showCompletionFeedback(threadId, completionId: completionId);
@@ -6920,6 +7315,14 @@ class CodexController extends ChangeNotifier {
       );
     }
     _clearPendingApprovalsForThread(threadId);
+    _finishGoalTurn(
+      threadId: threadId,
+      workspace: ownerWorkspace ?? workspacePath,
+      outcome: completionOutcome,
+      wasAutomaticContinuation: wasAutomaticGoalContinuation,
+      usedTool: goalTurnUsedTool,
+      failureMessage: failedTurnError,
+    );
   }
 
   /// Writes a background completion into the task's owning project instead of
@@ -7366,7 +7769,7 @@ class CodexController extends ChangeNotifier {
         switch (item['type']) {
           case 'userMessage':
             final text = _findText(item['content']);
-            if (text.isNotEmpty) {
+            if (text.isNotEmpty && text != _goalContinuationPrompt) {
               _add(
                 TimelineKind.user,
                 '你',

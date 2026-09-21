@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 修复 Goal 长期显示“进行中”但不再执行的问题：active Goal 会在 turn 完成后的安全边界自动续轮，后台与重启恢复同样有效；待处理输入、方向、Plan、暂停/阻塞和预算限制不会误触发。无工具调用的自动轮会停止空转，失败时显示可重试的“等待继续”，主动停止 turn 会同步暂停 Goal，内部续轮不会出现在用户消息中。
+
 - 修复任务运行期间某个文件的 Diff 尚未到达、仅含元数据或属于二进制内容时，Composer 文件变更提示会把其他文件已有的 `+ / -` 行数一并隐藏的问题；统计现在随实时 Diff 持续更新。
 
 - 计划模式补齐官方 App Server 与桌面交互：新增 `/plan` 命令，空命令切换模式、带正文直接发起计划任务；模式按聊天隔离，并从 `thread/resume.collaborationMode` 和 `thread/settings/updated` 恢复。客户端优先采用 `collaborationMode/list` 公布的 Plan 模型/推理预设，同时兼容未提供该接口的旧运行时。
