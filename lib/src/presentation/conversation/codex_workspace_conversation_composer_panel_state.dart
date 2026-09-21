@@ -44,7 +44,6 @@ class ComposerPanelState extends State<ComposerPanel> {
   bool _includeWorkspace = false;
   bool _includeIdeContext = false;
   String? _ideContextWorkspacePath;
-  bool _planMode = false;
   bool _goalMode = false;
   bool _mcpStatusVisible = false;
   bool _codeReviewOptionsVisible = false;
@@ -130,7 +129,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       _includeWorkspace ||
       _includeIdeContext ||
       _goal?.isNotEmpty == true ||
-      _planMode ||
+      controller.composerPlanMode ||
       _selectedSkillPaths.isNotEmpty;
 
   @override
@@ -353,6 +352,23 @@ class ComposerPanelState extends State<ComposerPanel> {
       description: '审查未提交的更改，或与某个分支进行比较',
       icon: Icons.fact_check_outlined,
       enabled: controller.canStartCodeReview,
+    ),
+    const ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.goal,
+      label: '目标',
+      description: '设置持续目标；建议先使用计划模式明确目标',
+      icon: Icons.track_changes_outlined,
+    ),
+    ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.planMode,
+      label: '计划模式',
+      description: controller.canSteer
+          ? '任务运行时不可用'
+          : controller.composerPlanMode
+          ? '关闭计划模式'
+          : '为多步骤任务制定计划',
+      icon: Icons.lightbulb_outline,
+      enabled: !controller.canSteer,
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.sideChat,
@@ -1210,6 +1226,24 @@ class ComposerPanelState extends State<ComposerPanel> {
       return false;
     }
     final rawComposerText = composer.text.trim();
+    final planCommand = !_goalMode
+        ? RegExp(
+            r'^/(?:plan|计划模式)(?:\s+([\s\S]+))?$',
+            caseSensitive: false,
+          ).firstMatch(rawComposerText)
+        : null;
+    if (planCommand != null && controller.canSteer) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('任务运行时无法切换计划模式。')));
+      return false;
+    }
+    final inlinePlanPrompt = planCommand?.group(1)?.trim();
+    if (planCommand != null && inlinePlanPrompt?.isNotEmpty != true) {
+      composer.clear();
+      _togglePlanMode();
+      return true;
+    }
     final inlineGoal = !_goalMode
         ? RegExp(
             r'^/(?:goal|目标)\s+(.+)$',
@@ -1217,15 +1251,7 @@ class ComposerPanelState extends State<ComposerPanel> {
             dotAll: true,
           ).firstMatch(rawComposerText)
         : null;
-    final inlinePlan = !_goalMode && !controller.canSteer
-        ? RegExp(
-            r'^/(?:plan|计划模式)\s+(.+)$',
-            caseSensitive: false,
-            dotAll: true,
-          ).firstMatch(rawComposerText)
-        : null;
     final inlineGoalText = inlineGoal?.group(1)?.trim();
-    final inlinePlanPrompt = inlinePlan?.group(1)?.trim();
     final goalText =
         inlineGoalText ?? (_goalMode ? _combinedComposerText : _goal);
     if (goalText != null && goalText.runes.length > 4000) {
@@ -1234,8 +1260,8 @@ class ComposerPanelState extends State<ComposerPanel> {
       ).showSnackBar(const SnackBar(content: Text('目标不能超过 4000 个字符。')));
       return false;
     }
-    if (inlinePlanPrompt?.isNotEmpty == true && !_planMode) {
-      setState(() => _planMode = true);
+    if (inlinePlanPrompt?.isNotEmpty == true && !controller.composerPlanMode) {
+      controller.setComposerPlanMode(true);
     }
     final submission = ComposerSubmission(
       // Codex Goal mode uses the objective as both the first prompt and the
@@ -1249,7 +1275,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       includeWorkspace: _includeWorkspace,
       includeIdeContext: _includeIdeContext,
       goal: goalText,
-      planMode: _planMode,
+      planMode: controller.composerPlanMode,
       skills: _selectedSkills,
     );
     final submitted = controller.canSteer
@@ -1593,7 +1619,7 @@ class ComposerPanelState extends State<ComposerPanel> {
 
   void _togglePlanMode() {
     if (controller.canSteer) return;
-    setState(() => _planMode = !_planMode);
+    controller.setComposerPlanMode(!controller.composerPlanMode);
   }
 
   List<PopupMenuEntry<AddMenuAction>> _buildAddMenu(BuildContext context) {
@@ -1632,10 +1658,10 @@ class ComposerPanelState extends State<ComposerPanel> {
         label: '计划模式',
         description: controller.canSteer
             ? '任务运行时不可用'
-            : _planMode
+            : controller.composerPlanMode
             ? '已开启计划模式'
             : '开启计划模式',
-        selected: _planMode,
+        selected: controller.composerPlanMode,
         enabled: !controller.canSteer,
       ),
       AddMenuItem(
@@ -2061,7 +2087,7 @@ class ComposerPanelState extends State<ComposerPanel> {
                                       onRemove: () =>
                                           setState(() => _goal = null),
                                     ),
-                                  if (_planMode)
+                                  if (controller.composerPlanMode)
                                     ComposerContextChip(
                                       key: const Key('composer-plan-mode-chip'),
                                       icon: Icons.lightbulb_outline,

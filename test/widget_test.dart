@@ -1067,6 +1067,47 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('keeps live file stats while another Diff is pending', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {
+                'path': 'lib/ready.dart',
+                'kind': 'modified',
+                'diff': '@@ -1 +1,2 @@\n-old\n+new\n+another',
+              },
+              {'path': 'lib/pending.dart', 'kind': 'modified'},
+            ],
+          },
+        },
+      ),
+    );
+    await tester.pump();
+
+    final pill = find.byKey(const Key('composer-file-change-pill'));
+    expect(
+      find.descendant(of: pill, matching: find.text('+2')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: pill, matching: find.text('-1')),
+      findsOneWidget,
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('edits the current task name from the workbench top bar', (
     tester,
   ) async {
@@ -5032,9 +5073,10 @@ void main() {
       await tester.pump();
       expect(find.byKey(const Key('composer-plan-mode-chip')), findsOneWidget);
 
+      controller.activeThreadId = 'thread-plan';
+      controller.setComposerPlanMode(true);
       controller
         ..status = RuntimeStatus.running
-        ..activeThreadId = 'thread-plan'
         ..activeTurnId = 'turn-plan';
       controller.handleServerEventForTesting(
         const ServerEvent(method: 'turn/started', params: {}),

@@ -429,6 +429,35 @@ void main() {
     });
   });
 
+  test('updates the collaboration mode used by the next thread turn', () async {
+    final server = ProtocolCaptureCodexAppServer();
+
+    await server.updateThreadSettings(
+      threadId: 'thread-1',
+      collaborationMode: const {
+        'mode': 'default',
+        'settings': {
+          'model': 'gpt-test',
+          'reasoning_effort': null,
+          'developer_instructions': null,
+        },
+      },
+    );
+
+    expect(server.requestedMethod, 'thread/settings/update');
+    expect(server.requestedParams, {
+      'threadId': 'thread-1',
+      'collaborationMode': {
+        'mode': 'default',
+        'settings': {
+          'model': 'gpt-test',
+          'reasoning_effort': null,
+          'developer_instructions': null,
+        },
+      },
+    });
+  });
+
   test('encodes active-turn direction adjustments', () async {
     final server = ProtocolCaptureCodexAppServer();
 

@@ -12,6 +12,8 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_submission.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_approval_panel.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_elicitation_panel.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_user_input_panel.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_plan_implementation_panel.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_goal_progress_row.dart';
 
 class ConversationPane extends StatelessWidget {
@@ -108,11 +110,22 @@ class ConversationPane extends StatelessWidget {
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
     final goalError = controller.goalOperationError;
-    final showElicitation = controller.shouldShowPendingElicitation;
+    final showUserInput = controller.shouldShowPendingUserInput;
+    final pendingUserInput = showUserInput ? controller.pendingUserInput : null;
+    final pendingPlanImplementation = pendingUserInput == null
+        ? controller.pendingPlanImplementation
+        : null;
+    final showElicitation =
+        pendingPlanImplementation == null &&
+        !showUserInput &&
+        controller.shouldShowPendingElicitation;
     final pendingElicitation = showElicitation
         ? controller.pendingElicitation
         : null;
-    final pendingApproval = showElicitation ? null : controller.pendingApproval;
+    final pendingApproval =
+        showUserInput || pendingPlanImplementation != null || showElicitation
+        ? null
+        : controller.pendingApproval;
     final showErrors =
         !controller.hasThreadWriterConflict && !controller.hasFailedTurnRetry;
     return Column(
@@ -166,7 +179,49 @@ class ConversationPane extends StatelessWidget {
                     when goal.status != 'complete' &&
                         goal.status != 'completed')
                   GoalProgressRow(controller: controller, goal: goal),
-                if (pendingElicitation case final elicitation?)
+                if (pendingUserInput case final request?)
+                  Flexible(
+                    child: UserInputPanel(
+                      key: ValueKey(request.requestId),
+                      request: request,
+                      taskLabel: controller.pendingUserInputTaskLabel,
+                      enabled: controller.canRespondToUserInput,
+                      autoResolutionDeadline:
+                          controller.pendingUserInputAutoResolutionDeadline,
+                      onSubmit: (answers, _) => controller.respondToUserInput(
+                        answers,
+                        requestId: request.requestId,
+                      ),
+                      onDismiss: () => controller.dismissUserInput(
+                        requestId: request.requestId,
+                      ),
+                      onUserInteraction: () =>
+                          controller.snoozeUserInput(request.requestId),
+                    ),
+                  )
+                else if (pendingPlanImplementation case final request?)
+                  Flexible(
+                    child: PlanImplementationPanel(
+                      key: ValueKey(request.requestKey),
+                      request: request,
+                      enabled: controller.canRespondToPlanImplementation,
+                      onImplement: () => controller.implementCompletedPlan(
+                        threadId: request.threadId,
+                        turnId: request.turnId,
+                      ),
+                      onFeedback: (feedback) =>
+                          controller.submitCompletedPlanFeedback(
+                            feedback,
+                            threadId: request.threadId,
+                            turnId: request.turnId,
+                          ),
+                      onDismiss: () => controller.dismissCompletedPlan(
+                        threadId: request.threadId,
+                        turnId: request.turnId,
+                      ),
+                    ),
+                  )
+                else if (pendingElicitation case final elicitation?)
                   Flexible(
                     child: ElicitationPanel(
                       key: ValueKey(elicitation.requestId),

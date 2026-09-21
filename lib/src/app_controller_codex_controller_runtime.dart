@@ -18,6 +18,8 @@ import 'package:chatgpt/src/domain/codex_ide_context.dart';
 import 'package:chatgpt/src/domain/git_project_status.dart';
 import 'package:chatgpt/src/domain/pending_approval.dart';
 import 'package:chatgpt/src/domain/pending_elicitation.dart';
+import 'package:chatgpt/src/domain/pending_plan_implementation_request.dart';
+import 'package:chatgpt/src/domain/pending_user_input.dart';
 import 'package:chatgpt/src/domain/runtime_log_entry.dart';
 import 'package:chatgpt/src/domain/scheduled_task.dart';
 import 'package:chatgpt/src/domain/subagent_thread_view.dart';
@@ -76,6 +78,10 @@ class CodexController extends ChangeNotifier {
     TaskCompletionNotifier? taskCompletionNotifier,
     CodexClock? clock,
     CodexIdeContextBridge? ideContextBridge,
+    Duration userInputForegroundInactivityDuration = const Duration(
+      seconds: 60,
+    ),
+    Duration userInputAutoResolutionDuration = const Duration(seconds: 90),
   }) : _server = server ?? CodexAppServer(),
        _runtimeConfigurationStore =
            runtimeConfigurationStore ??
@@ -94,7 +100,10 @@ class CodexController extends ChangeNotifier {
        _ownsIdeContextBridge = ideContextBridge == null,
        _taskCompletionNotifier =
            taskCompletionNotifier ?? TaskCompletionNotifier(),
-       _clock = clock ?? CodexClock() {
+       _clock = clock ?? CodexClock(),
+       _userInputForegroundInactivityDuration =
+           userInputForegroundInactivityDuration,
+       _userInputAutoResolutionDuration = userInputAutoResolutionDuration {
     _gitOperations = CodexGitOperations(
       service: _gitProjectService,
       workspace: () => workspacePath,
@@ -200,6 +209,8 @@ class CodexController extends ChangeNotifier {
   final bool _ownsIdeContextBridge;
   final TaskCompletionNotifier _taskCompletionNotifier;
   final CodexClock _clock;
+  final Duration _userInputForegroundInactivityDuration;
+  final Duration _userInputAutoResolutionDuration;
   late final CodexGitOperations _gitOperations;
   late final CodexRuntimeDiagnostics _runtimeDiagnostics;
   late final CodexAttachmentCoordinator _attachments;
@@ -246,6 +257,13 @@ class CodexController extends ChangeNotifier {
   int _subagentViewRequestSequence = 0;
   final Set<String> _completedCommandItemIds = {};
   final Set<String> _completedPlanItemIds = {};
+  final Map<String, PendingPlanImplementationRequest>
+  _planImplementationCandidates = {};
+  final Map<String, PendingPlanImplementationRequest>
+  _pendingPlanImplementations = {};
+  final Set<String> _successfulPlanTurnKeys = {};
+  final Set<String> _rejectedPlanTurnKeys = {};
+  final Set<String> _handledPlanImplementationKeys = {};
   final Set<String> _handledBrowserInvocationIds = {};
   Timer? _deltaNotificationTimer;
   Timer? _historySaveTimer;
@@ -309,6 +327,10 @@ class CodexController extends ChangeNotifier {
   Future<void> _approvalModeSave = Future.value();
   Map<String, Set<ReasoningEffort>> _reasoningEffortsByModel = const {};
   String? _catalogDefaultModelId;
+  JsonMap? _planCollaborationModePreset;
+  JsonMap? _defaultCollaborationModePreset;
+  final Map<String, bool> _planModeByThreadId = {};
+  bool _newThreadPlanMode = false;
   String? _configuredModelId;
   String? _configuredProviderId;
   String? _configuredModelSource;
@@ -682,13 +704,21 @@ class CodexController extends ChangeNotifier {
       LinkedHashMap();
   final LinkedHashMap<Object, PendingElicitation> _pendingElicitations =
       LinkedHashMap();
-  final List<({Object requestId, bool elicitation})> _pendingRequestOrder = [];
+  final LinkedHashMap<Object, PendingUserInputRequest> _pendingUserInputs =
+      LinkedHashMap();
+  final Map<String, Object> _autoResolvingUserInputByThread = {};
+  final Map<Object, Timer> _userInputAutoResolutionTimers = {};
+  final Map<Object, String> _userInputAutoResolutionStates = {};
+  final Map<Object, DateTime> _userInputAutoResolutionDeadlines = {};
+  final List<({Object requestId, String kind})> _pendingRequestOrder = [];
+  bool _userInputSurfaceForegrounded = false;
+  String? _presentedUserInputThreadId;
 
-  void _queuePendingRequest(Object requestId, {required bool elicitation}) {
+  void _queuePendingRequest(Object requestId, {required String kind}) {
     _pendingRequestOrder.removeWhere(
       (request) => request.requestId == requestId,
     );
-    _pendingRequestOrder.add((requestId: requestId, elicitation: elicitation));
+    _pendingRequestOrder.add((requestId: requestId, kind: kind));
   }
 
   void _removePendingRequest(Object? requestId) {
@@ -699,29 +729,40 @@ class CodexController extends ChangeNotifier {
 
   void _prunePendingRequestOrder() {
     _pendingRequestOrder.removeWhere(
-      (request) => request.elicitation
-          ? !_pendingElicitations.containsKey(request.requestId)
-          : !_pendingApprovals.containsKey(request.requestId),
+      (request) => switch (request.kind) {
+        'userInput' => !_pendingUserInputs.containsKey(request.requestId),
+        'elicitation' => !_pendingElicitations.containsKey(request.requestId),
+        _ => !_pendingApprovals.containsKey(request.requestId),
+      },
     );
+  }
+
+  String? get _preferredPendingRequestKind {
+    _prunePendingRequestOrder();
+    if (_pendingRequestOrder.isEmpty) return null;
+    final activeId = activeThreadId;
+    if (activeId != null) {
+      for (final request in _pendingRequestOrder) {
+        final threadId = switch (request.kind) {
+          'userInput' => _pendingUserInputs[request.requestId]?.threadId,
+          'elicitation' => _pendingElicitations[request.requestId]?.threadId,
+          _ => _pendingApprovals[request.requestId]?.threadId,
+        };
+        if (threadId == activeId) return request.kind;
+      }
+    }
+    return _pendingRequestOrder.first.kind;
   }
 
   /// Whether the next prompt card is an MCP elicitation. Requests belonging
   /// to the visible task take priority; requests within the same priority are
   /// presented in server arrival order.
   bool get shouldShowPendingElicitation {
-    _prunePendingRequestOrder();
-    if (_pendingRequestOrder.isEmpty) return false;
-    final activeId = activeThreadId;
-    if (activeId != null) {
-      for (final request in _pendingRequestOrder) {
-        final threadId = request.elicitation
-            ? _pendingElicitations[request.requestId]?.threadId
-            : _pendingApprovals[request.requestId]?.threadId;
-        if (threadId == activeId) return request.elicitation;
-      }
-    }
-    return _pendingRequestOrder.first.elicitation;
+    return _preferredPendingRequestKind == 'elicitation';
   }
+
+  bool get shouldShowPendingUserInput =>
+      _preferredPendingRequestKind == 'userInput';
 
   /// Prefers an approval for the task currently shown in the workbench. A
   /// background task's approval remains available rather than being replaced
@@ -749,6 +790,70 @@ class CodexController extends ChangeNotifier {
 
   bool approvalResponding = false;
   bool elicitationResponding = false;
+  bool userInputResponding = false;
+  bool planImplementationResponding = false;
+
+  PendingUserInputRequest? get pendingUserInput {
+    final activeId = activeThreadId;
+    if (activeId != null) {
+      for (final request in _pendingUserInputs.values) {
+        if (request.threadId == activeId) return request;
+      }
+    }
+    return _pendingUserInputs.values.firstOrNull;
+  }
+
+  /// Deadline shown by the official dismiss control during the final
+  /// auto-resolution countdown. Waiting-for-inactivity and snoozed requests
+  /// intentionally expose no deadline.
+  DateTime? get pendingUserInputAutoResolutionDeadline {
+    final request = pendingUserInput;
+    return request == null
+        ? null
+        : _userInputAutoResolutionDeadlines[request.requestId];
+  }
+
+  String? get pendingUserInputTaskLabel {
+    final threadId = pendingUserInput?.threadId;
+    if (threadId == null || threadId == activeThreadId) return null;
+    final title = _cachedThread(threadId)?.title;
+    if (title != null && title.isNotEmpty) return title;
+    final shortId = threadId.length > 12 ? threadId.substring(0, 12) : threadId;
+    return '后台任务 $shortId';
+  }
+
+  bool get canRespondToUserInput =>
+      pendingUserInput != null && !userInputResponding;
+
+  PendingPlanImplementationRequest? get pendingPlanImplementation {
+    final threadId = activeThreadId;
+    return threadId == null ? null : _pendingPlanImplementations[threadId];
+  }
+
+  bool get canRespondToPlanImplementation =>
+      pendingPlanImplementation != null &&
+      !planImplementationResponding &&
+      canSend;
+
+  /// Composer collaboration mode for the selected thread (or the next new
+  /// thread). Official Codex keeps this selection scoped to each conversation.
+  bool get composerPlanMode {
+    final threadId = activeThreadId;
+    return threadId == null
+        ? _newThreadPlanMode
+        : (_planModeByThreadId[threadId] ?? _newThreadPlanMode);
+  }
+
+  void setComposerPlanMode(bool enabled) {
+    if (canSteer || composerPlanMode == enabled) return;
+    final threadId = activeThreadId;
+    if (threadId == null) {
+      _newThreadPlanMode = enabled;
+    } else {
+      _planModeByThreadId[threadId] = enabled;
+    }
+    notifyListeners();
+  }
 
   /// Prefers a request that belongs to the task currently being viewed.
   PendingElicitation? get pendingElicitation {
@@ -2013,6 +2118,8 @@ class CodexController extends ChangeNotifier {
     codexConfigurationError = null;
     _reasoningEffortsByModel = const {};
     _catalogDefaultModelId = null;
+    _planCollaborationModePreset = null;
+    _defaultCollaborationModePreset = null;
     modelOptions = const [];
     modelCatalogError = null;
     reasoningEffortOptions = [
@@ -2285,6 +2392,8 @@ class CodexController extends ChangeNotifier {
       await refreshCodexConfiguration(notify: false);
       if (!isCurrentSelection()) return false;
       await _refreshReasoningEffortCapabilities();
+      if (!isCurrentSelection()) return false;
+      await _refreshCollaborationModes();
       if (!isCurrentSelection()) return false;
       if (preferredThread != null) {
         // The caller supplied an explicit task selection (for example via
@@ -3163,6 +3272,7 @@ class CodexController extends ChangeNotifier {
       refreshCodexConfiguration(notify: false),
       refreshAccount(expectedEpoch: connectionEpoch),
       _refreshReasoningEffortCapabilities(expectedEpoch: connectionEpoch),
+      _refreshCollaborationModes(expectedEpoch: connectionEpoch),
       refreshArchivedThreads(),
       refreshThreads(),
       refreshSkills(notify: false),
@@ -3226,7 +3336,7 @@ class CodexController extends ChangeNotifier {
     final requestThread = activeThreadId;
     final requestRevision = _conversationViewRevision;
     if (text.isEmpty || !canSend || requestWorkspace == null) return false;
-    if (planMode && _newThreadModelId == null) {
+    if (planMode && _collaborationMode(planMode: true) == null) {
       lastError = '计划模式需要先从 Codex 运行时读取可用模型。';
       _add(TimelineKind.error, '无法启动计划模式', lastError!);
       notifyListeners();
@@ -3317,16 +3427,7 @@ class CodexController extends ChangeNotifier {
       );
       final threadId = requestedThreadId;
       final objective = goal?.trim();
-      final collaborationMode = _newThreadModelId == null
-          ? null
-          : <String, dynamic>{
-              'mode': planMode ? 'plan' : 'default',
-              'settings': {
-                'model': _newThreadModelId,
-                'reasoning_effort': reasoningEffort.configValue,
-                'developer_instructions': null,
-              },
-            };
+      final collaborationMode = _collaborationMode(planMode: planMode);
       final submission = TurnSubmission(
         workspace: workspace,
         threadId: threadId,
@@ -3338,6 +3439,8 @@ class CodexController extends ChangeNotifier {
         imagePaths: persistedImagePaths,
       );
       _failedTurnRetries.remove(threadId);
+      _planModeByThreadId[threadId] = planMode;
+      if (activeThreadId == null) _newThreadPlanMode = false;
       _runningTurnSubmissions[threadId] = submission;
       if (activeThreadId == null) {
         activeThreadId = threadId;
@@ -4104,9 +4207,13 @@ class CodexController extends ChangeNotifier {
       _activeThreadAttached = false;
       _pendingApprovals.clear();
       _pendingElicitations.clear();
+      _clearUserInputAutoResolution();
+      _pendingUserInputs.clear();
+      _clearPlanImplementationState();
       _pendingRequestOrder.clear();
       approvalResponding = false;
       elicitationResponding = false;
+      userInputResponding = false;
       _clearStreamingState();
       _add(TimelineKind.system, '运行时连接已关闭', '应用会在需要时自动重新连接。');
     } catch (error) {
@@ -4778,6 +4885,10 @@ class CodexController extends ChangeNotifier {
           model: thread.model,
           config: null,
         );
+        _updateThreadCollaborationMode(
+          thread.id,
+          resumeResult['collaborationMode'],
+        );
         _activeThreadAttached = true;
         status = RuntimeStatus.ready;
       }
@@ -5122,6 +5233,7 @@ class CodexController extends ChangeNotifier {
       _userMessageEntriesByThreadId.remove(thread.id);
       _persistedFileChangesByThreadId.remove(thread.id);
       _persistedTurnDiffByThreadId.remove(thread.id);
+      _clearPlanImplementationForThread(thread.id);
       _threadTokenUsageById.remove(thread.id);
       _runningTurnIdsByThread.remove(thread.id);
       _pendingNetworkRetryEntriesByThread.remove(thread.id);
@@ -5481,6 +5593,324 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// Updates the single visible conversation surface used by the official
+  /// foreground/inactivity auto-resolution policy.
+  bool setUserInputSurfaceState({
+    required bool foregrounded,
+    required String? presentedThreadId,
+  }) {
+    if (_userInputSurfaceForegrounded == foregrounded &&
+        _presentedUserInputThreadId == presentedThreadId) {
+      return false;
+    }
+    _userInputSurfaceForegrounded = foregrounded;
+    _presentedUserInputThreadId = presentedThreadId;
+    var changed = false;
+    for (final entry in _autoResolvingUserInputByThread.entries.toList()) {
+      final requestId = entry.value;
+      if (_userInputAutoResolutionStates[requestId] == 'snoozed') continue;
+      if (_isUserInputThreadForegrounded(entry.key)) {
+        _waitForUserInputInactivity(entry.key, requestId);
+        changed = true;
+      } else if (_userInputAutoResolutionStates[requestId] ==
+          'waiting-for-inactivity') {
+        _startUserInputAutoResolutionCountdown(entry.key, requestId);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /// Restarts the inactivity window while the pending request's conversation
+  /// is both visible and foregrounded.
+  void recordUserInputConversationActivity() {
+    final threadId = _presentedUserInputThreadId;
+    if (threadId == null || !_isUserInputThreadForegrounded(threadId)) return;
+    final requestId = _autoResolvingUserInputByThread[threadId];
+    if (requestId == null ||
+        _userInputAutoResolutionStates[requestId] != 'waiting-for-inactivity') {
+      return;
+    }
+    _waitForUserInputInactivity(threadId, requestId);
+  }
+
+  /// Stops automatic resolution once the user starts interacting with the
+  /// question card, matching the official client's snoozed state.
+  void snoozeUserInput(Object requestId) {
+    final request = _pendingUserInputs[requestId];
+    if (request == null || request.isBlocking) return;
+    if (!_userInputAutoResolutionStates.containsKey(requestId)) return;
+    _userInputAutoResolutionTimers.remove(requestId)?.cancel();
+    _userInputAutoResolutionDeadlines.remove(requestId);
+    _userInputAutoResolutionStates[requestId] = 'snoozed';
+  }
+
+  bool _isUserInputThreadForegrounded(String threadId) =>
+      _userInputSurfaceForegrounded && _presentedUserInputThreadId == threadId;
+
+  void _trackUserInputAutoResolution(PendingUserInputRequest request) {
+    final previousRequestId = _autoResolvingUserInputByThread[request.threadId];
+    if (previousRequestId != null) {
+      _stopUserInputAutoResolution(previousRequestId);
+    }
+    if (request.isBlocking) return;
+    _autoResolvingUserInputByThread[request.threadId] = request.requestId;
+    if (_isUserInputThreadForegrounded(request.threadId)) {
+      _waitForUserInputInactivity(request.threadId, request.requestId);
+    } else {
+      _startUserInputAutoResolutionCountdown(
+        request.threadId,
+        request.requestId,
+      );
+    }
+  }
+
+  void _waitForUserInputInactivity(String threadId, Object requestId) {
+    if (_autoResolvingUserInputByThread[threadId] != requestId) return;
+    _userInputAutoResolutionTimers.remove(requestId)?.cancel();
+    _userInputAutoResolutionDeadlines.remove(requestId);
+    _userInputAutoResolutionStates[requestId] = 'waiting-for-inactivity';
+    _userInputAutoResolutionTimers[requestId] = Timer(
+      _userInputForegroundInactivityDuration,
+      () {
+        if (_disposed ||
+            _autoResolvingUserInputByThread[threadId] != requestId ||
+            _userInputAutoResolutionStates[requestId] !=
+                'waiting-for-inactivity') {
+          return;
+        }
+        _startUserInputAutoResolutionCountdown(threadId, requestId);
+        notifyListeners();
+      },
+    );
+  }
+
+  void _startUserInputAutoResolutionCountdown(
+    String threadId,
+    Object requestId,
+  ) {
+    if (_autoResolvingUserInputByThread[threadId] != requestId) return;
+    _userInputAutoResolutionTimers.remove(requestId)?.cancel();
+    _userInputAutoResolutionStates[requestId] = 'scheduled';
+    _userInputAutoResolutionDeadlines[requestId] = _clock.now().add(
+      _userInputAutoResolutionDuration,
+    );
+    _userInputAutoResolutionTimers[requestId] = Timer(
+      _userInputAutoResolutionDuration,
+      () => _autoResolveUserInput(threadId, requestId),
+    );
+  }
+
+  void _autoResolveUserInput(String threadId, Object requestId) {
+    if (_disposed || _autoResolvingUserInputByThread[threadId] != requestId) {
+      return;
+    }
+    final request = _pendingUserInputs[requestId];
+    _stopUserInputAutoResolution(requestId);
+    if (request == null) return;
+    try {
+      _server.respond(requestId, {'answers': const <String, dynamic>{}});
+      _pendingUserInputs.remove(requestId);
+      _removePendingRequest(requestId);
+    } catch (error) {
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '回答提交失败', lastError!);
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  void _stopUserInputAutoResolution(Object requestId) {
+    _userInputAutoResolutionTimers.remove(requestId)?.cancel();
+    _userInputAutoResolutionStates.remove(requestId);
+    _userInputAutoResolutionDeadlines.remove(requestId);
+    _autoResolvingUserInputByThread.removeWhere(
+      (_, trackedRequestId) => trackedRequestId == requestId,
+    );
+  }
+
+  void _clearUserInputAutoResolution() {
+    for (final timer in _userInputAutoResolutionTimers.values) {
+      timer.cancel();
+    }
+    _userInputAutoResolutionTimers.clear();
+    _userInputAutoResolutionStates.clear();
+    _userInputAutoResolutionDeadlines.clear();
+    _autoResolvingUserInputByThread.clear();
+  }
+
+  void _clearPlanImplementationState() {
+    for (final threadId in _pendingPlanImplementations.keys.toList()) {
+      _removeCachedThreadView(threadId);
+    }
+    _planImplementationCandidates.clear();
+    _pendingPlanImplementations.clear();
+    _successfulPlanTurnKeys.clear();
+    _rejectedPlanTurnKeys.clear();
+    _handledPlanImplementationKeys.clear();
+    planImplementationResponding = false;
+  }
+
+  void _clearPlanImplementationForThread(String threadId) {
+    _pendingPlanImplementations.remove(threadId);
+    _planImplementationCandidates.removeWhere(
+      (_, request) => request.threadId == threadId,
+    );
+    _successfulPlanTurnKeys.removeWhere((key) => key.startsWith('$threadId:'));
+    _rejectedPlanTurnKeys.removeWhere((key) => key.startsWith('$threadId:'));
+    _handledPlanImplementationKeys.removeWhere(
+      (key) => key.startsWith('$threadId:'),
+    );
+  }
+
+  /// Answers the current structured question request from Codex.
+  Future<void> respondToUserInput(JsonMap answers, {Object? requestId}) async {
+    final request = requestId == null
+        ? pendingUserInput
+        : _pendingUserInputs[requestId];
+    if (request == null || userInputResponding) return;
+
+    userInputResponding = true;
+    notifyListeners();
+    try {
+      _server.respond(request.requestId, {'answers': answers});
+      _stopUserInputAutoResolution(request.requestId);
+      _pendingUserInputs.remove(request.requestId);
+      _removePendingRequest(request.requestId);
+    } catch (error) {
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '回答提交失败', lastError!);
+    } finally {
+      userInputResponding = false;
+      notifyListeners();
+    }
+  }
+
+  /// Dismisses a question like the official client: optional requests receive
+  /// an empty answer, while blocking requests interrupt their owning turn.
+  Future<void> dismissUserInput({Object? requestId}) async {
+    final request = requestId == null
+        ? pendingUserInput
+        : _pendingUserInputs[requestId];
+    if (request == null || userInputResponding) return;
+    if (!request.isBlocking) {
+      await respondToUserInput(
+        const <String, dynamic>{},
+        requestId: request.requestId,
+      );
+      return;
+    }
+
+    userInputResponding = true;
+    notifyListeners();
+    try {
+      await _server.interruptTurn(
+        threadId: request.threadId,
+        turnId: request.turnId,
+      );
+    } catch (error) {
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '无法关闭问题', lastError!);
+    } finally {
+      userInputResponding = false;
+      notifyListeners();
+    }
+  }
+
+  /// Starts implementation of the exact plan produced by the completed turn.
+  Future<void> implementCompletedPlan({
+    required String threadId,
+    required String turnId,
+  }) async {
+    final request = _pendingPlanImplementations[threadId];
+    if (request == null ||
+        request.turnId != turnId ||
+        activeThreadId != threadId ||
+        planImplementationResponding) {
+      return;
+    }
+    planImplementationResponding = true;
+    notifyListeners();
+    try {
+      final sent = await sendPrompt(
+        'PLEASE IMPLEMENT THIS PLAN:\n${request.planContent}',
+        planMode: false,
+      );
+      if (sent && _pendingPlanImplementations[threadId]?.turnId == turnId) {
+        _pendingPlanImplementations.remove(threadId);
+      }
+    } finally {
+      planImplementationResponding = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  /// Sends free-form feedback while retaining Plan mode for the next turn.
+  Future<void> submitCompletedPlanFeedback(
+    String feedback, {
+    required String threadId,
+    required String turnId,
+  }) async {
+    final text = feedback.trim();
+    final request = _pendingPlanImplementations[threadId];
+    if (text.isEmpty ||
+        request == null ||
+        request.turnId != turnId ||
+        activeThreadId != threadId ||
+        planImplementationResponding) {
+      return;
+    }
+    planImplementationResponding = true;
+    notifyListeners();
+    try {
+      final sent = await sendPrompt(text, planMode: true);
+      if (sent && _pendingPlanImplementations[threadId]?.turnId == turnId) {
+        _pendingPlanImplementations.remove(threadId);
+      }
+    } finally {
+      planImplementationResponding = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  /// Dismisses a completed plan and changes the thread's next turn to default.
+  Future<void> dismissCompletedPlan({
+    required String threadId,
+    required String turnId,
+  }) async {
+    final request = _pendingPlanImplementations[threadId];
+    if (request == null ||
+        request.turnId != turnId ||
+        activeThreadId != threadId ||
+        planImplementationResponding) {
+      return;
+    }
+    planImplementationResponding = true;
+    notifyListeners();
+    try {
+      final defaultMode = _collaborationMode(planMode: false);
+      await _server.updateThreadSettings(
+        threadId: threadId,
+        collaborationMode: defaultMode,
+      );
+      _planModeByThreadId[threadId] = false;
+      _pendingPlanImplementations.remove(threadId);
+    } catch (error) {
+      final message = _messageOf(error);
+      if (activeThreadId == threadId) {
+        lastError = message;
+        _add(TimelineKind.error, 'Could not dismiss plan', message);
+      } else {
+        _recordRuntimeLog(
+          'Could not dismiss plan for $threadId: $message',
+          level: RuntimeLogLevel.error,
+        );
+      }
+    } finally {
+      planImplementationResponding = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
   /// 更新并持久化审批策略；自动模式会立即处理之后收到的审批请求。
   /// Updates and persists the approval policy; auto mode immediately handles later approval requests.
   Future<void> setApprovalMode(ApprovalMode mode) async {
@@ -5552,7 +5982,7 @@ class CodexController extends ChangeNotifier {
           );
         } else {
           _pendingApprovals[browserApproval.requestId] = browserApproval;
-          _queuePendingRequest(browserApproval.requestId, elicitation: false);
+          _queuePendingRequest(browserApproval.requestId, kind: 'approval');
           approvalResponding = false;
           if (browserApproval.threadId == null ||
               browserApproval.threadId == activeThreadId) {
@@ -5562,6 +5992,20 @@ class CodexController extends ChangeNotifier {
               browserApproval.detail,
             );
           }
+        }
+        notifyListeners();
+        return;
+      }
+      if (event.method == 'item/tool/requestUserInput') {
+        final request = PendingUserInputRequest.fromEvent(event);
+        if (request == null) {
+          _server.respondError(event.requestId!, '此用户输入请求格式不受支持。');
+          _add(TimelineKind.error, '无法显示 Codex 问题', '请求格式不受支持。');
+        } else {
+          _pendingUserInputs[request.requestId] = request;
+          _queuePendingRequest(request.requestId, kind: 'userInput');
+          _trackUserInputAutoResolution(request);
+          userInputResponding = false;
         }
         notifyListeners();
         return;
@@ -5579,7 +6023,7 @@ class CodexController extends ChangeNotifier {
           _add(TimelineKind.error, '无法显示 MCP 输入请求', '请求格式不受支持。');
         } else {
           _pendingElicitations[elicitation.requestId] = elicitation;
-          _queuePendingRequest(elicitation.requestId, elicitation: true);
+          _queuePendingRequest(elicitation.requestId, kind: 'elicitation');
           elicitationResponding = false;
           if (elicitation.threadId == null ||
               elicitation.threadId == activeThreadId) {
@@ -5610,7 +6054,7 @@ class CodexController extends ChangeNotifier {
           }
         } else {
           _pendingApprovals[approval.requestId] = approval;
-          _queuePendingRequest(approval.requestId, elicitation: false);
+          _queuePendingRequest(approval.requestId, kind: 'approval');
           approvalResponding = false;
           if (approval.threadId == null ||
               approval.threadId == activeThreadId) {
@@ -5696,6 +6140,7 @@ class CodexController extends ChangeNotifier {
       case 'mcpServerStatus/updated':
         _applyMcpServerStatusUpdated(event.params);
       case 'item/completed':
+        _capturePlanImplementationCandidate(event.params);
         if (_isEventForActiveTurn(event.params)) {
           _recordCompletedLiveActivity(event.params);
           _recordCompletedFileChange(event.params['item']);
@@ -5812,6 +6257,8 @@ class CodexController extends ChangeNotifier {
           _goalOperationErrorsByThread.remove(deletedThreadId);
           _persistedFileChangesByThreadId.remove(deletedThreadId);
           _persistedTurnDiffByThreadId.remove(deletedThreadId);
+          _planModeByThreadId.remove(deletedThreadId);
+          _clearPlanImplementationForThread(deletedThreadId);
         }
         unawaited(refreshThreads(allowLocalSessionFallback: false));
         unawaited(refreshArchivedThreads());
@@ -5845,9 +6292,13 @@ class CodexController extends ChangeNotifier {
         _updateThreadStatus(activeThreadId, 'systemError');
         _pendingApprovals.clear();
         _pendingElicitations.clear();
+        _clearUserInputAutoResolution();
+        _pendingUserInputs.clear();
+        _clearPlanImplementationState();
         _pendingRequestOrder.clear();
         approvalResponding = false;
         elicitationResponding = false;
+        userInputResponding = false;
         _clearStreamingState();
         _recordRuntimeLog(lastError!, level: RuntimeLogLevel.error);
         _add(TimelineKind.error, '运行时已断开', lastError!);
@@ -5855,9 +6306,21 @@ class CodexController extends ChangeNotifier {
       case 'serverRequest/resolved':
         _pendingApprovals.remove(event.params['requestId']);
         _pendingElicitations.remove(event.params['requestId']);
+        _stopUserInputAutoResolution(event.params['requestId']);
+        _pendingUserInputs.remove(event.params['requestId']);
         _removePendingRequest(event.params['requestId']);
         approvalResponding = false;
         elicitationResponding = false;
+        userInputResponding = false;
+      case 'thread/settings/updated':
+        final threadId = event.params['threadId']?.toString().trim();
+        final settings = event.params['threadSettings'];
+        if (threadId != null && threadId.isNotEmpty && settings is Map) {
+          _updateThreadCollaborationMode(
+            threadId,
+            settings['collaborationMode'],
+          );
+        }
       case 'skills/changed':
         unawaited(refreshSkills(forceReload: true));
       // Unrecognized notifications are protocol implementation details. In
@@ -6260,6 +6723,62 @@ class CodexController extends ChangeNotifier {
     if (detail != null) _add(TimelineKind.system, '目标状态', detail);
   }
 
+  String _planImplementationKey(String threadId, String turnId) =>
+      '$threadId:$turnId';
+
+  /// Retains a completed plan item even when its thread is running in the
+  /// background, then publishes it only after that exact turn succeeds.
+  void _capturePlanImplementationCandidate(JsonMap params) {
+    final rawItem = params['item'];
+    if (rawItem is! Map || rawItem['type']?.toString() != 'plan') return;
+    final threadId = _threadIdFromEvent(params);
+    final turnId = _turnIdFromEvent(params);
+    final planContent = rawItem['text']?.toString().trim() ?? '';
+    if (threadId == null || turnId == null || planContent.isEmpty) return;
+    final request = PendingPlanImplementationRequest(
+      threadId: threadId,
+      turnId: turnId,
+      planContent: planContent,
+    );
+    final key = request.requestKey;
+    if (_handledPlanImplementationKeys.contains(key) ||
+        _rejectedPlanTurnKeys.contains(key)) {
+      return;
+    }
+    _planImplementationCandidates[key] = request;
+    if (_successfulPlanTurnKeys.contains(key)) {
+      _publishPlanImplementation(request);
+    }
+  }
+
+  void _finishPlanImplementationTurn(
+    String? threadId,
+    String? turnId,
+    TurnCompletionOutcome outcome,
+  ) {
+    if (threadId == null || turnId == null) return;
+    final key = _planImplementationKey(threadId, turnId);
+    if (outcome != TurnCompletionOutcome.succeeded ||
+        _planModeByThreadId[threadId] != true) {
+      _planImplementationCandidates.remove(key);
+      _successfulPlanTurnKeys.remove(key);
+      _rejectedPlanTurnKeys.add(key);
+      return;
+    }
+    _rejectedPlanTurnKeys.remove(key);
+    _successfulPlanTurnKeys.add(key);
+    final request = _planImplementationCandidates[key];
+    if (request != null) _publishPlanImplementation(request);
+  }
+
+  void _publishPlanImplementation(PendingPlanImplementationRequest request) {
+    final key = request.requestKey;
+    if (!_handledPlanImplementationKeys.add(key)) return;
+    _planImplementationCandidates.remove(key);
+    _successfulPlanTurnKeys.remove(key);
+    _pendingPlanImplementations[request.threadId] = request;
+  }
+
   /// 处理任务结束事件，并采集其中的文件变更与统一 Diff。
   /// Handles a completed turn and captures its file changes and unified diff.
   void _handleTurnCompleted(JsonMap params) {
@@ -6279,6 +6798,11 @@ class CodexController extends ChangeNotifier {
         !_handledTurnCompletionKeys.add(completionKey)) {
       return;
     }
+    _finishPlanImplementationTurn(
+      completedThreadId,
+      _turnIdFromEvent(params),
+      completionOutcome,
+    );
     final failedTurnError = _findText(turnMap['error']).isNotEmpty
         ? _findText(turnMap['error'])
         : 'Codex 未能完成当前任务。';
@@ -6347,6 +6871,11 @@ class CodexController extends ChangeNotifier {
     final ownerWorkspace = _threadWorkspaceById.remove(threadId);
     final completionStatus = _completionStatusFromParams(params);
     final completionOutcome = _turnCompletionOutcome(completionStatus);
+    _finishPlanImplementationTurn(
+      threadId,
+      _turnIdFromEvent(params),
+      completionOutcome,
+    );
     final completionId = _turnIdFromEvent(params);
     final turn = params['turn'];
     final turnMap = turn is Map
@@ -6789,9 +7318,18 @@ class CodexController extends ChangeNotifier {
     _pendingElicitations.removeWhere(
       (_, elicitation) => elicitation.threadId == threadId,
     );
+    for (final request in _pendingUserInputs.values.where(
+      (request) => request.threadId == threadId,
+    )) {
+      _stopUserInputAutoResolution(request.requestId);
+    }
+    _pendingUserInputs.removeWhere(
+      (_, request) => request.threadId == threadId,
+    );
     _prunePendingRequestOrder();
     approvalResponding = false;
     elicitationResponding = false;
+    userInputResponding = false;
   }
 
   /// Updates a cached task status immediately after a turn changes outcome.
@@ -6812,8 +7350,10 @@ class CodexController extends ChangeNotifier {
   void _appendThreadHistory(JsonMap result) {
     final turns = result['turns'];
     if (turns is! Iterable) return;
+    JsonMap? latestTurn;
     for (final rawTurn in turns) {
       if (rawTurn is! Map) continue;
+      latestTurn = JsonMap.from(rawTurn);
       _clearFileChanges();
       final rawItems = rawTurn['items'];
       if (rawItems is! Iterable) {
@@ -6874,6 +7414,39 @@ class CodexController extends ChangeNotifier {
       }
       _appendTurnElapsed(JsonMap.from(rawTurn));
     }
+    _restorePlanImplementationFromHistory(latestTurn);
+  }
+
+  void _restorePlanImplementationFromHistory(JsonMap? turn) {
+    final threadId = activeThreadId;
+    if (threadId == null) return;
+    _pendingPlanImplementations.remove(threadId);
+    if (turn == null || _planModeByThreadId[threadId] != true) {
+      return;
+    }
+    final turnId = _label(turn['id']);
+    final outcome = _turnCompletionOutcome(turn['status']?.toString());
+    final items = turn['items'];
+    if (turnId.isEmpty ||
+        outcome != TurnCompletionOutcome.succeeded ||
+        items is! Iterable) {
+      return;
+    }
+    String? planContent;
+    for (final rawItem in items) {
+      if (rawItem is Map && rawItem['type']?.toString() == 'plan') {
+        final text = rawItem['text']?.toString().trim() ?? '';
+        if (text.isNotEmpty) planContent = text;
+      }
+    }
+    if (planContent == null) return;
+    final request = PendingPlanImplementationRequest(
+      threadId: threadId,
+      turnId: turnId,
+      planContent: planContent,
+    );
+    _handledPlanImplementationKeys.add(request.requestKey);
+    _pendingPlanImplementations[threadId] = request;
   }
 
   /// Records a server-declared current item so the interface can explain the
@@ -8494,6 +9067,71 @@ class CodexController extends ChangeNotifier {
       _configuredModelId ??
       _catalogDefaultModelId;
 
+  JsonMap? _collaborationMode({required bool planMode}) {
+    final preset = planMode
+        ? _planCollaborationModePreset
+        : _defaultCollaborationModePreset;
+    final presetModel = _nonEmptyConfigString(preset?['model']);
+    final model = presetModel ?? _newThreadModelId;
+    if (model == null) return null;
+    final presetHasEffort = preset?.containsKey('reasoning_effort') == true;
+    return {
+      'mode': planMode ? 'plan' : 'default',
+      'settings': {
+        'model': model,
+        'reasoning_effort': presetHasEffort
+            ? preset!['reasoning_effort']
+            : reasoningEffort.configValue,
+        'developer_instructions': null,
+      },
+    };
+  }
+
+  void _updateThreadCollaborationMode(String threadId, Object? value) {
+    if (value is! Map) return;
+    final mode = value['mode']?.toString();
+    if (mode == 'plan' || mode == 'default') {
+      _planModeByThreadId[threadId] = mode == 'plan';
+    }
+  }
+
+  Future<void> _refreshCollaborationModes({int? expectedEpoch}) async {
+    try {
+      final modes = await _server.listCollaborationModes();
+      if (expectedEpoch != null &&
+          !_isCurrentRuntimeConnection(expectedEpoch)) {
+        return;
+      }
+      JsonMap? plan;
+      JsonMap? standard;
+      for (final mode in modes) {
+        switch (mode['mode']?.toString()) {
+          case 'plan':
+            plan ??= JsonMap.from(mode);
+          case 'default':
+            standard ??= JsonMap.from(mode);
+        }
+      }
+      _planCollaborationModePreset = plan;
+      _defaultCollaborationModePreset = standard;
+    } catch (error) {
+      if (expectedEpoch != null &&
+          !_isCurrentRuntimeConnection(expectedEpoch)) {
+        return;
+      }
+      // Older App Server builds do not expose this experimental endpoint.
+      // Keep the protocol-compatible locally constructed mode as fallback.
+      _recordRuntimeLog(
+        '无法加载协作模式预设：${_messageOf(error)}',
+        level: RuntimeLogLevel.warning,
+      );
+    }
+  }
+
+  @visibleForTesting
+  Future<void> refreshCollaborationModesForTesting() =>
+      _refreshCollaborationModes();
+
   /// 判断指定或默认模型是否支持给定的推理强度。
   /// Determines whether the specified or default model supports a reasoning effort.
   bool _supportsReasoningEffort(String? modelId, ReasoningEffort effort) {
@@ -9697,6 +10335,7 @@ class CodexController extends ChangeNotifier {
     _historySaveTimer?.cancel();
     _runtimeReconnectTimer?.cancel();
     _runtimeReconnectTimer = null;
+    _clearUserInputAutoResolution();
     _scheduledTaskCoordinator.dispose();
     for (final timer in _subagentRefreshTimers.values) {
       timer.cancel();

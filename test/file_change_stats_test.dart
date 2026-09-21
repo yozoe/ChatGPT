@@ -3,7 +3,7 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('hides an aggregate when any file has no countable lines', () {
+  test('keeps live counts when another file has no countable lines', () {
     final stats = reliableFileChangeStats(const [
       CodexFileChange(
         path: 'assets/logo.png',
@@ -22,7 +22,8 @@ void main() {
       ),
     ], null);
 
-    expect(stats, isNull);
+    expect(stats?.additions, 1);
+    expect(stats?.deletions, 1);
   });
 
   test('recovers only the matching file from a turn-wide Diff', () {
@@ -68,6 +69,20 @@ diff --git a/packages/app/lib/app.dart b/packages/app/lib/app.dart
     );
 
     expect(stats, isNull);
+  });
+
+  test('keeps available counts while another file awaits its Diff', () {
+    final stats = reliableFileChangeStats(const [
+      CodexFileChange(
+        path: 'lib/ready.dart',
+        kind: 'modified',
+        diff: '@@ -1 +1,2 @@\n-old\n+new\n+another',
+      ),
+      CodexFileChange(path: 'lib/pending.dart', kind: 'modified', diff: ''),
+    ], null);
+
+    expect(stats?.additions, 2);
+    expect(stats?.deletions, 1);
   });
 
   test('prefers an exact path over an earlier suffix match', () {

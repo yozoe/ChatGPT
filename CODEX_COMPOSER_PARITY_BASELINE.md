@@ -2,12 +2,12 @@
 
 ## 固定版本
 
-- 官方客户端：`com.openai.codex` 26.903.61454（build 8378）。
-- 内置 Codex CLI：`codex-cli 0.153.4`。
+- 官方客户端：`com.openai.codex` 26.915.31945（build 9922）。
+- 内置 Codex CLI：`codex-cli 0.155.0-alpha.9.2`。
 - 操作系统：macOS，Asia/Singapore 时区。
-- 基线建立日期：2026-09-09。
-- 公开文档：[Codex IDE extension slash commands](https://learn.chatgpt.com/docs/developer-commands?surface=ide)、[Codex App Server](https://learn.chatgpt.com/docs/app-server)。
-- 协议证据：由上述客户端内置 CLI 执行 `codex app-server generate-json-schema --experimental` 生成的 0.153.4 Schema。
+- 基线更新日期：2026-09-21。
+- 公开文档：[Slash commands](https://learn.chatgpt.com/docs/reference/slash-commands)、[Codex App Server](https://learn.chatgpt.com/docs/app-server)。
+- 协议证据：由上述客户端内置 CLI 执行 `codex app-server generate-json-schema --experimental` 生成的 0.155.0 Schema。
 
 ## 证据等级
 
@@ -42,14 +42,14 @@
 | IDE 上下文 | 官方文档确认 IDE 可提供打开文件、当前选区及其他编辑器上下文；App Server Schema 确认 `turn/start.additionalContext` 是公开的客户端上下文载体 | 桌面端精确字段、宿主桥接与来源格式、断连降级；不得依赖未公开的扩展 IPC |
 | Skill | App Server 文档确认文本中的 `$skill-name` 应与结构化 `skill` 输入同时发送 | 官方桌面端是否把 Skill 放在 `@` 菜单、分组与排序 |
 | Goal | App Server 提供持久目标生命周期 | 官方桌面端 `@` 入口、徽标和草稿恢复细节 |
-| Plan | 官方文档确认 `/plan` 和 collaboration mode | 官方桌面端 `@` 入口及运行中状态 |
+| Plan | 官方文档确认 `/plan`；App Server 0.155.0 提供 `collaborationMode/list`、`turn/start.collaborationMode`、`thread/resume.collaborationMode`、`thread/settings/update`、`thread/settings/updated` 和 `item/tool/requestUserInput`；官方桌面端 26.915.31945 对非阻塞输入采用前台静置 60 秒、随后 90 秒倒计时并在交互后 snooze，完成计划后显示 `Implement this plan?` | 已接入跨项目刷新的运行时预设、逐线程恢复、空 `/plan` 切换、带正文提交、结构化逐题输入及相同自动处理状态机；完成卡支持官方实施前缀、Plan 反馈和关闭回 default，保留选项/自由文本来源并在发送失败、缓存恢复或历史恢复时维持待处理状态，所有结果按 thread/turn 隔离；像素级视觉仍需截图回归 |
 | 录制技能 | 客户端存在技能创建/录制相关产品入口；尚无证据证明本地“附加 skill-creator + 提示词”完全等价 | 精确名称、采集过程、保存与失败生命周期；当前入口按未知协议禁用 |
 
-### 上下文用量协议（Codex 0.153.4）
+### 上下文用量协议（Codex 0.155.0）
 
 App Server Schema 明确提供 `thread/tokenUsage/updated`，通知包含 `threadId`、`turnId`、`tokenUsage.last`、`tokenUsage.total` 和可空的 `modelContextWindow`。Composer 使用 `last.totalTokens` 作为最近一次模型上下文占用，并按 thread/turn 严格归属；`total.totalTokens` 仅保留为累计统计，不用于上下文百分比。缺少有效窗口或 usage 时显示等待状态，不使用字符数估算或固定窗口值。
 
-### 文件搜索协议（Codex 0.153.4）
+### 文件搜索协议（Codex 0.155.0）
 
 App Server Schema 明确提供一次性 `fuzzyFileSearch`，请求包含查询词、按顺序传入的工作区根目录和可选取消令牌，响应区分文件与目录并返回所属根目录、路径、分数和匹配索引。当前 Composer 只在非空 `@` 查询且运行时可用时调用该接口；查询或工作区变化会使旧结果失效，返回路径还会经过存在性、符号链接和所属根目录校验。Schema 不能证明官方桌面端的精确分组、行高、排序二次处理或是否同时保留系统选择器，这些仍属于桌面实测项。
 

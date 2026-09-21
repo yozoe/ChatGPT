@@ -26,6 +26,8 @@ class FakeCodexAppServer extends CodexAppServer {
   final Map<String, List<JsonMap>> listResponsesByDirectory = {};
   List<JsonMap> archivedListResponse = <JsonMap>[];
   List<JsonMap> modelListResponse = <JsonMap>[];
+  List<JsonMap> collaborationModeListResponse = <JsonMap>[];
+  int collaborationModeListCalls = 0;
   Object? modelListError;
   JsonMap configReadResponse = {
     'config': <String, Object?>{},
@@ -77,6 +79,10 @@ class FakeCodexAppServer extends CodexAppServer {
   List<JsonMap> startedTurnAdditionalInput = <JsonMap>[];
   JsonMap? startedTurnAdditionalContext;
   JsonMap? startedTurnCollaborationMode;
+  String? updatedSettingsThreadId;
+  JsonMap? updatedSettingsCollaborationMode;
+  Object? updateThreadSettingsError;
+  Completer<void>? updateThreadSettingsCompleter;
   Object? startTurnError;
   Completer<void>? startTurnCompleter;
   String? steeredTurnThreadId;
@@ -182,6 +188,12 @@ class FakeCodexAppServer extends CodexAppServer {
     return modelListResponse;
   }
 
+  @override
+  Future<List<JsonMap>> listCollaborationModes() async {
+    collaborationModeListCalls++;
+    return collaborationModeListResponse;
+  }
+
   /// 返回 App Server 已按层级合并的配置，并记录用于解析项目配置的目录。
   /// Returns App Server's merged configuration and records the workspace used to resolve project layers.
   @override
@@ -253,6 +265,19 @@ class FakeCodexAppServer extends CodexAppServer {
     startedTurnCollaborationMode = collaborationMode;
     if (startTurnCompleter case final completer?) await completer.future;
     if (startTurnError case final error?) throw error;
+  }
+
+  @override
+  Future<void> updateThreadSettings({
+    required String threadId,
+    JsonMap? collaborationMode,
+  }) async {
+    await updateThreadSettingsCompleter?.future;
+    if (updateThreadSettingsError case final error?) throw error;
+    updatedSettingsThreadId = threadId;
+    updatedSettingsCollaborationMode = collaborationMode == null
+        ? null
+        : JsonMap.from(collaborationMode);
   }
 
   @override

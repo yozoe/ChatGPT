@@ -236,6 +236,22 @@ class CodexAppServer {
     return models;
   }
 
+  /// Returns the collaboration-mode presets advertised by this runtime.
+  Future<List<JsonMap>> listCollaborationModes() async {
+    final response = await request('collaborationMode/list');
+    _throwIfError(response);
+    final result = response['result'];
+    if (result is! Map || result['data'] is! Iterable) {
+      throw const FormatException(
+        'App Server did not return collaboration mode presets.',
+      );
+    }
+    return (result['data'] as Iterable)
+        .whereType<Map>()
+        .map(JsonMap.from)
+        .toList(growable: false);
+  }
+
   /// 读取指定项目最终生效的 Codex 配置；返回值由 App Server 按官方配置层级合并。
   /// Reads the effective Codex configuration for a workspace after App Server applies the official layer precedence.
   Future<JsonMap> readConfig({String? workingDirectory}) async {
@@ -355,6 +371,18 @@ class CodexAppServer {
         ...additionalInput,
       ],
       'additionalContext': ?additionalContext,
+      'collaborationMode': ?collaborationMode,
+    });
+    _throwIfError(response);
+  }
+
+  /// Updates settings used by subsequent turns in an existing thread.
+  Future<void> updateThreadSettings({
+    required String threadId,
+    JsonMap? collaborationMode,
+  }) async {
+    final response = await request('thread/settings/update', {
+      'threadId': threadId,
       'collaborationMode': ?collaborationMode,
     });
     _throwIfError(response);

@@ -17,5 +17,6 @@ export 'domain/codex_mcp_runtime_status.dart';
 export 'domain/codex_file_search_result.dart';
 export 'domain/codex_ide_context.dart';
 export 'domain/codex_ide_file_context.dart';
+export 'domain/pending_plan_implementation_request.dart';
 export 'services/codex_ide_context_bridge.dart';
 export 'side_chat/codex_side_chat_session.dart';

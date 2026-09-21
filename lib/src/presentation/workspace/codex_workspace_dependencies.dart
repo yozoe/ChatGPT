@@ -29,6 +29,8 @@ export 'package:chatgpt/src/domain/codex_thread_goal.dart';
 export 'package:chatgpt/src/domain/git_project_status.dart';
 export 'package:chatgpt/src/domain/pending_approval.dart';
 export 'package:chatgpt/src/domain/pending_elicitation.dart';
+export 'package:chatgpt/src/domain/pending_plan_implementation_request.dart';
+export 'package:chatgpt/src/domain/pending_user_input.dart';
 export 'package:chatgpt/src/domain/scheduled_task.dart';
 export 'package:chatgpt/src/domain/task_plan.dart';
 export 'package:chatgpt/src/domain/timeline_entry.dart';
