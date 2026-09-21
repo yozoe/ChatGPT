@@ -431,6 +431,89 @@ void main() {
     controller.dispose();
   });
 
+  test('continues a restored goal with its persisted thread model', () async {
+    final server = FakeCodexAppServer()
+      ..configReadResponse = {
+        'config': <String, Object?>{'model': 'gpt-new-default'},
+        'origins': <String, Object?>{},
+      }
+      ..resumeResult = {
+        'thread': {'turns': <JsonMap>[]},
+        'collaborationMode': {
+          'mode': 'default',
+          'settings': {'model': 'gpt-original', 'reasoning_effort': 'high'},
+        },
+      }
+      ..threadGoalResponse = {
+        'threadId': 'goal-thread',
+        'objective': '沿用原线程模型',
+        'status': 'active',
+      };
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+
+    await controller.resumeThread(protocolThread(id: 'goal-thread'));
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(
+      server.startedTurnCollaborationMode?['settings'],
+      containsPair('model', 'gpt-original'),
+    );
+    controller.dispose();
+  });
+
+  test(
+    'keeps a resumed goal in its original workspace after switching',
+    () async {
+      final updateCompleter = Completer<JsonMap?>();
+      final server = FakeCodexAppServer()
+        ..threadGoalResponse = {
+          'threadId': 'goal-thread',
+          'objective': '留在原项目',
+          'status': 'paused',
+        }
+        ..threadGoalUpdateCompleters['goal-thread'] = updateCompleter;
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      );
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = '/workspace-a'
+        ..status = RuntimeStatus.ready;
+      await controller.resumeThread(protocolThread(id: 'goal-thread'));
+      await Future<void>.delayed(Duration.zero);
+
+      final resume = controller.resumeActiveGoal();
+      controller
+        ..workspacePath = '/workspace-b'
+        ..activeThreadId = 'other-thread'
+        ..status = RuntimeStatus.ready;
+      server.threadGoalUpdateCompleters.remove('goal-thread');
+      final resumedGoal = {
+        'threadId': 'goal-thread',
+        'objective': '留在原项目',
+        'status': 'active',
+      };
+      server.threadGoalResponse = resumedGoal;
+      updateCompleter.complete(resumedGoal);
+      expect(await resume, isTrue);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(server.startedTurnThreadId, 'goal-thread');
+      expect(server.startedTurnDirectory, '/workspace-a');
+      controller.dispose();
+    },
+  );
+
   test('continues a goal after its thread moves to the background', () async {
     final server = FakeCodexAppServer();
     final controller = CodexController(
@@ -504,6 +587,56 @@ void main() {
     expect(server.interruptedThreadId, 'goal-thread');
     expect(server.interruptedTurnId, 'turn-1');
     expect(controller.activeThreadGoal?.status, 'paused');
+    controller.dispose();
+  });
+
+  test('finishes a deferred goal pause after an overlapping edit', () async {
+    final server = FakeCodexAppServer();
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await controller.resumeThread(protocolThread(id: 'goal-thread'));
+    await Future<void>.delayed(Duration.zero);
+    expect(await controller.sendPrompt('执行目标', goal: '中断不能重新启动'), isTrue);
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/started',
+        params: {
+          'threadId': 'goal-thread',
+          'turn': {'id': 'turn-1'},
+        },
+      ),
+    );
+
+    final updateCompleter = Completer<JsonMap?>();
+    server.threadGoalUpdateCompleters['goal-thread'] = updateCompleter;
+    final edit = controller.editActiveGoal('更新后的目标');
+    await controller.stopCurrentTurn();
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'goal-thread',
+          'turn': {'id': 'turn-1', 'status': 'interrupted'},
+        },
+      ),
+    );
+    server.threadGoalUpdateCompleters.remove('goal-thread');
+    updateCompleter.complete({
+      'threadId': 'goal-thread',
+      'objective': '更新后的目标',
+      'status': 'active',
+    });
+    expect(await edit, isTrue);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(controller.activeThreadGoal?.status, 'paused');
+    expect(server.startedTurnPrompts, ['执行目标']);
     controller.dispose();
   });
 

@@ -20,11 +20,15 @@ import 'package:chatgpt/src/services/theme_preferences_store.dart';
 
 class MemoryConversationHistoryStore extends ConversationHistoryStore {
   final snapshots = <String, ConversationHistorySnapshot>{};
+  final readRequests = <String>[];
+  final readGates = <String, Completer<void>>{};
 
   /// 从内存快照表读取指定项目的历史。
   /// Reads a workspace history from the in-memory snapshot map.
   @override
   Future<ConversationHistorySnapshot?> read(String workspace) async {
+    readRequests.add(workspace);
+    await readGates[workspace]?.future;
     return snapshots[workspace];
   }
 

@@ -60,6 +60,8 @@ class FakeCodexAppServer extends CodexAppServer {
   String? startedModel;
   JsonMap? startedConfig;
   List<JsonMap> skillListResponse = <JsonMap>[];
+  final List<String> skillListDirectories = [];
+  final List<Completer<List<JsonMap>>> skillListCompleters = [];
   List<JsonMap> mcpServerStatusResponse = <JsonMap>[];
   Object? mcpServerStatusError;
   String? mcpServerStatusThreadId;
@@ -447,7 +449,13 @@ class FakeCodexAppServer extends CodexAppServer {
   Future<List<JsonMap>> listSkills({
     required String workingDirectory,
     bool forceReload = false,
-  }) async => List.of(skillListResponse);
+  }) async {
+    skillListDirectories.add(workingDirectory);
+    if (skillListCompleters.isNotEmpty) {
+      return skillListCompleters.removeAt(0).future;
+    }
+    return List.of(skillListResponse);
+  }
 
   @override
   Future<JsonMap> listMcpServerStatuses({

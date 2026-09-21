@@ -308,12 +308,15 @@ class CodexController extends ChangeNotifier {
   int _archivedThreadRefreshRequest = 0;
   int _mcpServerRefreshRequest = 0;
   int _runtimeMcpStatusRefreshRequest = 0;
+  int _skillsRefreshRequest = 0;
   int _pluginRefreshRequest = 0;
   int _marketplaceRefreshRequest = 0;
   int _gitProjectRefreshRequest = 0;
   int _gitDiffRefreshRequest = 0;
   int _gitReviewRefreshRequest = 0;
   int _codexConfigurationRefreshRequest = 0;
+  int _modelCatalogRefreshRequest = 0;
+  int _collaborationModesRefreshRequest = 0;
   final Set<String> _unarchivingThreadIds = {};
   final Set<String> _archivingThreadIds = {};
   final Set<String> _deletingThreadIds = {};
@@ -523,7 +526,9 @@ class CodexController extends ChangeNotifier {
   final Set<String> _automaticGoalTurnThreadIds = {};
   final Set<String> _goalTurnsWithToolCalls = {};
   final Set<String> _goalContinuationSuppressedThreadIds = {};
+  final Set<String> _goalPauseRequestedThreadIds = {};
   final Map<String, String> _goalContinuationErrorsByThread = {};
+  final Map<String, JsonMap> _threadCollaborationModesById = {};
   final Map<String, CodexThreadTokenUsage> _threadTokenUsageById = {};
   final Map<String, List<CodexFileChange>> _persistedFileChangesByThreadId = {};
   final Map<String, String?> _persistedTurnDiffByThreadId = {};
@@ -881,6 +886,11 @@ class CodexController extends ChangeNotifier {
       _newThreadPlanMode = enabled;
     } else {
       _planModeByThreadId[threadId] = enabled;
+      // Goal continuations send the thread's effective collaboration mode
+      // explicitly. Keep that snapshot aligned with the composer selection so
+      // switching away from Plan cannot reuse the previous Plan preset.
+      final mode = _collaborationMode(planMode: enabled);
+      if (mode != null) _threadCollaborationModesById[threadId] = mode;
     }
     notifyListeners();
   }
@@ -958,6 +968,7 @@ class CodexController extends ChangeNotifier {
   String? _runtimeMcpServerStatusesThreadId;
   List<CodexSkill> skills = const [];
   bool skillsLoading = false;
+  String? _skillsLoadingWorkspace;
   String? skillsError;
   List<CodexMarketplace> marketplaces = const [];
   bool marketplacesLoading = false;
@@ -1084,26 +1095,31 @@ class CodexController extends ChangeNotifier {
       _workspaceConfigurations,
     );
     final epoch = ++_workspaceTaskListLoadEpoch;
-    final next = <String, WorkspaceTaskList>{};
-    for (final workspace in workspaces) {
-      if (workspace.primaryPath == activePath) continue;
-      try {
-        final taskList = await readWorkspaceTaskList(workspace.primaryPath);
-        if (_disposed || epoch != _workspaceTaskListLoadEpoch) return;
-        next[workspace.primaryPath] = WorkspaceTaskList(
-          threads: taskList.threads,
-          pinnedIds: taskList.pinnedIds,
-          acknowledgedIds: taskList.acknowledgedIds,
-        );
-      } catch (_) {
-        // Leave an unreadable cache out of the sidebar. Selecting the project
-        // still reports the detailed persistence error through normal restore.
-      }
-    }
+    final entries = await Future.wait(
+      workspaces.where((workspace) => workspace.primaryPath != activePath).map((
+        workspace,
+      ) async {
+        try {
+          final taskList = await readWorkspaceTaskList(workspace.primaryPath);
+          return MapEntry(
+            workspace.primaryPath,
+            WorkspaceTaskList(
+              threads: taskList.threads,
+              pinnedIds: taskList.pinnedIds,
+              acknowledgedIds: taskList.acknowledgedIds,
+            ),
+          );
+        } catch (_) {
+          // Leave an unreadable cache out of the sidebar. Selecting the project
+          // still reports the detailed persistence error through normal restore.
+          return null;
+        }
+      }),
+    );
     if (_disposed || epoch != _workspaceTaskListLoadEpoch) return;
     _workspaceTaskLists
       ..clear()
-      ..addAll(next);
+      ..addEntries(entries.whereType<MapEntry<String, WorkspaceTaskList>>());
     notifyListeners();
   }
 
@@ -2169,6 +2185,7 @@ class CodexController extends ChangeNotifier {
     String path, {
     bool allowWhileRunning = false,
     bool Function()? isCurrentSelection,
+    bool pathAlreadyValidated = false,
   }) async {
     await _workspaceLoad;
     if (!allowWhileRunning && !canChooseWorkspace) {
@@ -2179,19 +2196,24 @@ class CodexController extends ChangeNotifier {
     }
     final normalized = path.trim();
     if (normalized.isEmpty) return;
-    final directory = Directory(normalized);
-    if (!await directory.exists()) {
-      lastError = '该项目目录不存在：$normalized';
-      _add(TimelineKind.error, '无法选择项目', lastError!);
-      notifyListeners();
-      return;
-    }
-    final canonicalPath = await directory.resolveSymbolicLinks();
-    if (await _isSystemTemporaryDirectory(canonicalPath)) {
-      lastError = '系统临时目录不能作为项目，请选择实际项目文件夹。';
-      _add(TimelineKind.error, '无法选择项目', lastError!);
-      notifyListeners();
-      return;
+    late final String canonicalPath;
+    if (pathAlreadyValidated) {
+      canonicalPath = normalized;
+    } else {
+      final directory = Directory(normalized);
+      if (!await directory.exists()) {
+        lastError = '该项目目录不存在：$normalized';
+        _add(TimelineKind.error, '无法选择项目', lastError!);
+        notifyListeners();
+        return;
+      }
+      canonicalPath = await directory.resolveSymbolicLinks();
+      if (await _isSystemTemporaryDirectory(canonicalPath)) {
+        lastError = '系统临时目录不能作为项目，请选择实际项目文件夹。';
+        _add(TimelineKind.error, '无法选择项目', lastError!);
+        notifyListeners();
+        return;
+      }
     }
     final previousThreadId = activeThreadId;
     if (previousThreadId != null && !isThreadRunning(previousThreadId)) {
@@ -2405,6 +2427,7 @@ class CodexController extends ChangeNotifier {
       canonicalPath,
       allowWhileRunning: reuseRuntime,
       isCurrentSelection: isCurrentSelection,
+      pathAlreadyValidated: true,
     );
     if (!isCurrentSelection() || workspacePath != canonicalPath) return false;
     if (preferredThread != null) {
@@ -2418,34 +2441,29 @@ class CodexController extends ChangeNotifier {
       );
     } else if (reuseRuntime) {
       // The App Server already supports requests scoped by working directory.
-      // Keep the shared process alive and refresh only project-owned state.
-      await refreshCodexConfiguration(notify: false);
-      if (!isCurrentSelection()) return false;
-      await _refreshReasoningEffortCapabilities();
-      if (!isCurrentSelection()) return false;
-      await _refreshCollaborationModes();
-      if (!isCurrentSelection()) return false;
-      if (preferredThread != null) {
-        // The caller supplied an explicit task selection (for example via
-        // openWorkspaceThread) and will resume it after the workspace switch.
-        // Do not also restore the project's cached last task here.
-        unawaited(refreshArchivedThreads());
-        unawaited(refreshSkills(notify: false));
-      } else {
-        // A project switch must remain responsive while another project's turn
-        // is still running. Remote list hydration can be slow or temporarily
-        // blocked; it is safe to reconcile it after the foreground workspace
-        // has switched because every refresh is request/epoch guarded.
-        if (_runningThreadIds.isNotEmpty) {
-          unawaited(refreshThreads());
-          unawaited(refreshArchivedThreads());
-        } else {
-          await refreshThreads();
-          await refreshArchivedThreads();
-        }
+      // Keep the shared process alive. Restore the cached task first; unrelated
+      // project metadata is refreshed concurrently after the switch is visible.
+      if (preferredThread == null) {
         await _resumeRestoredThreadIfNeeded();
-        await refreshSkills(notify: false);
+        if (!isCurrentSelection()) return false;
       }
+      unawaited(
+        Future.wait([
+          () async {
+            await refreshCodexConfiguration(notify: false);
+            if (!isCurrentSelection()) return;
+            await Future.wait([
+              _refreshReasoningEffortCapabilities(
+                expectedWorkspace: canonicalPath,
+              ),
+              _refreshCollaborationModes(expectedWorkspace: canonicalPath),
+            ]);
+          }(),
+          refreshThreads(),
+          refreshArchivedThreads(),
+          refreshSkills(notify: false),
+        ]),
+      );
     }
     return isCurrentSelection();
   }
@@ -3464,6 +3482,7 @@ class CodexController extends ChangeNotifier {
       final threadId = requestedThreadId;
       final objective = goal?.trim();
       final collaborationMode = _collaborationMode(planMode: planMode);
+      _updateThreadCollaborationMode(threadId, collaborationMode);
       final submission = TurnSubmission(
         workspace: workspace,
         threadId: threadId,
@@ -3672,12 +3691,18 @@ class CodexController extends ChangeNotifier {
     bool notify = true,
   }) async {
     final workspace = workspacePath;
-    if (!_server.isRunning || workspace == null || skillsLoading) return;
+    if (!_server.isRunning ||
+        workspace == null ||
+        (skillsLoading && _skillsLoadingWorkspace == workspace)) {
+      return;
+    }
+    final request = ++_skillsRefreshRequest;
     if (!pluginSaving) {
       pluginActionError = null;
       pluginActionWarning = null;
     }
     skillsLoading = true;
+    _skillsLoadingWorkspace = workspace;
     skillsError = null;
     if (notify && !_disposed) notifyListeners();
     try {
@@ -3685,17 +3710,28 @@ class CodexController extends ChangeNotifier {
         workingDirectory: workspace,
         forceReload: forceReload,
       );
-      if (_disposed || workspacePath != workspace) return;
+      if (_disposed ||
+          request != _skillsRefreshRequest ||
+          workspacePath != workspace) {
+        return;
+      }
       skills = rows
           .map(CodexSkill.fromJson)
           .whereType<CodexSkill>()
           .toList(growable: false);
     } catch (error) {
-      if (_disposed || workspacePath != workspace) return;
+      if (_disposed ||
+          request != _skillsRefreshRequest ||
+          workspacePath != workspace) {
+        return;
+      }
       skillsError = _messageOf(error);
     } finally {
-      if (!_disposed && workspacePath == workspace) {
+      if (!_disposed &&
+          request == _skillsRefreshRequest &&
+          workspacePath == workspace) {
         skillsLoading = false;
+        _skillsLoadingWorkspace = null;
         if (notify) notifyListeners();
       }
     }
@@ -4122,6 +4158,7 @@ class CodexController extends ChangeNotifier {
   /// Sets the selected user message as the thread's persistent goal.
   Future<bool> setActiveGoalFromMessage(String objective) async {
     final threadId = activeThreadId;
+    final goalWorkspace = workspacePath;
     final normalized = objective.trim();
     if (threadId == null || normalized.isEmpty || goalOperationInProgress) {
       return false;
@@ -4155,7 +4192,7 @@ class CodexController extends ChangeNotifier {
         );
         _goalContinuationSuppressedThreadIds.remove(threadId);
         _goalContinuationErrorsByThread.remove(threadId);
-        _scheduleGoalContinuation(threadId, workspacePath);
+        _scheduleGoalContinuation(threadId, goalWorkspace);
       }
       return true;
     } catch (error) {
@@ -4164,8 +4201,10 @@ class CodexController extends ChangeNotifier {
       return false;
     } finally {
       _goalOperationThreadIds.remove(threadId);
-      if (_threadGoalsById[threadId]?.isActive == true) {
-        _scheduleGoalContinuation(threadId, workspacePath);
+      if (_goalPauseRequestedThreadIds.remove(threadId)) {
+        await _pauseGoalAfterInterruption(threadId);
+      } else if (_threadGoalsById[threadId]?.isActive == true) {
+        _scheduleGoalContinuation(threadId, goalWorkspace);
       }
       if (!_disposed) notifyListeners();
     }
@@ -4174,6 +4213,7 @@ class CodexController extends ChangeNotifier {
   Future<bool> _updateActiveGoal({String? objective, String? status}) async {
     final threadId = activeThreadId;
     final goal = activeThreadGoal;
+    final goalWorkspace = workspacePath;
     if (threadId == null || goal == null || goalOperationInProgress) {
       return false;
     }
@@ -4206,7 +4246,7 @@ class CodexController extends ChangeNotifier {
         if (updated.isActive) {
           _goalContinuationSuppressedThreadIds.remove(threadId);
           _goalContinuationErrorsByThread.remove(threadId);
-          _scheduleGoalContinuation(threadId, workspacePath);
+          _scheduleGoalContinuation(threadId, goalWorkspace);
         } else {
           _clearGoalContinuationState(threadId);
         }
@@ -4217,8 +4257,10 @@ class CodexController extends ChangeNotifier {
       return false;
     } finally {
       _goalOperationThreadIds.remove(threadId);
-      if (_threadGoalsById[threadId]?.isActive == true) {
-        _scheduleGoalContinuation(threadId, workspacePath);
+      if (_goalPauseRequestedThreadIds.remove(threadId)) {
+        await _pauseGoalAfterInterruption(threadId);
+      } else if (_threadGoalsById[threadId]?.isActive == true) {
+        _scheduleGoalContinuation(threadId, goalWorkspace);
       }
       if (!_disposed) notifyListeners();
     }
@@ -4262,6 +4304,7 @@ class CodexController extends ChangeNotifier {
     _automaticGoalTurnThreadIds.remove(threadId);
     _goalTurnsWithToolCalls.remove(threadId);
     _goalContinuationSuppressedThreadIds.remove(threadId);
+    _goalPauseRequestedThreadIds.remove(threadId);
     _goalContinuationErrorsByThread.remove(threadId);
   }
 
@@ -4352,7 +4395,7 @@ class CodexController extends ChangeNotifier {
         threadId: threadId,
         prompt: _goalContinuationPrompt,
         workingDirectory: workspace,
-        collaborationMode: _collaborationMode(planMode: false),
+        collaborationMode: _threadCollaborationModesById[threadId],
       );
       _goalContinuationAwaitingAcceptanceThreadIds.remove(threadId);
     } catch (error) {
@@ -4421,9 +4464,17 @@ class CodexController extends ChangeNotifier {
 
   Future<void> _pauseGoalAfterInterruption(String threadId) async {
     final goal = _threadGoalsById[threadId];
-    if (goal?.isActive != true || _goalOperationThreadIds.contains(threadId)) {
+    if (goal?.isActive != true) {
+      _goalPauseRequestedThreadIds.remove(threadId);
       return;
     }
+    if (_goalOperationThreadIds.contains(threadId)) {
+      _goalPauseRequestedThreadIds.add(threadId);
+      _goalContinuationSuppressedThreadIds.add(threadId);
+      if (!_disposed) notifyListeners();
+      return;
+    }
+    _goalPauseRequestedThreadIds.remove(threadId);
     final revision = _nextThreadGoalRevision(threadId);
     _goalOperationThreadIds.add(threadId);
     try {
@@ -4506,7 +4557,9 @@ class CodexController extends ChangeNotifier {
       _automaticGoalTurnThreadIds.clear();
       _goalTurnsWithToolCalls.clear();
       _goalContinuationSuppressedThreadIds.clear();
+      _goalPauseRequestedThreadIds.clear();
       _goalContinuationErrorsByThread.clear();
+      _threadCollaborationModesById.clear();
       activeThreadId = null;
       _activeThreadAttached = false;
       _pendingApprovals.clear();
@@ -5143,7 +5196,15 @@ class CodexController extends ChangeNotifier {
       if (workspace != null) _threadWorkspaceById[previousThreadId] = workspace;
       _removeCachedThreadView(previousThreadId, workspace: workspacePath);
     }
-    final cachedView = _cachedThreadView(thread.id);
+    // A workspace restore has already populated the selected thread's local
+    // snapshot even though it is not attached to App Server yet. Reuse that
+    // view immediately instead of clearing it and downloading the same history
+    // again before the project switch can finish.
+    final cachedView =
+        _cachedThreadView(thread.id) ??
+        (previousThreadId == thread.id && _threadHistoryInitialized
+            ? _currentThreadViewSnapshot()
+            : null);
     _resumingThread = true;
     final previousThreadAttached = _activeThreadAttached;
     final previousView = previousThreadId == null
@@ -6201,6 +6262,9 @@ class CodexController extends ChangeNotifier {
         collaborationMode: defaultMode,
       );
       _planModeByThreadId[threadId] = false;
+      if (defaultMode != null) {
+        _threadCollaborationModesById[threadId] = defaultMode;
+      }
       _pendingPlanImplementations.remove(threadId);
     } catch (error) {
       final message = _messageOf(error);
@@ -6576,6 +6640,7 @@ class CodexController extends ChangeNotifier {
           _goalOperationThreadIds.remove(deletedThreadId);
           _goalOperationErrorsByThread.remove(deletedThreadId);
           _clearGoalContinuationState(deletedThreadId);
+          _threadCollaborationModesById.remove(deletedThreadId);
           _persistedFileChangesByThreadId.remove(deletedThreadId);
           _persistedTurnDiffByThreadId.remove(deletedThreadId);
           _planModeByThreadId.remove(deletedThreadId);
@@ -6612,7 +6677,9 @@ class CodexController extends ChangeNotifier {
         _automaticGoalTurnThreadIds.clear();
         _goalTurnsWithToolCalls.clear();
         _goalContinuationSuppressedThreadIds.clear();
+        _goalPauseRequestedThreadIds.clear();
         _goalContinuationErrorsByThread.clear();
+        _threadCollaborationModesById.clear();
         // The next runtime process must attach the retained thread again.
         _activeThreadAttached = false;
         lastError = 'Codex runtime 已退出（code ${event.params['code']}）。';
@@ -9492,19 +9559,26 @@ class CodexController extends ChangeNotifier {
 
   void _updateThreadCollaborationMode(String threadId, Object? value) {
     if (value is! Map) return;
+    _threadCollaborationModesById[threadId] = JsonMap.from(value);
     final mode = value['mode']?.toString();
     if (mode == 'plan' || mode == 'default') {
       _planModeByThreadId[threadId] = mode == 'plan';
     }
   }
 
-  Future<void> _refreshCollaborationModes({int? expectedEpoch}) async {
+  Future<void> _refreshCollaborationModes({
+    int? expectedEpoch,
+    String? expectedWorkspace,
+  }) async {
+    final request = ++_collaborationModesRefreshRequest;
+    bool isCurrentRequest() =>
+        !_disposed &&
+        request == _collaborationModesRefreshRequest &&
+        (expectedEpoch == null || _isCurrentRuntimeConnection(expectedEpoch)) &&
+        (expectedWorkspace == null || workspacePath == expectedWorkspace);
     try {
       final modes = await _server.listCollaborationModes();
-      if (expectedEpoch != null &&
-          !_isCurrentRuntimeConnection(expectedEpoch)) {
-        return;
-      }
+      if (!isCurrentRequest()) return;
       JsonMap? plan;
       JsonMap? standard;
       for (final mode in modes) {
@@ -9518,10 +9592,7 @@ class CodexController extends ChangeNotifier {
       _planCollaborationModePreset = plan;
       _defaultCollaborationModePreset = standard;
     } catch (error) {
-      if (expectedEpoch != null &&
-          !_isCurrentRuntimeConnection(expectedEpoch)) {
-        return;
-      }
+      if (!isCurrentRequest()) return;
       // Older App Server builds do not expose this experimental endpoint.
       // Keep the protocol-compatible locally constructed mode as fallback.
       _recordRuntimeLog(
@@ -9544,13 +9615,19 @@ class CodexController extends ChangeNotifier {
 
   /// 从模型列表刷新可用推理强度，并降级失效的已保存选择。
   /// Refreshes available reasoning efforts from models and downgrades an invalid saved choice.
-  Future<void> _refreshReasoningEffortCapabilities({int? expectedEpoch}) async {
+  Future<void> _refreshReasoningEffortCapabilities({
+    int? expectedEpoch,
+    String? expectedWorkspace,
+  }) async {
+    final request = ++_modelCatalogRefreshRequest;
+    bool isCurrentRequest() =>
+        !_disposed &&
+        request == _modelCatalogRefreshRequest &&
+        (expectedEpoch == null || _isCurrentRuntimeConnection(expectedEpoch)) &&
+        (expectedWorkspace == null || workspacePath == expectedWorkspace);
     try {
       final models = await _server.listModels();
-      if (expectedEpoch != null &&
-          !_isCurrentRuntimeConnection(expectedEpoch)) {
-        return;
-      }
+      if (!isCurrentRequest()) return;
       final capabilities = <String, Set<ReasoningEffort>>{};
       final optionsById = <String, CodexModelOption>{};
       String? defaultModelId;
@@ -9613,10 +9690,7 @@ class CodexController extends ChangeNotifier {
         }
       }
     } catch (error) {
-      if (expectedEpoch != null &&
-          !_isCurrentRuntimeConnection(expectedEpoch)) {
-        return;
-      }
+      if (!isCurrentRequest()) return;
       _reasoningEffortsByModel = const {};
       modelOptions = const [];
       _catalogDefaultModelId = null;

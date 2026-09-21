@@ -5199,7 +5199,7 @@ void main() {
 
     expect(find.byKey(const Key('goal-progress-row')), findsOneWidget);
     expect(find.text('完成目标模式复刻'), findsOneWidget);
-    expect(find.text('250 / 1000 tokens · 1 分钟'), findsOneWidget);
+    expect(find.text('250 / 1000 tokens · 累计 1 分钟'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('goal-pause-resume-button')));
     await tester.pumpAndSettle();
@@ -9986,6 +9986,59 @@ void main() {
       '耗时 61 秒',
       '任务完成',
     ]);
+  });
+
+  test(
+    'compacts three consecutive duration-only turns without losing detail',
+    () {
+      final entries = [
+        for (var seconds = 1; seconds <= 3; seconds++)
+          TimelineEntry(
+            kind: TimelineKind.elapsed,
+            title: '耗时 $seconds 秒',
+            detail: '',
+            createdAt: DateTime(2026, 1, 1, 0, 0, seconds),
+          ),
+      ];
+
+      final items = conversationTimelineItems(entries);
+
+      expect(items, hasLength(1));
+      expect(items.single.elapsedEntries, hasLength(3));
+      expect(items.single.elapsedEntries!.map((entry) => entry.title), [
+        '耗时 1 秒',
+        '耗时 2 秒',
+        '耗时 3 秒',
+      ]);
+    },
+  );
+
+  test('keeps short duration runs and detailed turns separate', () {
+    final entries = [
+      TimelineEntry(
+        kind: TimelineKind.elapsed,
+        title: '耗时 1 秒',
+        detail: '',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.elapsed,
+        title: '耗时 2 秒',
+        detail: '',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.agent,
+        title: 'Codex',
+        detail: '已完成工作',
+        createdAt: DateTime(2026),
+      ),
+    ];
+
+    final items = conversationTimelineItems(entries);
+
+    expect(items, hasLength(3));
+    expect(items.where((item) => item.elapsedEntries != null), isEmpty);
   });
 
   test('retains one duration and completion for each user turn', () {

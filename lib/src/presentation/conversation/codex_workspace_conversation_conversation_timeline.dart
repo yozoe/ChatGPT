@@ -188,6 +188,9 @@ class ConversationTimeline extends StatelessWidget {
       }
     }
     Key timelineItemKey(ConversationTimelineItem item) {
+      if (item.elapsedEntries != null) {
+        return ValueKey('elapsed-turn-group-${item.stableId}');
+      }
       if (item.completedTurnEntries != null) {
         return ValueKey('completed-turn-disclosure-${item.stableId}');
       }
@@ -392,6 +395,12 @@ class ConversationTimeline extends StatelessWidget {
                         );
                       }
                       final item = timelineItems[timelineIndex];
+                      if (item.elapsedEntries case final entries?) {
+                        return ElapsedTurnGroup(
+                          key: timelineItemKey(item),
+                          entries: entries,
+                        );
+                      }
                       if (item.completedTurnEntries case final entries?) {
                         return CompletedTurnDisclosure(
                           key: timelineItemKey(item),

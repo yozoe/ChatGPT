@@ -29,8 +29,8 @@ class GoalProgressRow extends StatelessWidget {
     final minutes = goal.timeUsedSeconds ~/ 60;
     final time = minutes > 0 ? '$minutes 分钟' : '${goal.timeUsedSeconds} 秒';
     final budget = goal.tokenBudget;
-    if (budget == null || budget <= 0) return time;
-    return '${goal.tokensUsed} / $budget tokens · $time';
+    if (budget == null || budget <= 0) return '累计 $time';
+    return '${goal.tokensUsed} / $budget tokens · 累计 $time';
   }
 
   Future<void> _editGoal(BuildContext context) async {

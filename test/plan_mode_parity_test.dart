@@ -179,6 +179,8 @@ void main() {
       ),
       isTrue,
     );
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
 
     expect(server.collaborationModeListCalls, 2);
   });
