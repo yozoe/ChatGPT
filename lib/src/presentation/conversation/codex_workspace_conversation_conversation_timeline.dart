@@ -258,206 +258,192 @@ class ConversationTimeline extends StatelessWidget {
           }
           return false;
         },
-        child: NotificationListener<ScrollEndNotification>(
-          onNotification: (notification) {
-            if (active) {
-              onUserScrollDirection(
-                notification.metrics,
-                ScrollDirection.reverse,
-              );
-            }
-            return false;
-          },
-          child: Stack(
-            children: [
-              Align(
-                alignment: Alignment.topCenter,
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(
-                    maxWidth: conversationContentMaxWidth,
+        child: Stack(
+          children: [
+            Align(
+              alignment: Alignment.topCenter,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(
+                  maxWidth: conversationContentMaxWidth,
+                ),
+                child: ListView.separated(
+                  key: PageStorageKey(
+                    'conversation-timeline-${pageKey.storageKey}',
                   ),
-                  child: ListView.separated(
-                    key: PageStorageKey(
-                      'conversation-timeline-${pageKey.storageKey}',
-                    ),
-                    controller: scrollController,
-                    scrollCacheExtent: ScrollCacheExtent.pixels(
-                      timelineCacheExtent,
-                    ),
-                    padding: EdgeInsets.fromLTRB(
-                      conversationContentHorizontalInset,
-                      12,
-                      conversationContentHorizontalInset,
-                      bottomPadding,
-                    ),
-                    itemCount: itemCount,
-                    findItemIndexCallback: (key) {
-                      final timelineIndex = timelineItemIndexes[key];
-                      if (timelineIndex != null) return timelineIndex;
-                      if (key ==
-                          ValueKey(
-                            'file-change-summary-${pageKey.storageKey}',
-                          )) {
-                        return timelineItems.length +
-                            (activeTurnStartedAt == null ? 0 : 1) +
-                            liveStatusCount;
-                      }
-                      return null;
-                    },
-                    separatorBuilder: (_, index) {
-                      if (activeTurnStartedAt != null &&
-                          index == liveElapsedIndex) {
-                        return const Padding(
-                          key: Key('live-elapsed-divider'),
-                          padding: EdgeInsets.symmetric(vertical: 14),
-                          child: Divider(height: 1),
-                        );
-                      }
-                      return const SizedBox(height: 29);
-                    },
-                    itemBuilder: (context, index) {
-                      if (activeTurnStartedAt != null &&
-                          index == liveElapsedIndex) {
-                        return LiveElapsedRow(startedAt: activeTurnStartedAt);
-                      }
-                      final timelineIndex =
-                          activeTurnStartedAt != null &&
-                              index > liveElapsedIndex
-                          ? index - 1
-                          : index;
-                      if (timelineIndex >= timelineItems.length) {
-                        var tailIndex = timelineIndex - timelineItems.length;
-                        if (visibleLiveActivity != null && tailIndex-- == 0) {
-                          return visibleLiveActivity.kind == 'commandExecution'
-                              ? LiveCommandRow(
-                                  command: visibleLiveActivity.detail,
-                                )
-                              : LiveActivityRow(
-                                  activity: visibleLiveActivity,
-                                  onOpenSubagent:
-                                      visibleLiveActivity.linkedThreadId == null
-                                      ? null
-                                      : () => onOpenSubagent(
-                                          TimelineEntry(
-                                            kind: TimelineKind.activity,
-                                            title: visibleLiveActivity.label,
-                                            detail: visibleLiveActivity.detail,
-                                            createdAt: DateTime.now(),
-                                            sourceItemId:
-                                                visibleLiveActivity.itemId,
-                                            activityKind: 'collaboration',
-                                            activityStatus:
-                                                visibleLiveActivity.status,
-                                            linkedThreadId: visibleLiveActivity
-                                                .linkedThreadId,
-                                            activityPrompt:
-                                                visibleLiveActivity.prompt,
-                                          ),
-                                        ),
-                                );
-                        }
-                        if (liveCollaborationActivities.isNotEmpty &&
-                            tailIndex-- == 0) {
-                          return LiveCollaborationActivitiesRow(
-                            activities: liveCollaborationActivities,
-                            onOpenSubagent: (activity) => onOpenSubagent(
-                              TimelineEntry(
-                                kind: TimelineKind.activity,
-                                title: activity.label,
-                                detail: activity.detail,
-                                createdAt: DateTime.now(),
-                                sourceItemId: activity.itemId,
-                                activityKind: 'collaboration',
-                                activityStatus: activity.status,
-                                linkedThreadId: activity.linkedThreadId,
-                                activityPrompt: activity.prompt,
-                              ),
-                            ),
-                          );
-                        }
-                        if (!data.showFileChangeSummary || tailIndex != 0) {
-                          throw StateError(
-                            'Unexpected conversation timeline item index.',
-                          );
-                        }
-                        return FileChangeSummaryCard(
-                          key: ValueKey(
-                            'file-change-summary-${pageKey.storageKey}',
-                          ),
-                          changes: data.fileChanges,
-                          turnDiff: data.turnDiff,
-                          expanded: fileChangeSummaryExpanded,
-                          onExpandedChanged: onFileChangeSummaryExpandedChanged,
-                          onReview: onReview,
-                          onUndo: onUndo,
-                          canUndo: canUndo,
-                          undoRunning: undoRunning,
-                        );
-                      }
-                      final item = timelineItems[timelineIndex];
-                      if (item.elapsedEntries case final entries?) {
-                        return ElapsedTurnGroup(
-                          key: timelineItemKey(item),
-                          entries: entries,
-                        );
-                      }
-                      if (item.completedTurnEntries case final entries?) {
-                        return CompletedTurnDisclosure(
-                          key: timelineItemKey(item),
-                          duration: item.entry!,
-                          entries: entries,
-                          workspacePath: pageKey.workspace,
-                          onOpenSubagent: onOpenSubagent,
-                        );
-                      }
-                      if (item.activities case final activities?) {
-                        final activityId = item.stableId;
-                        return TimelineActivityList(
-                          key: timelineItemKey(item),
-                          entries: activities,
-                          expanded: activityExpanded(activityId),
-                          onExpandedChanged: (expanded) =>
-                              onActivityExpandedChanged(activityId, expanded),
-                        );
-                      }
-                      final entry = item.entry!;
-                      return CodexTimelineEntry(
-                        entry,
-                        key: timelineItemKey(item),
-                        workspacePath: pageKey.workspace,
-                        streaming: entry.id == streamingAgentEntryId,
-                        onOpenSubagent: onOpenSubagent,
-                        onSubmitUserMessageEdit: active
-                            ? onSubmitUserMessageEdit
-                            : null,
-                        onSetGoal: active ? onSetGoal : null,
+                  controller: scrollController,
+                  scrollCacheExtent: ScrollCacheExtent.pixels(
+                    timelineCacheExtent,
+                  ),
+                  padding: EdgeInsets.fromLTRB(
+                    conversationContentHorizontalInset,
+                    12,
+                    conversationContentHorizontalInset,
+                    bottomPadding,
+                  ),
+                  itemCount: itemCount,
+                  findItemIndexCallback: (key) {
+                    final timelineIndex = timelineItemIndexes[key];
+                    if (timelineIndex != null) return timelineIndex;
+                    if (key ==
+                        ValueKey('file-change-summary-${pageKey.storageKey}')) {
+                      return timelineItems.length +
+                          (activeTurnStartedAt == null ? 0 : 1) +
+                          liveStatusCount;
+                    }
+                    return null;
+                  },
+                  separatorBuilder: (_, index) {
+                    if (activeTurnStartedAt != null &&
+                        index == liveElapsedIndex) {
+                      return const Padding(
+                        key: Key('live-elapsed-divider'),
+                        padding: EdgeInsets.symmetric(vertical: 14),
+                        child: Divider(height: 1),
                       );
-                    },
-                  ),
+                    }
+                    return const SizedBox(height: 29);
+                  },
+                  itemBuilder: (context, index) {
+                    if (activeTurnStartedAt != null &&
+                        index == liveElapsedIndex) {
+                      return LiveElapsedRow(startedAt: activeTurnStartedAt);
+                    }
+                    final timelineIndex =
+                        activeTurnStartedAt != null && index > liveElapsedIndex
+                        ? index - 1
+                        : index;
+                    if (timelineIndex >= timelineItems.length) {
+                      var tailIndex = timelineIndex - timelineItems.length;
+                      if (visibleLiveActivity != null && tailIndex-- == 0) {
+                        return visibleLiveActivity.kind == 'commandExecution'
+                            ? LiveCommandRow(
+                                command: visibleLiveActivity.detail,
+                              )
+                            : LiveActivityRow(
+                                activity: visibleLiveActivity,
+                                onOpenSubagent:
+                                    visibleLiveActivity.linkedThreadId == null
+                                    ? null
+                                    : () => onOpenSubagent(
+                                        TimelineEntry(
+                                          kind: TimelineKind.activity,
+                                          title: visibleLiveActivity.label,
+                                          detail: visibleLiveActivity.detail,
+                                          createdAt: DateTime.now(),
+                                          sourceItemId:
+                                              visibleLiveActivity.itemId,
+                                          activityKind: 'collaboration',
+                                          activityStatus:
+                                              visibleLiveActivity.status,
+                                          linkedThreadId: visibleLiveActivity
+                                              .linkedThreadId,
+                                          activityPrompt:
+                                              visibleLiveActivity.prompt,
+                                        ),
+                                      ),
+                              );
+                      }
+                      if (liveCollaborationActivities.isNotEmpty &&
+                          tailIndex-- == 0) {
+                        return LiveCollaborationActivitiesRow(
+                          activities: liveCollaborationActivities,
+                          onOpenSubagent: (activity) => onOpenSubagent(
+                            TimelineEntry(
+                              kind: TimelineKind.activity,
+                              title: activity.label,
+                              detail: activity.detail,
+                              createdAt: DateTime.now(),
+                              sourceItemId: activity.itemId,
+                              activityKind: 'collaboration',
+                              activityStatus: activity.status,
+                              linkedThreadId: activity.linkedThreadId,
+                              activityPrompt: activity.prompt,
+                            ),
+                          ),
+                        );
+                      }
+                      if (!data.showFileChangeSummary || tailIndex != 0) {
+                        throw StateError(
+                          'Unexpected conversation timeline item index.',
+                        );
+                      }
+                      return FileChangeSummaryCard(
+                        key: ValueKey(
+                          'file-change-summary-${pageKey.storageKey}',
+                        ),
+                        changes: data.fileChanges,
+                        turnDiff: data.turnDiff,
+                        expanded: fileChangeSummaryExpanded,
+                        onExpandedChanged: onFileChangeSummaryExpandedChanged,
+                        onReview: onReview,
+                        onUndo: onUndo,
+                        canUndo: canUndo,
+                        undoRunning: undoRunning,
+                      );
+                    }
+                    final item = timelineItems[timelineIndex];
+                    if (item.elapsedEntries case final entries?) {
+                      return ElapsedTurnGroup(
+                        key: timelineItemKey(item),
+                        entries: entries,
+                      );
+                    }
+                    if (item.completedTurnEntries case final entries?) {
+                      return CompletedTurnDisclosure(
+                        key: timelineItemKey(item),
+                        duration: item.entry!,
+                        entries: entries,
+                        workspacePath: pageKey.workspace,
+                        onOpenSubagent: onOpenSubagent,
+                      );
+                    }
+                    if (item.activities case final activities?) {
+                      final activityId = item.stableId;
+                      return TimelineActivityList(
+                        key: timelineItemKey(item),
+                        entries: activities,
+                        expanded: activityExpanded(activityId),
+                        onExpandedChanged: (expanded) =>
+                            onActivityExpandedChanged(activityId, expanded),
+                      );
+                    }
+                    final entry = item.entry!;
+                    return CodexTimelineEntry(
+                      entry,
+                      key: timelineItemKey(item),
+                      workspacePath: pageKey.workspace,
+                      streaming: entry.id == streamingAgentEntryId,
+                      onOpenSubagent: onOpenSubagent,
+                      onSubmitUserMessageEdit: active
+                          ? onSubmitUserMessageEdit
+                          : null,
+                      onSetGoal: active ? onSetGoal : null,
+                    );
+                  },
                 ),
               ),
-              if (userMessages.isNotEmpty)
-                Positioned(
-                  left: 16,
-                  top: 12,
-                  bottom: bottomPadding,
-                  child: ConversationUserMessageRail(
-                    messages: userMessages,
-                    onMessageSelected: (messageId) async {
-                      final target = userMessageTargets[messageId];
-                      if (target == null) return;
-                      await _revealConversationTimelineItem(
-                        timelineContext: context,
-                        scrollController: scrollController,
-                        targetKey: target.key,
-                        targetIndex: target.index,
-                        itemCount: itemCount,
-                      );
-                    },
-                  ),
+            ),
+            if (userMessages.isNotEmpty)
+              Positioned(
+                left: 16,
+                top: 12,
+                bottom: bottomPadding,
+                child: ConversationUserMessageRail(
+                  messages: userMessages,
+                  onMessageSelected: (messageId) async {
+                    final target = userMessageTargets[messageId];
+                    if (target == null) return;
+                    await _revealConversationTimelineItem(
+                      timelineContext: context,
+                      scrollController: scrollController,
+                      targetKey: target.key,
+                      targetIndex: target.index,
+                      itemCount: itemCount,
+                    );
+                  },
                 ),
-            ],
-          ),
+              ),
+          ],
         ),
       ),
     );

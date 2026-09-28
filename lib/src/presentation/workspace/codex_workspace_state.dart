@@ -558,12 +558,12 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   ) {
     final controller = _timelineScrollControllers[viewportKey];
     if (controller == null || !controller.hasClients) return;
-    // For a normal downward ListView, `reverse` means the scroll offset is
-    // decreasing, so the user is moving away from the latest messages toward
-    // older content. That gesture must pause follow mode. `forward` increases
-    // the offset and only resumes follow mode once the viewport is near the
-    // latest content again.
-    if (direction == ScrollDirection.reverse) {
+    // Flutter reports `forward` while a normal ListView is being dragged
+    // toward its zero offset. From the latest messages that is the user's
+    // upward/older-content gesture, so pause follow mode. `reverse` is the
+    // return gesture toward the latest messages and may resume following only
+    // once the viewport is close to the end.
+    if (direction == ScrollDirection.forward) {
       _timelineFollowsLatest[viewportKey] = false;
       if (_timelineScrollAnimationViewport == viewportKey) {
         _timelineScrollAnimationViewport = null;
