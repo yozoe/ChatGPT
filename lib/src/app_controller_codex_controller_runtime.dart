@@ -384,6 +384,10 @@ class CodexController extends ChangeNotifier {
       {};
   final Map<String, TurnSubmission> _runningTurnSubmissions = {};
   final Map<String, FailedTurnRetry> _failedTurnRetries = {};
+  final Map<String, int> _automaticRetryAttempts = {};
+  final Map<String, DateTime> _automaticRetryDeadlines = {};
+  final Map<String, Timer> _automaticRetryTimers = {};
+  final Set<String> _automaticRetryCancelled = {};
   String? _retryingFailedTurnThreadId;
   String? activeThreadId;
   // 初始运行时连接进行期间选中的任务可能不在首个服务端列表中；保留该选择，
@@ -603,6 +607,17 @@ class CodexController extends ChangeNotifier {
     return retry?.submission.workspace == workspacePath ? retry : null;
   }
 
+  FailedTurnRetry? _failedTurnRetryForThread(
+    String? threadId, {
+    bool allowDifferentWorkspace = false,
+  }) {
+    final retry = threadId == null ? null : _failedTurnRetries[threadId];
+    return allowDifferentWorkspace ||
+            retry?.submission.workspace == workspacePath
+        ? retry
+        : null;
+  }
+
   /// Whether the selected failed task still has its exact in-memory inputs.
   /// 当前失败任务是否仍保留可安全原样重发的内存输入。
   bool get hasFailedTurnRetry => _activeFailedTurnRetry != null;
@@ -612,6 +627,9 @@ class CodexController extends ChangeNotifier {
   bool get hasUsageLimitFailure =>
       _activeFailedTurnRetry?.kind == FailedTurnKind.usageLimit;
 
+  bool get hasCapacityRateLimitFailure =>
+      _activeFailedTurnRetry?.kind == FailedTurnKind.capacityRateLimit;
+
   String? get usageLimitFailureError =>
       hasUsageLimitFailure ? _activeFailedTurnRetry?.error : null;
 
@@ -619,9 +637,38 @@ class CodexController extends ChangeNotifier {
       _retryingFailedTurnThreadId != null &&
       _retryingFailedTurnThreadId == activeThreadId;
 
+  bool get hasAutomaticRetry =>
+      activeThreadId != null &&
+      _activeFailedTurnRetry?.kind == FailedTurnKind.capacityRateLimit &&
+      _automaticRetryDeadlines.containsKey(activeThreadId);
+
+  int? get automaticRetrySecondsRemaining {
+    final threadId = activeThreadId;
+    final deadline = threadId == null
+        ? null
+        : _automaticRetryDeadlines[threadId];
+    if (deadline == null) return null;
+    final remaining = deadline.difference(_clock.now()).inSeconds;
+    return remaining < 0 ? 0 : remaining;
+  }
+
+  bool get automaticRetryCancelled =>
+      activeThreadId != null &&
+      _automaticRetryCancelled.contains(activeThreadId);
+
+  void cancelAutomaticRetry() {
+    final threadId = activeThreadId;
+    if (threadId == null) return;
+    _automaticRetryTimers.remove(threadId)?.cancel();
+    _automaticRetryDeadlines.remove(threadId);
+    _automaticRetryCancelled.add(threadId);
+    notifyListeners();
+  }
+
   bool get canRetryFailedTurn =>
       hasFailedTurnRetry &&
       !hasUsageLimitFailure &&
+      (!hasAutomaticRetry || automaticRetryCancelled) &&
       !isRetryingFailedTurn &&
       canSend;
 
@@ -2216,6 +2263,7 @@ class CodexController extends ChangeNotifier {
       }
     }
     final previousThreadId = activeThreadId;
+    if (previousThreadId != null) _clearAutomaticRetry(previousThreadId);
     if (previousThreadId != null && !isThreadRunning(previousThreadId)) {
       _cacheActiveThreadView(includeUnattached: true);
     }
@@ -3568,11 +3616,13 @@ class CodexController extends ChangeNotifier {
           : _runningTurnSubmissions.remove(requestedThreadId);
       final failureMessage = _messageOf(error);
       if (failedSubmission != null) {
+        final kind = _failedTurnKindFromError(error, failureMessage);
         _failedTurnRetries[failedSubmission.threadId] = FailedTurnRetry(
           submission: failedSubmission,
           error: failureMessage,
-          kind: _failedTurnKindFromError(error, failureMessage),
+          kind: kind,
         );
+        _scheduleAutomaticRetryIfNeeded(failedSubmission.threadId, kind);
       }
       _updateThreadStatus(requestedThreadId, 'systemError');
       // Another task may have become active while this request was awaiting
@@ -3599,32 +3649,45 @@ class CodexController extends ChangeNotifier {
   /// duplicate optimistic user bubble. A task switch while awaiting App
   /// Server is allowed, but the result remains scoped to the original thread.
   /// 原样重发当前失败 turn；等待期间即使切换任务，结果也只归属原线程。
-  Future<bool> retryFailedTurn() async {
-    final retry = _activeFailedTurnRetry;
+  Future<bool> retryFailedTurn({String? threadIdOverride}) async {
+    final retryThreadId = threadIdOverride ?? activeThreadId;
+    final retry = _failedTurnRetryForThread(
+      retryThreadId,
+      allowDifferentWorkspace: threadIdOverride != null,
+    );
     final threadId = retry?.submission.threadId;
     if (retry == null ||
         threadId == null ||
         _retryingFailedTurnThreadId != null ||
-        !canSend ||
-        activeThreadId != threadId) {
+        (threadIdOverride != null && !_server.isRunning) ||
+        (threadIdOverride == null && !canSend) ||
+        (threadIdOverride == null && activeThreadId != threadId)) {
       return false;
     }
     final submission = retry.submission;
+    final isForeground = activeThreadId == threadId;
+    _automaticRetryTimers.remove(threadId)?.cancel();
+    _automaticRetryDeadlines.remove(threadId);
+    _automaticRetryCancelled.remove(threadId);
     _retryingFailedTurnThreadId = threadId;
     _runningTurnSubmissions[threadId] = submission;
     _runningThreadIds.add(threadId);
     _threadWorkspaceById[threadId] = submission.workspace;
-    status = RuntimeStatus.running;
-    lastError = null;
+    if (isForeground) {
+      status = RuntimeStatus.running;
+      lastError = null;
+    }
     // A retry continues the same thread-level task-file lifecycle. Retaining
     // the confirmed summary also avoids a failed retry deleting its persisted
     // restart snapshot before App Server accepts the request.
-    _beginFileChangeTurn();
-    _clearStreamingState();
+    if (isForeground) {
+      _beginFileChangeTurn();
+      _clearStreamingState();
+    }
     _activeTurnStartedAt = DateTime.now();
     _acknowledgedCompletedThreadIds.remove(threadId);
     _updateThreadStatus(threadId, 'active');
-    notifyListeners();
+    if (isForeground) notifyListeners();
     try {
       final objective = submission.goal;
       if (objective != null && objective.isNotEmpty) {
@@ -3640,6 +3703,7 @@ class CodexController extends ChangeNotifier {
         collaborationMode: submission.collaborationMode,
       );
       _failedTurnRetries.remove(threadId);
+      _automaticRetryAttempts.remove(threadId);
       return true;
     } catch (error) {
       _runningThreadIds.remove(threadId);
@@ -3650,6 +3714,10 @@ class CodexController extends ChangeNotifier {
         submission: submission,
         error: message,
         kind: _failedTurnKindFromError(error, message),
+      );
+      _scheduleAutomaticRetryIfNeeded(
+        threadId,
+        _failedTurnKindFromError(error, message),
       );
       _updateThreadStatus(threadId, 'systemError');
       if (activeThreadId == threadId && workspacePath == submission.workspace) {
@@ -4551,6 +4619,7 @@ class CodexController extends ChangeNotifier {
       _pendingNetworkRetryEntriesByThread.clear();
       _runningTurnSubmissions.clear();
       _failedTurnRetries.clear();
+      _clearAllAutomaticRetries();
       _retryingFailedTurnThreadId = null;
       _goalContinuationPendingThreadIds.clear();
       _goalContinuationAwaitingAcceptanceThreadIds.clear();
@@ -5528,6 +5597,7 @@ class CodexController extends ChangeNotifier {
         _removeCachedThreadView(thread.id, workspace: workspace);
         _runningTurnSubmissions.remove(thread.id);
         _failedTurnRetries.remove(thread.id);
+        _clearAutomaticRetry(thread.id);
         if (_retryingFailedTurnThreadId == thread.id) {
           _retryingFailedTurnThreadId = null;
         }
@@ -5608,6 +5678,7 @@ class CodexController extends ChangeNotifier {
       _pendingNetworkRetryEntriesByThread.remove(thread.id);
       _runningTurnSubmissions.remove(thread.id);
       _failedTurnRetries.remove(thread.id);
+      _clearAutomaticRetry(thread.id);
       if (_retryingFailedTurnThreadId == thread.id) {
         _retryingFailedTurnThreadId = null;
       }
@@ -7541,9 +7612,104 @@ class CodexController extends ChangeNotifier {
         error: error,
         kind: kind,
       );
+      _scheduleAutomaticRetryIfNeeded(threadId, kind);
     } else {
       _failedTurnRetries.remove(threadId);
+      _clearAutomaticRetry(threadId);
     }
+  }
+
+  static const List<Duration> _automaticRetryBackoff = [
+    Duration(seconds: 30),
+    Duration(minutes: 1),
+    Duration(minutes: 2),
+    Duration(minutes: 5),
+  ];
+
+  Duration _automaticRetryDelay(String threadId) {
+    final attempt = _automaticRetryAttempts[threadId] ?? 0;
+    return _automaticRetryBackoff[attempt.clamp(
+      0,
+      _automaticRetryBackoff.length - 1,
+    )];
+  }
+
+  void _scheduleAutomaticRetryIfNeeded(String threadId, FailedTurnKind kind) {
+    if (kind != FailedTurnKind.capacityRateLimit ||
+        _automaticRetryCancelled.contains(threadId) ||
+        _disposed) {
+      return;
+    }
+    _automaticRetryTimers.remove(threadId)?.cancel();
+    final delay = _automaticRetryDelay(threadId);
+    _automaticRetryDeadlines[threadId] = _clock.now().add(delay);
+    _automaticRetryTimers[threadId] = Timer.periodic(
+      const Duration(seconds: 1),
+      (timer) {
+        if (_disposed || _automaticRetryCancelled.contains(threadId)) {
+          timer.cancel();
+          return;
+        }
+        if (_clock.now().isBefore(_automaticRetryDeadlines[threadId]!)) {
+          if (activeThreadId == threadId) notifyListeners();
+          return;
+        }
+        if (!_server.isRunning) {
+          if (status == RuntimeStatus.failed) {
+            _scheduleRuntimeReconnect();
+          } else if (!_startingRuntime) {
+            unawaited(
+              startRuntime(
+                waitForWorkspaceData: false,
+                restoreLastThread: false,
+              ),
+            );
+          }
+          _automaticRetryDeadlines[threadId] = _clock.now().add(
+            const Duration(seconds: 1),
+          );
+          if (activeThreadId == threadId) notifyListeners();
+          return;
+        }
+        timer.cancel();
+        _automaticRetryDeadlines.remove(threadId);
+        _automaticRetryTimers.remove(threadId);
+        _automaticRetryAttempts[threadId] =
+            (_automaticRetryAttempts[threadId] ?? 0) + 1;
+        notifyListeners();
+        unawaited(() async {
+          final retried = await retryFailedTurn(threadIdOverride: threadId);
+          if (!retried &&
+              _failedTurnRetries[threadId]?.kind ==
+                  FailedTurnKind.capacityRateLimit &&
+              !_automaticRetryCancelled.contains(threadId) &&
+              !_disposed) {
+            _scheduleAutomaticRetryIfNeeded(
+              threadId,
+              FailedTurnKind.capacityRateLimit,
+            );
+          }
+        }());
+      },
+    );
+    notifyListeners();
+  }
+
+  void _clearAutomaticRetry(String threadId) {
+    _automaticRetryTimers.remove(threadId)?.cancel();
+    _automaticRetryDeadlines.remove(threadId);
+    _automaticRetryAttempts.remove(threadId);
+    _automaticRetryCancelled.remove(threadId);
+  }
+
+  void _clearAllAutomaticRetries() {
+    for (final timer in _automaticRetryTimers.values) {
+      timer.cancel();
+    }
+    _automaticRetryTimers.clear();
+    _automaticRetryDeadlines.clear();
+    _automaticRetryAttempts.clear();
+    _automaticRetryCancelled.clear();
   }
 
   /// Reconciles legacy unscoped completion events after an authoritative
@@ -10623,14 +10789,28 @@ class CodexController extends ChangeNotifier {
         .toLowerCase()
         .replaceAll(RegExp(r'[^a-z0-9]'), '');
     final normalizedMessage = message.trim().toLowerCase();
-    return identifier.contains('usagelimit') ||
-            identifier.contains('quotaexceeded') ||
-            identifier.contains('insufficientquota') ||
-            normalizedMessage.contains('usage limit') ||
-            normalizedMessage.contains('exceeded your current quota') ||
-            normalizedMessage == 'quota exceeded'
-        ? FailedTurnKind.usageLimit
-        : FailedTurnKind.retryable;
+    final isUsageLimit =
+        identifier.contains('usagelimit') ||
+        identifier.contains('quotaexceeded') ||
+        identifier.contains('insufficientquota') ||
+        normalizedMessage.contains('usage limit') ||
+        normalizedMessage.contains('exceeded your current quota') ||
+        normalizedMessage == 'quota exceeded';
+    if (isUsageLimit) return FailedTurnKind.usageLimit;
+    if (identifier == '429' ||
+        identifier.contains('ratelimit') ||
+        identifier.contains('toomanyrequests') ||
+        identifier.contains('modelatcapacity') ||
+        identifier.contains('capacity') ||
+        normalizedMessage.contains('selected model is at capacity') ||
+        normalizedMessage.contains('model is at capacity') ||
+        normalizedMessage.contains('rate limit') ||
+        normalizedMessage.contains('too many requests') ||
+        normalizedMessage.contains('http 429') ||
+        normalizedMessage == '429') {
+      return FailedTurnKind.capacityRateLimit;
+    }
+    return FailedTurnKind.retryable;
   }
 
   /// 判断路径是否指向剪贴板导入的临时图片。
@@ -10812,6 +10992,7 @@ class CodexController extends ChangeNotifier {
     _historySaveTimer?.cancel();
     _runtimeReconnectTimer?.cancel();
     _runtimeReconnectTimer = null;
+    _clearAllAutomaticRetries();
     _clearUserInputAutoResolution();
     _scheduledTaskCoordinator.dispose();
     for (final timer in _subagentRefreshTimers.values) {

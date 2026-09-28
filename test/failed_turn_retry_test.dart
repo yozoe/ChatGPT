@@ -119,6 +119,87 @@ void main() {
     },
   );
 
+  test('starts an automatic retry countdown for capacity errors', () async {
+    final server = FakeCodexAppServer();
+    final controller = await readyRetryController(server);
+    expect(await controller.sendPrompt('容量重试'), isTrue);
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'new-thread',
+          'turn': {
+            'status': 'failed',
+            'error': {
+              'message':
+                  'Selected model is at capacity. Please try a different model.',
+            },
+          },
+        },
+      ),
+    );
+    expect(controller.hasCapacityRateLimitFailure, isTrue);
+    expect(controller.hasAutomaticRetry, isTrue);
+    expect(controller.automaticRetrySecondsRemaining, inInclusiveRange(29, 30));
+    controller.cancelAutomaticRetry();
+    expect(controller.hasAutomaticRetry, isFalse);
+    expect(controller.automaticRetryCancelled, isTrue);
+    expect(controller.canRetryFailedTurn, isTrue);
+    controller.dispose();
+  });
+
+  test('does not automatically retry long-term usage limits', () async {
+    final server = FakeCodexAppServer();
+    final controller = await readyRetryController(server);
+    expect(await controller.sendPrompt('额度不自动轮询'), isTrue);
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'new-thread',
+          'turn': {
+            'status': 'failed',
+            'error': {'code': 'usage_limit_reached', 'message': 'usage limit'},
+          },
+        },
+      ),
+    );
+    expect(controller.hasUsageLimitFailure, isTrue);
+    expect(controller.hasAutomaticRetry, isFalse);
+    controller.dispose();
+  });
+
+  test('classifies a numeric structured 429 as a capacity retry', () async {
+    final server = FakeCodexAppServer()
+      ..startTurnError = const CodexAppServerException(
+        message: 'Too many requests',
+        code: '429',
+      );
+    final controller = await readyRetryController(server);
+    expect(await controller.sendPrompt('429 重试'), isFalse);
+    expect(controller.hasCapacityRateLimitFailure, isTrue);
+    expect(controller.hasAutomaticRetry, isTrue);
+    controller.cancelAutomaticRetry();
+    controller.dispose();
+  });
+
+  test(
+    'preserves a usage-limit classification when its type mentions capacity',
+    () async {
+      final server = FakeCodexAppServer()
+        ..startTurnError = const CodexAppServerException(
+          message: 'Usage limit reached',
+          code: 'usage_limit_reached',
+          type: 'capacity',
+        );
+      final controller = await readyRetryController(server);
+      expect(await controller.sendPrompt('额度优先级'), isFalse);
+      expect(controller.hasUsageLimitFailure, isTrue);
+      expect(controller.hasAutomaticRetry, isFalse);
+      controller.dispose();
+    },
+  );
+
   test('retries a failed turn with the exact original submission', () async {
     final server = FakeCodexAppServer();
     final controller = await readyRetryController(server);

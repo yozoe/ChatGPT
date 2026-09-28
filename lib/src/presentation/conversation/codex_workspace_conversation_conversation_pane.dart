@@ -267,6 +267,13 @@ class ConversationPane extends StatelessWidget {
                     retrying: controller.isRetryingFailedTurn,
                     enabled: controller.canRetryFailedTurn,
                     onRetry: controller.retryFailedTurn,
+                    secondsRemaining: controller.hasAutomaticRetry
+                        ? controller.automaticRetrySecondsRemaining
+                        : null,
+                    automaticRetrying:
+                        controller.isRetryingFailedTurn &&
+                        controller.hasCapacityRateLimitFailure,
+                    onCancelAutomaticRetry: controller.cancelAutomaticRetry,
                   ),
                 if (controller.hasArchivedThreadRestore)
                   ArchivedThreadNotice(

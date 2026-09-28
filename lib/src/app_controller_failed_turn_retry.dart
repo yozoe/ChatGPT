@@ -15,4 +15,4 @@ class FailedTurnRetry {
   final FailedTurnKind kind;
 }
 
-enum FailedTurnKind { retryable, usageLimit }
+enum FailedTurnKind { retryable, usageLimit, capacityRateLimit }

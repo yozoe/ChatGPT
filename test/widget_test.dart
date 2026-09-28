@@ -14825,6 +14825,50 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('shows and cancels the capacity auto-retry countdown', (
+    tester,
+  ) async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    expect(await tester.runAsync(() => controller.sendPrompt('容量测试')), isTrue);
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'new-thread',
+          'turn': {
+            'status': 'failed',
+            'error': {
+              'code': 'model_at_capacity',
+              'message': 'Model at capacity',
+            },
+          },
+        },
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      find.byKey(const Key('failed-turn-auto-retry-countdown')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('秒后重试'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('failed-turn-auto-retry-countdown')));
+    await tester.pump();
+    expect(
+      find.byKey(const Key('failed-turn-auto-retry-countdown')),
+      findsNothing,
+    );
+    expect(find.byKey(const Key('failed-turn-retry-button')), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('does not show a completion reminder for an interrupted task', (
     tester,
   ) async {
