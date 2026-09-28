@@ -12,6 +12,8 @@
 
 ## 当前进度
 
+- 新增 Codex 风格 Worktrees 设置页，支持配置工作树根目录、创建前获取更新、自动清理和保留数量，并提供基础 detached worktree 数据模型、持久化和 Git 服务；Composer 任务环境选择、线程绑定、Handoff 与永久工作树仍在后续阶段。
+
 - Codex CLI 自动发现兼容新版 ChatGPT macOS 应用包：除旧版 `Contents/Resources/codex` 外，也会识别 `codex-cli/bin/codex` 与 `CodexCLI.app/Contents/MacOS/codex`，避免 CLI 已随 ChatGPT 安装却被误报为缺失。
 
 - 用户消息悬停操作不会改变时间线消息高度，切换长会话时会保留原有滚动位置。

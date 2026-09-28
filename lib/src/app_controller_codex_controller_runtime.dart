@@ -26,6 +26,8 @@ import 'package:chatgpt/src/domain/subagent_thread_view.dart';
 import 'package:chatgpt/src/domain/task_plan.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/domain/workspace_configuration.dart';
+import 'package:chatgpt/src/domain/thread_environment_binding.dart';
+import 'package:chatgpt/src/domain/local_worktree_record.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/services/codex_clock.dart';
 import 'package:chatgpt/src/services/codex_plugin_store.dart';
@@ -34,6 +36,7 @@ import 'package:chatgpt/src/services/conversation_attachment_store.dart';
 import 'package:chatgpt/src/services/git_project_service.dart';
 import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
+import 'package:chatgpt/src/services/local_worktree_service.dart';
 import 'package:chatgpt/src/services/task_completion_notifier.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_url_normalizer.dart';
 import 'app_controller_support.dart';
@@ -110,7 +113,7 @@ class CodexController extends ChangeNotifier {
        _userInputAutoResolutionDuration = userInputAutoResolutionDuration {
     _gitOperations = CodexGitOperations(
       service: _gitProjectService,
-      workspace: () => workspacePath,
+      workspace: () => _threadWorkspaceById[activeThreadId] ?? workspacePath,
       isDisposed: () => _disposed,
       notify: notifyListeners,
       messageOf: _messageOf,
@@ -151,7 +154,7 @@ class CodexController extends ChangeNotifier {
       status: () => status,
       serverRunning: () => _server.isRunning,
       executable: () => _server.executable,
-      workspace: () => workspacePath,
+      workspace: () => _threadWorkspaceById[activeThreadId] ?? workspacePath,
       providerLabel: () => providerLabel,
       authLabel: () => authLabel,
       lastError: () => lastError,
@@ -205,6 +208,29 @@ class CodexController extends ChangeNotifier {
   @visibleForTesting
   static RuntimeConfigurationStore? testingRuntimeConfigurationStore;
   final RuntimeConfigurationStore _runtimeConfigurationStore;
+  late final LocalWorktreeService _localWorktreeService = LocalWorktreeService(
+    store: _runtimeConfigurationStore,
+  );
+
+  RuntimeConfigurationStore get runtimeConfigurationStore =>
+      _runtimeConfigurationStore;
+
+  Future<List<LocalWorktreeRecord>> listManagedWorktrees({
+    String? sourceRepository,
+  }) async {
+    final records = await _runtimeConfigurationStore.readWorktreeRecords();
+    if (sourceRepository == null) return records;
+    final canonical = await Directory(sourceRepository).resolveSymbolicLinks();
+    return records
+        .where((record) => record.sourceRepository == canonical)
+        .where(
+          (record) =>
+              record.state == LocalWorktreeState.ready ||
+              record.state == LocalWorktreeState.completed,
+        )
+        .toList(growable: false);
+  }
+
   final ConversationHistoryStore _conversationHistoryStore;
   final ConversationAttachmentStore _conversationAttachmentStore;
   final LocalSessionThreadStore _localSessionThreadStore;
@@ -3398,6 +3424,8 @@ class CodexController extends ChangeNotifier {
     bool planMode = false,
     List<String> imagePaths = const [],
     bool rollbackUserEntryOnFailure = false,
+    bool useManagedWorktree = false,
+    String? managedWorktreeId,
   }) async {
     final requestRevision = _conversationViewRevision;
     if (!_sendPromptInFlightRevisions.add(requestRevision)) return false;
@@ -3410,6 +3438,8 @@ class CodexController extends ChangeNotifier {
         planMode: planMode,
         imagePaths: imagePaths,
         rollbackUserEntryOnFailure: rollbackUserEntryOnFailure,
+        useManagedWorktree: useManagedWorktree,
+        managedWorktreeId: managedWorktreeId,
       );
     } finally {
       _sendPromptInFlightRevisions.remove(requestRevision);
@@ -3426,6 +3456,8 @@ class CodexController extends ChangeNotifier {
     bool planMode = false,
     List<String> imagePaths = const [],
     bool rollbackUserEntryOnFailure = false,
+    bool useManagedWorktree = false,
+    String? managedWorktreeId,
   }) async {
     final text = prompt.trim();
     final requestWorkspace = workspacePath;
@@ -3485,7 +3517,55 @@ class CodexController extends ChangeNotifier {
     final persistedImagePaths = persistedAttachments.imagePaths;
     final persistedAdditionalInput = persistedAttachments.additionalInput;
     final createdImagePaths = persistedAttachments.createdImagePaths;
-    final workspace = requestWorkspace;
+    var workspace = requestWorkspace;
+    String? selectedWorktreeId = managedWorktreeId;
+    if ((useManagedWorktree || managedWorktreeId != null) &&
+        requestThread == null) {
+      try {
+        final settings = await _runtimeConfigurationStore
+            .readWorktreeSettings();
+        final projectId = workspaceProjectId ?? requestWorkspace;
+        final records = await _runtimeConfigurationStore.readWorktreeRecords();
+        final existing = managedWorktreeId == null
+            ? null
+            : records
+                  .where((record) => record.worktreeId == managedWorktreeId)
+                  .firstOrNull;
+        final record =
+            existing ??
+            await _localWorktreeService.create(
+              repository: requestWorkspace,
+              rootPath: settings.rootPath,
+              projectId: projectId,
+              fetchBeforeCreate: settings.fetchBeforeCreate,
+            );
+        final canonicalRequestWorkspace = await Directory(
+          requestWorkspace,
+        ).resolveSymbolicLinks();
+        if (existing != null &&
+            existing.sourceRepository != canonicalRequestWorkspace) {
+          throw StateError('所选工作树不属于当前项目。');
+        }
+        if (existing != null && existing.state == LocalWorktreeState.running) {
+          throw StateError('所选工作树正在运行，请选择其他工作树。');
+        }
+        if (existing != null &&
+            (existing.state == LocalWorktreeState.removed ||
+                !await Directory(existing.worktreePath).exists())) {
+          throw StateError('所选工作树已不可用，请刷新列表后重新选择。');
+        }
+        workspace = record.worktreePath;
+        selectedWorktreeId = record.worktreeId;
+      } on Object catch (error) {
+        await _conversationAttachmentStore.delete(
+          persistedAttachments.createdImagePaths,
+        );
+        lastError = '无法创建工作树：${_messageOf(error)}';
+        _add(TimelineKind.error, '无法发送任务', lastError!);
+        notifyListeners();
+        return false;
+      }
+    }
     final previousFileChanges = List<CodexFileChange>.of(fileChanges);
     final previousTurnDiff = turnDiff;
     if (activeThreadId == null) {
@@ -3528,6 +3608,39 @@ class CodexController extends ChangeNotifier {
         config: _newThreadConfig(),
       );
       final threadId = requestedThreadId;
+      if (workspace != requestWorkspace) {
+        final records = await _runtimeConfigurationStore.readWorktreeRecords();
+        final managedRecord = records.where(
+          (record) => record.worktreePath == workspace,
+        );
+        if (managedRecord.isNotEmpty) {
+          await _runtimeConfigurationStore.saveWorktreeRecords(
+            records.map(
+              (record) => record.worktreePath == workspace
+                  ? record.copyWith(
+                      threadId: threadId,
+                      state: LocalWorktreeState.running,
+                      lastUsedAt: DateTime.now(),
+                    )
+                  : record,
+            ),
+          );
+        }
+        final bindings = await _runtimeConfigurationStore
+            .readThreadEnvironmentBindings();
+        final existing = bindings.where(
+          (binding) => binding.threadId != threadId,
+        );
+        await _runtimeConfigurationStore.saveThreadEnvironmentBindings([
+          ...existing,
+          ThreadEnvironmentBinding(
+            threadId: threadId,
+            kind: ThreadEnvironmentKind.managedWorktree,
+            workingDirectory: workspace,
+            worktreeId: selectedWorktreeId,
+          ),
+        ]);
+      }
       final objective = goal?.trim();
       final collaborationMode = _collaborationMode(planMode: planMode);
       _updateThreadCollaborationMode(threadId, collaborationMode);
@@ -3614,6 +3727,27 @@ class CodexController extends ChangeNotifier {
       final failedSubmission = requestedThreadId == null
           ? null
           : _runningTurnSubmissions.remove(requestedThreadId);
+      if (requestedThreadId != null && workspace != requestWorkspace) {
+        try {
+          final records = await _runtimeConfigurationStore
+              .readWorktreeRecords();
+          await _runtimeConfigurationStore.saveWorktreeRecords(
+            records.map(
+              (record) => record.worktreePath == workspace
+                  ? record.copyWith(state: LocalWorktreeState.failed)
+                  : record,
+            ),
+          );
+          final bindings = await _runtimeConfigurationStore
+              .readThreadEnvironmentBindings();
+          await _runtimeConfigurationStore.saveThreadEnvironmentBindings(
+            bindings.where((binding) => binding.threadId != requestedThreadId),
+          );
+        } on Object {
+          // Preserve the original turn failure; the record is recoverable from
+          // the Git worktree list on the next reconciliation.
+        }
+      }
       final failureMessage = _messageOf(error);
       if (failedSubmission != null) {
         final kind = _failedTurnKindFromError(error, failureMessage);
@@ -7600,6 +7734,7 @@ class CodexController extends ChangeNotifier {
     FailedTurnKind kind = FailedTurnKind.retryable,
   }) {
     if (threadId == null) return;
+    unawaited(_markManagedWorktreeCompleted(threadId));
     final turnId = _runningTurnIdsByThread[threadId];
     if (turnId != null) {
       _markNetworkRetryActivitiesHistorical(threadId: threadId, turnId: turnId);
@@ -7616,6 +7751,37 @@ class CodexController extends ChangeNotifier {
     } else {
       _failedTurnRetries.remove(threadId);
       _clearAutomaticRetry(threadId);
+    }
+  }
+
+  Future<void> _markManagedWorktreeCompleted(String threadId) async {
+    try {
+      final records = await _runtimeConfigurationStore.readWorktreeRecords();
+      var changed = false;
+      final next = records
+          .map((record) {
+            if (record.threadId != threadId) return record;
+            changed = true;
+            return record.copyWith(
+              state: LocalWorktreeState.completed,
+              lastUsedAt: DateTime.now(),
+            );
+          })
+          .toList(growable: false);
+      if (changed) await _runtimeConfigurationStore.saveWorktreeRecords(next);
+      if (changed) {
+        final settings = await _runtimeConfigurationStore
+            .readWorktreeSettings();
+        if (settings.autoCleanup) {
+          await _localWorktreeService.cleanup(
+            rootPath: settings.rootPath,
+            retentionLimit: settings.retentionLimit,
+            records: next,
+          );
+        }
+      }
+    } on Object {
+      // Completion state is advisory; retain the chat result if persistence fails.
     }
   }
 

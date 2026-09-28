@@ -3,6 +3,9 @@ import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_page.
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_extension_settings_dialog.dart';
 import 'package:chatgpt/src/services/dock_icon_service.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:chatgpt/src/domain/worktree_settings.dart';
+import 'package:chatgpt/src/domain/local_worktree_record.dart';
+import 'package:chatgpt/src/services/local_worktree_service.dart';
 
 /// 管理设置页面的局部导航和临时显示偏好。
 /// Owns settings-page local navigation and transient display preferences.
@@ -31,11 +34,23 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
   final DockIconService _dockIconService = DockIconService();
   final TextEditingController _uiFontSize = TextEditingController(text: '14');
   final TextEditingController _codeFontSize = TextEditingController(text: '13');
+  late final TextEditingController _worktreeRoot;
+  late final TextEditingController _worktreeRetention;
+  WorktreeSettings _worktreeSettings = WorktreeSettings.defaults();
+  List<LocalWorktreeRecord> _worktrees = const [];
+  bool _worktreesLoading = true;
+  String? _worktreesError;
+  late final LocalWorktreeService _worktreeService = LocalWorktreeService(
+    store: widget.runtimeConfigurationStore,
+  );
 
   @override
   void initState() {
     super.initState();
     _restoreDockIconSelection();
+    _worktreeRoot = TextEditingController(text: _worktreeSettings.rootPath);
+    _worktreeRetention = TextEditingController(text: '15');
+    _loadWorktrees();
   }
 
   @override
@@ -44,7 +59,184 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
     _archiveSearch.dispose();
     _uiFontSize.dispose();
     _codeFontSize.dispose();
+    _worktreeRoot.dispose();
+    _worktreeRetention.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadWorktrees() async {
+    try {
+      final values = await Future.wait([
+        widget.runtimeConfigurationStore.readWorktreeSettings(),
+        widget.runtimeConfigurationStore.readWorktreeRecords(),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        _worktreeSettings = values[0] as WorktreeSettings;
+        _worktrees = values[1] as List<LocalWorktreeRecord>;
+        _worktreeRoot.text = _worktreeSettings.rootPath;
+        _worktreeRetention.text = '${_worktreeSettings.retentionLimit}';
+        _worktreesLoading = false;
+      });
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _worktreesLoading = false;
+        _worktreesError = '$error';
+      });
+    }
+  }
+
+  Future<void> _saveWorktreeSettings(WorktreeSettings next) async {
+    if (next.rootPath.trim().isEmpty ||
+        !Directory(next.rootPath.trim()).isAbsolute) {
+      if (mounted) {
+        setState(() => _worktreesError = '工作树根目录必须是绝对路径。');
+      }
+      return;
+    }
+    _worktreesError = null;
+    setState(() => _worktreeSettings = next);
+    await widget.runtimeConfigurationStore.saveWorktreeSettings(next);
+  }
+
+  Future<void> _restoreWorktree(LocalWorktreeRecord record) async {
+    try {
+      await _worktreeService.restore(
+        record: record,
+        rootPath: _worktreeSettings.rootPath,
+      );
+      await _loadWorktrees();
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() => _worktreesError = '$error');
+    }
+  }
+
+  Widget _worktreesContent() {
+    final heading = Theme.of(context).textTheme.headlineMedium?.copyWith(
+      fontSize: 38,
+      fontWeight: FontWeight.w500,
+    );
+    final body = <Widget>[];
+    if (_worktreesLoading) {
+      body.add(const Center(child: CircularProgressIndicator()));
+    } else if (_worktreesError != null) {
+      body.add(
+        Text(
+          '无法读取工作树：$_worktreesError',
+          key: const Key('worktrees-error-state'),
+        ),
+      );
+    } else if (_worktrees.isEmpty) {
+      body.add(const Center(child: Text('ChatGPT 创建的工作树将显示在此处')));
+    } else {
+      body.addAll(
+        _worktrees.map(
+          (item) => ListTile(
+            title: Text(item.worktreeId),
+            subtitle: Text(item.worktreePath),
+            trailing: item.state == LocalWorktreeState.removed
+                ? TextButton(
+                    key: Key('worktree-restore-${item.worktreeId}'),
+                    onPressed: () => _restoreWorktree(item),
+                    child: const Text('恢复'),
+                  )
+                : Text(item.state.name),
+          ),
+        ),
+      );
+    }
+    return ListView(
+      key: const Key('settings-worktrees-page'),
+      padding: const EdgeInsets.fromLTRB(72, 36, 72, 72),
+      children: <Widget>[
+        Text('Worktrees', style: heading),
+        const SizedBox(height: 28),
+        Card(
+          child: Column(
+            children: <Widget>[
+              _settingRow(
+                title: '工作树根目录',
+                description: 'ChatGPT 创建托管工作树的目录。此目录使用默认位置。',
+                trailing: SizedBox(
+                  width: 260,
+                  child: TextField(
+                    key: const Key('worktree-root-field'),
+                    controller: _worktreeRoot,
+                    onSubmitted: (value) => _saveWorktreeSettings(
+                      _worktreeSettings.copyWith(rootPath: value.trim()),
+                    ),
+                  ),
+                ),
+              ),
+              const Divider(height: 1),
+              _settingRow(
+                title: '创建工作树时获取更新',
+                description: '创建每个新工作树时获取 Git 远端更新。',
+                trailing: Switch(
+                  key: const Key('worktree-fetch-toggle'),
+                  value: _worktreeSettings.fetchBeforeCreate,
+                  onChanged: (value) => _saveWorktreeSettings(
+                    _worktreeSettings.copyWith(fetchBeforeCreate: value),
+                  ),
+                ),
+              ),
+              const Divider(height: 1),
+              _settingRow(
+                title: '自动删除工作树',
+                description: '超出保留数量后自动清理已完成的托管工作树。',
+                trailing: Switch(
+                  key: const Key('worktree-cleanup-toggle'),
+                  value: _worktreeSettings.autoCleanup,
+                  onChanged: (value) => _saveWorktreeSettings(
+                    _worktreeSettings.copyWith(autoCleanup: value),
+                  ),
+                ),
+              ),
+              const Divider(height: 1),
+              _settingRow(
+                title: '自动删除限制',
+                description: '要保留的托管工作树数量。',
+                trailing: SizedBox(
+                  width: 72,
+                  child: TextField(
+                    key: const Key('worktree-retention-field'),
+                    controller: _worktreeRetention,
+                    keyboardType: TextInputType.number,
+                    onSubmitted: (value) {
+                      final limit = int.tryParse(value);
+                      if (limit == null || limit < 1) return;
+                      _saveWorktreeSettings(
+                        _worktreeSettings.copyWith(retentionLimit: limit),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 34),
+        Row(
+          children: <Widget>[
+            Expanded(
+              child: Text(
+                '尚无工作树',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+            IconButton(
+              key: const Key('worktrees-refresh'),
+              onPressed: _loadWorktrees,
+              icon: const Icon(Icons.refresh_outlined),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        ...body,
+      ],
+    );
   }
 
   void _select(String section) => setState(() => _section = section);
@@ -58,6 +250,7 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
       '配置 模型 权限 sandbox runtime': '配置',
       '插件 mcp 技能': '插件',
       '浏览器 网页': '浏览器',
+      'worktrees 工作树 工作树根目录': 'Worktrees',
       '钩子 hooks': '钩子',
       '归档 聊天 历史': '已归档的聊天',
     };
@@ -1652,6 +1845,12 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                           selected: _section == '浏览器',
                           onTap: _selectBrowser,
                         ),
+                        _navItem(
+                          label: 'Worktrees',
+                          icon: Icons.account_tree_outlined,
+                          selected: _section == 'Worktrees',
+                          onTap: () => _select('Worktrees'),
+                        ),
                         _sectionLabel('编码'),
                         _navItem(
                           label: '钩子',
@@ -1703,6 +1902,8 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
               ? _pluginsContent()
               : _section == '浏览器'
               ? _browserContent()
+              : _section == 'Worktrees'
+              ? _worktreesContent()
               : _section == '已归档的聊天'
               ? _archivedContent()
               : Center(child: Text('“$_section”设置即将推出')),

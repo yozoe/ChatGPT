@@ -558,11 +558,12 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   ) {
     final controller = _timelineScrollControllers[viewportKey];
     if (controller == null || !controller.hasClients) return;
-    // For a normal downward ListView, `forward` moves the viewport toward
-    // older messages (offset decreases); that is the only user gesture that
-    // pauses follow mode. `reverse` is the user's return toward the latest
-    // content.
-    if (direction == ScrollDirection.forward) {
+    // For a normal downward ListView, `reverse` means the scroll offset is
+    // decreasing, so the user is moving away from the latest messages toward
+    // older content. That gesture must pause follow mode. `forward` increases
+    // the offset and only resumes follow mode once the viewport is near the
+    // latest content again.
+    if (direction == ScrollDirection.reverse) {
       _timelineFollowsLatest[viewportKey] = false;
       if (_timelineScrollAnimationViewport == viewportKey) {
         _timelineScrollAnimationViewport = null;
@@ -1518,6 +1519,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       goal: submission.goal,
       planMode: submission.planMode,
       imagePaths: imagePaths,
+      useManagedWorktree: submission.useManagedWorktree,
+      managedWorktreeId: submission.managedWorktreeId,
     );
     if (sent) _composer.clear();
     return sent;
@@ -2744,6 +2747,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                 LayoutBuilder(
                   builder: (context, constraints) => SettingsPage(
                     controller: controller,
+                    runtimeConfigurationStore:
+                        controller.runtimeConfigurationStore,
                     navigationWidth: _sidebarWidthFor(constraints.maxWidth),
                     themeMode: widget.themeMode,
                     onThemeModeChanged: widget.onThemeModeChanged,

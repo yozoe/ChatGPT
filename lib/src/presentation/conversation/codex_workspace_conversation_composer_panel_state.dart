@@ -24,6 +24,7 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_selected_skill_chip.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_skill_details_dialog.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_context_usage_button.dart';
+import 'package:chatgpt/src/domain/local_worktree_record.dart';
 
 class ComposerPanelState extends State<ComposerPanel> {
   static const _clipboardFileReader = ClipboardFileReader();
@@ -42,6 +43,9 @@ class ComposerPanelState extends State<ComposerPanel> {
   String? _fileSearchError;
   bool _draggingFiles = false;
   bool _includeWorkspace = false;
+  bool _useManagedWorktree = false;
+  String? _managedWorktreeId;
+  List<LocalWorktreeRecord> _managedWorktrees = const [];
   bool _includeIdeContext = false;
   String? _ideContextWorkspacePath;
   bool _goalMode = false;
@@ -62,6 +66,7 @@ class ComposerPanelState extends State<ComposerPanel> {
   Timer? _fileSearchDebounce;
   int _fileSearchRequest = 0;
   String _fileSearchWorkspaceKey = '';
+  String? _managedWorktreeWorkspaceKey;
   String? _draftBeforeGoalMode;
   String? _goal;
   String? _goalBeforeGoalMode;
@@ -136,8 +141,18 @@ class ComposerPanelState extends State<ComposerPanel> {
   void initState() {
     super.initState();
     _fileSearchWorkspaceKey = _currentFileSearchWorkspaceKey;
+    _loadManagedWorktrees();
     controller.addListener(_handleControllerChanged);
     composer.addListener(_handleComposerEditingChanged);
+  }
+
+  Future<void> _loadManagedWorktrees() async {
+    final workspaceKey = controller.workspacePath;
+    final records = await controller.listManagedWorktrees(
+      sourceRepository: controller.workspacePath,
+    );
+    if (!mounted || controller.workspacePath != workspaceKey) return;
+    setState(() => _managedWorktrees = records);
   }
 
   @override
@@ -180,6 +195,10 @@ class ComposerPanelState extends State<ComposerPanel> {
     if (_fileSearchWorkspaceKey != fileSearchWorkspaceKey) {
       _fileSearchWorkspaceKey = fileSearchWorkspaceKey;
       _scheduleFileSearch(_currentMentionQuery);
+    }
+    if (_managedWorktreeWorkspaceKey != controller.workspacePath) {
+      _managedWorktreeWorkspaceKey = controller.workspacePath;
+      _loadManagedWorktrees();
     }
     final enabledSkillPaths = controller.skills
         .where((skill) => skill.enabled && skill.path.trim().isNotEmpty)
@@ -1277,6 +1296,8 @@ class ComposerPanelState extends State<ComposerPanel> {
       goal: goalText,
       planMode: controller.composerPlanMode,
       skills: _selectedSkills,
+      useManagedWorktree: _useManagedWorktree,
+      managedWorktreeId: _managedWorktreeId,
     );
     final submitted = controller.canSteer
         ? await widget.onQueueSteer(submission)
@@ -1292,6 +1313,8 @@ class ComposerPanelState extends State<ComposerPanel> {
       _pastedTexts.clear();
       _selectedSkillPaths.clear();
       _includeWorkspace = false;
+      _useManagedWorktree = false;
+      _managedWorktreeId = null;
       _includeIdeContext = false;
       _ideContextWorkspacePath = null;
       // A goal is persisted on the thread by the successful submission.  It
@@ -2248,6 +2271,58 @@ class ComposerPanelState extends State<ComposerPanel> {
                                             ],
                                           ),
                                         ),
+                                      ),
+                                    ),
+                                  ],
+                                  if (controller.activeThreadId == null &&
+                                      controller.workspacePath != null &&
+                                      controller
+                                              .gitProjectStatus
+                                              ?.isRepository ==
+                                          true) ...[
+                                    const SizedBox(width: 6),
+                                    PopupMenuButton<String>(
+                                      key: const Key(
+                                        'composer-worktree-toggle',
+                                      ),
+                                      onSelected: (value) => setState(() {
+                                        _managedWorktreeId = value.isEmpty
+                                            ? null
+                                            : value;
+                                        _useManagedWorktree = true;
+                                      }),
+                                      itemBuilder: (context) => [
+                                        const PopupMenuItem<String>(
+                                          value: '',
+                                          child: Text('新建工作树'),
+                                        ),
+                                        ..._managedWorktrees.map(
+                                          (record) => PopupMenuItem<String>(
+                                            value: record.worktreeId,
+                                            child: Text(record.worktreeId),
+                                          ),
+                                        ),
+                                      ],
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            Icons.account_tree_outlined,
+                                            size: 15,
+                                            color: _useManagedWorktree
+                                                ? palette.active
+                                                : palette.muted,
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            _useManagedWorktree ? '工作树' : '本地',
+                                            style: TextStyle(
+                                              color: _useManagedWorktree
+                                                  ? palette.active
+                                                  : palette.muted,
+                                            ),
+                                          ),
+                                        ],
                                       ),
                                     ),
                                   ],

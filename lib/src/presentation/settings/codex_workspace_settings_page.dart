@@ -1,11 +1,13 @@
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
 import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_page_state.dart';
+import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 
 /// Codex 风格的应用设置工作区。
 /// Codex-style application settings workspace.
 class SettingsPage extends ConsumerStatefulWidget {
   const SettingsPage({
     required this.controller,
+    required this.runtimeConfigurationStore,
     required this.navigationWidth,
     required this.themeMode,
     required this.onThemeModeChanged,
@@ -20,6 +22,7 @@ class SettingsPage extends ConsumerStatefulWidget {
   });
 
   final CodexController controller;
+  final RuntimeConfigurationStore runtimeConfigurationStore;
 
   /// Width shared with the main workspace sidebar, including user resizing.
   final double navigationWidth;
