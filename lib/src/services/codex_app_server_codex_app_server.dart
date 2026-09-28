@@ -13,12 +13,23 @@ class CodexAppServer {
   CodexAppServer({
     String? executable,
     @visibleForTesting void Function(JsonMap message)? messageSink,
+    @visibleForTesting String applicationsDirectory = '/Applications',
+    @visibleForTesting String? userApplicationsDirectory,
   }) : _messageSink = messageSink,
+       _applicationsDirectory = applicationsDirectory,
+       _userApplicationsDirectory =
+           userApplicationsDirectory ??
+           switch (Platform.environment['HOME']) {
+             final home? => '$home/Applications',
+             null => null,
+           },
        _executable =
            executable ?? Platform.environment['CODEX_EXECUTABLE'] ?? 'codex';
 
   String _executable;
   final void Function(JsonMap message)? _messageSink;
+  final String _applicationsDirectory;
+  final String? _userApplicationsDirectory;
   final StreamController<ServerEvent> _events =
       StreamController<ServerEvent>.broadcast();
   final Map<int, Completer<JsonMap>> _pending = {};
@@ -985,18 +996,29 @@ class CodexAppServer {
     if (requested.contains('/')) {
       return await File(requested).exists() ? requested : null;
     }
+    final applicationsDirectory = _applicationsDirectory;
+    final userApplicationsDirectory = _userApplicationsDirectory;
     final home = Platform.environment['HOME'];
     final pathDirectories = (Platform.environment['PATH'] ?? '')
         .split(Platform.pathSeparator)
         .where((directory) => directory.isNotEmpty);
     final candidates = <String>[
-      '/Applications/ChatGPT.app/Contents/Resources/codex',
-      '/Applications/Codex.app/Contents/Resources/codex',
+      '$applicationsDirectory/ChatGPT.app/Contents/Resources/codex',
+      // Recent ChatGPT macOS bundles ship the CLI either as a thin launcher
+      // in codex-cli/bin or as the executable inside CodexCLI.app.
+      '$applicationsDirectory/ChatGPT.app/Contents/Resources/codex-cli/bin/codex',
+      '$applicationsDirectory/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',
+      '$applicationsDirectory/Codex.app/Contents/Resources/codex',
       '/opt/homebrew/bin/codex',
       '/usr/local/bin/codex',
-      if (home != null)
-        '$home/Applications/ChatGPT.app/Contents/Resources/codex',
-      if (home != null) '$home/Applications/Codex.app/Contents/Resources/codex',
+      if (userApplicationsDirectory != null)
+        '$userApplicationsDirectory/ChatGPT.app/Contents/Resources/codex',
+      if (userApplicationsDirectory != null)
+        '$userApplicationsDirectory/ChatGPT.app/Contents/Resources/codex-cli/bin/codex',
+      if (userApplicationsDirectory != null)
+        '$userApplicationsDirectory/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',
+      if (userApplicationsDirectory != null)
+        '$userApplicationsDirectory/Codex.app/Contents/Resources/codex',
       if (home != null) '$home/.local/bin/codex',
       if (home != null) '$home/.codex/bin/codex',
       if (home != null) '$home/.npm-global/bin/codex',

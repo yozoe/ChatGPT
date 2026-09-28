@@ -402,3 +402,4 @@ Initial macOS release.
 ### 修复
 
 - IDE 上下文现在会安全过滤畸形选区范围，避免无效数据进入回合请求，同时保留有效文件和选中文本。
+- 修复 macOS 上随新版 ChatGPT 应用包安装的 Codex CLI 被误报为“未找到”：运行时现在识别 `codex-cli/bin/codex` 和嵌套 `CodexCLI.app` 路径。

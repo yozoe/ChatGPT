@@ -110,6 +110,34 @@ void main() {
     await server.dispose();
   });
 
+  test('discovers both supported ChatGPT app bundle CLI layouts', () async {
+    final root = await Directory.systemTemp.createTemp('codex-cli-discovery-');
+    try {
+      final launcherPath =
+          '${root.path}/ChatGPT.app/Contents/Resources/codex-cli/bin/codex';
+      await File(launcherPath).create(recursive: true);
+      final launcherServer = CodexAppServer(
+        applicationsDirectory: root.path,
+        userApplicationsDirectory: null,
+      );
+      expect(await launcherServer.resolveExecutable(), launcherPath);
+      await launcherServer.dispose();
+
+      await File(launcherPath).delete();
+      final nestedPath =
+          '${root.path}/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex';
+      await File(nestedPath).create(recursive: true);
+      final nestedServer = CodexAppServer(
+        applicationsDirectory: root.path,
+        userApplicationsDirectory: null,
+      );
+      expect(await nestedServer.resolveExecutable(), nestedPath);
+      await nestedServer.dispose();
+    } finally {
+      await root.delete(recursive: true);
+    }
+  });
+
   test(
     'keeps missing CLI failures recoverable with redacted diagnostics on retry',
     () async {
