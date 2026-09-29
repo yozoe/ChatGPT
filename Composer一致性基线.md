@@ -24,6 +24,8 @@
 
 本机观察版本（不改变上面的固定基线）：ChatGPT 应用 `26.924.22138`（build `11645`），内置 CLI `0.158.0-alpha.2.1`。由于该版本与固定基线不同，以下观察只作为版本漂移记录，不用于更新“官方一致”结论。
 
+补充可复核事实：`/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex` 在本机存在且可执行，直接运行返回 `codex-cli 0.158.0-alpha.2.1`；官方客户端仍报告“未找到 Codex CLI”。因此本轮官方离线状态还包含“应用自动发现失败但 CLI 文件实际存在”的运行时问题，不能把菜单未展开归因于 Composer 本身。
+
 ## `/` 命令基线
 
 | 能力 | 官方证据 | App Server 协议 | 当前实现状态 |
