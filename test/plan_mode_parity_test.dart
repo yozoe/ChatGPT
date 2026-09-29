@@ -607,6 +607,27 @@ void main() {
     expect(controller.pendingUserInputTaskLabel, startsWith('后台任务'));
   });
 
+  test('hides a stale same-thread user input after the turn changes', () {
+    final controller = CodexController(server: FakeCodexAppServer())
+      ..activeThreadId = 'foreground'
+      ..activeTurnId = 'turn-2';
+    controller.handleServerEventForTesting(
+      _userInputEvent('stale-input', threadId: 'foreground', turnId: 'turn-1'),
+    );
+    expect(controller.pendingUserInput, isNull);
+
+    controller.handleServerEventForTesting(
+      _userInputEvent(
+        'background-input',
+        threadId: 'background',
+        turnId: 'turn-8',
+      ),
+    );
+    expect(controller.pendingUserInput?.requestId, 'background-input');
+    expect(controller.pendingUserInputTaskLabel, startsWith('后台任务'));
+    controller.dispose();
+  });
+
   testWidgets('rejects bare /plan while a turn is running', (tester) async {
     final controller = CodexController(server: FakeCodexAppServer())
       ..workspacePath = '/workspace'
@@ -1003,6 +1024,7 @@ ServerEvent _planTurnCompletedEvent({
 ServerEvent _userInputEvent(
   String requestId, {
   String threadId = 'thread-plan',
+  String turnId = 'turn-plan',
   bool isBlocking = true,
   int questionCount = 1,
 }) => ServerEvent(
@@ -1010,7 +1032,7 @@ ServerEvent _userInputEvent(
   requestId: requestId,
   params: {
     'threadId': threadId,
-    'turnId': 'turn-plan',
+    'turnId': turnId,
     'itemId': 'item-question',
     'isBlocking': isBlocking,
     'questions': [
