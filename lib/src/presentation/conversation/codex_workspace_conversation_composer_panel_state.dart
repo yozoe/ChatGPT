@@ -389,6 +389,7 @@ class ComposerPanelState extends State<ComposerPanel> {
     description: '',
     icon: Icons.attach_file,
     aliases: ['file', 'files', 'folder', 'folders'],
+    surfaces: {ComposerMenuSurface.mention, ComposerMenuSurface.add},
   );
 
   ComposerSlashCommand get _recordSkillCommand => const ComposerSlashCommand(
@@ -398,6 +399,7 @@ class ComposerPanelState extends State<ComposerPanel> {
     icon: Icons.radio_button_checked,
     aliases: ['record-skill', 'record'],
     enabled: false,
+    surfaces: {ComposerMenuSurface.mention, ComposerMenuSurface.add},
   );
 
   ComposerSlashCommand get _workspaceContextCommand => ComposerSlashCommand(
@@ -409,6 +411,7 @@ class ComposerPanelState extends State<ComposerPanel> {
     icon: Icons.auto_awesome_outlined,
     aliases: const ['ide', 'ide-context', 'context'],
     enabled: controller.hasIdeContext,
+    surfaces: {ComposerMenuSurface.slash, ComposerMenuSurface.add},
   );
 
   ComposerSlashCommand
@@ -419,6 +422,7 @@ class ComposerPanelState extends State<ComposerPanel> {
     icon: Icons.terminal_outlined,
     aliases: const ['project', 'workspace', 'current', '当前'],
     enabled: controller.workspacePath != null,
+    surfaces: {ComposerMenuSurface.mention, ComposerMenuSurface.add},
   );
 
   List<ComposerSlashCommand> get _commandCatalog => [
@@ -446,6 +450,11 @@ class ComposerPanelState extends State<ComposerPanel> {
       description: '设置持续目标；建议先使用计划模式明确目标',
       icon: Icons.track_changes_outlined,
       aliases: ['goal'],
+      surfaces: {
+        ComposerMenuSurface.slash,
+        ComposerMenuSurface.mention,
+        ComposerMenuSurface.add,
+      },
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.planMode,
@@ -458,6 +467,11 @@ class ComposerPanelState extends State<ComposerPanel> {
       icon: Icons.lightbulb_outline,
       aliases: const ['plan'],
       enabled: !controller.canSteer,
+      surfaces: {
+        ComposerMenuSurface.slash,
+        ComposerMenuSurface.mention,
+        ComposerMenuSurface.add,
+      },
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.sideChat,
@@ -528,22 +542,32 @@ class ComposerPanelState extends State<ComposerPanel> {
   ];
 
   List<ComposerSlashCommand> get _slashCommands => _commandCatalog
-      .where(
-        (command) =>
-            command.kind != ComposerSlashCommandKind.files &&
-            command.kind != ComposerSlashCommandKind.recordSkill,
-      )
+      .where((command) => command.supports(ComposerMenuSurface.slash))
       .toList(growable: false);
 
   List<ComposerSlashCommand> get _mentionCommands => [
     _filesCommand,
     _mentionWorkspaceCommand,
     ..._commandCatalog.where(
-      (command) => const {
-        ComposerSlashCommandKind.goal,
-        ComposerSlashCommandKind.planMode,
-      }.contains(command.kind),
+      (command) =>
+          command.supports(ComposerMenuSurface.mention) &&
+          command.kind != ComposerSlashCommandKind.workspaceContext &&
+          command.kind != ComposerSlashCommandKind.files &&
+          command.kind != ComposerSlashCommandKind.recordSkill,
     ),
+    _recordSkillCommand,
+  ];
+
+  List<ComposerSlashCommand> get _addCommands => [
+    ..._commandCatalog.where(
+      (command) =>
+          command.supports(ComposerMenuSurface.add) &&
+          command.kind != ComposerSlashCommandKind.workspaceContext &&
+          command.kind != ComposerSlashCommandKind.files &&
+          command.kind != ComposerSlashCommandKind.recordSkill,
+    ),
+    _filesCommand,
+    _mentionWorkspaceCommand,
     _recordSkillCommand,
   ];
 
@@ -1699,7 +1723,7 @@ class ComposerPanelState extends State<ComposerPanel> {
   List<PopupMenuEntry<AddMenuAction>> _buildAddMenu(BuildContext context) {
     final palette = YeknomPalette.of(context);
     final commands = {
-      for (final command in _mentionCommands) command.kind: command,
+      for (final command in _addCommands) command.kind: command,
     };
     final filesCommand = commands[ComposerSlashCommandKind.files]!;
     final workspaceCommand =

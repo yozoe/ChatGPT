@@ -16,4 +16,31 @@ void main() {
     expect(command.matches('计划'), isTrue);
     expect(command.matches('unknown'), isFalse);
   });
+
+  test('keeps command exposure explicit per Composer surface', () {
+    const command = ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.goal,
+      label: '目标',
+      description: '设置持续目标',
+      icon: Icons.track_changes_outlined,
+      surfaces: {
+        ComposerMenuSurface.slash,
+        ComposerMenuSurface.mention,
+        ComposerMenuSurface.add,
+      },
+    );
+    const slashOnly = ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.model,
+      label: '模型',
+      description: '选择模型',
+      icon: Icons.view_in_ar_outlined,
+    );
+
+    expect(command.supports(ComposerMenuSurface.slash), isTrue);
+    expect(command.supports(ComposerMenuSurface.mention), isTrue);
+    expect(command.supports(ComposerMenuSurface.add), isTrue);
+    expect(slashOnly.supports(ComposerMenuSurface.slash), isTrue);
+    expect(slashOnly.supports(ComposerMenuSurface.mention), isFalse);
+    expect(slashOnly.supports(ComposerMenuSurface.add), isFalse);
+  });
 }

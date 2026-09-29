@@ -16,6 +16,8 @@ Composer 命令现在同时支持官方英文 slash 别名（如 `/plan`、`/rev
 
 ## 当前进度
 
+- Composer 的 `/`、`@` 与 `+` 入口现在由同一份带入口范围标记的命令目录驱动；命令是否出现在各入口不再依赖三套独立过滤条件，禁用状态仍由当前线程、项目和运行时状态计算。
+
 - 新增 Codex 风格 Worktrees 设置页，支持配置工作树根目录、创建前获取更新、自动清理和保留数量，并提供基础 detached worktree 数据模型、持久化和 Git 服务；Composer 任务环境选择、线程绑定、Handoff 与永久工作树仍在后续阶段。
 
 - Codex CLI 自动发现兼容新版 ChatGPT macOS 应用包：除旧版 `Contents/Resources/codex` 外，也会识别 `codex-cli/bin/codex` 与 `CodexCLI.app/Contents/MacOS/codex`，避免 CLI 已随 ChatGPT 安装却被误报为缺失。

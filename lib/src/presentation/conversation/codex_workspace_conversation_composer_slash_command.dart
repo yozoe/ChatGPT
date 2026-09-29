@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+/// Identifies the Composer surface that can expose a command.
+enum ComposerMenuSurface { slash, mention, add }
+
 /// Identifies an action available from the Composer slash-command menu.
 enum ComposerSlashCommandKind {
   workspaceContext,
@@ -28,6 +31,7 @@ class ComposerSlashCommand {
     required this.icon,
     this.aliases = const [],
     this.enabled = true,
+    this.surfaces = const {ComposerMenuSurface.slash},
   });
 
   final ComposerSlashCommandKind kind;
@@ -36,6 +40,7 @@ class ComposerSlashCommand {
   final IconData icon;
   final List<String> aliases;
   final bool enabled;
+  final Set<ComposerMenuSurface> surfaces;
 
   ComposerSlashCommand copyWith({
     String? label,
@@ -43,6 +48,7 @@ class ComposerSlashCommand {
     bool? enabled,
     IconData? icon,
     List<String>? aliases,
+    Set<ComposerMenuSurface>? surfaces,
   }) => ComposerSlashCommand(
     kind: kind,
     label: label ?? this.label,
@@ -50,7 +56,10 @@ class ComposerSlashCommand {
     icon: icon ?? this.icon,
     aliases: aliases ?? this.aliases,
     enabled: enabled ?? this.enabled,
+    surfaces: surfaces ?? this.surfaces,
   );
+
+  bool supports(ComposerMenuSurface surface) => surfaces.contains(surface);
 
   bool matches(String query) {
     final normalized = query.trim().toLowerCase();
