@@ -181,6 +181,10 @@ Schema 进一步确认 `turn/diff/updated` 是“该 turn 内所有 file change 
 
 这进一步支持该运行时的“当前 turn 文件列表”语义，而不是 thread 累计列表；新增文件在没有完整 Diff 时仍可显示文件行，但撤销安全性和行数保持未知。由于客户端身份未确认，本项目继续保持 thread 累计文件摘要的保守实现。
 
+### 当前 turn 多文件观察（身份未确认）
+
+第五轮（同一 thread）同时创建 `parity_multi_a.txt` 和 `parity_multi_b.txt`：运行中显示“2 个文件已更改”，完成后列出两个路径，各自标记 `{type: add}`、`+0/-0`，并提供“撤销”和“审核”。该回合没有把此前的 `parity_probe.txt`、`parity_second.txt` 带入当前列表，继续符合当前 turn 范围；新增文件的真实行数仍未从在线运行时取得。
+
 ## 时间线与 Composer 浮层矩阵
 
 | 交互层级 | 本地实现证据 | 官方桌面证据 |
