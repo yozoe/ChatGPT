@@ -2938,13 +2938,13 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pump();
     expect(find.byKey(const Key('composer-slash-menu')), findsNothing);
-    expect(tester.widget<TextField>(field).controller!.text, isEmpty);
+    expect(tester.widget<TextField>(field).controller!.text, '/');
 
     await tester.enterText(field, '/m');
     await tester.pump();
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pumpAndSettle();
-    expect(tester.widget<TextField>(field).controller!.text, isEmpty);
+    expect(tester.widget<TextField>(field).controller!.text, '/');
     expect(find.byKey(const Key('composer-mcp-status-panel')), findsOneWidget);
     expect(find.text('codex_app'), findsOneWidget);
     expect(find.text('computer-use'), findsOneWidget);
