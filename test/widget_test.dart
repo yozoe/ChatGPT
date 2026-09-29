@@ -12805,6 +12805,141 @@ void main() {
     },
   );
 
+  test(
+    'undoing a later turn restores the earlier version of the same file',
+    () async {
+      final server = _FakeCodexAppServer();
+      final git = _FakeGitProjectService();
+      final controller = CodexController(server: server, gitProjectService: git)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      const firstDiff =
+          'diff --git a/lib/main.dart b/lib/main.dart\n'
+          '--- a/lib/main.dart\n'
+          '+++ b/lib/main.dart\n'
+          '@@ -1 +1 @@\n-old\n+first';
+      const secondDiff =
+          'diff --git a/lib/main.dart b/lib/main.dart\n'
+          '--- a/lib/main.dart\n'
+          '+++ b/lib/main.dart\n'
+          '@@ -1 +1 @@\n+first\n+second';
+
+      expect(await controller.sendPrompt('first change'), isTrue);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'item': {
+              'type': 'fileChange',
+              'changes': [
+                {
+                  'path': 'lib/main.dart',
+                  'kind': 'modified',
+                  'diff': firstDiff,
+                },
+              ],
+            },
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/diff/updated',
+          params: {'diff': firstDiff},
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'turn': {'status': 'completed'},
+          },
+        ),
+      );
+
+      expect(await controller.sendPrompt('second change'), isTrue);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'item': {
+              'type': 'fileChange',
+              'changes': [
+                {
+                  'path': 'lib/main.dart',
+                  'kind': 'modified',
+                  'diff': secondDiff,
+                },
+              ],
+            },
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/diff/updated',
+          params: {'diff': secondDiff},
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'turn': {'status': 'completed'},
+          },
+        ),
+      );
+
+      expect(controller.canUndoFileChanges, isTrue);
+      expect(await controller.undoFileChanges(), isTrue);
+      expect(git.reversedDiff, secondDiff);
+      expect(controller.fileChanges.single.diff, firstDiff);
+      expect(controller.turnFileChanges, isEmpty);
+      controller.dispose();
+    },
+  );
+
+  test('keeps undo disabled for a truncated task Diff', () async {
+    final controller =
+        CodexController(
+            server: CodexAppServer(),
+            gitProjectService: _FakeGitProjectService(),
+          )
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready;
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {
+                'path': 'lib/main.dart',
+                'kind': 'modified',
+                'diff': '@@ -1 +1 @@\n-old\n+new',
+              },
+            ],
+          },
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      ServerEvent(
+        method: 'turn/diff/updated',
+        params: {
+          'diff':
+              'diff --git a/lib/main.dart b/lib/main.dart\n${GitProjectService.truncatedDiffMarker}',
+        },
+      ),
+    );
+
+    expect(controller.canUndoFileChanges, isFalse);
+    expect(await controller.undoFileChanges(), isFalse);
+    expect(controller.fileChangeUndoError, contains('Diff 不完整'));
+    controller.dispose();
+  });
+
   test('restores task files after a follow-up with no file changes', () async {
     final workspaceDirectory = await Directory.systemTemp.createTemp(
       'codex-desk-thread-files-follow-up-',

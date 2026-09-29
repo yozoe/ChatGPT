@@ -98,6 +98,34 @@ void main() {
   });
 
   test(
+    'hides stale same-thread requests but keeps background ownership visible',
+    () {
+      final controller = CodexController(server: CodexAppServer())
+        ..activeThreadId = 'foreground'
+        ..activeTurnId = 'turn-2';
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/commandExecution/requestApproval',
+          requestId: 'stale-approval',
+          params: {'threadId': 'foreground', 'turnId': 'turn-1'},
+        ),
+      );
+      expect(controller.pendingApproval, isNull);
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/commandExecution/requestApproval',
+          requestId: 'background-approval',
+          params: {'threadId': 'background', 'turnId': 'turn-7'},
+        ),
+      );
+      expect(controller.pendingApproval?.requestId, 'background-approval');
+      expect(controller.pendingApprovalTaskLabel, startsWith('后台任务'));
+      controller.dispose();
+    },
+  );
+
+  test(
     'automatically approves supported requests in auto approval mode',
     () async {
       final writes = <JsonMap>[];
