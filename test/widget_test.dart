@@ -8666,9 +8666,7 @@ void main() {
           'codex-desk-agent-file-link-batch-',
         );
         controllerFile = File('${workspace.path}/app_controller.dart');
-        specificationFile = File(
-          '${workspace.path}/LOCAL_WORKTREE_DEVELOPMENT.md',
-        );
+        specificationFile = File('${workspace.path}/本地工作树开发文档.md');
         await controllerFile.writeAsString('class Controller {}');
         await specificationFile.writeAsString('# Worktree');
       });
@@ -8743,7 +8741,7 @@ void main() {
       expect(find.byKey(const Key('agent-streaming-text')), findsNothing);
       expect(find.byKey(const Key('agent-markdown-selection')), findsOneWidget);
       expect(find.text('app_controller.dart'), findsOneWidget);
-      expect(find.text('LOCAL_WORKTREE_DEVELOPMENT.md'), findsNWidgets(3));
+      expect(find.text('本地工作树开发文档.md'), findsNWidgets(3));
       expect(find.byIcon(Icons.insert_drive_file_outlined), findsNWidgets(4));
       final completedRect = tester.getRect(
         find.byKey(const Key('agent-markdown-selection')),

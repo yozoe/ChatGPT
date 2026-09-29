@@ -1,6 +1,6 @@
 # Codex Composer 与任务文件一致性改造方案（当前开发目标）
 
-> 本文档当前只覆盖仓库内可实现、可测试并已交付的开发内容。官方客户端精确行为矩阵、视觉并排验收、任务文件最终范围实测和具体 IDE 插件已移至 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](CODEX_COMPOSER_PARITY_FOLLOWUP.md)，不属于本次目标。
+> 本文档当前只覆盖仓库内可实现、可测试并已交付的开发内容。官方客户端精确行为矩阵、视觉并排验收、任务文件最终范围实测和具体 IDE 插件已移至 [Composer一致性后续验收清单.md](Composer一致性后续验收清单.md)，不属于本次目标。
 
 ## 目标
 
@@ -31,7 +31,7 @@ Codex 桌面客户端的私有源码和内部实现不可作为可验证目标�
 ### 部分实现或语义不完整
 
 - “IDE 上下文”已提供 `codex_desk/ide_context` 通用宿主通道，可接收当前文件、选区和打开标签；有效快照到达后 `/` 项启用，只有用户明确选择后才通过 `turn/start.additionalContext` 或 `turn/steer.additionalContext` 发送字符串化 JSON，断连或切换项目会清除选择。当前仓库尚无具体 IDE 插件端，且官方未公开来源键与序列化格式，因此独立运行时仍禁用，不能宣称官方 IDE 集成已经完整交付。当前项目路径继续从 `@`/添加菜单独立提供。
-- `@` 非空查询已接入 App Server 0.153.4 的 `fuzzyFileSearch`，按主目录和附加工作区顺序展示真实文件/目录建议，保留系统选择器作为浏览更多入口；查询和工作区竞态、加载/错误/空状态、键盘/鼠标选择、窄窗口与符号链接越界均有处理。普通文件和目录在首轮任务和运行中方向调整里同时通过 `mention {name, path}` 结构化输入和提示词路径传递；菜单精确分组、二次排序与官方桌面视觉仍待实测。
+- `@` 非空查询已接入 App Server 0.155.0 的 `fuzzyFileSearch`，按主目录和附加工作区顺序展示真实文件/目录建议，保留系统选择器作为浏览更多入口；查询和工作区竞态、加载/错误/空状态、键盘/鼠标选择、窄窗口与符号链接越界均有处理。普通文件和目录在首轮任务和运行中方向调整里同时通过 `mention {name, path}` 结构化输入和提示词路径传递；菜单精确分组、二次排序与官方桌面视觉仍待实测。
 - “录制技能”曾通过选择 `skill-creator` 并追加提示实现，但这不是真正的操作流程录制；当前已禁用，等待公开协议或官方实测证据。
 - “代码审查”已通过结构化 `review/start` 接入，但仍需确认是否覆盖官方完整审查生命周期。
 - 目标、计划和 Skill 已接入真实数据；Goal 的状态记录和运行中目标摘要已补齐，Skill 列表刷新时会重新校验选中路径，但仍需核对官方客户端的精确生命周期、失败恢复和展示规则。
@@ -235,7 +235,7 @@ Codex 桌面客户端的私有源码和内部实现不可作为可验证目标�
 
 当前实现提供公开边界内的通用宿主接口，支持 `activeFile`、`activeSelectionContent` / `selectedText`、`selectionRange` 和 `openTabs`；最多保留 64 个打开标签，选区最多 64,000 字符。App Server Schema 要求 `additionalContext` 每项的 `value` 为字符串，因此快照使用 JSON 字符串传入首轮与方向调整请求；宿主连接本身和官方不透明来源格式仍是待完成的集成项。
 
-宿主接入契约见 [IDE_CONTEXT_HOST_PROTOCOL.md](IDE_CONTEXT_HOST_PROTOCOL.md)，包含 `updateContext` 示例、断连语义、用户选择边界和隐私责任。该契约不表示仓库已经内置某个 IDE 插件。
+宿主接入契约见 [IDE上下文宿主协议.md](IDE上下文宿主协议.md)，包含 `updateContext` 示例、断连语义、用户选择边界和隐私责任。该契约不表示仓库已经内置某个 IDE 插件。
 
 ### 3.4 当前项目
 
@@ -375,7 +375,7 @@ Codex 桌面客户端的私有源码和内部实现不可作为可验证目标�
 
 反馈载体应与官方一致，不能统一使用 Snackbar 替代面板错误、行内错误或禁用说明。
 
-上下文用量已改为消费 App Server 0.153.4 的 `thread/tokenUsage/updated`：使用 `last.totalTokens / modelContextWindow` 展示最近一次模型上下文占比，按 thread/turn 隔离迟到与后台通知；缺少有效窗口时明确等待服务端数据，不再以字符数或固定 258k 估算。
+上下文用量已改为消费 App Server 0.155.0 的 `thread/tokenUsage/updated`：使用 `last.totalTokens / modelContextWindow` 展示最近一次模型上下文占比，按 thread/turn 隔离迟到与后台通知；缺少有效窗口时明确等待服务端数据，不再以字符数或固定 258k 估算。
 
 ## 阶段七：对齐任务文件生命周期
 
@@ -516,7 +516,7 @@ flutter test
 
 ## 后续文档
 
-官方客户端实测、视觉并排、任务文件最终范围和具体 IDE 插件见 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](CODEX_COMPOSER_PARITY_FOLLOWUP.md)。这些事项不阻塞本次仓库开发目标的完成。
+官方客户端实测、视觉并排、任务文件最终范围和具体 IDE 插件见 [Composer一致性后续验收清单.md](Composer一致性后续验收清单.md)。这些事项不阻塞本次仓库开发目标的完成。
 
 ## 已知边界
 

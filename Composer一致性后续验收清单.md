@@ -1,6 +1,6 @@
 # Codex Composer 一致性后续验收清单
 
-本文档承接 [CODEX_COMPOSER_PARITY_PLAN.md](CODEX_COMPOSER_PARITY_PLAN.md) 中不纳入当前开发目标的工作。当前仓库已实现并测试的 Composer、App Server 协议、任务文件持久化和 IDE 宿主边界不需要在本清单中重复开发。
+本文档承接 [Composer一致性改造方案.md](Composer一致性改造方案.md) 中不纳入当前开发目标的工作。当前仓库已实现并测试的 Composer、App Server 协议、任务文件持久化和 IDE 宿主边界不需要在本清单中重复开发。
 
 ## 官方客户端实测
 
@@ -30,11 +30,11 @@
 5. 审查、撤销、恢复、切换聊天、切换项目和应用重启。
 6. 任务开始前已有 Git 工作树改动。
 
-根据证据确定右侧任务文件使用最新 turn、整个 thread、Git 工作树，或其他组合语义，再回到实现和测试中更新对应行为。
+根据证据确定右侧任务文件、Composer 摘要和撤销入口分别使用当前 turn、整个 thread、Git 工作树，或其他组合语义，再回到实现和测试中更新对应行为。当前本地实现的保守语义是：文件列表保留 thread 累计集合，`+/-` 行数统计当前 turn，撤销只接受当前 turn 的完整 Diff；这不是官方结论，不能替代桌面实测。
 
 ## 具体 IDE 插件
 
-当前仓库只提供 `codex_desk/ide_context` 通用宿主协议，见 [IDE_CONTEXT_HOST_PROTOCOL.md](IDE_CONTEXT_HOST_PROTOCOL.md)。后续工作需要为目标 IDE 提供实际宿主端，并用真实插件验证连接、项目切换、断连、选区和打开标签更新；完成前不得宣称内置 VS Code、Xcode 或其他 IDE 集成。
+当前仓库只提供 `codex_desk/ide_context` 通用宿主协议，见 [IDE上下文宿主协议.md](IDE上下文宿主协议.md)。后续工作需要为目标 IDE 提供实际宿主端，并用真实插件验证连接、项目切换、断连、选区和打开标签更新；完成前不得宣称内置 VS Code、Xcode 或其他 IDE 集成。
 
 ## 交付门槛
 

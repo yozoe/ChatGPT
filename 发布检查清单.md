@@ -14,7 +14,7 @@ Run this checklist for every release. The DMG build never launches the applicati
 Use a separate macOS user account or a clean test machine. Do not reuse the development application bundle or prior Codex Desk Keychain items.
 
 1. Mount the generated DMG and drag `Codex Desk.app` to `Applications`.
-2. Start the installed app, choose a test workspace, and verify that no CLI is shown as a clear recoverable error when `codex` is absent. Confirm that the timeline shows the bounded retry countdown and stops retrying after the third attempt.
+2. Start the installed app, choose a test workspace, and verify that no CLI is shown as a clear recoverable error when `codex` is absent. For capacity/rate-limit failures, confirm the automatic retry countdowns progress through 30, 60, 120 and 300 seconds, then remain capped at 300 seconds until the user cancels; ordinary failures and quota exhaustion must not enter this automatic loop.
 3. Use “Codex CLI” to confirm the diagnostic report can be copied and contains no test credential.
 4. Install or select a test Codex CLI, choose “重新检测”, and verify that the app connects without being restarted or exposing start/stop controls.
 5. Create a second workspace and verify that both entries appear in the sidebar, the current entry is visibly selected, and the other entry switches with one click. Confirm that the runtime reconnects automatically and each workspace restores its own additional directories. Remove a non-active workspace record and confirm that its directory is not deleted.

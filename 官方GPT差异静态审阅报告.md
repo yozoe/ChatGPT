@@ -204,8 +204,8 @@ Composer 中保留“录制技能”入口，但当前 App Server 没有公开�
 
 证据：
 
-- [`CODEX_COMPOSER_PARITY_BASELINE.md:25`](<CODEX_COMPOSER_PARITY_BASELINE.md:25>)
-- [`CODEX_COMPOSER_PARITY_FOLLOWUP.md:31`](<CODEX_COMPOSER_PARITY_FOLLOWUP.md:31>)
+- [`Composer一致性基线.md:25`](<Composer一致性基线.md:25>)
+- [`Composer一致性后续验收清单.md:31`](<Composer一致性后续验收清单.md:31>)
 
 判断：**已确认能力边界**。独立运行时 IDE 上下文入口会保持禁用。
 
@@ -256,7 +256,7 @@ Composer 中保留“录制技能”入口，但当前 App Server 没有公开�
 
 证据：
 
-- [`CODEX_COMPOSER_PARITY_BASELINE.md:21`](<CODEX_COMPOSER_PARITY_BASELINE.md:21>)
+- [`Composer一致性基线.md:21`](<Composer一致性基线.md:21>)
 - [`lib/src/presentation/conversation/codex_workspace_conversation_composer_panel_state.dart:757`](<lib/src/presentation/conversation/codex_workspace_conversation_composer_panel_state.dart:757>)
 
 但以下项目仍不能仅通过代码确认与官方完全一致：
@@ -271,9 +271,9 @@ Composer 中保留“录制技能”入口，但当前 App Server 没有公开�
 
 证据：
 
-- [`CODEX_COMPOSER_PARITY_BASELINE.md:17`](<CODEX_COMPOSER_PARITY_BASELINE.md:17>)
-- [`CODEX_COMPOSER_PARITY_BASELINE.md:19`](<CODEX_COMPOSER_PARITY_BASELINE.md:19>)
-- [`CODEX_COMPOSER_PARITY_FOLLOWUP.md:8`](<CODEX_COMPOSER_PARITY_FOLLOWUP.md:8>)
+- [`Composer一致性基线.md:17`](<Composer一致性基线.md:17>)
+- [`Composer一致性基线.md:19`](<Composer一致性基线.md:19>)
+- [`Composer一致性后续验收清单.md:8`](<Composer一致性后续验收清单.md:8>)
 
 判断：**协议层较接近，桌面视觉和精确交互仍待实测**。
 
@@ -330,7 +330,7 @@ Composer 中保留“录制技能”入口，但当前 App Server 没有公开�
 
 ### 已部分修复：`/`、`@` 和“添加”菜单的动作元数据已共享
 
-此前版本存在三套独立定义。当前实现已抽取共享的 `ComposerSlashCommand` 命令描述，`/`、`@` 和“添加”菜单复用文件、工作区上下文、目标、计划模式和技能录制等核心元数据；选择、禁用和键盘导航也已统一测试。仍需官方矩阵确认完整入口集合、顺序和隐藏条件，后续若发现动作集合继续分叉，再扩展为完整的不可变 action catalog。
+此前版本存在三套独立定义。当前实现已抽取共享的 `ComposerSlashCommand` 命令描述，`/`、`@` 和“添加”菜单复用文件、工作区上下文、目标、计划模式和 Skill 等核心元数据；“录制技能”没有公开协议时保持禁用，不伪造录制上下文。选择、禁用和键盘导航也已统一测试。仍需官方矩阵确认完整入口集合、顺序和隐藏条件，后续若发现动作集合继续分叉，再扩展为完整的不可变 action catalog。
 
 ### P2：精确顺序和视觉仍不能宣称与官方一致
 
@@ -459,7 +459,7 @@ Composer 中保留“录制技能”入口，但当前 App Server 没有公开�
 ## 十三、2026-09-29 回归与客户端对照补充
 
 - 完整 `flutter test` 首轮暴露了后台请求选择、首次 turn 撤销空快照、无 thread 撤销、窄窗口 Composer 溢出、工作树路径失效和完成提醒确认等回归；相关执行路径已修复，并以聚焦测试逐项复验。
-- `/`、`@`、`+` 当前共享文件、工作区上下文、目标、计划模式和录制技能等命令元数据；禁用项不会截获 Enter，Esc 只关闭当前菜单或浮层，`@` 文件查询仍使用当前工作区的模糊搜索结果。
-- 官方客户端真实对照存在环境限制：本机已安装 `/Applications/ChatGPT.app`，Bundle ID 为 `com.openai.codex`、版本 `26.924.22138`，但系统拒绝 Computer Use 自动化绑定该应用；浏览器侧也缺少 Codex 鉴权 token。当前可访问的 `chatgpt` 窗口实际为本地 Xedoc/Codex Desk 构建。因此本轮不能把官方菜单顺序、图标和隐藏条件标记为最终实测完成，后续仍需在允许绑定官方包的环境补齐截图与行为矩阵。
+- `/`、`@`、`+` 当前共享文件、工作区上下文、目标、计划模式和 Skill 等命令元数据；没有公开协议的“录制技能”保持禁用，不会伪造录制上下文。禁用项不会截获 Enter，Esc 只关闭当前菜单或浮层，`@` 文件查询仍使用当前工作区的模糊搜索结果。
+- 官方客户端真实对照存在环境限制：本机曾安装 `/Applications/ChatGPT.app`，Bundle ID 为 `com.openai.codex`，观察到的本机版本为 `26.924.22138`；本轮固定对照基线则是 `26.915.31945` / CLI `0.155.0-alpha.9.2`。系统拒绝 Computer Use 自动化绑定官方应用，浏览器侧也缺少 Codex 鉴权 token。当前可访问的 `chatgpt` 窗口实际为本地 Xedoc/Codex Desk 构建。因此本轮不能把官方菜单顺序、图标和隐藏条件标记为最终实测完成，后续仍需在允许绑定固定版本官方包的环境补齐截图与行为矩阵。
 - 当前可访问窗口的 AX/截图证据显示：底部 Composer 有独立的“+”添加入口、审批模式入口（“帮我批准”）、模型与推理强度选择；右侧环境栏显示“任务文件”并在无任务时显示“暂无”。这些证据只能用于确认本地构建的层级和术语，不能替代官方包的菜单顺序、禁用态与键盘实测。
 - Goal 完成摘要已补齐：目标完成时，时间线显示带完成图标的“已在 Xm Ys 内达成目标”紧凑提示；服务端未提供用时时按 0 秒安全降级。该实现对齐用户提供的参考形态，但官方字体、图标和精确间距仍属于待实测项。

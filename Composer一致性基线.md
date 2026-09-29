@@ -9,6 +9,8 @@
 - 公开文档：[Slash commands](https://learn.chatgpt.com/docs/reference/slash-commands)、[Codex App Server](https://learn.chatgpt.com/docs/app-server)。
 - 协议证据：由上述客户端内置 CLI 执行 `codex app-server generate-json-schema --experimental` 生成的 0.155.0 Schema。
 
+本文件的“固定版本”是可复现对照目标；审阅报告中记录的 `26.924.22138` 仅表示本机曾观察到的安装版本，不与本基线混用。所有桌面视觉和行为结论仍必须注明实际观察版本。
+
 ## 证据等级
 
 - `已确认（文档）`：OpenAI 官方文档明确描述。
@@ -22,7 +24,7 @@
 
 | 能力 | 官方证据 | App Server 协议 | 当前实现状态 |
 | --- | --- | --- | --- |
-| IDE 上下文 | 已确认（文档）：`/ide-context` 切换自动 IDE 上下文；CLI `/ide` 包含打开文件和当前选区 | App Server 0.153.4 的 `turn/start.additionalContext` 与 `turn/steer.additionalContext` 可携带按不透明来源键组织的 `{kind: untrusted/application, value: string}` 文本片段；官方文档仍未给出 IDE 宿主连接、来源键和序列化格式 | 已提供 `codex_desk/ide_context` 通用宿主通道并接入当前文件、选区、打开标签；有效快照到达后入口启用，显式选择后以 JSON 字符串发送，断连/切换项目清除选择。仓库没有具体 IDE 插件端，独立运行时仍禁用；当前项目路径从 `@`/添加菜单单独提供 |
+| IDE 上下文 | 已确认（文档）：`/ide-context` 切换自动 IDE 上下文；CLI `/ide` 包含打开文件和当前选区 | App Server 0.155.0 的 `turn/start.additionalContext` 与 `turn/steer.additionalContext` 可携带按不透明来源键组织的 `{kind: untrusted/application, value: string}` 文本片段；官方文档仍未给出 IDE 宿主连接、来源键和序列化格式 | 已提供 `codex_desk/ide_context` 通用宿主通道并接入当前文件、选区、打开标签；有效快照到达后入口启用，显式选择后以 JSON 字符串发送，断连/切换项目清除选择。仓库没有具体 IDE 插件端，独立运行时仍禁用；当前项目路径从 `@`/添加菜单单独提供 |
 | MCP | 已确认（文档） | `mcpServerStatus/list`、`mcpServerStatus/updated` | 已接入当前线程实时连接、认证与工具状态；待桌面实测 |
 | 代码审查 | 已确认（文档）：未提交改动或相对基础分支 | `review/start`，目标支持 `uncommittedChanges`、`baseBranch`、`commit`、`custom` | 已改用结构化 `review/start` |
 | 侧边聊天 | 已确认（文档）：临时聊天，不中断主聊天；审查模式和嵌套侧边聊天中不可用 | `thread/fork` + `ephemeral: true`；分页线程使用 `excludeTurns: true` | 已接入独立侧栏 UI，审查/嵌套/重复创建均禁用，迟到结果按任务丢弃；精确布局仍待桌面实测 |
@@ -38,7 +40,7 @@
 
 | 能力 | 已确认内容 | 尚待确认 |
 | --- | --- | --- |
-| 文件和文件夹 | 官方文档确认 `@` 可搜索工作区文件并把路径加入提示；App Server 0.153.4 Schema 明确提供 `fuzzyFileSearch {query, roots, cancellationToken}` 和带文件/目录类型、根目录、分数与匹配索引的结果，并支持 `mention {name, path}` | 已接入 Schema 证明的实时工作区搜索和结构化提交，保留系统选择器作为浏览更多入口；桌面端精确分组、排序和视觉仍待实测 |
+| 文件和文件夹 | 官方文档确认 `@` 可搜索工作区文件并把路径加入提示；App Server 0.155.0 Schema 明确提供 `fuzzyFileSearch {query, roots, cancellationToken}` 和带文件/目录类型、根目录、分数与匹配索引的结果，并支持 `mention {name, path}` | 已接入 Schema 证明的实时工作区搜索和结构化提交，保留系统选择器作为浏览更多入口；桌面端精确分组、排序和视觉仍待实测 |
 | IDE 上下文 | 官方文档确认 IDE 可提供打开文件、当前选区及其他编辑器上下文；App Server Schema 确认 `turn/start.additionalContext` 是公开的客户端上下文载体 | 桌面端精确字段、宿主桥接与来源格式、断连降级；不得依赖未公开的扩展 IPC |
 | Skill | App Server 文档确认文本中的 `$skill-name` 应与结构化 `skill` 输入同时发送 | 官方桌面端是否把 Skill 放在 `@` 菜单、分组与排序 |
 | Goal | App Server 提供持久目标生命周期 | 官方桌面端 `@` 入口、徽标和草稿恢复细节 |
