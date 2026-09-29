@@ -376,6 +376,60 @@ void main() {
     },
   );
 
+  test('restores the previous turn diff when a retry start fails', () async {
+    final server = FakeCodexAppServer();
+    final controller = await readyRetryController(server);
+    expect(await controller.sendPrompt('保留上一回合 Diff'), isTrue);
+
+    const diff =
+        'diff --git a/lib/main.dart b/lib/main.dart\n'
+        '@@ -1 +1 @@\n'
+        '-old\n'
+        '+new';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {
+                'path': 'lib/main.dart',
+                'kind': 'modified',
+                'diff': '@@ -1 +1 @@\n-old\n+new',
+              },
+            ],
+          },
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(method: 'turn/diff/updated', params: {'diff': diff}),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'new-thread',
+          'turn': {
+            'status': 'failed',
+            'error': {'message': 'offline'},
+          },
+        },
+      ),
+    );
+    expect(controller.turnDiff, diff);
+    expect(controller.fileChanges.single.path, 'lib/main.dart');
+
+    server.startTurnError = StateError('retry still offline');
+    expect(await controller.retryFailedTurn(), isFalse);
+
+    expect(controller.fileChanges.single.path, 'lib/main.dart');
+    expect(controller.turnDiff, diff);
+    expect(controller.failedTurnRetryError, 'retry still offline');
+    controller.dispose();
+  });
+
   test('does not offer retry after an interrupted turn', () async {
     final server = FakeCodexAppServer();
     final controller = await readyRetryController(server);
