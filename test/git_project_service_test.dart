@@ -219,4 +219,62 @@ void main() {
     ], workingDirectory: directory.path);
     expect(stagedDiff.stdout, contains('+new'));
   });
+
+  test(
+    'preserves pre-existing worktree edits when undoing a task patch',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'codex-undo-preexisting-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      expect(
+        (await Process.run('git', [
+          'init',
+          '-q',
+        ], workingDirectory: directory.path)).exitCode,
+        0,
+      );
+      final file = File('${directory.path}/tracked.txt');
+      await file.writeAsString('base\n');
+      expect(
+        (await Process.run('git', [
+          'add',
+          'tracked.txt',
+        ], workingDirectory: directory.path)).exitCode,
+        0,
+      );
+      expect(
+        (await Process.run('git', [
+          '-c',
+          'user.name=Codex Test',
+          '-c',
+          'user.email=codex@example.com',
+          'commit',
+          '-qm',
+          'initial',
+        ], workingDirectory: directory.path)).exitCode,
+        0,
+      );
+
+      // This line predates the task and must survive its undo.
+      await file.writeAsString('base\nuser edit\n');
+      const taskDiff = '''diff --git a/tracked.txt b/tracked.txt
+--- a/tracked.txt
++++ b/tracked.txt
+@@ -1,2 +1,3 @@
+ base
+ user edit
++task edit
+''';
+
+      await file.writeAsString('base\nuser edit\ntask edit\n');
+      await GitProjectService().reverseApplyDiff(
+        workspace: directory.path,
+        diff: taskDiff,
+        expectedPaths: const ['tracked.txt'],
+      );
+
+      expect(await file.readAsString(), 'base\nuser edit\n');
+    },
+  );
 }
