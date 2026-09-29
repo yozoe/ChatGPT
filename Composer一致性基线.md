@@ -162,6 +162,15 @@ Schema 进一步确认 `turn/diff/updated` 是“该 turn 内所有 file change 
 
 这只证明该在线运行时的无文件任务完成层级和耗时呈现；未涉及工具活动、审批、Plan、文件 Diff 或滚动中断，且窗口身份仍为 `Xedoc` 定制实例，不能标记为官方一致。
 
+### Plan 观察（身份未确认）
+
+在新聊天输入 `/plan` 并提交：
+
+1. 第一回合只产生“你希望我规划什么？请提供任务或目标”的普通 Codex 回复，没有独立 Plan 卡片。
+2. 继续发送“plan a three step verification without modifying files”后，回复正文列出三步计划（静态检查、非变更验证、证据复核），但时间线没有出现独立的结构化 Plan 卡片，也没有 `Implement this plan?` 完成卡片。
+
+该观察与本项目当前结构化 Plan 实现不同；由于客户端仍显示 `Xedoc` 定制身份，不能据此判断官方生产客户端的 Plan 视觉或生命周期语义。
+
 ### 任务文件跨轮观察：首轮修改后第二轮只追问（身份未确认）
 
 在同一 thread 中完成两轮真实任务：
