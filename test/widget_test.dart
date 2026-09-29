@@ -3078,6 +3078,31 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('keeps slash review visible but disabled while running', (
+    tester,
+  ) async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'running-thread'
+      ..activeTurnId = 'running-turn';
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final field = find.byKey(const Key('composer-field'));
+    await tester.enterText(field, '/');
+    await tester.pump();
+
+    final review = find.byKey(
+      const ValueKey('composer-slash-command-codeReview'),
+    );
+    expect(review, findsOneWidget);
+    expect(tester.widget<InkWell>(review).onTap, isNull);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('does not execute project context without a selected project', (
     tester,
   ) async {
