@@ -3400,6 +3400,33 @@ void main() {
     },
   );
 
+  testWidgets('closes the slash menu with Tab without submitting the token', (
+    tester,
+  ) async {
+    final controller =
+        CodexController(
+            server: _FakeCodexAppServer(),
+            pluginStore: _MemoryCodexPluginStore(),
+          )
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final field = find.byKey(const Key('composer-field'));
+    await tester.enterText(field, '/');
+    await tester.pump();
+    expect(find.byKey(const Key('composer-slash-menu')), findsOneWidget);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+
+    expect(find.byKey(const Key('composer-slash-menu')), findsNothing);
+    expect(tester.widget<TextField>(field).controller!.text, '/');
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('submits Composer feedback through the App Server dialog', (
     tester,
   ) async {
