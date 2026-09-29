@@ -12792,12 +12792,15 @@ void main() {
         'first.txt',
         'second.txt',
       ]);
+      expect(controller.turnFileChanges.map((change) => change.path), [
+        'second.txt',
+      ]);
       expect(controller.turnDiff, secondDiff);
-      // The latest turn Diff does not cover the earlier thread-level file,
-      // so the safe undo guard must not present it as a complete task undo.
-      expect(controller.canUndoFileChanges, isFalse);
-      expect(await controller.undoFileChanges(), isFalse);
-      expect(git.reversedDiff, isNull);
+      // Undo is scoped to the current turn and must not require the Diff to
+      // cover the thread's older cumulative file summary.
+      expect(controller.canUndoFileChanges, isTrue);
+      expect(await controller.undoFileChanges(), isTrue);
+      expect(git.reversedDiff, secondDiff);
       controller.dispose();
     },
   );

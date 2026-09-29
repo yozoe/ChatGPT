@@ -261,6 +261,7 @@ class CodexController extends ChangeNotifier {
       _ideContextBridge.additionalContext;
   final Map<String, int> _composerTemporaryAttachmentRetains = {};
   final Map<String, CodexFileChange> _fileChangesByPath = {};
+  final Map<String, CodexFileChange> _turnFileChangesByPath = {};
   final Set<String> _turnDiffDerivedFileChangePaths = {};
   final Set<String> _turnExplicitFileChangePaths = {};
   final Set<String> _pinnedThreadIds = {};
@@ -561,6 +562,10 @@ class CodexController extends ChangeNotifier {
   final Map<String, JsonMap> _threadCollaborationModesById = {};
   final Map<String, CodexThreadTokenUsage> _threadTokenUsageById = {};
   final Map<String, List<CodexFileChange>> _persistedFileChangesByThreadId = {};
+  final Map<String, List<CodexFileChange>> _persistedTurnFileChangesByThreadId =
+      {};
+  final Map<String, List<CodexFileChange>>
+  _persistedFileChangesBeforeTurnByThreadId = {};
   final Map<String, String?> _persistedTurnDiffByThreadId = {};
   final Set<String> _goalOperationThreadIds = {};
   final Map<String, String> _goalOperationErrorsByThread = {};
@@ -856,8 +861,19 @@ class CodexController extends ChangeNotifier {
           'elicitation' => _pendingElicitations[request.requestId]?.threadId,
           _ => _pendingApprovals[request.requestId]?.threadId,
         };
-        if (threadId == activeId) return request.kind;
+        final turnId = switch (request.kind) {
+          'userInput' => _pendingUserInputs[request.requestId]?.turnId,
+          'elicitation' => _pendingElicitations[request.requestId]?.turnId,
+          _ => _pendingApprovals[request.requestId]?.turnId,
+        };
+        if (threadId == activeId &&
+            (activeTurnId == null ||
+                turnId == null ||
+                turnId == activeTurnId)) {
+          return request.kind;
+        }
       }
+      return null;
     }
     return _pendingRequestOrder.first.kind;
   }
@@ -879,10 +895,15 @@ class CodexController extends ChangeNotifier {
     final activeId = activeThreadId;
     if (activeId != null) {
       for (final approval in _pendingApprovals.values) {
-        if (approval.threadId == activeId) return approval;
+        if (approval.threadId == activeId &&
+            (approval.turnId == null ||
+                activeTurnId == null ||
+                approval.turnId == activeTurnId)) {
+          return approval;
+        }
       }
     }
-    return _pendingApprovals.values.firstOrNull;
+    return activeId == null ? _pendingApprovals.values.firstOrNull : null;
   }
 
   /// Describes the task owning an approval that is not in the current view.
@@ -905,10 +926,13 @@ class CodexController extends ChangeNotifier {
     final activeId = activeThreadId;
     if (activeId != null) {
       for (final request in _pendingUserInputs.values) {
-        if (request.threadId == activeId) return request;
+        if (request.threadId == activeId &&
+            (activeTurnId == null || request.turnId == activeTurnId)) {
+          return request;
+        }
       }
     }
-    return _pendingUserInputs.values.firstOrNull;
+    return activeId == null ? _pendingUserInputs.values.firstOrNull : null;
   }
 
   /// Deadline shown by the official dismiss control during the final
@@ -1409,6 +1433,8 @@ class CodexController extends ChangeNotifier {
   /// Returns an unmodifiable view of recorded file changes.
   List<CodexFileChange> get fileChanges =>
       List.unmodifiable(_fileChangesByPath.values);
+  List<CodexFileChange> get turnFileChanges =>
+      List.unmodifiable(_turnFileChangesByPath.values);
   String? turnDiff;
 
   /// 撤销只对完整、带文件头的任务 Diff 开放；仅有统计或 hunk 时保持禁用。
@@ -1420,7 +1446,7 @@ class CodexController extends ChangeNotifier {
     final diffChanges = codexFileChangesFromUnifiedDiff(diff);
     final diffCoversTaskSummary =
         diffChanges.isNotEmpty &&
-        fileChanges.every(
+        turnFileChanges.every(
           (taskChange) => diffChanges.any(
             (diffChange) => _sameWorkspaceChangePath(
               taskChange.path,
@@ -1430,7 +1456,7 @@ class CodexController extends ChangeNotifier {
           ),
         ) &&
         diffChanges.every(
-          (diffChange) => fileChanges.any(
+          (diffChange) => turnFileChanges.any(
             (taskChange) => _sameWorkspaceChangePath(
               taskChange.path,
               diffChange.path,
@@ -1440,7 +1466,7 @@ class CodexController extends ChangeNotifier {
         );
     return !hasRunningTasks &&
         !fileChangeUndoRunning &&
-        fileChanges.isNotEmpty &&
+        turnFileChanges.isNotEmpty &&
         diffCoversTaskSummary &&
         !diff.contains(GitProjectService.truncatedDiffMarker) &&
         (diff.contains('diff --git ') ||
@@ -5014,7 +5040,16 @@ class CodexController extends ChangeNotifier {
     _fileChangesByPath
       ..clear()
       ..addEntries(
-        snapshot.fileChanges.map((change) => MapEntry(change.path, change)),
+        (snapshot.threadFileChanges ?? snapshot.fileChanges).map(
+          (change) => MapEntry(_fileChangeKey(change.path), change),
+        ),
+      );
+    _turnFileChangesByPath
+      ..clear()
+      ..addEntries(
+        snapshot.fileChanges.map(
+          (change) => MapEntry(_fileChangeKey(change.path), change),
+        ),
       );
     turnDiff = snapshot.turnDiff;
     _restorePersistedThreadFileSnapshots(snapshot);
@@ -5419,7 +5454,7 @@ class CodexController extends ChangeNotifier {
     final localFileChanges = previousThreadId == thread.id
         ? List<CodexFileChange>.of(fileChanges)
         : List<CodexFileChange>.of(
-            _persistedFileChangesByThreadId[thread.id] ?? const [],
+            _persistedTurnFileChangesByThreadId[thread.id] ?? const [],
           );
     final localTurnDiff = previousThreadId == thread.id
         ? turnDiff
@@ -5475,8 +5510,8 @@ class CodexController extends ChangeNotifier {
           // snapshot before reattaching to App Server. Older servers may
           // return turns without file-change items; retain that durable local
           // summary instead of blanking the task panel during reattach.
-          if (localFileChanges.isNotEmpty && fileChanges.isEmpty) {
-            _replaceFileChanges(localFileChanges, localTurnDiff);
+          if (localFileChanges.isNotEmpty && turnFileChanges.isEmpty) {
+            _replaceTurnFileChanges(localFileChanges, localTurnDiff);
           }
           _restoreMissingCompletedCommands(localTimelineEntries);
           viewLoaded = true;
@@ -5805,6 +5840,8 @@ class CodexController extends ChangeNotifier {
       _removeCachedThreadView(thread.id, workspace: workspacePath);
       _userMessageEntriesByThreadId.remove(thread.id);
       _persistedFileChangesByThreadId.remove(thread.id);
+      _persistedTurnFileChangesByThreadId.remove(thread.id);
+      _persistedFileChangesBeforeTurnByThreadId.remove(thread.id);
       _persistedTurnDiffByThreadId.remove(thread.id);
       _clearPlanImplementationForThread(thread.id);
       _threadTokenUsageById.remove(thread.id);
@@ -6085,8 +6122,11 @@ class CodexController extends ChangeNotifier {
   Future<void> respondToApproval({
     required bool accepted,
     bool allowSimilar = false,
+    Object? requestId,
   }) async {
-    final approval = pendingApproval;
+    final approval = requestId == null
+        ? pendingApproval
+        : _pendingApprovals[requestId];
     if (approval == null || approvalResponding) return;
 
     approvalResponding = true;
@@ -6847,6 +6887,8 @@ class CodexController extends ChangeNotifier {
           _clearGoalContinuationState(deletedThreadId);
           _threadCollaborationModesById.remove(deletedThreadId);
           _persistedFileChangesByThreadId.remove(deletedThreadId);
+          _persistedTurnFileChangesByThreadId.remove(deletedThreadId);
+          _persistedFileChangesBeforeTurnByThreadId.remove(deletedThreadId);
           _persistedTurnDiffByThreadId.remove(deletedThreadId);
           _planModeByThreadId.remove(deletedThreadId);
           _clearPlanImplementationForThread(deletedThreadId);
@@ -8153,10 +8195,15 @@ class CodexController extends ChangeNotifier {
     final turns = result['turns'];
     if (turns is! Iterable) return;
     JsonMap? latestTurn;
+    // A resumed thread owns one cumulative task-file summary. Clear the
+    // previous view once before replaying all turns, then merge each turn's
+    // file changes by path. Clearing inside the loop would leave only the
+    // final turn visible after restart.
+    _clearFileChanges();
     for (final rawTurn in turns) {
       if (rawTurn is! Map) continue;
+      _turnFileChangesByPath.clear();
       latestTurn = JsonMap.from(rawTurn);
-      _clearFileChanges();
       final rawItems = rawTurn['items'];
       if (rawItems is! Iterable) {
         _appendTurnElapsed(JsonMap.from(rawTurn));
@@ -9563,17 +9610,22 @@ class CodexController extends ChangeNotifier {
       if (rawChange is! Map) continue;
       final change = CodexFileChange.fromJson(rawChange);
       if (change.path.isEmpty) continue;
-      final previous = _fileChangesByPath[change.path];
+      final key = _fileChangeKey(change.path);
+      final previous = _fileChangesByPath[key];
       if (change.diff.isEmpty && previous != null) {
         // Metadata-only events must not discard that this entry's patch was
         // derived from turn/diff/updated. A later diff update still owns the
         // displayed patch and needs to replace it.
-        _fileChangesByPath[change.path] = previous.copyWith(kind: change.kind);
+        _fileChangesByPath[key] = previous.copyWith(kind: change.kind);
       } else {
-        _turnDiffDerivedFileChangePaths.remove(change.path);
-        _turnExplicitFileChangePaths.add(change.path);
-        _fileChangesByPath[change.path] = change;
+        _turnDiffDerivedFileChangePaths.remove(key);
+        _turnExplicitFileChangePaths.add(key);
+        _fileChangesByPath[key] = change;
       }
+      final turnPrevious = _turnFileChangesByPath[key];
+      _turnFileChangesByPath[key] = change.diff.isEmpty && turnPrevious != null
+          ? turnPrevious.copyWith(kind: change.kind)
+          : change;
       changed = true;
     }
     if (changed) {
@@ -9592,7 +9644,7 @@ class CodexController extends ChangeNotifier {
   Future<void> _hydrateMissingFileChangeDiffs() async {
     final workspace = workspacePath;
     if (workspace == null || _disposed) return;
-    final pending = fileChanges
+    final pending = turnFileChanges
         .where((change) => change.diff.trim().isEmpty)
         .toList(growable: false);
     if (pending.isEmpty) return;
@@ -9622,7 +9674,7 @@ class CodexController extends ChangeNotifier {
         if (target != null) requests.add((source: source, target: target));
       }
       if (requests.isEmpty) return;
-      var hydrated = false;
+      var didHydrate = false;
       for (final request in requests) {
         if (_disposed || workspacePath != workspace) return;
         GitDiffPreview preview;
@@ -9634,16 +9686,19 @@ class CodexController extends ChangeNotifier {
         } catch (_) {
           continue;
         }
-        final current = _fileChangesByPath[request.source.path];
+        final key = _fileChangeKey(request.source.path);
+        final current = _turnFileChangesByPath[key];
         if (current != request.source || preview.content.trim().isEmpty) {
           continue;
         }
-        _fileChangesByPath[request.source.path] = request.source.copyWith(
-          diff: preview.content,
-        );
-        hydrated = true;
+        final hydratedChange = request.source.copyWith(diff: preview.content);
+        _turnFileChangesByPath[key] = hydratedChange;
+        if (_fileChangesByPath[key] != null) {
+          _fileChangesByPath[key] = hydratedChange;
+        }
+        didHydrate = true;
       }
-      if (hydrated) {
+      if (didHydrate) {
         _scheduleConversationHistorySave();
         notifyListeners();
       }
@@ -9672,7 +9727,7 @@ class CodexController extends ChangeNotifier {
     final workspace = workspacePath!;
     final threadId = activeThreadId;
     final diff = turnDiff!;
-    final expectedPaths = fileChanges
+    final expectedPaths = turnFileChanges
         .map((change) => change.path)
         .toList(growable: false);
     fileChangeUndoRunning = true;
@@ -9688,16 +9743,38 @@ class CodexController extends ChangeNotifier {
       if (workspacePath == workspace &&
           activeThreadId == threadId &&
           turnDiff == diff) {
-        _clearFileChanges();
+        final previousThreadFiles =
+            _persistedFileChangesBeforeTurnByThreadId[threadId] ?? const [];
+        _fileChangesByPath
+          ..clear()
+          ..addEntries(
+            previousThreadFiles.map(
+              (change) => MapEntry(_fileChangeKey(change.path), change),
+            ),
+          );
+        _turnFileChangesByPath.clear();
+        turnDiff = null;
+        _persistedFileChangesByThreadId[threadId!] = List<CodexFileChange>.of(
+          previousThreadFiles,
+        );
+        _persistedTurnFileChangesByThreadId.remove(threadId);
+        _persistedFileChangesBeforeTurnByThreadId.remove(threadId);
+        _persistedTurnDiffByThreadId.remove(threadId);
         _scheduleConversationHistorySave();
       } else if (workspacePath == workspace && threadId != null) {
         final cacheKey = (workspace: workspace, threadId: threadId);
         final cached = _threadViewCache.remove(cacheKey);
         var detachedSnapshotCleared = false;
         if (cached != null && cached.turnDiff == diff) {
+          final previousThreadFiles =
+              _persistedFileChangesBeforeTurnByThreadId[threadId] ??
+              _persistedFileChangesByThreadId[threadId] ??
+              cached.fileChanges;
           _threadViewCache[cacheKey] = ThreadViewSnapshot(
             entries: cached.entries,
-            fileChanges: const [],
+            fileChanges: previousThreadFiles,
+            turnFileChanges: const [],
+            fileChangesBeforeTurn: null,
             turnDiff: null,
           );
           detachedSnapshotCleared = true;
@@ -9705,7 +9782,15 @@ class CodexController extends ChangeNotifier {
           _threadViewCache[cacheKey] = cached;
         }
         if (_persistedTurnDiffByThreadId[threadId] == diff) {
-          _persistedFileChangesByThreadId.remove(threadId);
+          final previousThreadFiles =
+              _persistedFileChangesBeforeTurnByThreadId[threadId] ??
+              _persistedFileChangesByThreadId[threadId] ??
+              const <CodexFileChange>[];
+          _persistedFileChangesByThreadId[threadId] = List<CodexFileChange>.of(
+            previousThreadFiles,
+          );
+          _persistedTurnFileChangesByThreadId.remove(threadId);
+          _persistedFileChangesBeforeTurnByThreadId.remove(threadId);
           _persistedTurnDiffByThreadId.remove(threadId);
           detachedSnapshotCleared = true;
         }
@@ -9743,12 +9828,33 @@ class CodexController extends ChangeNotifier {
     return source == '$root/$target' || target == '$root/$source';
   }
 
+  /// Returns a stable workspace-relative key for task-file aggregation.
+  /// App Server may alternate between absolute and relative paths, and may
+  /// use either slash style. The original path remains on the value for UI.
+  String _fileChangeKey(String path) {
+    var normalized = path
+        .replaceAll('\\', '/')
+        .replaceFirst(RegExp(r'^\./'), '');
+    final workspace = workspacePath;
+    if (workspace != null) {
+      final root = workspace
+          .replaceAll('\\', '/')
+          .replaceFirst(RegExp(r'/$'), '');
+      if (normalized == root) return '';
+      if (normalized.startsWith('$root/')) {
+        normalized = normalized.substring(root.length + 1);
+      }
+    }
+    return normalized;
+  }
+
   /// 规范化并保存当前任务的统一 Diff。
   /// Normalizes and stores the current turn's unified diff.
   void _updateTurnDiff(Object? rawDiff) {
     final diff = rawDiff?.toString() ?? '';
     turnDiff = diff.isEmpty ? null : diff;
     for (final path in _turnDiffDerivedFileChangePaths) {
+      _turnFileChangesByPath.remove(path);
       _fileChangesByPath.remove(path);
     }
     _turnDiffDerivedFileChangePaths.clear();
@@ -9761,16 +9867,19 @@ class CodexController extends ChangeNotifier {
     // per-file task snapshot from its Git headers so the environment card,
     // timeline summary, and review panel do not disagree about this turn.
     for (final change in codexFileChangesFromUnifiedDiff(diff)) {
-      final previous = _fileChangesByPath[change.path];
+      final key = _fileChangeKey(change.path);
+      final previous = _turnFileChangesByPath[key];
       final patchIsDerived =
           previous == null ||
           previous.diff.trim().isEmpty ||
-          !_turnExplicitFileChangePaths.contains(change.path);
-      _fileChangesByPath[change.path] = patchIsDerived
+          !_turnExplicitFileChangePaths.contains(key);
+      final next = patchIsDerived
           ? previous?.copyWith(diff: change.diff) ?? change
           : previous;
+      _turnFileChangesByPath[key] = next;
+      _fileChangesByPath[key] = next;
       if (patchIsDerived) {
-        _turnDiffDerivedFileChangePaths.add(change.path);
+        _turnDiffDerivedFileChangePaths.add(key);
       }
     }
     _scheduleConversationHistorySave();
@@ -10405,7 +10514,16 @@ class CodexController extends ChangeNotifier {
       _fileChangesByPath
         ..clear()
         ..addEntries(
-          snapshot.fileChanges.map((change) => MapEntry(change.path, change)),
+          (snapshot.threadFileChanges ?? snapshot.fileChanges).map(
+            (change) => MapEntry(_fileChangeKey(change.path), change),
+          ),
+        );
+      _turnFileChangesByPath
+        ..clear()
+        ..addEntries(
+          snapshot.fileChanges.map(
+            (change) => MapEntry(_fileChangeKey(change.path), change),
+          ),
         );
       turnDiff = snapshot.turnDiff;
       _restorePersistedThreadFileSnapshots(snapshot);
@@ -10670,7 +10788,16 @@ class CodexController extends ChangeNotifier {
     _fileChangesByPath
       ..clear()
       ..addEntries(
-        snapshot.fileChanges.map((change) => MapEntry(change.path, change)),
+        (snapshot.threadFileChanges ?? snapshot.fileChanges).map(
+          (change) => MapEntry(_fileChangeKey(change.path), change),
+        ),
+      );
+    _turnFileChangesByPath
+      ..clear()
+      ..addEntries(
+        snapshot.fileChanges.map(
+          (change) => MapEntry(_fileChangeKey(change.path), change),
+        ),
       );
     turnDiff = snapshot.turnDiff;
     _restorePersistedThreadFileSnapshots(snapshot);
@@ -10691,15 +10818,34 @@ class CodexController extends ChangeNotifier {
         for (final entry in snapshot.fileChangesByThreadId.entries)
           entry.key: List<CodexFileChange>.of(entry.value),
       });
+    _persistedTurnFileChangesByThreadId
+      ..clear()
+      ..addAll({
+        for (final entry in snapshot.turnFileChangesByThreadId.entries)
+          entry.key: List<CodexFileChange>.of(entry.value),
+      });
+    _persistedFileChangesBeforeTurnByThreadId
+      ..clear()
+      ..addAll({
+        for (final entry in snapshot.fileChangesBeforeTurnByThreadId.entries)
+          entry.key: List<CodexFileChange>.of(entry.value),
+      });
     _persistedTurnDiffByThreadId
       ..clear()
       ..addAll(snapshot.turnDiffByThreadId);
     final threadId = activeThreadId;
-    if (threadId != null && fileChanges.isNotEmpty) {
+    if (threadId != null) {
       _persistedFileChangesByThreadId[threadId] = List<CodexFileChange>.of(
         fileChanges,
       );
       _persistedTurnDiffByThreadId[threadId] = turnDiff;
+      _persistedTurnFileChangesByThreadId[threadId] = List<CodexFileChange>.of(
+        turnFileChanges,
+      );
+      if (!_persistedFileChangesBeforeTurnByThreadId.containsKey(threadId) &&
+          turnFileChanges.isEmpty) {
+        _persistedFileChangesBeforeTurnByThreadId.remove(threadId);
+      }
     }
   }
 
@@ -10714,17 +10860,31 @@ class CodexController extends ChangeNotifier {
     final turnDiffByThreadId = <String, String?>{
       ..._persistedTurnDiffByThreadId,
     };
-    if (activeThreadId != null && fileChanges.isNotEmpty) {
+    if (activeThreadId != null) {
       fileChangesByThreadId[activeThreadId!] = List<CodexFileChange>.of(
         fileChanges,
       );
       turnDiffByThreadId[activeThreadId!] = turnDiff;
     }
+    final turnFileChangesByThreadId = <String, List<CodexFileChange>>{
+      for (final entry in _persistedTurnFileChangesByThreadId.entries)
+        entry.key: List<CodexFileChange>.of(entry.value),
+    };
+    final fileChangesBeforeTurnByThreadId = <String, List<CodexFileChange>>{
+      for (final entry in _persistedFileChangesBeforeTurnByThreadId.entries)
+        entry.key: List<CodexFileChange>.of(entry.value),
+    };
+    if (activeThreadId != null) {
+      turnFileChangesByThreadId[activeThreadId!] = List<CodexFileChange>.of(
+        turnFileChanges,
+      );
+    }
     return ConversationHistorySnapshot(
       threads: List.of(threads),
       archivedThreads: List.of(archivedThreads),
       entries: List.of(entries),
-      fileChanges: List.of(fileChanges),
+      fileChanges: List.of(turnFileChanges),
+      threadFileChanges: List.of(fileChanges),
       pinnedThreadIds: Set.of(_pinnedThreadIds),
       acknowledgedCompletedThreadIds: Set.of(_acknowledgedCompletedThreadIds),
       turnDiff: turnDiff,
@@ -10736,6 +10896,8 @@ class CodexController extends ChangeNotifier {
           entry.key: List<TimelineEntry>.of(entry.value),
       },
       fileChangesByThreadId: fileChangesByThreadId,
+      turnFileChangesByThreadId: turnFileChangesByThreadId,
+      fileChangesBeforeTurnByThreadId: fileChangesBeforeTurnByThreadId,
       turnDiffByThreadId: turnDiffByThreadId,
     );
   }
@@ -10744,6 +10906,7 @@ class CodexController extends ChangeNotifier {
   /// Clears the current task's file-change collection and unified diff.
   void _clearFileChanges() {
     _fileChangesByPath.clear();
+    _turnFileChangesByPath.clear();
     _turnDiffDerivedFileChangePaths.clear();
     _turnExplicitFileChangePaths.clear();
     turnDiff = null;
@@ -10751,14 +10914,35 @@ class CodexController extends ChangeNotifier {
     final threadId = activeThreadId;
     if (threadId != null) {
       _persistedFileChangesByThreadId.remove(threadId);
+      _persistedTurnFileChangesByThreadId.remove(threadId);
+      _persistedFileChangesBeforeTurnByThreadId.remove(threadId);
       _persistedTurnDiffByThreadId.remove(threadId);
     }
   }
 
   /// Starts a new turn without discarding the thread-level task-file summary.
   void _beginFileChangeTurn() {
+    final threadId = activeThreadId;
+    if (threadId != null) {
+      _persistedFileChangesBeforeTurnByThreadId[threadId] =
+          List<CodexFileChange>.of(fileChanges);
+    }
+    _turnFileChangesByPath.clear();
     _turnDiffDerivedFileChangePaths.clear();
     _turnExplicitFileChangePaths.clear();
+    fileChangeUndoError = null;
+  }
+
+  void _replaceTurnFileChanges(
+    Iterable<CodexFileChange> changes,
+    String? diff,
+  ) {
+    _turnFileChangesByPath
+      ..clear()
+      ..addEntries(
+        changes.map((change) => MapEntry(_fileChangeKey(change.path), change)),
+      );
+    turnDiff = diff;
     fileChangeUndoError = null;
   }
 
@@ -10767,7 +10951,14 @@ class CodexController extends ChangeNotifier {
   void _replaceFileChanges(Iterable<CodexFileChange> changes, String? diff) {
     _fileChangesByPath
       ..clear()
-      ..addEntries(changes.map((change) => MapEntry(change.path, change)));
+      ..addEntries(
+        changes.map((change) => MapEntry(_fileChangeKey(change.path), change)),
+      );
+    _turnFileChangesByPath
+      ..clear()
+      ..addEntries(
+        changes.map((change) => MapEntry(_fileChangeKey(change.path), change)),
+      );
     turnDiff = diff;
     fileChangeUndoError = null;
   }
@@ -10786,13 +10977,20 @@ class CodexController extends ChangeNotifier {
     _threadViewCache
       ..remove(key)
       ..[key] = _currentThreadViewSnapshot();
-    if (fileChanges.isNotEmpty) {
+    if (fileChanges.isNotEmpty ||
+        turnFileChanges.isNotEmpty ||
+        turnDiff != null) {
       _persistedFileChangesByThreadId[id] = List<CodexFileChange>.of(
         fileChanges,
+      );
+      _persistedTurnFileChangesByThreadId[id] = List<CodexFileChange>.of(
+        turnFileChanges,
       );
       _persistedTurnDiffByThreadId[id] = turnDiff;
     } else {
       _persistedFileChangesByThreadId.remove(id);
+      _persistedTurnFileChangesByThreadId.remove(id);
+      _persistedFileChangesBeforeTurnByThreadId.remove(id);
       _persistedTurnDiffByThreadId.remove(id);
     }
     while (_threadViewCache.length > _maximumThreadViewCacheEntries) {
@@ -10827,6 +11025,13 @@ class CodexController extends ChangeNotifier {
   ThreadViewSnapshot _currentThreadViewSnapshot() => ThreadViewSnapshot(
     entries: List.unmodifiable(_entries),
     fileChanges: List.unmodifiable(fileChanges),
+    turnFileChanges: List.unmodifiable(turnFileChanges),
+    fileChangesBeforeTurn: activeThreadId == null
+        ? null
+        : List.unmodifiable(
+            _persistedFileChangesBeforeTurnByThreadId[activeThreadId!] ??
+                const [],
+          ),
     turnDiff: turnDiff,
   );
 
@@ -10848,8 +11053,21 @@ class CodexController extends ChangeNotifier {
     _fileChangesByPath
       ..clear()
       ..addEntries(
-        snapshot.fileChanges.map((change) => MapEntry(change.path, change)),
+        snapshot.fileChanges.map(
+          (change) => MapEntry(_fileChangeKey(change.path), change),
+        ),
       );
+    _turnFileChangesByPath
+      ..clear()
+      ..addEntries(
+        (snapshot.turnFileChanges ?? snapshot.fileChanges).map(
+          (change) => MapEntry(_fileChangeKey(change.path), change),
+        ),
+      );
+    if (activeThreadId != null && snapshot.fileChangesBeforeTurn != null) {
+      _persistedFileChangesBeforeTurnByThreadId[activeThreadId!] =
+          List<CodexFileChange>.of(snapshot.fileChangesBeforeTurn!);
+    }
     turnDiff = snapshot.turnDiff;
   }
 

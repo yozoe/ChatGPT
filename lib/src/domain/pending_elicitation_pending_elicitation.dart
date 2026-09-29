@@ -28,6 +28,11 @@ class PendingElicitation {
     return null;
   }
 
+  String? get turnId {
+    final direct = params['turnId']?.toString().trim();
+    return direct == null || direct.isEmpty ? null : direct;
+  }
+
   String get title => mode == ElicitationMode.url ? 'MCP 链接确认' : 'MCP 需要你的输入';
 
   /// Parses the two App Server elicitation request shapes. Only simple scalar

@@ -113,7 +113,7 @@ void main() {
       ),
     );
 
-    expect(controller.fileChanges.map((change) => change.path), [
+    expect(controller.turnFileChanges.map((change) => change.path), [
       'second.dart',
     ]);
     controller.dispose();

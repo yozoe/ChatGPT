@@ -237,14 +237,19 @@ class ConversationPane extends StatelessWidget {
                       approval: approval,
                       taskLabel: controller.pendingApprovalTaskLabel,
                       enabled: controller.canRespondToApproval,
-                      onAccept: () =>
-                          controller.respondToApproval(accepted: true),
+                      onAccept: () => controller.respondToApproval(
+                        accepted: true,
+                        requestId: approval.requestId,
+                      ),
                       onAllowSimilar: () => controller.respondToApproval(
                         accepted: true,
                         allowSimilar: true,
+                        requestId: approval.requestId,
                       ),
-                      onDecline: () =>
-                          controller.respondToApproval(accepted: false),
+                      onDecline: () => controller.respondToApproval(
+                        accepted: false,
+                        requestId: approval.requestId,
+                      ),
                     ),
                   ),
                 if (controller.hasThreadWriterConflict)

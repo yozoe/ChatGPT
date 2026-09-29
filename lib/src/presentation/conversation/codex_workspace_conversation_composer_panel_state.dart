@@ -326,20 +326,54 @@ class ComposerPanelState extends State<ComposerPanel> {
     }
   }
 
+  ({String marker, String query, int start, int end})?
+  get _activeComposerTrigger {
+    final value = composer.value;
+    final selection = value.selection;
+    if (selection.isValid && !selection.isCollapsed) return null;
+    final caret = selection.isValid ? selection.baseOffset : value.text.length;
+    if (caret < 0 || caret > value.text.length) return null;
+
+    var start = caret;
+    while (start > 0 && !RegExp(r'\s').hasMatch(value.text[start - 1])) {
+      start--;
+    }
+    if (start >= caret) return null;
+    final token = value.text.substring(start, caret);
+    if (token[0] != '/' && token[0] != '@') return null;
+    if (token.substring(1).contains('/') || token.substring(1).contains('@')) {
+      return null;
+    }
+    return (
+      marker: token[0],
+      query: token.substring(1),
+      start: start,
+      end: caret,
+    );
+  }
+
   String? get _currentSlashQuery {
-    final text = composer.text;
-    if (!text.startsWith('/') || text.contains('\n')) return null;
-    final query = text.substring(1);
-    if (query.contains(RegExp(r'\s'))) return null;
-    return query;
+    final trigger = _activeComposerTrigger;
+    return trigger?.marker == '/' ? trigger?.query : null;
   }
 
   String? get _currentMentionQuery {
-    final text = composer.text;
-    if (!text.startsWith('@') || text.contains('\n')) return null;
-    final query = text.substring(1);
-    if (query.contains(RegExp(r'\s'))) return null;
-    return query;
+    final trigger = _activeComposerTrigger;
+    return trigger?.marker == '@' ? trigger?.query : null;
+  }
+
+  void _removeActiveComposerTrigger() {
+    final trigger = _activeComposerTrigger;
+    if (trigger == null) {
+      composer.clear();
+      return;
+    }
+    final nextText = composer.text.replaceRange(trigger.start, trigger.end, '');
+    final nextOffset = trigger.start.clamp(0, nextText.length);
+    composer.value = TextEditingValue(
+      text: nextText,
+      selection: TextSelection.collapsed(offset: nextOffset),
+    );
   }
 
   bool get _showSlashMenu => _currentSlashQuery != null && !_slashMenuDismissed;
@@ -349,27 +383,61 @@ class ComposerPanelState extends State<ComposerPanel> {
 
   bool get _showComposerMenu => _showSlashMenu || _showMentionMenu;
 
-  List<ComposerSlashCommand> get _slashCommands => [
-    ComposerSlashCommand(
-      kind: ComposerSlashCommandKind.workspaceContext,
-      label: 'IDE 上下文',
-      description: controller.hasIdeContext
-          ? '附加当前 IDE 文件、选区和打开标签'
-          : '未连接 IDE 宿主，当前不可用',
-      icon: Icons.auto_awesome_outlined,
-      enabled: controller.hasIdeContext,
-    ),
+  ComposerSlashCommand get _filesCommand => const ComposerSlashCommand(
+    kind: ComposerSlashCommandKind.files,
+    label: '文件和文件夹',
+    description: '',
+    icon: Icons.attach_file,
+    aliases: ['file', 'files', 'folder', 'folders'],
+  );
+
+  ComposerSlashCommand get _recordSkillCommand => const ComposerSlashCommand(
+    kind: ComposerSlashCommandKind.recordSkill,
+    label: '录制技能',
+    description: '当前运行时未提供技能录制协议',
+    icon: Icons.radio_button_checked,
+    aliases: ['record-skill', 'record'],
+    enabled: false,
+  );
+
+  ComposerSlashCommand get _workspaceContextCommand => ComposerSlashCommand(
+    kind: ComposerSlashCommandKind.workspaceContext,
+    label: 'IDE 上下文',
+    description: controller.hasIdeContext
+        ? '附加当前 IDE 文件、选区和打开标签'
+        : '未连接 IDE 宿主，当前不可用',
+    icon: Icons.auto_awesome_outlined,
+    aliases: const ['ide', 'ide-context', 'context'],
+    enabled: controller.hasIdeContext,
+  );
+
+  ComposerSlashCommand
+  get _mentionWorkspaceCommand => _workspaceContextCommand.copyWith(
+    label:
+        '附加 ${controller.workspacePath == null ? '当前项目' : _pathLabel(controller.workspacePath!)}',
+    description: controller.workspacePath == null ? '请先选择项目' : '',
+    icon: Icons.terminal_outlined,
+    aliases: const ['project', 'workspace', 'current', '当前'],
+    enabled: controller.workspacePath != null,
+  );
+
+  List<ComposerSlashCommand> get _commandCatalog => [
+    _workspaceContextCommand,
+    _filesCommand.copyWith(enabled: false),
+    _recordSkillCommand,
     const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.mcpStatus,
       label: 'MCP',
       description: '显示 MCP 服务器状态',
       icon: Icons.hub_outlined,
+      aliases: ['mcp', 'mcp-status'],
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.codeReview,
       label: '代码审查',
       description: '审查未提交的更改，或与某个分支进行比较',
       icon: Icons.fact_check_outlined,
+      aliases: const ['review', 'code-review'],
       enabled: controller.canStartCodeReview,
     ),
     const ComposerSlashCommand(
@@ -377,6 +445,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       label: '目标',
       description: '设置持续目标；建议先使用计划模式明确目标',
       icon: Icons.track_changes_outlined,
+      aliases: ['goal'],
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.planMode,
@@ -387,6 +456,7 @@ class ComposerPanelState extends State<ComposerPanel> {
           ? '关闭计划模式'
           : '为多步骤任务制定计划',
       icon: Icons.lightbulb_outline,
+      aliases: const ['plan'],
       enabled: !controller.canSteer,
     ),
     ComposerSlashCommand(
@@ -394,6 +464,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       label: '侧边',
       description: '打开不会中断主任务的临时聊天',
       icon: Icons.add_circle_outline,
+      aliases: const ['side-chat', 'sidechat'],
       enabled:
           controller.activeThreadId != null &&
           controller.workspacePath != null &&
@@ -405,6 +476,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       label: '创建聊天分支',
       description: '在当前工作空间或新工作树中创建此聊天的分支',
       icon: Icons.call_split_outlined,
+      aliases: const ['fork', 'fork-chat', 'branch'],
       enabled: controller.canForkActiveThread,
     ),
     ComposerSlashCommand(
@@ -412,6 +484,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       label: '压缩',
       description: _compactDescription,
       icon: Icons.circle_outlined,
+      aliases: const ['compact', 'summarize'],
       enabled: controller.canCompactActiveThread,
     ),
     const ComposerSlashCommand(
@@ -419,12 +492,14 @@ class ComposerPanelState extends State<ComposerPanel> {
       label: '反馈',
       description: '发送有关此聊天的反馈',
       icon: Icons.chat_bubble_outline,
+      aliases: ['feedback'],
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.archive,
       label: '归档',
       description: '归档当前聊天',
       icon: Icons.archive_outlined,
+      aliases: const ['archive'],
       enabled: _canArchiveActiveThread,
     ),
     ComposerSlashCommand(
@@ -432,6 +507,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       label: '推理',
       description: controller.reasoningEffort.label,
       icon: Icons.psychology_outlined,
+      aliases: const ['reasoning', 'effort'],
       enabled: controller.canSelectReasoningEffort,
     ),
     const ComposerSlashCommand(
@@ -439,51 +515,36 @@ class ComposerPanelState extends State<ComposerPanel> {
       label: '新聊天',
       description: '在同一工作空间中开启空白聊天',
       icon: Icons.add_comment_outlined,
+      aliases: ['new', 'new-chat'],
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.model,
       label: '模型',
       description: controller.newTaskModelLabel,
       icon: Icons.view_in_ar_outlined,
+      aliases: const ['model'],
       enabled: controller.canSelectModel,
     ),
   ];
 
+  List<ComposerSlashCommand> get _slashCommands => _commandCatalog
+      .where(
+        (command) =>
+            command.kind != ComposerSlashCommandKind.files &&
+            command.kind != ComposerSlashCommandKind.recordSkill,
+      )
+      .toList(growable: false);
+
   List<ComposerSlashCommand> get _mentionCommands => [
-    const ComposerSlashCommand(
-      kind: ComposerSlashCommandKind.files,
-      label: '文件和文件夹',
-      description: '',
-      icon: Icons.attach_file,
+    _filesCommand,
+    _mentionWorkspaceCommand,
+    ..._commandCatalog.where(
+      (command) => const {
+        ComposerSlashCommandKind.goal,
+        ComposerSlashCommandKind.planMode,
+      }.contains(command.kind),
     ),
-    ComposerSlashCommand(
-      kind: ComposerSlashCommandKind.workspaceContext,
-      label:
-          '附加 ${controller.workspacePath == null ? '当前项目' : _pathLabel(controller.workspacePath!)}',
-      description: controller.workspacePath == null ? '请先选择项目' : '',
-      icon: Icons.terminal_outlined,
-      enabled: controller.workspacePath != null,
-    ),
-    const ComposerSlashCommand(
-      kind: ComposerSlashCommandKind.goal,
-      label: '目标',
-      description: '设置要持续追求的目标',
-      icon: Icons.track_changes_outlined,
-    ),
-    ComposerSlashCommand(
-      kind: ComposerSlashCommandKind.planMode,
-      label: '计划模式',
-      description: controller.canSteer ? '任务运行时不可用' : '开启计划模式',
-      icon: Icons.lightbulb_outline,
-      enabled: !controller.canSteer,
-    ),
-    const ComposerSlashCommand(
-      kind: ComposerSlashCommandKind.recordSkill,
-      label: '录制技能',
-      description: '当前运行时未提供技能录制协议',
-      icon: Icons.radio_button_checked,
-      enabled: false,
-    ),
+    _recordSkillCommand,
   ];
 
   List<ComposerSlashCommand> get _filteredSlashCommands {
@@ -653,20 +714,20 @@ class ComposerPanelState extends State<ComposerPanel> {
       _selectedSkillPaths.add(skill.path);
       _slashMenuDismissed = true;
     });
-    composer.clear();
+    _removeActiveComposerTrigger();
   }
 
   void _selectFileSearchResult(CodexFileSearchResult result) {
-    composer.clear();
     setState(() => _slashMenuDismissed = true);
+    _removeActiveComposerTrigger();
     _addAttachments([
       ComposerAttachment(path: result.path, isDirectory: result.isDirectory),
     ]);
   }
 
   Future<void> _selectMentionCommand(ComposerSlashCommand command) async {
-    composer.clear();
     setState(() => _slashMenuDismissed = true);
+    _removeActiveComposerTrigger();
     switch (command.kind) {
       case ComposerSlashCommandKind.files:
         await _showAttachmentPicker();
@@ -758,6 +819,7 @@ class ComposerPanelState extends State<ComposerPanel> {
 
   Future<void> _selectSlashCommand(ComposerSlashCommand command) async {
     setState(() => _slashMenuDismissed = true);
+    _removeActiveComposerTrigger();
     switch (command.kind) {
       case ComposerSlashCommandKind.workspaceContext:
         if (controller.hasIdeContext) {
@@ -766,16 +828,13 @@ class ComposerPanelState extends State<ComposerPanel> {
             _ideContextWorkspacePath = controller.workspacePath;
           });
         }
-        composer.clear();
       case ComposerSlashCommandKind.files:
-        composer.clear();
         await _showAttachmentPicker();
       case ComposerSlashCommandKind.goal:
         _enterGoalMode();
       case ComposerSlashCommandKind.planMode:
         if (controller.canSteer) return;
         _togglePlanMode();
-        composer.clear();
       case ComposerSlashCommandKind.recordSkill:
         // No public App Server recording protocol is available. The row is
         // intentionally disabled and must never create a local success chip.
@@ -802,7 +861,6 @@ class ComposerPanelState extends State<ComposerPanel> {
         });
         unawaited(_showCodeReviewOptions());
       case ComposerSlashCommandKind.sideChat:
-        composer.clear();
         final openSideChat = widget.onOpenSideChat;
         if (openSideChat == null) {
           _showUnavailableSlashCommand('侧边聊天界面');
@@ -810,25 +868,18 @@ class ComposerPanelState extends State<ComposerPanel> {
         }
         await openSideChat();
       case ComposerSlashCommandKind.forkChat:
-        composer.clear();
         await _forkActiveThread();
       case ComposerSlashCommandKind.compact:
-        composer.clear();
         await _confirmAndCompactThread();
       case ComposerSlashCommandKind.feedback:
-        composer.clear();
         await _showFeedbackDialog();
       case ComposerSlashCommandKind.archive:
-        composer.clear();
         await _archiveCurrentThread();
       case ComposerSlashCommandKind.reasoning:
-        composer.clear();
         await _showReasoningPicker();
       case ComposerSlashCommandKind.model:
-        composer.clear();
         await _showModelPicker();
       case ComposerSlashCommandKind.newChat:
-        composer.clear();
         controller.createThread();
     }
   }
@@ -1647,6 +1698,15 @@ class ComposerPanelState extends State<ComposerPanel> {
 
   List<PopupMenuEntry<AddMenuAction>> _buildAddMenu(BuildContext context) {
     final palette = YeknomPalette.of(context);
+    final commands = {
+      for (final command in _mentionCommands) command.kind: command,
+    };
+    final filesCommand = commands[ComposerSlashCommandKind.files]!;
+    final workspaceCommand =
+        commands[ComposerSlashCommandKind.workspaceContext]!;
+    final goalCommand = commands[ComposerSlashCommandKind.goal]!;
+    final planCommand = commands[ComposerSlashCommandKind.planMode]!;
+    final recordSkillCommand = commands[ComposerSlashCommandKind.recordSkill]!;
     final workspace = controller.workspacePath;
     final workspaceName = workspace == null ? '当前项目' : _pathLabel(workspace);
     final entries = <PopupMenuEntry<AddMenuAction>>[
@@ -1654,14 +1714,14 @@ class ComposerPanelState extends State<ComposerPanel> {
       AddMenuItem(
         key: const Key('add-files-menu-item'),
         value: const AddMenuAction(AddMenuActionKind.files),
-        icon: Icons.attach_file,
-        label: '文件和文件夹',
+        icon: filesCommand.icon,
+        label: filesCommand.label,
         selected: _attachments.isNotEmpty,
       ),
       AddMenuItem(
         key: const Key('add-workspace-menu-item'),
         value: const AddMenuAction(AddMenuActionKind.workspace),
-        icon: Icons.terminal_outlined,
+        icon: workspaceCommand.icon,
         label: '附加 $workspaceName',
         selected: _includeWorkspace,
         enabled: workspace != null,
@@ -1669,16 +1729,16 @@ class ComposerPanelState extends State<ComposerPanel> {
       AddMenuItem(
         key: const Key('add-goal-menu-item'),
         value: const AddMenuAction(AddMenuActionKind.goal),
-        icon: Icons.track_changes_outlined,
-        label: '目标',
-        description: _goal ?? '设置要持续追求的目标',
+        icon: goalCommand.icon,
+        label: goalCommand.label,
+        description: _goal ?? goalCommand.description,
         selected: _goal?.isNotEmpty == true,
       ),
       AddMenuItem(
         key: const Key('add-plan-mode-menu-item'),
         value: const AddMenuAction(AddMenuActionKind.plan),
-        icon: Icons.lightbulb_outline,
-        label: '计划模式',
+        icon: planCommand.icon,
+        label: planCommand.label,
         description: controller.canSteer
             ? '任务运行时不可用'
             : controller.composerPlanMode
@@ -1690,9 +1750,9 @@ class ComposerPanelState extends State<ComposerPanel> {
       AddMenuItem(
         key: const Key('record-skill-menu-item'),
         value: const AddMenuAction(AddMenuActionKind.recordSkill),
-        icon: Icons.radio_button_checked,
-        label: '录制技能',
-        description: '当前运行时未提供技能录制协议',
+        icon: recordSkillCommand.icon,
+        label: recordSkillCommand.label,
+        description: recordSkillCommand.description,
         selected: false,
         enabled: false,
       ),
@@ -2448,7 +2508,7 @@ class ComposerPanelState extends State<ComposerPanel> {
                   ],
                 ),
               ),
-              if (controller.fileChanges.isNotEmpty)
+              if (controller.turnFileChanges.isNotEmpty)
                 Positioned(
                   key: const Key('composer-file-change-overlay'),
                   top: -18,
@@ -2460,7 +2520,7 @@ class ComposerPanelState extends State<ComposerPanel> {
                   child: IgnorePointer(
                     child: Center(
                       child: ComposerFileChangePill(
-                        changes: controller.fileChanges,
+                        changes: controller.turnFileChanges,
                         turnDiff: controller.turnDiff,
                       ),
                     ),

@@ -33,8 +33,6 @@ void main() {
     final field = find.byKey(const Key('composer-field'));
 
     for (final value in [
-      '先说明 @main',
-      '先说明 /model',
       '@main 文件',
       '/model 参数',
       '@main\n下一行',
@@ -45,6 +43,14 @@ void main() {
       expect(find.byKey(const Key('composer-mention-menu')), findsNothing);
       expect(find.byKey(const Key('composer-slash-menu')), findsNothing);
     }
+
+    await tester.enterText(field, '先说明 @main');
+    await tester.pump();
+    expect(find.byKey(const Key('composer-mention-menu')), findsOneWidget);
+
+    await tester.enterText(field, '先说明 /model');
+    await tester.pump();
+    expect(find.byKey(const Key('composer-slash-menu')), findsOneWidget);
 
     await tester.enterText(field, '@');
     await tester.pump();

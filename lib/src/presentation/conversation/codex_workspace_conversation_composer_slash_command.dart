@@ -37,6 +37,21 @@ class ComposerSlashCommand {
   final List<String> aliases;
   final bool enabled;
 
+  ComposerSlashCommand copyWith({
+    String? label,
+    String? description,
+    bool? enabled,
+    IconData? icon,
+    List<String>? aliases,
+  }) => ComposerSlashCommand(
+    kind: kind,
+    label: label ?? this.label,
+    description: description ?? this.description,
+    icon: icon ?? this.icon,
+    aliases: aliases ?? this.aliases,
+    enabled: enabled ?? this.enabled,
+  );
+
   bool matches(String query) {
     final normalized = query.trim().toLowerCase();
     if (normalized.isEmpty) return true;

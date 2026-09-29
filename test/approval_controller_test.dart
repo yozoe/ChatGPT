@@ -66,6 +66,37 @@ void main() {
     controller.dispose();
   });
 
+  test('responds to the approval card request id after turn changes', () async {
+    final writes = <JsonMap>[];
+    final controller =
+        CodexController(server: CodexAppServer(messageSink: writes.add))
+          ..activeThreadId = 'thread-1'
+          ..activeTurnId = 'turn-2';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/commandExecution/requestApproval',
+        requestId: 'old-approval',
+        params: {'threadId': 'thread-1', 'turnId': 'turn-1'},
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/commandExecution/requestApproval',
+        requestId: 'new-approval',
+        params: {'threadId': 'thread-1', 'turnId': 'turn-2'},
+      ),
+    );
+
+    await controller.respondToApproval(
+      accepted: true,
+      requestId: 'new-approval',
+    );
+
+    expect(writes.single['id'], 'new-approval');
+    expect(controller.pendingApproval, isNull);
+    controller.dispose();
+  });
+
   test(
     'automatically approves supported requests in auto approval mode',
     () async {

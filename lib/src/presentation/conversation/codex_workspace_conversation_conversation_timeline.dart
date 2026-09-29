@@ -362,10 +362,12 @@ class ConversationTimeline extends StatelessWidget {
                           ),
                         );
                       }
+                      // Live activities and file summaries can change in the
+                      // same frame as an async server event. Keep the list
+                      // renderable if a stale itemCount reaches the builder;
+                      // the next frame will consume the new immutable data.
                       if (!data.showFileChangeSummary || tailIndex != 0) {
-                        throw StateError(
-                          'Unexpected conversation timeline item index.',
-                        );
+                        return const SizedBox.shrink();
                       }
                       return FileChangeSummaryCard(
                         key: ValueKey(
