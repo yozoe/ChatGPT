@@ -2938,13 +2938,13 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pump();
     expect(find.byKey(const Key('composer-slash-menu')), findsNothing);
-    expect(tester.widget<TextField>(field).controller!.text, '/');
+    expect(tester.widget<TextField>(field).controller!.text, isEmpty);
 
     await tester.enterText(field, '/m');
     await tester.pump();
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pumpAndSettle();
-    expect(tester.widget<TextField>(field).controller!.text, '/');
+    expect(tester.widget<TextField>(field).controller!.text, isEmpty);
     expect(find.byKey(const Key('composer-mcp-status-panel')), findsOneWidget);
     expect(find.text('codex_app'), findsOneWidget);
     expect(find.text('computer-use'), findsOneWidget);
@@ -3056,6 +3056,25 @@ void main() {
     expect(find.byKey(const Key('composer-record-skill-chip')), findsNothing);
     expect(tester.takeException(), isNull);
 
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('keeps the slash menu closed while the runtime is offline', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.stopped;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final field = find.byKey(const Key('composer-field'));
+    await tester.enterText(field, '/');
+    await tester.pump();
+
+    expect(find.byKey(const Key('composer-slash-menu')), findsNothing);
+    expect(tester.widget<TextField>(field).controller!.text, isEmpty);
     await tester.pumpWidget(const SizedBox());
   });
 
