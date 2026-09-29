@@ -12939,6 +12939,45 @@ void main() {
     controller.dispose();
   });
 
+  test('keeps undo disabled for a binary-only task Diff', () async {
+    final controller =
+        CodexController(
+            server: CodexAppServer(),
+            gitProjectService: _FakeGitProjectService(),
+          )
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready;
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {'path': 'assets/logo.png', 'kind': 'modified'},
+            ],
+          },
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/diff/updated',
+        params: {
+          'diff':
+              'diff --git a/assets/logo.png b/assets/logo.png\n'
+              'index 123..456 100644\n'
+              'Binary files a/assets/logo.png and b/assets/logo.png differ',
+        },
+      ),
+    );
+
+    expect(controller.canUndoFileChanges, isFalse);
+    expect(await controller.undoFileChanges(), isFalse);
+    expect(controller.fileChangeUndoError, contains('Diff 不完整'));
+    controller.dispose();
+  });
+
   test('restores task files after a follow-up with no file changes', () async {
     final workspaceDirectory = await Directory.systemTemp.createTemp(
       'codex-desk-thread-files-follow-up-',

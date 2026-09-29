@@ -1495,10 +1495,17 @@ class CodexController extends ChangeNotifier {
         turnFileChanges.isNotEmpty &&
         diffCoversTaskSummary &&
         !diff.contains(GitProjectService.truncatedDiffMarker) &&
+        _hasApplyableDiffBody(diff) &&
         (diff.contains('diff --git ') ||
             ((diff.startsWith('--- ') || diff.contains('\n--- ')) &&
                 diff.contains('\n+++ ')));
   }
+
+  /// Metadata-only and binary-summary Diffs cannot be safely reverse-applied.
+  /// A complete textual hunk or an explicit Git binary patch is required.
+  bool _hasApplyableDiffBody(String diff) =>
+      diff.contains(RegExp(r'^@@ ', multiLine: true)) ||
+      diff.contains('\nGIT binary patch\n');
 
   /// 返回最近的已脱敏运行时日志；日志仅保留在本次应用进程的内存中。
   /// Returns recent redacted runtime logs; logs are retained only in this app process's memory.
