@@ -252,6 +252,7 @@
 - `已完成` 将线程历史解析、最新回合文件快照、恢复状态、最近 8 个任务视图缓存、回合/项目分页、协作与上下文压缩记录、分页失败隔离及页数上限部分结果迁移到 `test/thread_history_test.dart`；控制器测试显式等待初始配置，原混合 Widget 文件中的重复测试已删除。
 - `已完成` 将线程列表刷新代次、稳定排序、取消归档恢复以及归档/删除通知对活动与归档列表的同步刷新回归迁移到 `test/thread_list_refresh_test.dart`；测试显式等待初始配置，原混合 Widget 文件中的重复块已删除。
 - `已完成` 将连续命令/搜索活动分组、自动批准命令合并与同时间戳隔离回归迁移到 `test/timeline_activity_list_test.dart`；将本地会话缓存、历史写入串行化、缓存容错、活动元数据和导入版本边界迁移到 `test/conversation_history_serialization_test.dart`，并保留独立的加密磁盘持久化测试，两个职责层均可独立执行。
+- `已完成` 新增 `test/timeline_parity_matrix_test.dart` 时间线矩阵，覆盖任务创建、Agent 回复、命令活动、最终回复、耗时、完成状态的顺序，以及审批浮层位于 Composer 上方的布局关系；该矩阵只固定本地行为，不替代官方客户端视觉验收。
 - `已完成` 将 App Server 文件事件与整轮统一 Diff 的合并、仅 Diff 文件派生、后续替换、元数据刷新及引号路径解析回归迁移到 `test/file_change_protocol_test.dart`；文件快照协议与 `test/file_change_stats_test.dart` 的可靠统计边界可分别独立执行。
 - `已完成` 将账户通知状态、服务端认证要求与恢复线程附着前发送门禁迁移到 `test/session_access_test.dart`；独立测试显式初始化 Flutter binding 和控制器配置，不再借用混合 Widget 套件的全局初始化。
 - `已完成` 将侧栏长任务标题渐隐和渐隐层尾缘锚定迁移到 `test/sidebar_task_title_test.dart`；独立覆盖固定窗口宽度与任务行几何边界，原混合 Widget 文件中的重复块已删除。
