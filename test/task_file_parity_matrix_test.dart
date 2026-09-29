@@ -200,6 +200,86 @@ void main() {
   );
 
   test(
+    'isolates task files when switching projects and restores the original project',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-task-file-workspace-switch-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final firstWorkspace = await Directory('${root.path}/first').create();
+      final secondWorkspace = await Directory('${root.path}/second').create();
+      final firstPath = await firstWorkspace.resolveSymbolicLinks();
+      final secondPath = await secondWorkspace.resolveSymbolicLinks();
+      final history = MemoryConversationHistoryStore();
+      final server = FakeCodexAppServer()
+        ..startThreadResponseIds.addAll(['first-thread', 'second-thread']);
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+        conversationHistoryStore: history,
+      )..status = RuntimeStatus.ready;
+      addTearDown(controller.dispose);
+      await controller.waitForInitialConfiguration();
+
+      await controller.selectWorkspace(
+        firstPath,
+        allowWhileRunning: true,
+        pathAlreadyValidated: true,
+      );
+      final firstDiff = _diff('lib/first.dart', 'old', 'first');
+      await _completeFileTurn(
+        controller,
+        'first project turn',
+        changes: [
+          {'path': 'lib/first.dart', 'kind': 'modified', 'diff': firstDiff},
+        ],
+        diff: firstDiff,
+        threadId: 'first-thread',
+      );
+      await controller.saveConversationHistoryForTesting();
+
+      await controller.selectWorkspace(
+        secondPath,
+        allowWhileRunning: true,
+        pathAlreadyValidated: true,
+      );
+      expect(controller.workspacePath, secondPath);
+      expect(controller.fileChanges, isEmpty);
+      expect(controller.turnFileChanges, isEmpty);
+      expect(controller.turnDiff, isNull);
+
+      final secondDiff = _diff('lib/second.dart', 'old', 'second');
+      await _completeFileTurn(
+        controller,
+        'second project turn',
+        changes: [
+          {'path': 'lib/second.dart', 'kind': 'modified', 'diff': secondDiff},
+        ],
+        diff: secondDiff,
+        threadId: 'second-thread',
+      );
+      await controller.saveConversationHistoryForTesting();
+
+      await controller.selectWorkspace(
+        firstPath,
+        allowWhileRunning: true,
+        pathAlreadyValidated: true,
+      );
+      expect(controller.workspacePath, firstPath);
+      expect(controller.activeThreadId, 'first-thread');
+      expect(controller.fileChanges.single.path, 'lib/first.dart');
+      expect(controller.turnFileChanges.single.path, 'lib/first.dart');
+      expect(controller.turnDiff, firstDiff);
+      expect(
+        controller.fileChanges.any(
+          (change) => change.path == 'lib/second.dart',
+        ),
+        isFalse,
+      );
+    },
+  );
+
+  test(
     'keeps undo unavailable for metadata-only and binary-only matrix rows',
     () {
       final metadataController =
