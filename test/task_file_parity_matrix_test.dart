@@ -484,4 +484,69 @@ diff --git a/lib/second.dart b/lib/second.dart
       expect(await file.readAsString(), 'base\nuser edit\n');
     },
   );
+
+  test(
+    'rejects controller undo when the current-turn file becomes staged',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'codex-task-file-staged-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      Future<void> git(List<String> arguments) async {
+        final result = await Process.run(
+          'git',
+          arguments,
+          workingDirectory: directory.path,
+        );
+        expect(result.exitCode, 0, reason: result.stderr.toString());
+      }
+
+      await git(const ['init', '-q']);
+      await git(const ['config', 'user.name', 'Codex Test']);
+      await git(const ['config', 'user.email', 'codex@example.com']);
+      final file = File('${directory.path}/tracked.txt');
+      await file.writeAsString('old\n');
+      await git(const ['add', 'tracked.txt']);
+      await git(const ['commit', '-qm', 'initial']);
+      const diff = '''diff --git a/tracked.txt b/tracked.txt
+--- a/tracked.txt
++++ b/tracked.txt
+@@ -1 +1 @@
+-old
++new
+''';
+      await file.writeAsString('new\n');
+
+      final controller =
+          CodexController(
+              server: CodexAppServer(),
+              gitProjectService: GitProjectService(),
+            )
+            ..workspacePath = directory.path
+            ..status = RuntimeStatus.ready;
+      addTearDown(controller.dispose);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'item': {
+              'type': 'fileChange',
+              'changes': [
+                {'path': 'tracked.txt', 'kind': 'modified'},
+              ],
+            },
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(method: 'turn/diff/updated', params: {'diff': diff}),
+      );
+      expect(controller.canUndoFileChanges, isTrue);
+
+      await git(const ['add', 'tracked.txt']);
+      expect(controller.canUndoFileChanges, isTrue);
+      expect(await controller.undoFileChanges(), isFalse);
+      expect(await file.readAsString(), 'new\n');
+    },
+  );
 }
