@@ -3866,6 +3866,8 @@ class CodexController extends ChangeNotifier {
     _runningTurnSubmissions[threadId] = submission;
     _runningThreadIds.add(threadId);
     _threadWorkspaceById[threadId] = submission.workspace;
+    final previousFileChanges = List<CodexFileChange>.of(fileChanges);
+    final previousTurnDiff = turnDiff;
     if (isForeground) {
       status = RuntimeStatus.running;
       lastError = null;
@@ -3916,6 +3918,7 @@ class CodexController extends ChangeNotifier {
       if (activeThreadId == threadId && workspacePath == submission.workspace) {
         status = _server.isRunning ? RuntimeStatus.ready : RuntimeStatus.failed;
         _clearStreamingState();
+        _replaceFileChanges(previousFileChanges, previousTurnDiff);
         lastError = message;
         _add(TimelineKind.error, '重试失败', message);
         if (status == RuntimeStatus.failed) _scheduleRuntimeReconnect();
@@ -10990,6 +10993,10 @@ class CodexController extends ChangeNotifier {
     _turnFileChangesByPath.clear();
     _turnDiffDerivedFileChangePaths.clear();
     _turnExplicitFileChangePaths.clear();
+    // Line statistics belong strictly to the new turn. The previous turn's
+    // summary remains in [fileChanges] but must not leak into the Composer
+    // while this turn is waiting for its first Diff notification.
+    turnDiff = null;
     fileChangeUndoError = null;
   }
 

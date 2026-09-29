@@ -12758,7 +12758,7 @@ void main() {
       server.startTurnError = null;
       expect(await controller.sendPrompt('second turn'), isTrue);
       expect(controller.fileChanges.single.path, 'first.txt');
-      expect(controller.turnDiff, firstDiff);
+      expect(controller.turnDiff, isNull);
       controller.handleServerEventForTesting(
         const ServerEvent(
           method: 'item/completed',
@@ -13029,6 +13029,8 @@ void main() {
       ),
     );
     expect(firstController.fileChanges.single.path, 'lib/main.dart');
+    expect(firstController.turnFileChanges, isEmpty);
+    expect(firstController.turnDiff, isNull);
     await firstController.saveConversationHistoryForTesting();
     firstController.dispose();
 
