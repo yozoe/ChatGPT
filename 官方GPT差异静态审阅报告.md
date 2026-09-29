@@ -304,48 +304,13 @@ Composer 中保留“录制技能”入口，但当前 App Server 没有公开�
 
 ## 九、专项分析：Composer 菜单
 
-### P0：运行时菜单没有配置官方英文 slash 别名
+### 已修复：运行时菜单英文 slash 别名与提交解析不一致
 
-`ComposerSlashCommand.matches()` 只匹配中文 `label`、中文 `description` 和 `aliases`。但运行时创建的命令全部没有传入 `aliases`。
+此前版本的静态审阅曾将此项列为 P0。当前实现已为运行时命令目录补齐 canonical 英文别名，并由菜单筛选与提交路径共同使用；`/plan`、`/mcp`、`/review`、`/compact`、`/feedback`、`/archive`、`/model`、`/reasoning`、`/new` 等路径已有专项测试覆盖。该项不再是当前缺陷，但官方完整命令集合和排序仍待实测。
 
-证据：
+### 已修复：`/` 和 `@` 的触发范围过窄
 
-- [`lib/src/presentation/conversation/codex_workspace_conversation_composer_slash_command.dart:24`](<lib/src/presentation/conversation/codex_workspace_conversation_composer_slash_command.dart:24>)
-- [`lib/src/presentation/conversation/codex_workspace_conversation_composer_panel_state.dart:352`](<lib/src/presentation/conversation/codex_workspace_conversation_composer_panel_state.dart:352>)
-- 仓库中没有运行时 `aliases:` 配置。
-
-影响：
-
-- 输入 `/plan`、`/mcp`、`/review`、`/compact`、`/feedback`、`/archive`、`/model`、`/reasoning`、`/new` 等官方英文命令时，菜单筛选可能没有结果。
-- `_submit()` 只对 `/plan` 和 `/goal` 做了英文解析，菜单显示和直接提交的行为不一致。
-- 现有计划模式测试主要验证 `/plan` 的提交路径，没有覆盖“输入 `/plan` 后菜单是否显示命令项”。
-
-修复建议：
-
-1. 为每个命令增加协议名和别名，例如 `plan`、`mcp`、`review`、`compact`、`feedback`、`archive`、`model`、`reasoning`、`new`、`fork`、`side-chat`。
-2. `matches()` 统一匹配 canonical command id、英文别名、当前语言文案和描述。
-3. 将命令定义抽成不可变的命令目录，提交解析器和菜单都引用同一个 canonical id，避免菜单能选但提交不能识别。
-4. 增加 widget test：分别验证 `/plan`、`/计划模式`、`/review` 和中文文案搜索结果。
-
-### P1：`/` 和 `@` 的触发范围过窄
-
-当前 `_currentSlashQuery` 和 `_currentMentionQuery` 只接受“整个 Composer 文本以 `/` 或 `@` 开头、且查询中没有空格或换行”的情况。
-
-证据：
-
-- [`lib/src/presentation/conversation/codex_workspace_conversation_composer_panel_state.dart:329`](<lib/src/presentation/conversation/codex_workspace_conversation_composer_panel_state.dart:329>)
-- [`lib/src/presentation/conversation/codex_workspace_conversation_composer_panel_state.dart:337`](<lib/src/presentation/conversation/codex_workspace_conversation_composer_panel_state.dart:337>)
-
-影响：
-
-- `前文 @文件`、换行后输入 `@文件`、光标位于文本中间时不会打开菜单。
-- 是否与官方完全一致需要桌面实测，但这是必须纳入行为矩阵的高风险边界。
-
-修复建议：
-
-- 按光标位置向前扫描当前 token，而不是只检查 `text.startsWith()`。
-- 明确句首、空白后、换行后、标点后和已有 token 内的触发规则。
-- 查询和选择完成后只替换当前 token，不要清空整个 Composer。
+此前版本只支持 Composer 文本起始位置。当前实现按光标所在 token 计算触发范围，支持句首、空白后和消息中间的有效 token，并只替换当前 token；无效范围、换行边界和键盘选择已有专项测试。是否与官方在标点、输入法组合态等细节完全一致，仍待实测。
 
 ### P1：禁用项仍参与可见菜单，官方隐藏/禁用策略尚未对齐
 
@@ -363,21 +328,9 @@ Composer 中保留“录制技能”入口，但当前 App Server 没有公开�
 - 将 `visibility` 与 `enabled` 分开建模，避免所有不可用能力都被渲染成灰色菜单行。
 - 无 IDE 宿主时建议隐藏 IDE 上下文；录制技能无协议时建议隐藏，而不是让用户尝试一个永远无效的入口。
 
-### P1：菜单定义重复，`/`、`@` 和“添加”存在三套来源
+### 已部分修复：`/`、`@` 和“添加”菜单的动作元数据已共享
 
-当前有 `_slashCommands`、`_mentionCommands` 和 `_buildAddMenu()` 三套定义，同一能力分别出现为不同中文文案和不同选择逻辑。
-
-证据：
-
-- [`lib/src/presentation/conversation/codex_workspace_conversation_composer_panel_state.dart:352`](<lib/src/presentation/conversation/codex_workspace_conversation_composer_panel_state.dart:352>)
-- [`lib/src/presentation/conversation/codex_workspace_conversation_composer_panel_state.dart:452`](<lib/src/presentation/conversation/codex_workspace_conversation_composer_panel_state.dart:452>)
-- [`lib/src/presentation/conversation/codex_workspace_conversation_composer_panel_state.dart:1648`](<lib/src/presentation/conversation/codex_workspace_conversation_composer_panel_state.dart:1648>)
-
-修复建议：
-
-- 建立一个 `ComposerActionCatalog`，每个动作只有一个 canonical id、官方命令名、显示文案、触发入口、可用条件和执行器。
-- `/`、`@`、`+` 只做过滤和分组，不再各自复制动作定义。
-- 为每个入口生成统一的可用性快照，避免同一状态在不同菜单中显示不同结果。
+此前版本存在三套独立定义。当前实现已抽取共享的 `ComposerSlashCommand` 命令描述，`/`、`@` 和“添加”菜单复用文件、工作区上下文、目标、计划模式和技能录制等核心元数据；选择、禁用和键盘导航也已统一测试。仍需官方矩阵确认完整入口集合、顺序和隐藏条件，后续若发现动作集合继续分叉，再扩展为完整的不可变 action catalog。
 
 ### P2：精确顺序和视觉仍不能宣称与官方一致
 
@@ -420,46 +373,13 @@ Composer 中保留“录制技能”入口，但当前 App Server 没有公开�
 - 为每一种事件序列建立 golden + widget test：纯回复、回复+命令、多个命令、审批、错误、Plan、Subagent、最终答案补发。
 - 将“信息可见性策略”从 Widget 中抽成纯函数，避免依赖 UI 分支隐式决定折叠行为。
 
-### P1：异步条目数量变化时存在脆弱的越界保护
+### 已修复：异步条目数量变化时的时间线索引越界
 
-`itemBuilder` 在尾部索引与实时活动、协作活动、文件摘要的数量不一致时直接抛出 `StateError`。
+此前版本在 `itemBuilder` 中直接依赖实时列表长度。当前实现使用不可变渲染快照，并在实时活动、协作活动和文件摘要同帧变化时安全降级；相关时间线和完成状态测试已通过。
 
-证据：
+### 已修复边界：审批、用户输入和 Plan 实施卡的 thread/turn 归属
 
-- [`lib/src/presentation/conversation/codex_workspace_conversation_conversation_timeline.dart:365`](<lib/src/presentation/conversation/codex_workspace_conversation_conversation_timeline.dart:365>)
-
-风险：
-
-- `itemCount`、实时活动和文件摘要可能在同一帧由异步事件同时更新。
-- 在快速完成、停止、切换线程或 Diff 到达时，理论上可能出现短暂索引不一致并中断渲染。
-
-修复建议：
-
-- 先构造不可变的 `RenderedTimelineItem` 列表，再由 `itemCount` 和 `itemBuilder` 共同消费同一快照。
-- 不要在 `itemBuilder` 中用异常作为状态一致性检查；生产环境应返回安全占位或重新调度一次布局。
-- 增加实时 activity 出现/消失与 file summary 同帧更新的 widget test。
-
-### P1：审批、用户输入和 Plan 实施卡不在时间线内
-
-审批、`request_user_input` 和 `Implement this plan?` 主要通过 `ConversationPane` 底部浮动区域渲染，而不是作为时间线条目。
-
-证据：
-
-- [`lib/src/presentation/conversation/codex_workspace_conversation_conversation_pane.dart:113`](<lib/src/presentation/conversation/codex_workspace_conversation_conversation_pane.dart:113>)
-- [`lib/src/presentation/conversation/codex_workspace_conversation_conversation_pane.dart:182`](<lib/src/presentation/conversation/codex_workspace_conversation_conversation_pane.dart:182>)
-- [`lib/src/presentation/conversation/codex_workspace_conversation_conversation_pane.dart:236`](<lib/src/presentation/conversation/codex_workspace_conversation_conversation_pane.dart:236>)
-
-风险：
-
-- 滚动到历史位置时，用户仍可能被当前任务卡片遮挡。
-- 切换任务或后台任务时，卡片是否始终绑定正确 thread/turn 需要运行时验证。
-- 官方可能把某些请求锚定到具体时间线条目，而当前实现采用全局底部卡。
-
-修复建议：
-
-- 为浮动卡片显示明确的 thread、turn、task label，并在切换任务时做快照绑定。
-- 对后台任务请求、切换线程、恢复历史和关闭窗口分别增加隔离测试。
-- 官方若采用时间线锚定，应把请求状态建模为 timeline item，而不是只有全局 controller 状态。
+卡片仍以 Composer 底部浮动区域呈现，这一点是否与官方信息架构一致仍待实测；但当前实现已将审批、MCP elicitation、结构化用户输入和 Plan 实施请求绑定到明确的 thread/turn。旧 turn 请求在同一线程切换后隐藏，后台线程请求保留并显示任务归属，专项测试已覆盖。
 
 ### P2：滚动策略复杂，但缺少官方行为证据
 
@@ -479,53 +399,13 @@ Composer 中保留“录制技能”入口，但当前 App Server 没有公开�
 
 ## 十一、专项分析：任务文件与 Diff
 
-### P0：恢复历史时每个 turn 都清空文件摘要，跨轮文件可能丢失
+### 已修复：恢复历史时跨轮文件摘要丢失
 
-`_appendThreadHistory()` 遍历多个 turn 时，在每个 turn 开始都调用 `_clearFileChanges()`；因此循环结束后只保留最后一个 turn 的文件变更。
+此前版本在遍历每个 turn 时重复清空文件状态。当前实现将 thread 累计文件摘要与当前 turn Diff 分开维护，恢复时按 thread 合并多轮文件，并保留最近一次可撤销的 turn Diff；跨轮恢复、重启和删除清理已有回归测试。
 
-证据：
+### 已修复：thread 级文件摘要与 turn 级 Diff 混用
 
-- [`lib/src/app_controller_codex_controller_runtime.dart:8153`](<lib/src/app_controller_codex_controller_runtime.dart:8153>)
-- [`lib/src/app_controller_codex_controller_runtime.dart:8159`](<lib/src/app_controller_codex_controller_runtime.dart:8159>)
-
-这与当前代码在发送新回合时“文件属于 thread 而不只是最近 turn”的设计注释相矛盾：
-
-- [`lib/src/app_controller_codex_controller_runtime.dart:3571`](<lib/src/app_controller_codex_controller_runtime.dart:3571>)
-
-影响：
-
-- 第一轮修改 `a.dart`，第二轮只追问或修改 `b.dart`，重启后可能只显示最后一轮文件。
-- 右侧任务文件、Diff 统计和撤销条件会因是否走本地缓存而不同。
-- 切换聊天后返回与应用重启可能出现不同结果。
-
-修复建议：
-
-1. 在 `_appendThreadHistory()` 进入循环前只清空一次。
-2. 每个 turn 的 `fileChange` 都合并到 thread 级 map；同一路径按明确规则保留最新 patch 和最新 kind。
-3. 单独保存 `latestTurnDiff` 与 `threadAggregateFileChanges`，不要用一个 `turnDiff` 同时表达两种范围。
-4. 恢复完成后用本地快照与服务端历史做一致性校验，并记录缺失来源，而不是静默覆盖。
-
-### P1：thread 级文件摘要与 turn 级 Diff 混用
-
-当前 `fileChanges` 按路径跨回合累积，而 `turnDiff` 是最近一次 `turn/diff/updated`；文件摘要统计却同时把所有 `fileChanges` 与当前 `turnDiff` 作为输入。
-
-证据：
-
-- [`lib/src/app_controller_codex_controller_runtime.dart:1410`](<lib/src/app_controller_codex_controller_runtime.dart:1410>)
-- [`lib/src/presentation/conversation/codex_workspace_conversation_support.dart:72`](<lib/src/presentation/conversation/codex_workspace_conversation_support.dart:72>)
-- [`lib/src/presentation/conversation/codex_workspace_conversation_file_change_summary_card.dart:31`](<lib/src/presentation/conversation/codex_workspace_conversation_file_change_summary_card.dart:31>)
-
-风险：
-
-- `+新增/-删除` 可能代表整个 thread，也可能只代表最新 turn，用户没有明确范围。
-- 后续 turn 修改旧文件时，旧 patch、最新 patch 和 map 覆盖规则可能产生难以解释的统计。
-- 撤销按钮实际反向应用的是一个 `turnDiff`，但卡片标题却是“已编辑 N 个文件”，语义范围不一致。
-
-修复建议：
-
-- UI 明确标注“本回合变更”或“此任务累计变更”。
-- 使用独立模型：`TurnChangeSnapshot`、`ThreadFileSummary`、`UndoablePatch`。
-- 撤销只绑定一个明确的 turn；若要支持整个任务撤销，应保存按 turn 排序的 patch 栈并按顺序回滚。
+当前 UI 和控制器已拆分累计文件摘要、当前 turn Diff、统计范围和撤销资格。卡片展示累计文件集合，撤销只针对当前 turn 的完整 Diff；当累计集合超出当前 Diff 覆盖范围、Diff 被截断或任务仍在运行时，撤销保持禁用。
 
 ### P1：撤销条件保守但不能覆盖所有有效文件变更
 
@@ -547,62 +427,25 @@ Composer 中保留“录制技能”入口，但当前 App Server 没有公开�
 - 在按钮旁区分“无 Diff”“Diff 截断”“包含任务前已有改动”“任务仍在运行”等具体原因。
 - 只有服务端明确给出任务级 patch 或 baseline 校验通过时才允许撤销。
 
-### P1：路径作为 map key 未统一规范化
+### 已修复边界：文件路径归属与重复合并
 
-`_fileChangesByPath` 直接使用 `change.path` 作为 key，但服务端可能返回绝对路径、工作区相对路径或不同分隔符；路径匹配时才另外调用 `_sameWorkspaceChangePath()`。
+当前文件事件会按工作区路径进行安全匹配，并在整轮 Diff 派生文件时统一处理相对/绝对路径和引号路径；同一 turn 的后续 Diff 会替换派生文件，跨 turn 则保留 thread 摘要。仍建议在官方任务文件矩阵完成后补充最终展示范围验证。
 
-证据：
+### 部分完成：本地七个任务文件场景已覆盖，官方范围仍待实测
 
-- [`lib/src/app_controller_codex_controller_runtime.dart:9564`](<lib/src/app_controller_codex_controller_runtime.dart:9564>)
-- [`lib/src/app_controller_codex_controller_runtime.dart:9730`](<lib/src/app_controller_codex_controller_runtime.dart:9730>)
-
-风险：
-
-- 同一文件可能在摘要中出现两次。
-- 新 Diff 不能覆盖旧的路径键，造成统计、展开列表和撤销覆盖判断不一致。
-
-修复建议：
-
-- 在进入 map 前统一解析为“工作区身份 + workspace-relative POSIX path”。
-- 原始路径只作为展示字段保存。
-- 增加绝对路径、相对路径、`./`、Windows 分隔符和符号链接别名测试。
-
-### P2：缺少官方七个任务文件场景的自动化验收
-
-仓库基线已经列出以下待实测场景，但当前代码和测试没有形成完整行为矩阵：
-
-1. 第一轮创建文件，第二轮只追问。
-2. 后续回合再次修改旧文件。
-3. 多轮分别修改不同文件。
-4. 任务开始前已有 Git 改动。
-5. 撤销当前变更。
-6. 切换聊天后返回。
-7. 应用重启后恢复。
-
-证据：
-
-- [`CODEX_COMPOSER_PARITY_BASELINE.md:任务文件专项基线`](<CODEX_COMPOSER_PARITY_BASELINE.md>)
-
-修复建议：
-
-- 先在官方客户端逐项记录最终 UI 结果，再为本项目建立同名集成测试。
-- 测试断言不只看文件数量，还要看路径集合、统计范围、Diff 内容、撤销可用性和重启后状态。
+当前仓库已覆盖跨轮修改、只追问、重启恢复、切换任务、撤销禁用和删除清理等本地行为；但官方客户端究竟展示当前 turn、thread 累计集合还是 Git 工作树，无法仅凭本地代码确认。因此官方范围矩阵仍保留为待实测，不阻塞本地实现。
 
 ## 十二、建议的修复优先级
 
-### P0：先修复数据和命令正确性
+### 已完成：本地正确性与状态边界
 
-1. 给 slash 命令补 canonical id 和英文 aliases。
-2. 修复历史恢复循环中的 `_clearFileChanges()`，避免跨轮文件摘要丢失。
-3. 拆分最新 turn Diff 与 thread 累计文件摘要的数据模型。
+此前 P0/P1 中的 slash canonical aliases、光标 token 触发、菜单核心元数据共享、跨轮文件摘要、turn Diff 拆分、请求 thread/turn 归属、时间线异步快照和路径合并边界均已实现并通过回归测试。本地实现暂无待处理的同类 P0/P1 修复项。
 
-### P1：再修复状态和交互一致性
+### 仍待确认：官方行为矩阵
 
-1. 统一 `/`、`@`、`+` 菜单目录和可用性策略。
-2. 按光标 token 支持菜单触发，不要只检查整个文本开头。
-3. 将审批、用户输入和 Plan 卡片绑定到明确 thread/turn。
-4. 用不可变渲染快照消除时间线异步索引越界风险。
-5. 统一路径规范化，避免重复文件条目。
+1. 官方 `/`、`@`、`+` 的完整顺序、分组、图标、文案和隐藏/禁用条件。
+2. 官方时间线折叠、审批卡锚定、完成提醒和滚动阈值。
+3. 官方七个任务文件场景的展示范围、Diff 统计和撤销语义。
 
 ### P2：最后做官方行为和视觉对齐
 
