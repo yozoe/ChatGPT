@@ -220,7 +220,8 @@ class CodexController extends ChangeNotifier {
   }) async {
     final records = await _runtimeConfigurationStore.readWorktreeRecords();
     if (sourceRepository == null) return records;
-    final canonical = await Directory(sourceRepository).resolveSymbolicLinks();
+    final canonical = await _resolveExistingPath(sourceRepository);
+    if (canonical == null) return const [];
     return records
         .where((record) => record.sourceRepository == canonical)
         .where(
@@ -229,6 +230,14 @@ class CodexController extends ChangeNotifier {
               record.state == LocalWorktreeState.completed,
         )
         .toList(growable: false);
+  }
+
+  Future<String?> _resolveExistingPath(String path) async {
+    try {
+      return await Directory(path).resolveSymbolicLinks();
+    } on FileSystemException {
+      return null;
+    }
   }
 
   final ConversationHistoryStore _conversationHistoryStore;
@@ -873,6 +882,17 @@ class CodexController extends ChangeNotifier {
           return request.kind;
         }
       }
+      // A background request remains actionable and is rendered with its
+      // owning-task label. Never fall back to a stale request from the active
+      // thread when its turn no longer matches.
+      for (final request in _pendingRequestOrder) {
+        final threadId = switch (request.kind) {
+          'userInput' => _pendingUserInputs[request.requestId]?.threadId,
+          'elicitation' => _pendingElicitations[request.requestId]?.threadId,
+          _ => _pendingApprovals[request.requestId]?.threadId,
+        };
+        if (threadId != activeId) return request.kind;
+      }
       return null;
     }
     return _pendingRequestOrder.first.kind;
@@ -902,6 +922,9 @@ class CodexController extends ChangeNotifier {
           return approval;
         }
       }
+      for (final approval in _pendingApprovals.values) {
+        if (approval.threadId != activeId) return approval;
+      }
     }
     return activeId == null ? _pendingApprovals.values.firstOrNull : null;
   }
@@ -930,6 +953,9 @@ class CodexController extends ChangeNotifier {
             (activeTurnId == null || request.turnId == activeTurnId)) {
           return request;
         }
+      }
+      for (final request in _pendingUserInputs.values) {
+        if (request.threadId != activeId) return request;
       }
     }
     return activeId == null ? _pendingUserInputs.values.firstOrNull : null;
@@ -9754,9 +9780,15 @@ class CodexController extends ChangeNotifier {
           );
         _turnFileChangesByPath.clear();
         turnDiff = null;
-        _persistedFileChangesByThreadId[threadId!] = List<CodexFileChange>.of(
-          previousThreadFiles,
-        );
+        if (threadId == null || previousThreadFiles.isEmpty) {
+          if (threadId != null) {
+            _persistedFileChangesByThreadId.remove(threadId);
+          }
+        } else {
+          _persistedFileChangesByThreadId[threadId] = List<CodexFileChange>.of(
+            previousThreadFiles,
+          );
+        }
         _persistedTurnFileChangesByThreadId.remove(threadId);
         _persistedFileChangesBeforeTurnByThreadId.remove(threadId);
         _persistedTurnDiffByThreadId.remove(threadId);
@@ -9768,8 +9800,7 @@ class CodexController extends ChangeNotifier {
         if (cached != null && cached.turnDiff == diff) {
           final previousThreadFiles =
               _persistedFileChangesBeforeTurnByThreadId[threadId] ??
-              _persistedFileChangesByThreadId[threadId] ??
-              cached.fileChanges;
+              const <CodexFileChange>[];
           _threadViewCache[cacheKey] = ThreadViewSnapshot(
             entries: cached.entries,
             fileChanges: previousThreadFiles,
@@ -9784,11 +9815,13 @@ class CodexController extends ChangeNotifier {
         if (_persistedTurnDiffByThreadId[threadId] == diff) {
           final previousThreadFiles =
               _persistedFileChangesBeforeTurnByThreadId[threadId] ??
-              _persistedFileChangesByThreadId[threadId] ??
               const <CodexFileChange>[];
-          _persistedFileChangesByThreadId[threadId] = List<CodexFileChange>.of(
-            previousThreadFiles,
-          );
+          if (previousThreadFiles.isEmpty) {
+            _persistedFileChangesByThreadId.remove(threadId);
+          } else {
+            _persistedFileChangesByThreadId[threadId] =
+                List<CodexFileChange>.of(previousThreadFiles);
+          }
           _persistedTurnFileChangesByThreadId.remove(threadId);
           _persistedFileChangesBeforeTurnByThreadId.remove(threadId);
           _persistedTurnDiffByThreadId.remove(threadId);

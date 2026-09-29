@@ -732,6 +732,12 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     final scrollController = _timelineScrollControllers[viewportKey];
     if (scrollController == null) return;
     _setTimelineAboveLatest(viewportKey, metrics.extentAfter > 1);
+    if (metrics.extentAfter <= 48) {
+      // Metrics notifications can arrive after the user gesture has ended,
+      // without a final UserScrollNotification carrying the return direction.
+      // Treat the settled bottom as the authoritative latest position.
+      _timelineFollowsLatest[viewportKey] = true;
+    }
     final viewportDimension = metrics.viewportDimension;
     final previousViewportDimension = _timelineViewportDimensions[viewportKey];
     _timelineViewportDimensions[viewportKey] = viewportDimension;

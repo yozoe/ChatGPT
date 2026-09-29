@@ -2205,6 +2205,7 @@ class ComposerPanelState extends State<ComposerPanel> {
                               final showGoalMode =
                                   _goalMode && constraints.maxWidth >= 400;
                               final showModel = constraints.maxWidth >= 240;
+                              final showWorktree = constraints.maxWidth >= 520;
                               return Row(
                                 children: [
                                   if (showAttachment)
@@ -2334,7 +2335,8 @@ class ComposerPanelState extends State<ComposerPanel> {
                                       ),
                                     ),
                                   ],
-                                  if (controller.activeThreadId == null &&
+                                  if (showWorktree &&
+                                      controller.activeThreadId == null &&
                                       controller.workspacePath != null &&
                                       controller
                                               .gitProjectStatus

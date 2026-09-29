@@ -1,6 +1,6 @@
 # Codex Desk
 
-Composer 命令现在同时支持官方英文 slash 别名（如 `/plan`、`/review`、`/mcp`），并由共享命令定义驱动 `/`、`@` 和添加菜单中的核心操作；按光标所在 token 触发菜单，选择文件、技能或命令时只移除当前 token。文件状态区分当前 turn Diff 与 thread 累计文件摘要：撤销只针对当前 turn 的完整 Diff，重启恢复仍保留 thread 内跨轮文件列表，且不会展示不属于当前 turn 的旧审批或用户输入卡片。
+Composer 命令现在同时支持官方英文 slash 别名（如 `/plan`、`/review`、`/mcp`），并由共享命令定义驱动 `/`、`@` 和添加菜单中的核心操作；按光标所在 token 触发菜单，选择文件、技能或命令时只移除当前 token。文件状态区分当前 turn Diff 与 thread 累计文件摘要：撤销只针对当前 turn 的完整 Diff，重启恢复仍保留 thread 内跨轮文件列表，且不会展示当前 thread 中不属于当前 turn 的旧审批或用户输入卡片；其他后台任务的待处理请求仍会带任务归属显示。窄窗口会优先隐藏工作树环境入口，保留 Composer 添加菜单并避免工具栏溢出。
 
 一个以 Flutter 构建的本地优先 Codex 桌面客户端。首个目标平台是 macOS。
 
