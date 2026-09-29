@@ -783,6 +783,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       // arrival order.
       entries: List.unmodifiable(orderAgentMessagePhases(_controller.entries)),
       fileChanges: List.unmodifiable(_controller.fileChanges),
+      turnFileChanges: List.unmodifiable(_controller.turnFileChanges),
       turnDiff: _controller.turnDiff,
       showFileChangeSummary:
           _controller.status != RuntimeStatus.running &&

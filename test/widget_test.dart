@@ -392,6 +392,7 @@ void main() {
             data: TimelinePageData(
               entries: entries,
               fileChanges: const [],
+              turnFileChanges: const [],
               turnDiff: null,
               showFileChangeSummary: false,
               activeActivity: null,

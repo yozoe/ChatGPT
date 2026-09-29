@@ -374,6 +374,7 @@ class ConversationTimeline extends StatelessWidget {
                           'file-change-summary-${pageKey.storageKey}',
                         ),
                         changes: data.fileChanges,
+                        statsChanges: data.turnFileChanges,
                         turnDiff: data.turnDiff,
                         expanded: fileChangeSummaryExpanded,
                         onExpandedChanged: onFileChangeSummaryExpandedChanged,
