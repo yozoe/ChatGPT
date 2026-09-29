@@ -28,6 +28,8 @@
 
 ## `/` 命令基线
 
+本地触发边界已通过回归测试覆盖：句首、空白后和句中合法 token 会打开对应菜单；标记嵌在普通路径/标点 token、token 后已有空白或换行、光标选区非折叠时不会打开菜单；输入法仍处于 composition 时 Enter 不会被 Composer 当作发送或菜单选择。以上是本地实现证据，不是官方桌面行为结论。
+
 | 能力 | 官方证据 | App Server 协议 | 当前实现状态 |
 | --- | --- | --- | --- |
 | IDE 上下文 | 已确认（文档）：`/ide-context` 切换自动 IDE 上下文；CLI `/ide` 包含打开文件和当前选区 | App Server 0.155.0 的 `turn/start.additionalContext` 与 `turn/steer.additionalContext` 可携带按不透明来源键组织的 `{kind: untrusted/application, value: string}` 文本片段；官方文档仍未给出 IDE 宿主连接、来源键和序列化格式 | 已提供 `codex_desk/ide_context` 通用宿主通道并接入当前文件、选区、打开标签；有效快照到达后入口启用，显式选择后以 JSON 字符串发送，断连/切换项目清除选择。仓库没有具体 IDE 插件端，独立运行时仍禁用；当前项目路径从 `@`/添加菜单单独提供 |

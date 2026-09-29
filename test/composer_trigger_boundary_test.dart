@@ -2,6 +2,7 @@ import 'package:chatgpt/src/app_controller.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_panel.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -58,5 +59,98 @@ void main() {
     await tester.enterText(field, '/');
     await tester.pump();
     expect(find.byKey(const Key('composer-slash-menu')), findsOneWidget);
+  });
+
+  testWidgets('only treats slash and mention markers as token starts', (
+    tester,
+  ) async {
+    final controller =
+        CodexController(server: CodexAppServer(executable: '/not/a/codex'))
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready;
+    final composer = TextEditingController();
+    addTearDown(() {
+      composer.dispose();
+      controller.dispose();
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ComposerPanel(
+            controller: controller,
+            composer: composer,
+            onSend: (_) async => true,
+            onQueueSteer: (_) async => true,
+          ),
+        ),
+      ),
+    );
+    final field = find.byKey(const Key('composer-field'));
+
+    for (final value in [
+      '路径/foo/bar',
+      '说明,@main',
+      '说明 /model 参数',
+      '说明 @main\n下一行',
+      '说明 /model\n下一行',
+    ]) {
+      await tester.enterText(field, value);
+      await tester.pump();
+      expect(find.byKey(const Key('composer-mention-menu')), findsNothing);
+      expect(find.byKey(const Key('composer-slash-menu')), findsNothing);
+    }
+
+    await tester.enterText(field, '说明 /model');
+    await tester.pump();
+    expect(find.byKey(const Key('composer-slash-menu')), findsOneWidget);
+    composer.value = composer.value.copyWith(
+      selection: const TextSelection(baseOffset: 0, extentOffset: 2),
+    );
+    await tester.pump();
+    expect(find.byKey(const Key('composer-slash-menu')), findsNothing);
+  });
+
+  testWidgets('IME composition owns Enter before Composer submission', (
+    tester,
+  ) async {
+    final controller =
+        CodexController(server: CodexAppServer(executable: '/not/a/codex'))
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready;
+    final composer = TextEditingController();
+    var sends = 0;
+    addTearDown(() {
+      composer.dispose();
+      controller.dispose();
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ComposerPanel(
+            controller: controller,
+            composer: composer,
+            onSend: (_) async {
+              sends++;
+              return true;
+            },
+            onQueueSteer: (_) async => true,
+          ),
+        ),
+      ),
+    );
+    final field = find.byKey(const Key('composer-field'));
+    await tester.tap(field);
+    composer.value = const TextEditingValue(
+      text: '拼音',
+      selection: TextSelection.collapsed(offset: 2),
+      composing: TextRange(start: 0, end: 2),
+    );
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+
+    expect(sends, 0);
   });
 }
