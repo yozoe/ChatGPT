@@ -7421,13 +7421,33 @@ class CodexController extends ChangeNotifier {
       'active' => previousStatus == null ? '目标已启动' : '目标已恢复',
       'blocked' => '目标需要你的输入',
       'paused' => '目标已暂停',
-      'complete' || 'completed' => '目标已完成',
+      'complete' || 'completed' => _goalCompletionLabel(threadId),
       'usageLimited' => '目标因用量限制暂停',
       'budgetLimited' => '目标因预算耗尽暂停',
       'cleared' => '目标已清除',
       _ => null,
     };
-    if (detail != null) _add(TimelineKind.system, '目标状态', detail);
+    if (detail != null) {
+      _add(
+        TimelineKind.system,
+        '目标状态',
+        detail,
+        activityKind: status == 'complete' || status == 'completed'
+            ? 'goalCompleted'
+            : null,
+      );
+    }
+  }
+
+  String _goalCompletionLabel(String threadId) {
+    final seconds = _threadGoalsById[threadId]?.timeUsedSeconds ?? 0;
+    final safeSeconds = seconds < 0 ? 0 : seconds;
+    final minutes = safeSeconds ~/ 60;
+    final remainingSeconds = safeSeconds % 60;
+    final duration = minutes > 0
+        ? '${minutes}m ${remainingSeconds}s'
+        : '${remainingSeconds}s';
+    return '已在 $duration 内达成目标';
   }
 
   String _planImplementationKey(String threadId, String turnId) =>

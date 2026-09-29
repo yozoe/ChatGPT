@@ -287,9 +287,30 @@ void main() {
       publish('active');
       publish('blocked');
 
+      controller.handleServerEventForTesting(
+        ServerEvent(
+          method: 'thread/goal/updated',
+          params: {
+            'threadId': 'goal-feedback-thread',
+            'goal': {
+              'threadId': 'goal-feedback-thread',
+              'objective': '完成反馈展示',
+              'status': 'completed',
+              'timeUsedSeconds': 604,
+            },
+          },
+        ),
+      );
+
       expect(
         controller.entries.map((entry) => entry.detail),
-        containsAll(['目标已启动', '目标需要你的输入']),
+        containsAll(['目标已启动', '目标需要你的输入', '已在 10m 4s 内达成目标']),
+      );
+      expect(
+        controller.entries
+            .lastWhere((entry) => entry.activityKind == 'goalCompleted')
+            .activityKind,
+        'goalCompleted',
       );
       controller.dispose();
     },

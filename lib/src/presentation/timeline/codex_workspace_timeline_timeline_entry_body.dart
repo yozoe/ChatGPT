@@ -4,6 +4,7 @@ import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_conve
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_user_message_bubble.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_streaming_agent_text.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_agent_markdown.dart';
+import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_goal_completion_summary.dart';
 
 class TimelineEntryBody extends StatelessWidget {
   const TimelineEntryBody(
@@ -31,6 +32,9 @@ class TimelineEntryBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
+    if (entry.activityKind == 'goalCompleted') {
+      return GoalCompletionSummary(label: entry.detail);
+    }
     if (entry.kind == TimelineKind.elapsed) {
       return Semantics(
         label: entry.title,
