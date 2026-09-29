@@ -43,4 +43,71 @@ void main() {
     expect(slashOnly.supports(ComposerMenuSurface.mention), isFalse);
     expect(slashOnly.supports(ComposerMenuSurface.add), isFalse);
   });
+
+  test('uses shared per-surface order without duplicating menu lists', () {
+    const commands = [
+      ComposerSlashCommand(
+        kind: ComposerSlashCommandKind.goal,
+        label: '目标',
+        description: '',
+        icon: Icons.track_changes_outlined,
+        surfaces: {
+          ComposerMenuSurface.slash,
+          ComposerMenuSurface.mention,
+          ComposerMenuSurface.add,
+        },
+        surfaceOrder: {
+          ComposerMenuSurface.slash: 2,
+          ComposerMenuSurface.mention: 1,
+          ComposerMenuSurface.add: 0,
+        },
+      ),
+      ComposerSlashCommand(
+        kind: ComposerSlashCommandKind.files,
+        label: '文件和文件夹',
+        description: '',
+        icon: Icons.attach_file,
+        surfaces: {ComposerMenuSurface.mention, ComposerMenuSurface.add},
+        surfaceOrder: {
+          ComposerMenuSurface.mention: 0,
+          ComposerMenuSurface.add: 1,
+        },
+      ),
+      ComposerSlashCommand(
+        kind: ComposerSlashCommandKind.mcpStatus,
+        label: 'MCP',
+        description: '',
+        icon: Icons.hub_outlined,
+        surfaceOrder: {ComposerMenuSurface.slash: 1},
+      ),
+    ];
+
+    final slash = sortComposerCommands(
+      commands.where((command) => command.supports(ComposerMenuSurface.slash)),
+      ComposerMenuSurface.slash,
+    );
+    final mention = sortComposerCommands(
+      commands.where(
+        (command) => command.supports(ComposerMenuSurface.mention),
+      ),
+      ComposerMenuSurface.mention,
+    );
+    final add = sortComposerCommands(
+      commands.where((command) => command.supports(ComposerMenuSurface.add)),
+      ComposerMenuSurface.add,
+    );
+
+    expect(slash.map((command) => command.kind), [
+      ComposerSlashCommandKind.mcpStatus,
+      ComposerSlashCommandKind.goal,
+    ]);
+    expect(mention.map((command) => command.kind), [
+      ComposerSlashCommandKind.files,
+      ComposerSlashCommandKind.goal,
+    ]);
+    expect(add.map((command) => command.kind), [
+      ComposerSlashCommandKind.goal,
+      ComposerSlashCommandKind.files,
+    ]);
+  });
 }

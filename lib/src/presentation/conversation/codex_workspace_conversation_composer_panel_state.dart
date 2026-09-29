@@ -390,6 +390,7 @@ class ComposerPanelState extends State<ComposerPanel> {
     icon: Icons.attach_file,
     aliases: ['file', 'files', 'folder', 'folders'],
     surfaces: {ComposerMenuSurface.mention, ComposerMenuSurface.add},
+    surfaceOrder: {ComposerMenuSurface.mention: 0, ComposerMenuSurface.add: 0},
   );
 
   ComposerSlashCommand get _recordSkillCommand => const ComposerSlashCommand(
@@ -400,6 +401,7 @@ class ComposerPanelState extends State<ComposerPanel> {
     aliases: ['record-skill', 'record'],
     enabled: false,
     surfaces: {ComposerMenuSurface.mention, ComposerMenuSurface.add},
+    surfaceOrder: {ComposerMenuSurface.mention: 4, ComposerMenuSurface.add: 4},
   );
 
   ComposerSlashCommand get _workspaceContextCommand => ComposerSlashCommand(
@@ -412,6 +414,7 @@ class ComposerPanelState extends State<ComposerPanel> {
     aliases: const ['ide', 'ide-context', 'context'],
     enabled: controller.hasIdeContext,
     surfaces: {ComposerMenuSurface.slash, ComposerMenuSurface.add},
+    surfaceOrder: {ComposerMenuSurface.slash: 0, ComposerMenuSurface.add: 1},
   );
 
   ComposerSlashCommand
@@ -423,11 +426,12 @@ class ComposerPanelState extends State<ComposerPanel> {
     aliases: const ['project', 'workspace', 'current', '当前'],
     enabled: controller.workspacePath != null,
     surfaces: {ComposerMenuSurface.mention, ComposerMenuSurface.add},
+    surfaceOrder: {ComposerMenuSurface.mention: 1, ComposerMenuSurface.add: 1},
   );
 
   List<ComposerSlashCommand> get _commandCatalog => [
     _workspaceContextCommand,
-    _filesCommand.copyWith(enabled: false),
+    _filesCommand,
     _recordSkillCommand,
     const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.mcpStatus,
@@ -435,6 +439,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       description: '显示 MCP 服务器状态',
       icon: Icons.hub_outlined,
       aliases: ['mcp', 'mcp-status'],
+      surfaceOrder: {ComposerMenuSurface.slash: 1},
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.codeReview,
@@ -443,6 +448,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       icon: Icons.fact_check_outlined,
       aliases: const ['review', 'code-review'],
       enabled: controller.canStartCodeReview,
+      surfaceOrder: {ComposerMenuSurface.slash: 2},
     ),
     const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.goal,
@@ -454,6 +460,11 @@ class ComposerPanelState extends State<ComposerPanel> {
         ComposerMenuSurface.slash,
         ComposerMenuSurface.mention,
         ComposerMenuSurface.add,
+      },
+      surfaceOrder: {
+        ComposerMenuSurface.slash: 3,
+        ComposerMenuSurface.mention: 2,
+        ComposerMenuSurface.add: 2,
       },
     ),
     ComposerSlashCommand(
@@ -472,6 +483,11 @@ class ComposerPanelState extends State<ComposerPanel> {
         ComposerMenuSurface.mention,
         ComposerMenuSurface.add,
       },
+      surfaceOrder: {
+        ComposerMenuSurface.slash: 4,
+        ComposerMenuSurface.mention: 3,
+        ComposerMenuSurface.add: 3,
+      },
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.sideChat,
@@ -484,6 +500,7 @@ class ComposerPanelState extends State<ComposerPanel> {
           controller.workspacePath != null &&
           controller.serverIsRunning &&
           widget.sideChatEnabled,
+      surfaceOrder: {ComposerMenuSurface.slash: 5},
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.forkChat,
@@ -492,6 +509,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       icon: Icons.call_split_outlined,
       aliases: const ['fork', 'fork-chat', 'branch'],
       enabled: controller.canForkActiveThread,
+      surfaceOrder: {ComposerMenuSurface.slash: 6},
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.compact,
@@ -500,6 +518,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       icon: Icons.circle_outlined,
       aliases: const ['compact', 'summarize'],
       enabled: controller.canCompactActiveThread,
+      surfaceOrder: {ComposerMenuSurface.slash: 7},
     ),
     const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.feedback,
@@ -507,6 +526,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       description: '发送有关此聊天的反馈',
       icon: Icons.chat_bubble_outline,
       aliases: ['feedback'],
+      surfaceOrder: {ComposerMenuSurface.slash: 8},
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.archive,
@@ -515,6 +535,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       icon: Icons.archive_outlined,
       aliases: const ['archive'],
       enabled: _canArchiveActiveThread,
+      surfaceOrder: {ComposerMenuSurface.slash: 9},
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.reasoning,
@@ -523,6 +544,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       icon: Icons.psychology_outlined,
       aliases: const ['reasoning', 'effort'],
       enabled: controller.canSelectReasoningEffort,
+      surfaceOrder: {ComposerMenuSurface.slash: 10},
     ),
     const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.newChat,
@@ -530,6 +552,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       description: '在同一工作空间中开启空白聊天',
       icon: Icons.add_comment_outlined,
       aliases: ['new', 'new-chat'],
+      surfaceOrder: {ComposerMenuSurface.slash: 11},
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.model,
@@ -538,38 +561,36 @@ class ComposerPanelState extends State<ComposerPanel> {
       icon: Icons.view_in_ar_outlined,
       aliases: const ['model'],
       enabled: controller.canSelectModel,
+      surfaceOrder: {ComposerMenuSurface.slash: 12},
     ),
   ];
 
-  List<ComposerSlashCommand> get _slashCommands => _commandCatalog
-      .where((command) => command.supports(ComposerMenuSurface.slash))
-      .toList(growable: false);
+  List<ComposerSlashCommand> _commandsForSurface(ComposerMenuSurface surface) {
+    final commands = <ComposerSlashCommand>[];
+    for (final command in _commandCatalog) {
+      if (!command.supports(surface)) continue;
+      if ((surface == ComposerMenuSurface.mention ||
+              surface == ComposerMenuSurface.add) &&
+          command.kind == ComposerSlashCommandKind.workspaceContext) {
+        continue;
+      }
+      commands.add(command);
+    }
+    if (surface == ComposerMenuSurface.mention ||
+        surface == ComposerMenuSurface.add) {
+      commands.add(_mentionWorkspaceCommand);
+    }
+    return sortComposerCommands(commands, surface);
+  }
 
-  List<ComposerSlashCommand> get _mentionCommands => [
-    _filesCommand,
-    _mentionWorkspaceCommand,
-    ..._commandCatalog.where(
-      (command) =>
-          command.supports(ComposerMenuSurface.mention) &&
-          command.kind != ComposerSlashCommandKind.workspaceContext &&
-          command.kind != ComposerSlashCommandKind.files &&
-          command.kind != ComposerSlashCommandKind.recordSkill,
-    ),
-    _recordSkillCommand,
-  ];
+  List<ComposerSlashCommand> get _slashCommands =>
+      _commandsForSurface(ComposerMenuSurface.slash);
 
-  List<ComposerSlashCommand> get _addCommands => [
-    ..._commandCatalog.where(
-      (command) =>
-          command.supports(ComposerMenuSurface.add) &&
-          command.kind != ComposerSlashCommandKind.workspaceContext &&
-          command.kind != ComposerSlashCommandKind.files &&
-          command.kind != ComposerSlashCommandKind.recordSkill,
-    ),
-    _filesCommand,
-    _mentionWorkspaceCommand,
-    _recordSkillCommand,
-  ];
+  List<ComposerSlashCommand> get _mentionCommands =>
+      _commandsForSurface(ComposerMenuSurface.mention);
+
+  List<ComposerSlashCommand> get _addCommands =>
+      _commandsForSurface(ComposerMenuSurface.add);
 
   List<ComposerSlashCommand> get _filteredSlashCommands {
     final query = _currentSlashQuery;
