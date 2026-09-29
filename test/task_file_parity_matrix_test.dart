@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:chatgpt/src/app_controller.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
+import 'package:chatgpt/src/services/git_project_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'widget_test_fakes.dart';
@@ -416,6 +417,71 @@ diff --git a/lib/second.dart b/lib/second.dart
         'lib/first.dart',
         'lib/second.dart',
       });
+    },
+  );
+
+  test(
+    'keeps task-start worktree edits when undoing through the controller',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'codex-task-file-preexisting-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      Future<void> git(List<String> arguments) async {
+        final result = await Process.run(
+          'git',
+          arguments,
+          workingDirectory: directory.path,
+        );
+        expect(result.exitCode, 0, reason: result.stderr.toString());
+      }
+
+      await git(const ['init', '-q']);
+      await git(const ['config', 'user.name', 'Codex Test']);
+      await git(const ['config', 'user.email', 'codex@example.com']);
+      final file = File('${directory.path}/tracked.txt');
+      await file.writeAsString('base\n');
+      await git(const ['add', 'tracked.txt']);
+      await git(const ['commit', '-qm', 'initial']);
+      await file.writeAsString('base\nuser edit\n');
+
+      final controller =
+          CodexController(
+              server: CodexAppServer(),
+              gitProjectService: GitProjectService(),
+            )
+            ..workspacePath = directory.path
+            ..status = RuntimeStatus.ready;
+      addTearDown(controller.dispose);
+      const diff = '''diff --git a/tracked.txt b/tracked.txt
+--- a/tracked.txt
++++ b/tracked.txt
+@@ -1,2 +1,3 @@
+ base
+ user edit
++task edit
+''';
+      await file.writeAsString('base\nuser edit\ntask edit\n');
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'item': {
+              'type': 'fileChange',
+              'changes': [
+                {'path': 'tracked.txt', 'kind': 'modified'},
+              ],
+            },
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(method: 'turn/diff/updated', params: {'diff': diff}),
+      );
+
+      expect(controller.canUndoFileChanges, isTrue);
+      expect(await controller.undoFileChanges(), isTrue);
+      expect(await file.readAsString(), 'base\nuser edit\n');
     },
   );
 }
