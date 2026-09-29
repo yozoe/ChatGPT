@@ -350,4 +350,72 @@ void main() {
       expect(binaryController.canUndoFileChanges, isFalse);
     },
   );
+
+  test(
+    'requires every current-turn file to be present in the undo Diff',
+    () async {
+      final git = FakeGitProjectService();
+      final controller =
+          CodexController(server: CodexAppServer(), gitProjectService: git)
+            ..workspacePath = '/workspace'
+            ..status = RuntimeStatus.ready;
+      addTearDown(controller.dispose);
+      const diff = '''diff --git a/lib/first.dart b/lib/first.dart
+--- a/lib/first.dart
++++ b/lib/first.dart
+@@ -1 +1 @@
+-old
++first
+diff --git a/lib/second.dart b/lib/second.dart
+--- a/lib/second.dart
++++ b/lib/second.dart
+@@ -1 +1 @@
+-old
++second
+''';
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'item': {
+              'type': 'fileChange',
+              'changes': [
+                {'path': 'lib/first.dart', 'kind': 'modified'},
+                {'path': 'lib/second.dart', 'kind': 'modified'},
+              ],
+            },
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/diff/updated',
+          params: {
+            'diff': '''diff --git a/lib/first.dart b/lib/first.dart
+--- a/lib/first.dart
++++ b/lib/first.dart
+@@ -1 +1 @@
+-old
++first
+''',
+          },
+        ),
+      );
+
+      expect(controller.turnFileChanges.map((change) => change.path).toSet(), {
+        'lib/first.dart',
+        'lib/second.dart',
+      });
+      expect(controller.canUndoFileChanges, isFalse);
+      controller.handleServerEventForTesting(
+        const ServerEvent(method: 'turn/diff/updated', params: {'diff': diff}),
+      );
+      expect(controller.canUndoFileChanges, isTrue);
+      expect(await controller.undoFileChanges(), isTrue);
+      expect(git.reversedExpectedPaths?.toSet(), {
+        'lib/first.dart',
+        'lib/second.dart',
+      });
+    },
+  );
 }
