@@ -2,6 +2,8 @@
 
 官方证据门禁：本仓库的对照目标是 `/Applications/ChatGPT.app`（bundle `com.openai.codex`），但当前可操作窗口实际来自 `/Applications/Codex Desk.app`（bundle `com.yozoe.chatgpt`，产品名 `Xedoc`）。因此下文所有 Xedoc 菜单、时间线和任务文件观察均为本地定制客户端证据，不标记为官方一致；官方客户端的身份可确认取证仍待完成。
 
+最近一次取证尝试确认官方应用虽在运行，但桌面自动化缺少 Codex 认证令牌，并拒绝绑定 `com.openai.codex`；本轮未取得官方 UI 证据，现有本地实现不因该状态改变。
+
 文件变更摘要的范围已明确分层：文件数量和文件列表表示当前 thread 的累计任务文件；Composer、会话时间线和右侧环境信息中的 `+新增/-删除` 行数表示当前 turn。跨轮文件集合不会再与当前回合 Diff 混算，当前 turn 的完整 Diff 仍是撤销资格的依据。
 
 Composer 命令现在同时支持官方英文 slash 别名（如 `/plan`、`/review`、`/mcp`），并由共享命令定义驱动 `/`、`@` 和添加菜单中的核心操作；按光标所在 token 触发菜单，选择文件、技能或命令时只移除当前 token。文件状态区分当前 turn Diff 与 thread 累计文件摘要：撤销只针对当前 turn 的完整 Diff，重启恢复仍保留 thread 内跨轮文件列表，且不会展示当前 thread 中不属于当前 turn 的旧审批或用户输入卡片；其他后台任务的待处理请求仍会带任务归属显示。窄窗口会优先隐藏工作树环境入口，保留 Composer 添加菜单并避免工具栏溢出。
