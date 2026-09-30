@@ -26,7 +26,7 @@
 
 系统状态显示官方 ChatGPT 应用仍在运行（`com.openai.codex`），但桌面自动化初始化同时报告 `Codex auth token is unavailable`；尝试读取该 bundle 时再次返回“Computer Use is not allowed to use the app `com.openai.codex` for safety reasons”。因此本次没有产生任何可归属于官方客户端的无障碍树、截图或逐键结果，也没有改变 `/`、`@`、`+`、时间线和任务文件矩阵的官方结论。只有成功绑定官方窗口并验证会话身份后，新的桌面观察才可进入“官方一致”列。
 
-本轮补充的官方客户端实测证据：固定客户端窗口显示为 `chatgpt`，项目 `/Users/yeknom/Code/toast` 的本地 `codex app-server` 反复提示“未找到 Codex CLI”，运行时处于连接失败/自动重连状态。输入区仍可见，右侧“任务文件”显示“暂无”，但在输入区尝试输入 `/` 未出现命令菜单。该结果只能证明离线状态下的降级表现，不能证明在线状态的菜单顺序、分组、文案、图标或键盘行为。截图证据保存在本次桌面实测记录中；由于当前仓库不存放临时桌面截图，不将其标记为完整官方一致。
+本轮曾记录一个标题为 `chatgpt` 的离线窗口：项目 `/Users/yeknom/Code/toast` 的本地 `codex app-server` 反复提示“未找到 Codex CLI”，输入区仍可见，右侧“任务文件”显示“暂无”，输入 `/` 未出现命令菜单。后续来源核对无法证明该窗口属于 `com.openai.codex`，因此该记录降级为“身份未确认的离线窗口观察”，不再作为官方客户端实测证据，也不能证明官方离线状态的 token、菜单或焦点语义。
 
 本机观察版本（不改变上面的固定基线）：ChatGPT 应用 `26.924.22138`（build `11645`），内置 CLI `0.158.0-alpha.2.1`。由于该版本与固定基线不同，以下观察只作为版本漂移记录，不用于更新“官方一致”结论。
 
@@ -142,7 +142,7 @@
 | Escape | 关闭菜单并保留 token | 关闭菜单并保留 `/` token | 待实测 |
 | 鼠标悬停 | 同步键盘选择，禁用项不成为执行目标 | 自动化环境未提供可靠视觉悬停状态 | 待实测 |
 | 输入法组合态 | 组合中 Enter 不发送；候选确认后的下一次 Enter 才发送 | 未实测 | 待实测 |
-| 离线状态 | `/`、`@` 不展开且清除 token | 固定官方窗口曾观察到离线 `/` 不展开 | 仅离线降级方向有证据，精确语义待复核 |
+| 离线状态 | `/`、`@` 不展开且清除 token | 身份未确认的离线窗口曾观察到 `/` 不展开 | 官方结论待实测 |
 
 矩阵中的“本地回归证据”只证明当前仓库行为；“Xedoc 观察”只证明本地定制客户端实例的实际运行状态。只有第三列由身份可确认的目标官方客户端复核后，才能把对应项目标记为官方一致。
 
@@ -174,7 +174,7 @@
 | IDE 上下文 | 官方文档确认 IDE 可提供打开文件、当前选区及其他编辑器上下文；App Server Schema 确认 `turn/start.additionalContext` 是公开的客户端上下文载体 | 桌面端精确字段、宿主桥接与来源格式、断连降级；不得依赖未公开的扩展 IPC |
 | Skill | App Server 文档确认文本中的 `$skill-name` 应与结构化 `skill` 输入同时发送 | 官方桌面端是否把 Skill 放在 `@` 菜单、分组与排序 |
 | Goal | App Server 提供持久目标生命周期 | 官方桌面端 `@` 入口、徽标和草稿恢复细节 |
-| Plan | 官方文档确认 `/plan`；App Server 0.155.0 提供 `collaborationMode/list`、`turn/start.collaborationMode`、`thread/resume.collaborationMode`、`thread/settings/update`、`thread/settings/updated` 和 `item/tool/requestUserInput`；官方桌面端 26.915.31945 对非阻塞输入采用前台静置 60 秒、随后 90 秒倒计时并在交互后 snooze，完成计划后显示 `Implement this plan?` | 已接入跨项目刷新的运行时预设、逐线程恢复、空 `/plan` 切换、带正文提交、结构化逐题输入及相同自动处理状态机；完成卡支持官方实施前缀、Plan 反馈和关闭回 default，保留选项/自由文本来源并在发送失败、缓存恢复或历史恢复时维持待处理状态，所有结果按 thread/turn 隔离；像素级视觉仍需截图回归 |
+| Plan | 官方文档确认 `/plan`；App Server 0.155.0 提供 `collaborationMode/list`、`turn/start.collaborationMode`、`thread/resume.collaborationMode`、`thread/settings/update`、`thread/settings/updated` 和 `item/tool/requestUserInput`。既有基线还记录了前台静置、倒计时、snooze 与 `Implement this plan?` 行为，但缺少当前可追溯的官方窗口身份和截图，不能作为本轮官方结论 | 已接入跨项目刷新的运行时预设、逐线程恢复、空 `/plan` 切换、带正文提交、结构化逐题输入及相同自动处理状态机；完成卡支持实施前缀、Plan 反馈和关闭回 default，保留选项/自由文本来源并在发送失败、缓存恢复或历史恢复时维持待处理状态，所有结果按 thread/turn 隔离；官方行为和像素级视觉仍需身份可确认的截图回归 |
 | 录制技能 | 客户端存在技能创建/录制相关产品入口；尚无证据证明本地“附加 skill-creator + 提示词”完全等价 | 精确名称、采集过程、保存与失败生命周期；当前入口按未知协议禁用 |
 
 ### 上下文用量协议（Codex 0.155.0）

@@ -2,6 +2,7 @@
 
 证据更正：此前记录中的 `Xedoc` 窗口来自本地 `/Applications/Codex Desk.app`（`com.yozoe.chatgpt`），不是可确认身份的官方 `/Applications/ChatGPT.app`（`com.openai.codex`）窗口。相关菜单、时间线和任务文件观察均保留为本地定制客户端证据，未标记为官方一致。
 - 记录最新官方取证门禁：`com.openai.codex` 应用虽在运行，但桌面自动化缺少 Codex 认证令牌且拒绝绑定该应用；本轮未产生新的官方菜单、时间线或任务文件证据。
+- 更正旧基线中的离线状态和 Plan 证据等级：无法追溯到 `com.openai.codex` 窗口身份的观察统一降级，不再作为官方桌面结论。
 
 ## Unreleased
 
