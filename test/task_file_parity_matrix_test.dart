@@ -546,6 +546,7 @@ diff --git a/lib/second.dart b/lib/second.dart
       await git(const ['add', 'tracked.txt']);
       expect(controller.canUndoFileChanges, isTrue);
       expect(await controller.undoFileChanges(), isFalse);
+      expect(controller.fileChangeUndoError, contains('暂存改动'));
       expect(await file.readAsString(), 'new\n');
     },
   );
