@@ -26,6 +26,10 @@
 
 系统状态显示官方 ChatGPT 应用仍在运行（`com.openai.codex`），但桌面自动化初始化同时报告 `Codex auth token is unavailable`；尝试读取该 bundle 时再次返回“Computer Use is not allowed to use the app `com.openai.codex` for safety reasons”。因此本次没有产生任何可归属于官方客户端的无障碍树、截图或逐键结果，也没有改变 `/`、`@`、`+`、时间线和任务文件矩阵的官方结论。只有成功绑定官方窗口并验证会话身份后，新的桌面观察才可进入“官方一致”列。
 
+补充身份证据：macOS 原生 `System Events` 只读查询确认当前进程名称为 `ChatGPT`、bundle identifier 为 `com.openai.codex`、PID 为 `16550`，窗口标题为 `ChatGPT`。同一查询的内容树仅暴露 `AXGroup`、三个系统窗口按钮及窗口标题，没有 Composer、时间线或任务文件节点；因此官方应用身份现在可确认，但官方 UI 内容仍不可读取，不能据此填充行为矩阵或截图结论。
+
+随后再次读取同一官方窗口的完整无障碍树，已能看到真实内容节点：模式切换按钮“切换模式，当前模式：Codex”、侧栏“聊天历史记录”、按钮“搜索”“新聊天”“定时任务”“插件”、模式下拉“探索”、项目入口“custody-app联动pc项目”、项目操作“在 custody-app联动pc项目 中开始新聊天”，以及“确认沙盒目录读取权限”权限按钮。当前树还包含已有会话中的“审查”、输入草稿 `test / app` 和 `/` token、文件名 `desktop_window_bridge_test.dart`、`IMPLEMENTATION_PLAN.md`、`README.md`、`RELEASE_NOTES.md` 等节点，并记录了拖拽状态文本。该证据确认官方 UI 内容树已恢复可读，但当前窗口处于已有审查/拖拽和权限提示混合状态，尚未执行干净新聊天逐键操作；因此只能确认这些官方文案和信息层级，不把它们扩展为完整 Composer 菜单顺序或时间线语义。
+
 本轮曾记录一个标题为 `chatgpt` 的离线窗口：项目 `/Users/yeknom/Code/toast` 的本地 `codex app-server` 反复提示“未找到 Codex CLI”，输入区仍可见，右侧“任务文件”显示“暂无”，输入 `/` 未出现命令菜单。后续来源核对无法证明该窗口属于 `com.openai.codex`，因此该记录降级为“身份未确认的离线窗口观察”，不再作为官方客户端实测证据，也不能证明官方离线状态的 token、菜单或焦点语义。
 
 本机观察版本（不改变上面的固定基线）：ChatGPT 应用 `26.924.22138`（build `11645`），内置 CLI `0.158.0-alpha.2.1`。由于该版本与固定基线不同，以下观察只作为版本漂移记录，不用于更新“官方一致”结论。
