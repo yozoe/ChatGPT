@@ -175,7 +175,15 @@ enum AttachmentPickerKind { files, folder }
 
 /// Composer “添加”菜单产生的结构化上下文类型。
 /// Structured context types emitted by the composer add menu.
-enum AddMenuActionKind { files, workspace, goal, plan, recordSkill, skill }
+enum AddMenuActionKind {
+  files,
+  workspace,
+  goal,
+  plan,
+  recordSkill,
+  draw,
+  skill,
+}
 
 /// 将菜单项类型与可选负载组合，避免菜单直接依赖 Composer 私有状态。
 /// Couples a menu action kind with optional payload without exposing Composer private state.

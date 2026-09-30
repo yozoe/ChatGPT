@@ -2666,7 +2666,8 @@ void main() {
   testWidgets('shows App Server context usage without a local estimate', (
     tester,
   ) async {
-    final controller = CodexController(server: _FakeCodexAppServer())
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
       ..workspacePath = '/workspace'
       ..activeThreadId = 'usage-thread'
       ..activeTurnId = 'usage-turn';
@@ -5069,6 +5070,22 @@ void main() {
           scope: 'system',
           displayName: 'Documents',
         ),
+        CodexSkill(
+          name: 'pdf',
+          path: '/skills/pdf/SKILL.md',
+          description: 'Read PDFs',
+          enabled: true,
+          scope: 'system',
+          displayName: 'PDF',
+        ),
+        CodexSkill(
+          name: 'spreadsheets',
+          path: '/skills/spreadsheets/SKILL.md',
+          description: 'Edit spreadsheets',
+          enabled: true,
+          scope: 'system',
+          displayName: 'Spreadsheets',
+        ),
       ];
     await tester.pumpWidget(
       MaterialApp(home: CodexWorkspace(controller: controller)),
@@ -5081,7 +5098,30 @@ void main() {
     expect(find.text('附加 workspace'), findsOneWidget);
     expect(find.text('插件'), findsAtLeastNWidgets(1));
     expect(find.text('Documents'), findsOneWidget);
+    expect(find.text('PDF'), findsOneWidget);
+    expect(find.text('Spreadsheets'), findsOneWidget);
+    expect(find.text('Create and edit documents'), findsOneWidget);
+    expect(find.text('Read, create, and verify PDFs'), findsOneWidget);
+    expect(find.text('Create and edit spreadsheets'), findsOneWidget);
+    expect(find.byKey(const Key('draw-menu-item')), findsOneWidget);
+    expect(
+      tester
+          .widget<PopupMenuItem<AddMenuAction>>(
+            find.byKey(const Key('draw-menu-item')),
+          )
+          .enabled,
+      isTrue,
+    );
+    await tester.tap(find.byKey(const Key('draw-menu-item')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('sketch-canvas-dialog')), findsOneWidget);
+    expect(find.byKey(const Key('sketch-attach-button')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('sketch-cancel-button')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('sketch-canvas-dialog')), findsNothing);
 
+    await tester.tap(find.byKey(const Key('composer-add-button')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('add-goal-menu-item')));
     await tester.pump();
     expect(find.byKey(const Key('composer-goal-dialog')), findsNothing);
@@ -5120,10 +5160,95 @@ void main() {
 
     await tester.tap(find.byKey(const Key('composer-add-button')));
     await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('composer-skill-pdf')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('composer-add-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('composer-skill-spreadsheets')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('composer-skill-chip-documents')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('composer-skill-chip-pdf')), findsOneWidget);
+    expect(
+      find.byKey(const Key('composer-skill-chip-spreadsheets')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const Key('composer-add-button')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('record-skill-menu-item')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('composer-record-skill-chip')), findsNothing);
 
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('adds a locally rendered sketch as a temporary image', (
+    tester,
+  ) async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('composer-add-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('draw-menu-item')));
+    await tester.pumpAndSettle();
+    final canvas = find.byKey(const Key('sketch-canvas'));
+    final start = tester.getTopLeft(canvas) + const Offset(24, 24);
+    final gesture = await tester.startGesture(start);
+    await gesture.moveBy(const Offset(80, 40));
+    await gesture.up();
+    await tester.pump();
+    final attach = tester.widget<FilledButton>(
+      find.byKey(const Key('sketch-attach-button')),
+    );
+    expect(attach.onPressed, isNotNull);
+    await tester.runAsync(() async {
+      await tester.tap(find.byKey(const Key('sketch-attach-button')));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('sketch-canvas-dialog')), findsNothing);
+    expect(find.byKey(const Key('composer-image-thumbnail')), findsOneWidget);
+    final send = tester
+        .widget<IconButton>(
+          find.byWidgetPredicate(
+            (widget) => widget is IconButton && widget.tooltip == '发送任务',
+          ),
+        )
+        .onPressed!;
+    server.startTurnError = StateError('sketch turn rejected');
+    await tester.runAsync(() async {
+      send();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await tester.pump();
+    expect(find.byKey(const Key('composer-image-thumbnail')), findsOneWidget);
+    expect(controller.lastError, contains('sketch turn rejected'));
+
+    server.startTurnError = null;
+    final retrySend = tester
+        .widget<IconButton>(
+          find.byWidgetPredicate(
+            (widget) => widget is IconButton && widget.tooltip == '发送任务',
+          ),
+        )
+        .onPressed!;
+    await tester.runAsync(() async {
+      retrySend();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await tester.pump();
+    expect(server.startedTurnAdditionalInput, hasLength(1));
+    expect(server.startedTurnAdditionalInput.single['type'], 'localImage');
+    expect(server.startedTurnAdditionalInput.single['path'], isA<String>());
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -5277,6 +5402,31 @@ void main() {
     await tester.pumpAndSettle();
     expect(server.threadGoalStatus, 'paused');
     expect(find.text('已暂停'), findsOneWidget);
+    expect(find.byKey(const Key('goal-progress-row-running')), findsNothing);
+    expect(find.byKey(const Key('goal-progress-status')), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const Key('goal-progress-row'))).height,
+      greaterThan(50),
+    );
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'thread/goal/updated',
+        params: {
+          'threadId': 'thread-goal',
+          'goal': {
+            'threadId': 'thread-goal',
+            'objective': '完成目标模式复刻',
+            'status': 'blocked',
+            'tokensUsed': 250,
+            'timeUsedSeconds': 75,
+          },
+        },
+      ),
+    );
+    await tester.pump();
+    expect(find.text('需要输入'), findsOneWidget);
+    expect(find.byKey(const Key('goal-pause-resume-button')), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('goal-actions-button')));
     await tester.pumpAndSettle();
@@ -5350,6 +5500,118 @@ void main() {
     expect(await controller.clearActiveGoal(), isTrue);
     await tester.pumpAndSettle();
     expect(server.clearThreadGoalCalls, 1);
+    expect(find.byKey(const Key('goal-progress-row')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('keeps a waiting-for-input goal in the detailed state row', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(700, 800);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    final writes = <JsonMap>[];
+    final controller =
+        CodexController(server: CodexAppServer(messageSink: writes.add))
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.running
+          ..activeThreadId = 'waiting-goal'
+          ..activeTurnId = 'waiting-turn';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'thread/goal/updated',
+        params: {
+          'threadId': 'waiting-goal',
+          'goal': {
+            'threadId': 'waiting-goal',
+            'objective': '等待用户确认后继续',
+            'status': 'active',
+            'tokensUsed': 20,
+            'timeUsedSeconds': 12,
+          },
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/tool/requestUserInput',
+        requestId: 'waiting-input-request',
+        params: {
+          'threadId': 'waiting-goal',
+          'turnId': 'waiting-turn',
+          'itemId': 'waiting-input-item',
+          'isBlocking': true,
+          'questions': [
+            {
+              'id': 'confirm',
+              'header': '确认',
+              'question': '是否继续执行这个目标？',
+              'options': [
+                {'label': '继续', 'description': '继续执行当前目标'},
+                {'label': '停止', 'description': '停止当前目标'},
+              ],
+            },
+          ],
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(find.byKey(const Key('user-input-panel')), findsOneWidget);
+    expect(find.text('是否继续执行这个目标？'), findsOneWidget);
+    expect(find.byKey(const Key('goal-progress-row')), findsOneWidget);
+    expect(find.byKey(const Key('goal-progress-row-running')), findsNothing);
+    expect(find.text('等待输入'), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const Key('user-input-panel'))).height,
+      lessThanOrEqualTo(440),
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('uses the compact official-style bar while a goal is running', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(900, 800);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'running-goal';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'thread/goal/updated',
+        params: {
+          'threadId': 'running-goal',
+          'goal': {
+            'threadId': 'running-goal',
+            'objective': '执行官方目标样式核对',
+            'status': 'active',
+            'tokenBudget': 1000,
+            'tokensUsed': 250,
+            'timeUsedSeconds': 49866,
+          },
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(find.byKey(const Key('goal-progress-row-running')), findsOneWidget);
+    expect(find.text('进行中的目标：执行官方目标样式核对'), findsOneWidget);
+    expect(find.text('13h 51m 6s'), findsOneWidget);
+    expect(find.textContaining('250 / 1000 tokens'), findsNothing);
+    expect(find.byKey(const Key('goal-pause-running-button')), findsOneWidget);
+    expect(
+      find.byKey(const Key('goal-running-actions-button')),
+      findsOneWidget,
+    );
     expect(find.byKey(const Key('goal-progress-row')), findsNothing);
     await tester.pumpWidget(const SizedBox());
   });

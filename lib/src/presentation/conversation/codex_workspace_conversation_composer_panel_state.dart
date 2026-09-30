@@ -24,6 +24,7 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_selected_skill_chip.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_skill_details_dialog.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_context_usage_button.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_sketch_canvas.dart';
 import 'package:chatgpt/src/domain/local_worktree_record.dart';
 
 class ComposerPanelState extends State<ComposerPanel> {
@@ -404,6 +405,17 @@ class ComposerPanelState extends State<ComposerPanel> {
     surfaceOrder: {ComposerMenuSurface.mention: 4, ComposerMenuSurface.add: 4},
   );
 
+  ComposerSlashCommand get _drawCommand => const ComposerSlashCommand(
+    kind: ComposerSlashCommandKind.draw,
+    label: '绘图',
+    description: '绘制草图',
+    icon: Icons.draw_outlined,
+    aliases: ['draw', 'drawing', 'sketch'],
+    enabled: true,
+    surfaces: {ComposerMenuSurface.add},
+    surfaceOrder: {ComposerMenuSurface.add: 5},
+  );
+
   ComposerSlashCommand get _workspaceContextCommand => ComposerSlashCommand(
     kind: ComposerSlashCommandKind.workspaceContext,
     label: 'IDE 上下文',
@@ -433,6 +445,7 @@ class ComposerPanelState extends State<ComposerPanel> {
     _workspaceContextCommand,
     _filesCommand,
     _recordSkillCommand,
+    _drawCommand,
     const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.mcpStatus,
       label: 'MCP',
@@ -792,6 +805,8 @@ class ComposerPanelState extends State<ComposerPanel> {
         // command visible as a disabled parity row, but never create a local
         // chip that would imply a recording was started.
         return;
+      case ComposerSlashCommandKind.draw:
+        return;
       case ComposerSlashCommandKind.mcpStatus ||
           ComposerSlashCommandKind.codeReview ||
           ComposerSlashCommandKind.sideChat ||
@@ -883,6 +898,9 @@ class ComposerPanelState extends State<ComposerPanel> {
       case ComposerSlashCommandKind.recordSkill:
         // No public App Server recording protocol is available. The row is
         // intentionally disabled and must never create a local success chip.
+        return;
+      case ComposerSlashCommandKind.draw:
+        _showUnavailableSlashCommand('绘图');
         return;
       case ComposerSlashCommandKind.mcpStatus:
         composer.value = const TextEditingValue(
@@ -1457,6 +1475,20 @@ class ComposerPanelState extends State<ComposerPanel> {
         if (!controller.canSteer) _togglePlanMode();
       case AddMenuActionKind.recordSkill:
         return;
+      case AddMenuActionKind.draw:
+        final path = await showDialog<String>(
+          context: context,
+          builder: (context) => const SketchCanvasDialog(),
+        );
+        if (path != null && mounted) {
+          _addAttachments([
+            ComposerAttachment(
+              path: path,
+              isDirectory: false,
+              isTemporary: true,
+            ),
+          ]);
+        }
       case AddMenuActionKind.skill:
         final path = action.value;
         if (path == null) return;
@@ -1752,6 +1784,7 @@ class ComposerPanelState extends State<ComposerPanel> {
     final goalCommand = commands[ComposerSlashCommandKind.goal]!;
     final planCommand = commands[ComposerSlashCommandKind.planMode]!;
     final recordSkillCommand = commands[ComposerSlashCommandKind.recordSkill]!;
+    final drawCommand = commands[ComposerSlashCommandKind.draw]!;
     final workspace = controller.workspacePath;
     final workspaceName = workspace == null ? '当前项目' : _pathLabel(workspace);
     final entries = <PopupMenuEntry<AddMenuAction>>[
@@ -1799,18 +1832,39 @@ class ComposerPanelState extends State<ComposerPanel> {
         label: recordSkillCommand.label,
         description: recordSkillCommand.description,
         selected: false,
-        enabled: false,
+        enabled: recordSkillCommand.enabled,
+      ),
+      AddMenuItem(
+        key: const Key('draw-menu-item'),
+        value: const AddMenuAction(AddMenuActionKind.draw),
+        icon: drawCommand.icon,
+        label: drawCommand.label,
+        description: drawCommand.description,
+        selected: false,
+        enabled: drawCommand.enabled,
       ),
       AddMenuHeader(label: '插件', palette: palette),
     ];
-    final enabledSkills = controller.skills
-        .where((skill) => skill.enabled)
-        .toList(growable: false);
-    if (controller.skillsLoading && enabledSkills.isEmpty) {
+    final enabledSkills =
+        controller.skills.where((skill) => skill.enabled).toList()
+          ..sort((a, b) {
+            final order = _officialSkillOrder(
+              a,
+            ).compareTo(_officialSkillOrder(b));
+            return order == 0 ? a.label.compareTo(b.label) : order;
+          });
+    final visibleSkills = <CodexSkill>[];
+    final visibleSkillLabels = <String>{};
+    for (final skill in enabledSkills) {
+      if (visibleSkillLabels.add(_officialSkillLabel(skill))) {
+        visibleSkills.add(skill);
+      }
+    }
+    if (controller.skillsLoading && visibleSkills.isEmpty) {
       entries.add(
         AddMenuMessage(key: Key('composer-skills-loading'), label: '正在读取可用技能…'),
       );
-    } else if (enabledSkills.isEmpty) {
+    } else if (visibleSkills.isEmpty) {
       entries.add(
         AddMenuMessage(
           key: const Key('composer-skills-empty'),
@@ -1818,14 +1872,14 @@ class ComposerPanelState extends State<ComposerPanel> {
         ),
       );
     } else {
-      for (final skill in enabledSkills) {
+      for (final skill in visibleSkills) {
         entries.add(
           AddMenuItem(
             key: ValueKey('composer-skill-${skill.name}'),
             value: AddMenuAction(AddMenuActionKind.skill, skill.path),
             icon: _skillIcon(skill.name),
-            label: skill.label,
-            description: skill.summary,
+            label: _officialSkillLabel(skill),
+            description: _officialSkillSummary(skill),
             selected: _selectedSkillPaths.contains(skill.path),
           ),
         );
@@ -1847,6 +1901,54 @@ class ComposerPanelState extends State<ComposerPanel> {
       return Icons.description_outlined;
     }
     return Icons.auto_awesome_outlined;
+  }
+
+  String _officialSkillLabel(CodexSkill skill) {
+    final names = <String>{
+      skill.name.trim().toLowerCase(),
+      if (skill.displayName case final displayName?)
+        displayName.trim().toLowerCase(),
+    };
+    if (names.any(
+      (name) =>
+          name == 'spreadsheets' ||
+          name == 'spreadsheet' ||
+          name == 'excel' ||
+          name == 'openai-spreadsheets',
+    )) {
+      return 'Spreadsheets';
+    }
+    if (names.any((name) => name == 'pdf' || name == 'openai-pdf')) {
+      return 'PDF';
+    }
+    if (names.any(
+      (name) =>
+          name == 'documents' ||
+          name == 'document' ||
+          name == 'openai-documents',
+    )) {
+      return 'Documents';
+    }
+    return skill.label;
+  }
+
+  String _officialSkillSummary(CodexSkill skill) {
+    final label = _officialSkillLabel(skill);
+    return switch (label) {
+      'Documents' => 'Create and edit documents',
+      'PDF' => 'Read, create, and verify PDFs',
+      'Spreadsheets' => 'Create and edit spreadsheets',
+      _ => skill.summary,
+    };
+  }
+
+  int _officialSkillOrder(CodexSkill skill) {
+    return switch (_officialSkillLabel(skill)) {
+      'Documents' => 0,
+      'PDF' => 1,
+      'Spreadsheets' => 2,
+      _ => 100,
+    };
   }
 
   String _pathLabel(String path) {

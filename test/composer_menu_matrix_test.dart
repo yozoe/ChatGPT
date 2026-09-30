@@ -124,6 +124,15 @@ void main() {
       const Key('add-plan-mode-menu-item'),
       const Key('record-skill-menu-item'),
     ]);
+    expect(find.byKey(const Key('draw-menu-item')), findsOneWidget);
+    expect(
+      tester
+          .widget<PopupMenuItem<AddMenuAction>>(
+            find.byKey(const Key('draw-menu-item')),
+          )
+          .enabled,
+      isTrue,
+    );
     expect(
       tester
           .widget<PopupMenuItem<AddMenuAction>>(

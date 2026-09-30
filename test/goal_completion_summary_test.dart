@@ -19,5 +19,15 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('已在 10m 4s 内达成目标'), findsOneWidget);
+    expect(find.byKey(const Key('goal-progress-row')), findsNothing);
+    expect(find.byKey(const Key('goal-progress-row-running')), findsNothing);
+    expect(find.byIcon(Icons.pause_rounded), findsNothing);
+    expect(find.byIcon(Icons.play_arrow_rounded), findsNothing);
+    expect(
+      tester
+          .getSize(find.byKey(const Key('goal-completion-summary-label')))
+          .height,
+      lessThanOrEqualTo(24),
+    );
   });
 }

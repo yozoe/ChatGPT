@@ -10,6 +10,7 @@ enum ComposerSlashCommandKind {
   goal,
   planMode,
   recordSkill,
+  draw,
   mcpStatus,
   codeReview,
   sideChat,
