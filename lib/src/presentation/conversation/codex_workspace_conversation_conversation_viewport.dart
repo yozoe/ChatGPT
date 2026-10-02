@@ -24,6 +24,7 @@ class ConversationViewport extends StatefulWidget {
     required this.onUndo,
     required this.onOpenSubagent,
     required this.onSubmitUserMessageEdit,
+    required this.onSetGoal,
     required this.composerValue,
     required this.onPromptSuggestionSelected,
     required this.bottomOverlay,
@@ -59,6 +60,7 @@ class ConversationViewport extends StatefulWidget {
   final ValueChanged<TimelineEntry> onOpenSubagent;
   final Future<bool> Function(TimelineEntry entry, String text)
   onSubmitUserMessageEdit;
+  final Future<bool> Function(String text) onSetGoal;
   final ValueListenable<TextEditingValue> composerValue;
   final ValueChanged<String> onPromptSuggestionSelected;
   final Widget bottomOverlay;

@@ -9,6 +9,7 @@ class CodexTimelineEntry extends StatefulWidget {
     this.streaming = false,
     this.onOpenSubagent,
     this.onSubmitUserMessageEdit,
+    this.onSetGoal,
     super.key,
   });
 
@@ -18,6 +19,7 @@ class CodexTimelineEntry extends StatefulWidget {
   final ValueChanged<TimelineEntry>? onOpenSubagent;
   final Future<bool> Function(TimelineEntry entry, String text)?
   onSubmitUserMessageEdit;
+  final Future<bool> Function(String text)? onSetGoal;
 
   @override
   State<CodexTimelineEntry> createState() => CodexTimelineEntryState();

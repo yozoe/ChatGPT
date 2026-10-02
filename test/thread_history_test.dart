@@ -81,41 +81,51 @@ void main() {
     controller.dispose();
   });
 
-  test('restores file changes from only the latest historical turn', () async {
-    final server = FakeCodexAppServer()
-      ..resumeResult = {
-        'thread': {
-          'turns': [
-            {
-              'id': 'turn-1',
-              'startedAt': 1,
-              'items': [
-                {
-                  'type': 'fileChange',
-                  'changes': [
-                    {'path': 'first.txt', 'kind': 'modified', 'diff': '+first'},
-                  ],
-                },
-              ],
-            },
-            {
-              'id': 'turn-2',
-              'startedAt': 2,
-              'items': [
-                {'type': 'agentMessage', 'text': 'No files changed.'},
-              ],
-            },
-          ],
-        },
-      };
-    final controller = await historyController(server);
+  test(
+    'restores cumulative thread files while keeping latest turn files separate',
+    () async {
+      final server = FakeCodexAppServer()
+        ..resumeResult = {
+          'thread': {
+            'turns': [
+              {
+                'id': 'turn-1',
+                'startedAt': 1,
+                'items': [
+                  {
+                    'type': 'fileChange',
+                    'changes': [
+                      {
+                        'path': 'first.txt',
+                        'kind': 'modified',
+                        'diff': '+first',
+                      },
+                    ],
+                  },
+                ],
+              },
+              {
+                'id': 'turn-2',
+                'startedAt': 2,
+                'items': [
+                  {'type': 'agentMessage', 'text': 'No files changed.'},
+                ],
+              },
+            ],
+          },
+        };
+      final controller = await historyController(server);
 
-    await controller.resumeThread(historyThread('history-thread'));
+      await controller.resumeThread(historyThread('history-thread'));
 
-    expect(controller.fileChanges, isEmpty);
-    expect(controller.turnDiff, isNull);
-    controller.dispose();
-  });
+      expect(controller.fileChanges.map((change) => change.path), [
+        'first.txt',
+      ]);
+      expect(controller.turnFileChanges, isEmpty);
+      expect(controller.turnDiff, isNull);
+      controller.dispose();
+    },
+  );
 
   test('marks history restoration separately from live output', () async {
     final controller = await historyController(FakeCodexAppServer());

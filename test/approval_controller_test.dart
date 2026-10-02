@@ -66,6 +66,65 @@ void main() {
     controller.dispose();
   });
 
+  test('responds to the approval card request id after turn changes', () async {
+    final writes = <JsonMap>[];
+    final controller =
+        CodexController(server: CodexAppServer(messageSink: writes.add))
+          ..activeThreadId = 'thread-1'
+          ..activeTurnId = 'turn-2';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/commandExecution/requestApproval',
+        requestId: 'old-approval',
+        params: {'threadId': 'thread-1', 'turnId': 'turn-1'},
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/commandExecution/requestApproval',
+        requestId: 'new-approval',
+        params: {'threadId': 'thread-1', 'turnId': 'turn-2'},
+      ),
+    );
+
+    await controller.respondToApproval(
+      accepted: true,
+      requestId: 'new-approval',
+    );
+
+    expect(writes.single['id'], 'new-approval');
+    expect(controller.pendingApproval, isNull);
+    controller.dispose();
+  });
+
+  test(
+    'hides stale same-thread requests but keeps background ownership visible',
+    () {
+      final controller = CodexController(server: CodexAppServer())
+        ..activeThreadId = 'foreground'
+        ..activeTurnId = 'turn-2';
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/commandExecution/requestApproval',
+          requestId: 'stale-approval',
+          params: {'threadId': 'foreground', 'turnId': 'turn-1'},
+        ),
+      );
+      expect(controller.pendingApproval, isNull);
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/commandExecution/requestApproval',
+          requestId: 'background-approval',
+          params: {'threadId': 'background', 'turnId': 'turn-7'},
+        ),
+      );
+      expect(controller.pendingApproval?.requestId, 'background-approval');
+      expect(controller.pendingApprovalTaskLabel, startsWith('后台任务'));
+      controller.dispose();
+    },
+  );
+
   test(
     'automatically approves supported requests in auto approval mode',
     () async {

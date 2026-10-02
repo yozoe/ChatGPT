@@ -392,6 +392,7 @@ void main() {
             data: TimelinePageData(
               entries: entries,
               fileChanges: const [],
+              turnFileChanges: const [],
               turnDiff: null,
               showFileChangeSummary: false,
               activeActivity: null,
@@ -1064,6 +1065,47 @@ void main() {
     expect(find.descendant(of: pill, matching: find.text('+0')), findsNothing);
     expect(find.descendant(of: pill, matching: find.text('-0')), findsNothing);
     expect(find.byKey(const Key('file-change-summary-stats')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('keeps live file stats while another Diff is pending', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..status = RuntimeStatus.running;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {
+                'path': 'lib/ready.dart',
+                'kind': 'modified',
+                'diff': '@@ -1 +1,2 @@\n-old\n+new\n+another',
+              },
+              {'path': 'lib/pending.dart', 'kind': 'modified'},
+            ],
+          },
+        },
+      ),
+    );
+    await tester.pump();
+
+    final pill = find.byKey(const Key('composer-file-change-pill'));
+    expect(
+      find.descendant(of: pill, matching: find.text('+2')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: pill, matching: find.text('-1')),
+      findsOneWidget,
+    );
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -2624,7 +2666,8 @@ void main() {
   testWidgets('shows App Server context usage without a local estimate', (
     tester,
   ) async {
-    final controller = CodexController(server: _FakeCodexAppServer())
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
       ..workspacePath = '/workspace'
       ..activeThreadId = 'usage-thread'
       ..activeTurnId = 'usage-turn';
@@ -3017,6 +3060,50 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('keeps the slash menu closed while the runtime is offline', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.stopped;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final field = find.byKey(const Key('composer-field'));
+    await tester.enterText(field, '/');
+    await tester.pump();
+
+    expect(find.byKey(const Key('composer-slash-menu')), findsNothing);
+    expect(tester.widget<TextField>(field).controller!.text, isEmpty);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('keeps slash review visible but disabled while running', (
+    tester,
+  ) async {
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'running-thread'
+      ..activeTurnId = 'running-turn';
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final field = find.byKey(const Key('composer-field'));
+    await tester.enterText(field, '/');
+    await tester.pump();
+
+    final review = find.byKey(
+      const ValueKey('composer-slash-command-codeReview'),
+    );
+    expect(review, findsOneWidget);
+    expect(tester.widget<InkWell>(review).onTap, isNull);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('does not execute project context without a selected project', (
     tester,
   ) async {
@@ -3357,6 +3444,33 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets('closes the slash menu with Tab without submitting the token', (
+    tester,
+  ) async {
+    final controller =
+        CodexController(
+            server: _FakeCodexAppServer(),
+            pluginStore: _MemoryCodexPluginStore(),
+          )
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    final field = find.byKey(const Key('composer-field'));
+    await tester.enterText(field, '/');
+    await tester.pump();
+    expect(find.byKey(const Key('composer-slash-menu')), findsOneWidget);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+
+    expect(find.byKey(const Key('composer-slash-menu')), findsNothing);
+    expect(tester.widget<TextField>(field).controller!.text, '/');
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('submits Composer feedback through the App Server dialog', (
     tester,
@@ -4956,6 +5070,22 @@ void main() {
           scope: 'system',
           displayName: 'Documents',
         ),
+        CodexSkill(
+          name: 'pdf',
+          path: '/skills/pdf/SKILL.md',
+          description: 'Read PDFs',
+          enabled: true,
+          scope: 'system',
+          displayName: 'PDF',
+        ),
+        CodexSkill(
+          name: 'spreadsheets',
+          path: '/skills/spreadsheets/SKILL.md',
+          description: 'Edit spreadsheets',
+          enabled: true,
+          scope: 'system',
+          displayName: 'Spreadsheets',
+        ),
       ];
     await tester.pumpWidget(
       MaterialApp(home: CodexWorkspace(controller: controller)),
@@ -4968,7 +5098,30 @@ void main() {
     expect(find.text('附加 workspace'), findsOneWidget);
     expect(find.text('插件'), findsAtLeastNWidgets(1));
     expect(find.text('Documents'), findsOneWidget);
+    expect(find.text('PDF'), findsOneWidget);
+    expect(find.text('Spreadsheets'), findsOneWidget);
+    expect(find.text('Create and edit documents'), findsOneWidget);
+    expect(find.text('Read, create, and verify PDFs'), findsOneWidget);
+    expect(find.text('Create and edit spreadsheets'), findsOneWidget);
+    expect(find.byKey(const Key('draw-menu-item')), findsOneWidget);
+    expect(
+      tester
+          .widget<PopupMenuItem<AddMenuAction>>(
+            find.byKey(const Key('draw-menu-item')),
+          )
+          .enabled,
+      isTrue,
+    );
+    await tester.tap(find.byKey(const Key('draw-menu-item')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('sketch-canvas-dialog')), findsOneWidget);
+    expect(find.byKey(const Key('sketch-attach-button')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('sketch-cancel-button')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('sketch-canvas-dialog')), findsNothing);
 
+    await tester.tap(find.byKey(const Key('composer-add-button')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('add-goal-menu-item')));
     await tester.pump();
     expect(find.byKey(const Key('composer-goal-dialog')), findsNothing);
@@ -5007,10 +5160,95 @@ void main() {
 
     await tester.tap(find.byKey(const Key('composer-add-button')));
     await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('composer-skill-pdf')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('composer-add-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('composer-skill-spreadsheets')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('composer-skill-chip-documents')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('composer-skill-chip-pdf')), findsOneWidget);
+    expect(
+      find.byKey(const Key('composer-skill-chip-spreadsheets')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const Key('composer-add-button')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('record-skill-menu-item')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('composer-record-skill-chip')), findsNothing);
 
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('adds a locally rendered sketch as a temporary image', (
+    tester,
+  ) async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    await tester.tap(find.byKey(const Key('composer-add-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('draw-menu-item')));
+    await tester.pumpAndSettle();
+    final canvas = find.byKey(const Key('sketch-canvas'));
+    final start = tester.getTopLeft(canvas) + const Offset(24, 24);
+    final gesture = await tester.startGesture(start);
+    await gesture.moveBy(const Offset(80, 40));
+    await gesture.up();
+    await tester.pump();
+    final attach = tester.widget<FilledButton>(
+      find.byKey(const Key('sketch-attach-button')),
+    );
+    expect(attach.onPressed, isNotNull);
+    await tester.runAsync(() async {
+      await tester.tap(find.byKey(const Key('sketch-attach-button')));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('sketch-canvas-dialog')), findsNothing);
+    expect(find.byKey(const Key('composer-image-thumbnail')), findsOneWidget);
+    final send = tester
+        .widget<IconButton>(
+          find.byWidgetPredicate(
+            (widget) => widget is IconButton && widget.tooltip == '发送任务',
+          ),
+        )
+        .onPressed!;
+    server.startTurnError = StateError('sketch turn rejected');
+    await tester.runAsync(() async {
+      send();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await tester.pump();
+    expect(find.byKey(const Key('composer-image-thumbnail')), findsOneWidget);
+    expect(controller.lastError, contains('sketch turn rejected'));
+
+    server.startTurnError = null;
+    final retrySend = tester
+        .widget<IconButton>(
+          find.byWidgetPredicate(
+            (widget) => widget is IconButton && widget.tooltip == '发送任务',
+          ),
+        )
+        .onPressed!;
+    await tester.runAsync(() async {
+      retrySend();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await tester.pump();
+    expect(server.startedTurnAdditionalInput, hasLength(1));
+    expect(server.startedTurnAdditionalInput.single['type'], 'localImage');
+    expect(server.startedTurnAdditionalInput.single['path'], isA<String>());
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -5032,9 +5270,10 @@ void main() {
       await tester.pump();
       expect(find.byKey(const Key('composer-plan-mode-chip')), findsOneWidget);
 
+      controller.activeThreadId = 'thread-plan';
+      controller.setComposerPlanMode(true);
       controller
         ..status = RuntimeStatus.running
-        ..activeThreadId = 'thread-plan'
         ..activeTurnId = 'turn-plan';
       controller.handleServerEventForTesting(
         const ServerEvent(method: 'turn/started', params: {}),
@@ -5157,12 +5396,37 @@ void main() {
 
     expect(find.byKey(const Key('goal-progress-row')), findsOneWidget);
     expect(find.text('完成目标模式复刻'), findsOneWidget);
-    expect(find.text('250 / 1000 tokens · 1 分钟'), findsOneWidget);
+    expect(find.text('250 / 1000 tokens · 累计 1 分钟'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('goal-pause-resume-button')));
     await tester.pumpAndSettle();
     expect(server.threadGoalStatus, 'paused');
     expect(find.text('已暂停'), findsOneWidget);
+    expect(find.byKey(const Key('goal-progress-row-running')), findsNothing);
+    expect(find.byKey(const Key('goal-progress-status')), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const Key('goal-progress-row'))).height,
+      greaterThan(50),
+    );
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'thread/goal/updated',
+        params: {
+          'threadId': 'thread-goal',
+          'goal': {
+            'threadId': 'thread-goal',
+            'objective': '完成目标模式复刻',
+            'status': 'blocked',
+            'tokensUsed': 250,
+            'timeUsedSeconds': 75,
+          },
+        },
+      ),
+    );
+    await tester.pump();
+    expect(find.text('需要输入'), findsOneWidget);
+    expect(find.byKey(const Key('goal-pause-resume-button')), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('goal-actions-button')));
     await tester.pumpAndSettle();
@@ -5214,11 +5478,140 @@ void main() {
     await tester.pump();
     expect(find.text('预算已用尽'), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('goal-actions-button')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('清除目标'));
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'thread/goal/updated',
+        params: {
+          'threadId': 'thread-goal',
+          'goal': {
+            'threadId': 'thread-goal',
+            'objective': '完成目标模式和计划模式复刻',
+            'status': 'complete',
+            'tokensUsed': 1000,
+            'timeUsedSeconds': 120,
+          },
+        },
+      ),
+    );
+    await tester.pump();
+    expect(find.byKey(const Key('goal-progress-row')), findsNothing);
+
+    // The completed goal card is gone, so clear it through the controller API.
+    expect(await controller.clearActiveGoal(), isTrue);
     await tester.pumpAndSettle();
     expect(server.clearThreadGoalCalls, 1);
+    expect(find.byKey(const Key('goal-progress-row')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('keeps a waiting-for-input goal in the detailed state row', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(700, 800);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    final writes = <JsonMap>[];
+    final controller =
+        CodexController(server: CodexAppServer(messageSink: writes.add))
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.running
+          ..activeThreadId = 'waiting-goal'
+          ..activeTurnId = 'waiting-turn';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'thread/goal/updated',
+        params: {
+          'threadId': 'waiting-goal',
+          'goal': {
+            'threadId': 'waiting-goal',
+            'objective': '等待用户确认后继续',
+            'status': 'active',
+            'tokensUsed': 20,
+            'timeUsedSeconds': 12,
+          },
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/tool/requestUserInput',
+        requestId: 'waiting-input-request',
+        params: {
+          'threadId': 'waiting-goal',
+          'turnId': 'waiting-turn',
+          'itemId': 'waiting-input-item',
+          'isBlocking': true,
+          'questions': [
+            {
+              'id': 'confirm',
+              'header': '确认',
+              'question': '是否继续执行这个目标？',
+              'options': [
+                {'label': '继续', 'description': '继续执行当前目标'},
+                {'label': '停止', 'description': '停止当前目标'},
+              ],
+            },
+          ],
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(find.byKey(const Key('user-input-panel')), findsOneWidget);
+    expect(find.text('是否继续执行这个目标？'), findsOneWidget);
+    expect(find.byKey(const Key('goal-progress-row')), findsOneWidget);
+    expect(find.byKey(const Key('goal-progress-row-running')), findsNothing);
+    expect(find.text('等待输入'), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const Key('user-input-panel'))).height,
+      lessThanOrEqualTo(440),
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('uses the compact official-style bar while a goal is running', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(900, 800);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    final controller = CodexController(server: _FakeCodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.running
+      ..activeThreadId = 'running-goal';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'thread/goal/updated',
+        params: {
+          'threadId': 'running-goal',
+          'goal': {
+            'threadId': 'running-goal',
+            'objective': '执行官方目标样式核对',
+            'status': 'active',
+            'tokenBudget': 1000,
+            'tokensUsed': 250,
+            'timeUsedSeconds': 49866,
+          },
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+
+    expect(find.byKey(const Key('goal-progress-row-running')), findsOneWidget);
+    expect(find.text('进行中的目标：执行官方目标样式核对'), findsOneWidget);
+    expect(find.text('13h 51m 6s'), findsOneWidget);
+    expect(find.textContaining('250 / 1000 tokens'), findsNothing);
+    expect(find.byKey(const Key('goal-pause-running-button')), findsOneWidget);
+    expect(
+      find.byKey(const Key('goal-running-actions-button')),
+      findsOneWidget,
+    );
     expect(find.byKey(const Key('goal-progress-row')), findsNothing);
     await tester.pumpWidget(const SizedBox());
   });
@@ -8606,9 +8999,7 @@ void main() {
           'codex-desk-agent-file-link-batch-',
         );
         controllerFile = File('${workspace.path}/app_controller.dart');
-        specificationFile = File(
-          '${workspace.path}/LOCAL_WORKTREE_DEVELOPMENT.md',
-        );
+        specificationFile = File('${workspace.path}/本地工作树开发文档.md');
         await controllerFile.writeAsString('class Controller {}');
         await specificationFile.writeAsString('# Worktree');
       });
@@ -8683,7 +9074,7 @@ void main() {
       expect(find.byKey(const Key('agent-streaming-text')), findsNothing);
       expect(find.byKey(const Key('agent-markdown-selection')), findsOneWidget);
       expect(find.text('app_controller.dart'), findsOneWidget);
-      expect(find.text('LOCAL_WORKTREE_DEVELOPMENT.md'), findsNWidgets(3));
+      expect(find.text('本地工作树开发文档.md'), findsNWidgets(3));
       expect(find.byIcon(Icons.insert_drive_file_outlined), findsNWidgets(4));
       final completedRect = tester.getRect(
         find.byKey(const Key('agent-markdown-selection')),
@@ -9927,6 +10318,59 @@ void main() {
       '耗时 61 秒',
       '任务完成',
     ]);
+  });
+
+  test(
+    'compacts three consecutive duration-only turns without losing detail',
+    () {
+      final entries = [
+        for (var seconds = 1; seconds <= 3; seconds++)
+          TimelineEntry(
+            kind: TimelineKind.elapsed,
+            title: '耗时 $seconds 秒',
+            detail: '',
+            createdAt: DateTime(2026, 1, 1, 0, 0, seconds),
+          ),
+      ];
+
+      final items = conversationTimelineItems(entries);
+
+      expect(items, hasLength(1));
+      expect(items.single.elapsedEntries, hasLength(3));
+      expect(items.single.elapsedEntries!.map((entry) => entry.title), [
+        '耗时 1 秒',
+        '耗时 2 秒',
+        '耗时 3 秒',
+      ]);
+    },
+  );
+
+  test('keeps short duration runs and detailed turns separate', () {
+    final entries = [
+      TimelineEntry(
+        kind: TimelineKind.elapsed,
+        title: '耗时 1 秒',
+        detail: '',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.elapsed,
+        title: '耗时 2 秒',
+        detail: '',
+        createdAt: DateTime(2026),
+      ),
+      TimelineEntry(
+        kind: TimelineKind.agent,
+        title: 'Codex',
+        detail: '已完成工作',
+        createdAt: DateTime(2026),
+      ),
+    ];
+
+    final items = conversationTimelineItems(entries);
+
+    expect(items, hasLength(3));
+    expect(items.where((item) => item.elapsedEntries != null), isEmpty);
   });
 
   test('retains one duration and completion for each user turn', () {
@@ -12647,7 +13091,7 @@ void main() {
       server.startTurnError = null;
       expect(await controller.sendPrompt('second turn'), isTrue);
       expect(controller.fileChanges.single.path, 'first.txt');
-      expect(controller.turnDiff, firstDiff);
+      expect(controller.turnDiff, isNull);
       controller.handleServerEventForTesting(
         const ServerEvent(
           method: 'item/completed',
@@ -12680,15 +13124,192 @@ void main() {
         'first.txt',
         'second.txt',
       ]);
+      expect(controller.turnFileChanges.map((change) => change.path), [
+        'second.txt',
+      ]);
       expect(controller.turnDiff, secondDiff);
-      // The latest turn Diff does not cover the earlier thread-level file,
-      // so the safe undo guard must not present it as a complete task undo.
-      expect(controller.canUndoFileChanges, isFalse);
-      expect(await controller.undoFileChanges(), isFalse);
-      expect(git.reversedDiff, isNull);
+      // Undo is scoped to the current turn and must not require the Diff to
+      // cover the thread's older cumulative file summary.
+      expect(controller.canUndoFileChanges, isTrue);
+      expect(await controller.undoFileChanges(), isTrue);
+      expect(git.reversedDiff, secondDiff);
       controller.dispose();
     },
   );
+
+  test(
+    'undoing a later turn restores the earlier version of the same file',
+    () async {
+      final server = _FakeCodexAppServer();
+      final git = _FakeGitProjectService();
+      final controller = CodexController(server: server, gitProjectService: git)
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      const firstDiff =
+          'diff --git a/lib/main.dart b/lib/main.dart\n'
+          '--- a/lib/main.dart\n'
+          '+++ b/lib/main.dart\n'
+          '@@ -1 +1 @@\n-old\n+first';
+      const secondDiff =
+          'diff --git a/lib/main.dart b/lib/main.dart\n'
+          '--- a/lib/main.dart\n'
+          '+++ b/lib/main.dart\n'
+          '@@ -1 +1 @@\n+first\n+second';
+
+      expect(await controller.sendPrompt('first change'), isTrue);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'item': {
+              'type': 'fileChange',
+              'changes': [
+                {
+                  'path': 'lib/main.dart',
+                  'kind': 'modified',
+                  'diff': firstDiff,
+                },
+              ],
+            },
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/diff/updated',
+          params: {'diff': firstDiff},
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'turn': {'status': 'completed'},
+          },
+        ),
+      );
+
+      expect(await controller.sendPrompt('second change'), isTrue);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/completed',
+          params: {
+            'item': {
+              'type': 'fileChange',
+              'changes': [
+                {
+                  'path': 'lib/main.dart',
+                  'kind': 'modified',
+                  'diff': secondDiff,
+                },
+              ],
+            },
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/diff/updated',
+          params: {'diff': secondDiff},
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'turn': {'status': 'completed'},
+          },
+        ),
+      );
+
+      expect(controller.canUndoFileChanges, isTrue);
+      expect(await controller.undoFileChanges(), isTrue);
+      expect(git.reversedDiff, secondDiff);
+      expect(controller.fileChanges.single.diff, firstDiff);
+      expect(controller.turnFileChanges, isEmpty);
+      controller.dispose();
+    },
+  );
+
+  test('keeps undo disabled for a truncated task Diff', () async {
+    final controller =
+        CodexController(
+            server: CodexAppServer(),
+            gitProjectService: _FakeGitProjectService(),
+          )
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready;
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {
+                'path': 'lib/main.dart',
+                'kind': 'modified',
+                'diff': '@@ -1 +1 @@\n-old\n+new',
+              },
+            ],
+          },
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      ServerEvent(
+        method: 'turn/diff/updated',
+        params: {
+          'diff':
+              'diff --git a/lib/main.dart b/lib/main.dart\n${GitProjectService.truncatedDiffMarker}',
+        },
+      ),
+    );
+
+    expect(controller.canUndoFileChanges, isFalse);
+    expect(await controller.undoFileChanges(), isFalse);
+    expect(controller.fileChangeUndoError, contains('Diff 不完整'));
+    controller.dispose();
+  });
+
+  test('keeps undo disabled for a binary-only task Diff', () async {
+    final controller =
+        CodexController(
+            server: CodexAppServer(),
+            gitProjectService: _FakeGitProjectService(),
+          )
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready;
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {'path': 'assets/logo.png', 'kind': 'modified'},
+            ],
+          },
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/diff/updated',
+        params: {
+          'diff':
+              'diff --git a/assets/logo.png b/assets/logo.png\n'
+              'index 123..456 100644\n'
+              'Binary files a/assets/logo.png and b/assets/logo.png differ',
+        },
+      ),
+    );
+
+    expect(controller.canUndoFileChanges, isFalse);
+    expect(await controller.undoFileChanges(), isFalse);
+    expect(controller.fileChangeUndoError, contains('Diff 不完整'));
+    controller.dispose();
+  });
 
   test('restores task files after a follow-up with no file changes', () async {
     final workspaceDirectory = await Directory.systemTemp.createTemp(
@@ -12741,6 +13362,8 @@ void main() {
       ),
     );
     expect(firstController.fileChanges.single.path, 'lib/main.dart');
+    expect(firstController.turnFileChanges, isEmpty);
+    expect(firstController.turnDiff, isNull);
     await firstController.saveConversationHistoryForTesting();
     firstController.dispose();
 
@@ -14710,6 +15333,50 @@ void main() {
     await tester.pump();
     expect(server.startedTurnPrompts, ['网络测试', '网络测试']);
     expect(find.byKey(const Key('failed-turn-retry-notice')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('shows and cancels the capacity auto-retry countdown', (
+    tester,
+  ) async {
+    final server = _FakeCodexAppServer();
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    expect(await tester.runAsync(() => controller.sendPrompt('容量测试')), isTrue);
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'new-thread',
+          'turn': {
+            'status': 'failed',
+            'error': {
+              'code': 'model_at_capacity',
+              'message': 'Model at capacity',
+            },
+          },
+        },
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      find.byKey(const Key('failed-turn-auto-retry-countdown')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('秒后重试'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('failed-turn-auto-retry-countdown')));
+    await tester.pump();
+    expect(
+      find.byKey(const Key('failed-turn-auto-retry-countdown')),
+      findsNothing,
+    );
+    expect(find.byKey(const Key('failed-turn-retry-button')), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 

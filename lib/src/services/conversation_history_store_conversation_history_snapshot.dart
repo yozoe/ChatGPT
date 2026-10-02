@@ -9,6 +9,7 @@ class ConversationHistorySnapshot {
     required this.archivedThreads,
     required this.entries,
     required this.fileChanges,
+    this.threadFileChanges,
     this.pinnedThreadIds = const {},
     this.acknowledgedCompletedThreadIds = const {},
     this.turnDiff,
@@ -17,6 +18,8 @@ class ConversationHistorySnapshot {
     this.historyInitialized = false,
     this.userMessageEntriesByThreadId = const {},
     this.fileChangesByThreadId = const {},
+    this.turnFileChangesByThreadId = const {},
+    this.fileChangesBeforeTurnByThreadId = const {},
     this.turnDiffByThreadId = const {},
   });
 
@@ -24,6 +27,9 @@ class ConversationHistorySnapshot {
   final List<CodexThread> archivedThreads;
   final List<TimelineEntry> entries;
   final List<CodexFileChange> fileChanges;
+
+  /// Cumulative file summary for the whole thread. Older snapshots omit it.
+  final List<CodexFileChange>? threadFileChanges;
   final Set<String> pinnedThreadIds;
 
   /// Completed-task reminders that the user has already viewed.
@@ -45,6 +51,8 @@ class ConversationHistorySnapshot {
   /// when an inactive thread is reopened after a restart.
   final Map<String, List<TimelineEntry>> userMessageEntriesByThreadId;
   final Map<String, List<CodexFileChange>> fileChangesByThreadId;
+  final Map<String, List<CodexFileChange>> turnFileChangesByThreadId;
+  final Map<String, List<CodexFileChange>> fileChangesBeforeTurnByThreadId;
   final Map<String, String?> turnDiffByThreadId;
 
   /// 将当前工作区快照转换为可持久化的 JSON。
@@ -56,6 +64,10 @@ class ConversationHistorySnapshot {
         .toList(),
     'entries': entries.map((entry) => entry.toJson()).toList(),
     'fileChanges': fileChanges.map((change) => change.toJson()).toList(),
+    if (threadFileChanges != null)
+      'threadFileChanges': threadFileChanges!
+          .map((change) => change.toJson())
+          .toList(),
     'pinnedThreadIds': pinnedThreadIds.toList(growable: false),
     'acknowledgedCompletedThreadIds': acknowledgedCompletedThreadIds.toList(
       growable: false,
@@ -72,6 +84,14 @@ class ConversationHistorySnapshot {
       for (final entry in fileChangesByThreadId.entries)
         entry.key: entry.value.map((item) => item.toJson()).toList(),
     },
+    'turnFileChangesByThreadId': {
+      for (final entry in turnFileChangesByThreadId.entries)
+        entry.key: entry.value.map((item) => item.toJson()).toList(),
+    },
+    'fileChangesBeforeTurnByThreadId': {
+      for (final entry in fileChangesBeforeTurnByThreadId.entries)
+        entry.key: entry.value.map((item) => item.toJson()).toList(),
+    },
     'turnDiffByThreadId': turnDiffByThreadId,
   };
 
@@ -86,6 +106,23 @@ class ConversationHistorySnapshot {
     ) {
       if (raw is! Iterable) return const [];
       return raw.whereType<Map>().map(parse).toList(growable: false);
+    }
+
+    Map<String, List<CodexFileChange>> decodeFileChangesByThreadId(
+      Object? raw,
+    ) {
+      final decoded = <String, List<CodexFileChange>>{};
+      if (raw is! Map) return decoded;
+      for (final entry in raw.entries) {
+        final threadId = entry.key.toString().trim();
+        if (threadId.isEmpty || entry.value is! Iterable) continue;
+        decoded[threadId] = (entry.value as Iterable)
+            .whereType<Map>()
+            .map(CodexFileChange.fromJson)
+            .where((item) => item.path.isNotEmpty)
+            .toList(growable: false);
+      }
+      return decoded;
     }
 
     final decodedThreads = decodeList(
@@ -132,6 +169,12 @@ class ConversationHistorySnapshot {
       }
     }
     final turnDiffByThreadId = <String, String?>{};
+    final turnFileChangesByThreadId = decodeFileChangesByThreadId(
+      value['turnFileChangesByThreadId'],
+    );
+    final fileChangesBeforeTurnByThreadId = decodeFileChangesByThreadId(
+      value['fileChangesBeforeTurnByThreadId'],
+    );
     final rawTurnDiffByThreadId = value['turnDiffByThreadId'];
     if (rawTurnDiffByThreadId is Map) {
       for (final entry in rawTurnDiffByThreadId.entries) {
@@ -148,11 +191,18 @@ class ConversationHistorySnapshot {
       ...decodedThreads.map((thread) => thread.id),
       ...decodedArchivedThreads.map((thread) => thread.id),
     };
+    final decodedThreadFileChanges = decodeList(
+      value['threadFileChanges'],
+      CodexFileChange.fromJson,
+    );
     return ConversationHistorySnapshot(
       threads: decodedThreads,
       archivedThreads: decodedArchivedThreads,
       entries: decodeList(value['entries'], TimelineEntry.fromJson),
       fileChanges: decodeList(value['fileChanges'], CodexFileChange.fromJson),
+      threadFileChanges: decodedThreadFileChanges.isEmpty
+          ? null
+          : decodedThreadFileChanges,
       pinnedThreadIds: value['pinnedThreadIds'] is Iterable
           ? (value['pinnedThreadIds'] as Iterable)
                 .where((id) => id != null)
@@ -177,6 +227,8 @@ class ConversationHistorySnapshot {
           value['historyInitialized'] == true || owned.isNotEmpty,
       userMessageEntriesByThreadId: userMessageEntriesByThreadId,
       fileChangesByThreadId: fileChangesByThreadId,
+      turnFileChangesByThreadId: turnFileChangesByThreadId,
+      fileChangesBeforeTurnByThreadId: fileChangesBeforeTurnByThreadId,
       turnDiffByThreadId: turnDiffByThreadId,
     );
   }

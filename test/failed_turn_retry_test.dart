@@ -119,6 +119,87 @@ void main() {
     },
   );
 
+  test('starts an automatic retry countdown for capacity errors', () async {
+    final server = FakeCodexAppServer();
+    final controller = await readyRetryController(server);
+    expect(await controller.sendPrompt('容量重试'), isTrue);
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'new-thread',
+          'turn': {
+            'status': 'failed',
+            'error': {
+              'message':
+                  'Selected model is at capacity. Please try a different model.',
+            },
+          },
+        },
+      ),
+    );
+    expect(controller.hasCapacityRateLimitFailure, isTrue);
+    expect(controller.hasAutomaticRetry, isTrue);
+    expect(controller.automaticRetrySecondsRemaining, inInclusiveRange(29, 30));
+    controller.cancelAutomaticRetry();
+    expect(controller.hasAutomaticRetry, isFalse);
+    expect(controller.automaticRetryCancelled, isTrue);
+    expect(controller.canRetryFailedTurn, isTrue);
+    controller.dispose();
+  });
+
+  test('does not automatically retry long-term usage limits', () async {
+    final server = FakeCodexAppServer();
+    final controller = await readyRetryController(server);
+    expect(await controller.sendPrompt('额度不自动轮询'), isTrue);
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'new-thread',
+          'turn': {
+            'status': 'failed',
+            'error': {'code': 'usage_limit_reached', 'message': 'usage limit'},
+          },
+        },
+      ),
+    );
+    expect(controller.hasUsageLimitFailure, isTrue);
+    expect(controller.hasAutomaticRetry, isFalse);
+    controller.dispose();
+  });
+
+  test('classifies a numeric structured 429 as a capacity retry', () async {
+    final server = FakeCodexAppServer()
+      ..startTurnError = const CodexAppServerException(
+        message: 'Too many requests',
+        code: '429',
+      );
+    final controller = await readyRetryController(server);
+    expect(await controller.sendPrompt('429 重试'), isFalse);
+    expect(controller.hasCapacityRateLimitFailure, isTrue);
+    expect(controller.hasAutomaticRetry, isTrue);
+    controller.cancelAutomaticRetry();
+    controller.dispose();
+  });
+
+  test(
+    'preserves a usage-limit classification when its type mentions capacity',
+    () async {
+      final server = FakeCodexAppServer()
+        ..startTurnError = const CodexAppServerException(
+          message: 'Usage limit reached',
+          code: 'usage_limit_reached',
+          type: 'capacity',
+        );
+      final controller = await readyRetryController(server);
+      expect(await controller.sendPrompt('额度优先级'), isFalse);
+      expect(controller.hasUsageLimitFailure, isTrue);
+      expect(controller.hasAutomaticRetry, isFalse);
+      controller.dispose();
+    },
+  );
+
   test('retries a failed turn with the exact original submission', () async {
     final server = FakeCodexAppServer();
     final controller = await readyRetryController(server);
@@ -294,6 +375,60 @@ void main() {
       controller.dispose();
     },
   );
+
+  test('restores the previous turn diff when a retry start fails', () async {
+    final server = FakeCodexAppServer();
+    final controller = await readyRetryController(server);
+    expect(await controller.sendPrompt('保留上一回合 Diff'), isTrue);
+
+    const diff =
+        'diff --git a/lib/main.dart b/lib/main.dart\n'
+        '@@ -1 +1 @@\n'
+        '-old\n'
+        '+new';
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/completed',
+        params: {
+          'item': {
+            'type': 'fileChange',
+            'changes': [
+              {
+                'path': 'lib/main.dart',
+                'kind': 'modified',
+                'diff': '@@ -1 +1 @@\n-old\n+new',
+              },
+            ],
+          },
+        },
+      ),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(method: 'turn/diff/updated', params: {'diff': diff}),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'turn/completed',
+        params: {
+          'threadId': 'new-thread',
+          'turn': {
+            'status': 'failed',
+            'error': {'message': 'offline'},
+          },
+        },
+      ),
+    );
+    expect(controller.turnDiff, diff);
+    expect(controller.fileChanges.single.path, 'lib/main.dart');
+
+    server.startTurnError = StateError('retry still offline');
+    expect(await controller.retryFailedTurn(), isFalse);
+
+    expect(controller.fileChanges.single.path, 'lib/main.dart');
+    expect(controller.turnDiff, diff);
+    expect(controller.failedTurnRetryError, 'retry still offline');
+    controller.dispose();
+  });
 
   test('does not offer retry after an interrupted turn', () async {
     final server = FakeCodexAppServer();

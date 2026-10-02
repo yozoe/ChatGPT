@@ -7,6 +7,7 @@ class TimelinePageData {
   const TimelinePageData({
     required this.entries,
     required this.fileChanges,
+    required this.turnFileChanges,
     required this.turnDiff,
     required this.showFileChangeSummary,
     required this.activeActivity,
@@ -18,6 +19,7 @@ class TimelinePageData {
 
   final List<TimelineEntry> entries;
   final List<CodexFileChange> fileChanges;
+  final List<CodexFileChange> turnFileChanges;
   final String? turnDiff;
   final bool showFileChangeSummary;
   final LiveTurnActivity? activeActivity;

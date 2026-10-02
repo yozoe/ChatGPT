@@ -6,6 +6,7 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 class FileChangeSummaryCard extends StatelessWidget {
   const FileChangeSummaryCard({
     required this.changes,
+    required this.statsChanges,
     required this.turnDiff,
     required this.expanded,
     required this.onExpandedChanged,
@@ -17,6 +18,7 @@ class FileChangeSummaryCard extends StatelessWidget {
   });
 
   final List<CodexFileChange> changes;
+  final List<CodexFileChange> statsChanges;
   final String? turnDiff;
   final bool expanded;
   final ValueChanged<bool> onExpandedChanged;
@@ -28,7 +30,7 @@ class FileChangeSummaryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
-    final stats = reliableFileChangeStats(changes, turnDiff);
+    final stats = reliableFileChangeStats(statsChanges, turnDiff);
     final visibleChanges = expanded
         ? changes
         : changes.take(3).toList(growable: false);
@@ -81,6 +83,10 @@ class FileChangeSummaryCard extends StatelessWidget {
                           key: const Key('file-change-summary-stats'),
                           TextSpan(
                             children: [
+                              TextSpan(
+                                text: '本回合  ',
+                                style: TextStyle(color: palette.faint),
+                              ),
                               TextSpan(
                                 text: '+${stats.additions}',
                                 style: TextStyle(color: palette.ack),

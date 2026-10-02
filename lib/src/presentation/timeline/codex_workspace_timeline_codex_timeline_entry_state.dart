@@ -27,6 +27,7 @@ class CodexTimelineEntryState extends State<CodexTimelineEntry> {
     workspacePath: widget.workspacePath,
     streaming: widget.streaming,
     preserveViewportOnMarkdownResolve: _preserveViewportOnMarkdownResolve,
+    onSetGoal: widget.onSetGoal,
     onOpenSubagent: widget.onOpenSubagent == null
         ? null
         : () => widget.onOpenSubagent?.call(widget.entry),

@@ -2,6 +2,9 @@ import 'dart:convert';
 
 import 'package:chatgpt/src/domain/workspace_configuration.dart';
 import 'package:chatgpt/src/domain/scheduled_task.dart';
+import 'package:chatgpt/src/domain/worktree_settings.dart';
+import 'package:chatgpt/src/domain/local_worktree_record.dart';
+import 'package:chatgpt/src/domain/thread_environment_binding.dart';
 import 'codex_keychain_storage.dart';
 
 /// 将本机 Codex Desk 偏好保存到项目目录之外。
@@ -21,6 +24,9 @@ class RuntimeConfigurationStore {
   static const _approvalModeKey = 'codex_desk.approval_mode.v1';
   static const _browserEnabledKey = 'codex_desk.browser.enabled.v1';
   static const _scheduledTasksKey = 'codex_desk.scheduled_tasks.v1';
+  static const _worktreeSettingsKey = 'codex_desk.worktrees.settings.v1';
+  static const _worktreeRecordsKey = 'codex_desk.worktrees.records.v1';
+  static const _threadBindingsKey = 'codex_desk.worktrees.thread_bindings.v1';
 
   final CodexKeychainStorage _storage;
 
@@ -218,4 +224,65 @@ class RuntimeConfigurationStore {
     if (values.isEmpty) return _storage.delete(key: _scheduledTasksKey);
     return _storage.write(key: _scheduledTasksKey, value: jsonEncode(values));
   }
+
+  Future<WorktreeSettings> readWorktreeSettings() async {
+    final stored = await _storage.read(key: _worktreeSettingsKey);
+    if (stored == null || stored.trim().isEmpty) {
+      return WorktreeSettings.defaults();
+    }
+    try {
+      final decoded = jsonDecode(stored);
+      return decoded is Map
+          ? WorktreeSettings.fromJson(decoded)
+          : WorktreeSettings.defaults();
+    } on Object {
+      return WorktreeSettings.defaults();
+    }
+  }
+
+  Future<void> saveWorktreeSettings(WorktreeSettings settings) => _storage
+      .write(key: _worktreeSettingsKey, value: jsonEncode(settings.toJson()));
+
+  Future<List<LocalWorktreeRecord>> readWorktreeRecords() async {
+    final stored = await _storage.read(key: _worktreeRecordsKey);
+    if (stored == null || stored.trim().isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(stored);
+      if (decoded is! List) return const [];
+      return decoded
+          .whereType<Map>()
+          .map(LocalWorktreeRecord.fromJson)
+          .toList(growable: false);
+    } on Object {
+      return const [];
+    }
+  }
+
+  Future<void> saveWorktreeRecords(Iterable<LocalWorktreeRecord> records) =>
+      _storage.write(
+        key: _worktreeRecordsKey,
+        value: jsonEncode(records.map((record) => record.toJson()).toList()),
+      );
+
+  Future<List<ThreadEnvironmentBinding>> readThreadEnvironmentBindings() async {
+    final stored = await _storage.read(key: _threadBindingsKey);
+    if (stored == null || stored.trim().isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(stored);
+      if (decoded is! List) return const [];
+      return decoded
+          .whereType<Map>()
+          .map(ThreadEnvironmentBinding.fromJson)
+          .toList(growable: false);
+    } on Object {
+      return const [];
+    }
+  }
+
+  Future<void> saveThreadEnvironmentBindings(
+    Iterable<ThreadEnvironmentBinding> bindings,
+  ) => _storage.write(
+    key: _threadBindingsKey,
+    value: jsonEncode(bindings.map((binding) => binding.toJson()).toList()),
+  );
 }

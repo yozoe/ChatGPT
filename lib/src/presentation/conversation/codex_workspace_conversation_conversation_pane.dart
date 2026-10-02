@@ -12,6 +12,8 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_submission.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_approval_panel.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_elicitation_panel.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_user_input_panel.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_plan_implementation_panel.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_goal_progress_row.dart';
 
 class ConversationPane extends StatelessWidget {
@@ -37,6 +39,7 @@ class ConversationPane extends StatelessWidget {
     required this.onUndo,
     required this.onOpenSubagent,
     required this.onSubmitUserMessageEdit,
+    required this.onSetGoal,
     this.onOpenSideChat,
     this.sideChatEnabled = true,
   });
@@ -75,42 +78,70 @@ class ConversationPane extends StatelessWidget {
   final ValueChanged<TimelineEntry> onOpenSubagent;
   final Future<bool> Function(TimelineEntry entry, String text)
   onSubmitUserMessageEdit;
+  final Future<bool> Function(String text) onSetGoal;
   final Future<void> Function()? onOpenSideChat;
   final bool sideChatEnabled;
+
+  Widget _errorBanner({
+    required YeknomPalette palette,
+    required Key key,
+    required String error,
+  }) => Align(
+    alignment: Alignment.topCenter,
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: conversationContentMaxWidth),
+      child: Container(
+        key: key,
+        width: double.infinity,
+        margin: const EdgeInsets.fromLTRB(24, 0, 24, 12),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: palette.fault.withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Text(error, style: TextStyle(color: palette.fault)),
+      ),
+    ),
+  );
 
   /// 构建时间线、审批提示和任务输入区域。
   /// Builds the timeline, approval prompt, and task composer area.
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
-    final showElicitation = controller.shouldShowPendingElicitation;
+    final goalError = controller.goalOperationError;
+    final showUserInput = controller.shouldShowPendingUserInput;
+    final pendingUserInput = showUserInput ? controller.pendingUserInput : null;
+    final pendingPlanImplementation = pendingUserInput == null
+        ? controller.pendingPlanImplementation
+        : null;
+    final showElicitation =
+        pendingPlanImplementation == null &&
+        !showUserInput &&
+        controller.shouldShowPendingElicitation;
     final pendingElicitation = showElicitation
         ? controller.pendingElicitation
         : null;
-    final pendingApproval = showElicitation ? null : controller.pendingApproval;
+    final pendingApproval =
+        showUserInput || pendingPlanImplementation != null || showElicitation
+        ? null
+        : controller.pendingApproval;
+    final showErrors =
+        !controller.hasThreadWriterConflict && !controller.hasFailedTurnRetry;
     return Column(
       children: [
-        if (controller.lastError case final error?
-            when !controller.hasThreadWriterConflict &&
-                !controller.hasFailedTurnRetry)
-          Align(
-            alignment: Alignment.topCenter,
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(
-                maxWidth: conversationContentMaxWidth,
-              ),
-              child: Container(
-                key: const Key('conversation-error-banner'),
-                width: double.infinity,
-                margin: const EdgeInsets.fromLTRB(24, 0, 24, 12),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: palette.fault.withValues(alpha: 0.14),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text(error, style: TextStyle(color: palette.fault)),
-              ),
-            ),
+        if (controller.lastError case final error? when showErrors)
+          _errorBanner(
+            palette: palette,
+            key: const Key('conversation-error-banner'),
+            error: error,
+          ),
+        if (goalError case final error?
+            when showErrors && controller.activeThreadGoal == null)
+          _errorBanner(
+            palette: palette,
+            key: const Key('conversation-goal-error-banner'),
+            error: error,
           ),
         Expanded(
           child: ConversationViewport(
@@ -133,6 +164,7 @@ class ConversationPane extends StatelessWidget {
             onUndo: onUndo,
             onOpenSubagent: onOpenSubagent,
             onSubmitUserMessageEdit: onSubmitUserMessageEdit,
+            onSetGoal: onSetGoal,
             composerValue: composer,
             onPromptSuggestionSelected: (prompt) {
               composer.value = TextEditingValue(
@@ -143,9 +175,53 @@ class ConversationPane extends StatelessWidget {
             bottomOverlay: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (controller.activeThreadGoal case final goal?)
+                if (controller.activeThreadGoal case final goal?
+                    when goal.status != 'complete' &&
+                        goal.status != 'completed')
                   GoalProgressRow(controller: controller, goal: goal),
-                if (pendingElicitation case final elicitation?)
+                if (pendingUserInput case final request?)
+                  Flexible(
+                    child: UserInputPanel(
+                      key: ValueKey(request.requestId),
+                      request: request,
+                      taskLabel: controller.pendingUserInputTaskLabel,
+                      enabled: controller.canRespondToUserInput,
+                      autoResolutionDeadline:
+                          controller.pendingUserInputAutoResolutionDeadline,
+                      onSubmit: (answers, _) => controller.respondToUserInput(
+                        answers,
+                        requestId: request.requestId,
+                      ),
+                      onDismiss: () => controller.dismissUserInput(
+                        requestId: request.requestId,
+                      ),
+                      onUserInteraction: () =>
+                          controller.snoozeUserInput(request.requestId),
+                    ),
+                  )
+                else if (pendingPlanImplementation case final request?)
+                  Flexible(
+                    child: PlanImplementationPanel(
+                      key: ValueKey(request.requestKey),
+                      request: request,
+                      enabled: controller.canRespondToPlanImplementation,
+                      onImplement: () => controller.implementCompletedPlan(
+                        threadId: request.threadId,
+                        turnId: request.turnId,
+                      ),
+                      onFeedback: (feedback) =>
+                          controller.submitCompletedPlanFeedback(
+                            feedback,
+                            threadId: request.threadId,
+                            turnId: request.turnId,
+                          ),
+                      onDismiss: () => controller.dismissCompletedPlan(
+                        threadId: request.threadId,
+                        turnId: request.turnId,
+                      ),
+                    ),
+                  )
+                else if (pendingElicitation case final elicitation?)
                   Flexible(
                     child: ElicitationPanel(
                       key: ValueKey(elicitation.requestId),
@@ -161,14 +237,19 @@ class ConversationPane extends StatelessWidget {
                       approval: approval,
                       taskLabel: controller.pendingApprovalTaskLabel,
                       enabled: controller.canRespondToApproval,
-                      onAccept: () =>
-                          controller.respondToApproval(accepted: true),
+                      onAccept: () => controller.respondToApproval(
+                        accepted: true,
+                        requestId: approval.requestId,
+                      ),
                       onAllowSimilar: () => controller.respondToApproval(
                         accepted: true,
                         allowSimilar: true,
+                        requestId: approval.requestId,
                       ),
-                      onDecline: () =>
-                          controller.respondToApproval(accepted: false),
+                      onDecline: () => controller.respondToApproval(
+                        accepted: false,
+                        requestId: approval.requestId,
+                      ),
                     ),
                   ),
                 if (controller.hasThreadWriterConflict)
@@ -191,6 +272,13 @@ class ConversationPane extends StatelessWidget {
                     retrying: controller.isRetryingFailedTurn,
                     enabled: controller.canRetryFailedTurn,
                     onRetry: controller.retryFailedTurn,
+                    secondsRemaining: controller.hasAutomaticRetry
+                        ? controller.automaticRetrySecondsRemaining
+                        : null,
+                    automaticRetrying:
+                        controller.isRetryingFailedTurn &&
+                        controller.hasCapacityRateLimitFailure,
+                    onCancelAutomaticRetry: controller.cancelAutomaticRetry,
                   ),
                 if (controller.hasArchivedThreadRestore)
                   ArchivedThreadNotice(

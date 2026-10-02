@@ -28,6 +28,14 @@ class PendingApproval {
     return nested == null || nested.isEmpty ? null : nested;
   }
 
+  String? get turnId {
+    final direct = params['turnId']?.toString().trim();
+    if (direct != null && direct.isNotEmpty) return direct;
+    final turn = params['turn'];
+    final nested = turn is Map ? turn['id']?.toString().trim() : null;
+    return nested == null || nested.isEmpty ? null : nested;
+  }
+
   /// 返回与审批类型对应的本地化标题。
   /// Returns the localized title for this approval kind.
   String get title => switch (kind) {

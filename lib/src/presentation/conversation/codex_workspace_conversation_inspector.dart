@@ -27,10 +27,11 @@ class Inspector extends StatelessWidget {
   Widget _taskProjectChange(
     BuildContext context,
     ({String root, List<CodexFileChange> changes}) group,
+    List<CodexFileChange> statsChanges,
     String? turnDiff,
   ) {
     final palette = YeknomPalette.of(context);
-    final stats = reliableFileChangeStats(group.changes, turnDiff);
+    final stats = reliableFileChangeStats(statsChanges, turnDiff);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -84,6 +85,11 @@ class Inspector extends StatelessWidget {
       additionalRoots: controller.additionalWorkspacePaths,
       changes: taskChanges,
     );
+    final turnGroups = groupTaskFileChanges(
+      primaryRoot: controller.workspacePath,
+      additionalRoots: controller.additionalWorkspacePaths,
+      changes: controller.turnFileChanges,
+    );
     return SizedBox(
       key: const Key('environment-inspector-pane'),
       width: width,
@@ -124,7 +130,18 @@ class Inspector extends StatelessWidget {
                     const SizedBox(height: 22),
                     if (taskChanges.isNotEmpty || hasTurnDiff)
                       for (final group in taskGroups)
-                        _taskProjectChange(context, group, controller.turnDiff),
+                        _taskProjectChange(
+                          context,
+                          group,
+                          turnGroups
+                                  .where(
+                                    (candidate) => candidate.root == group.root,
+                                  )
+                                  .firstOrNull
+                                  ?.changes ??
+                              const <CodexFileChange>[],
+                          controller.turnDiff,
+                        ),
                     InspectorActionRow(
                       icon: Icons.description_outlined,
                       label: '任务文件',

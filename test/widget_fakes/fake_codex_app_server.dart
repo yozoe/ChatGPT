@@ -26,6 +26,8 @@ class FakeCodexAppServer extends CodexAppServer {
   final Map<String, List<JsonMap>> listResponsesByDirectory = {};
   List<JsonMap> archivedListResponse = <JsonMap>[];
   List<JsonMap> modelListResponse = <JsonMap>[];
+  List<JsonMap> collaborationModeListResponse = <JsonMap>[];
+  int collaborationModeListCalls = 0;
   Object? modelListError;
   JsonMap configReadResponse = {
     'config': <String, Object?>{},
@@ -58,6 +60,8 @@ class FakeCodexAppServer extends CodexAppServer {
   String? startedModel;
   JsonMap? startedConfig;
   List<JsonMap> skillListResponse = <JsonMap>[];
+  final List<String> skillListDirectories = [];
+  final List<Completer<List<JsonMap>>> skillListCompleters = [];
   List<JsonMap> mcpServerStatusResponse = <JsonMap>[];
   Object? mcpServerStatusError;
   String? mcpServerStatusThreadId;
@@ -77,6 +81,10 @@ class FakeCodexAppServer extends CodexAppServer {
   List<JsonMap> startedTurnAdditionalInput = <JsonMap>[];
   JsonMap? startedTurnAdditionalContext;
   JsonMap? startedTurnCollaborationMode;
+  String? updatedSettingsThreadId;
+  JsonMap? updatedSettingsCollaborationMode;
+  Object? updateThreadSettingsError;
+  Completer<void>? updateThreadSettingsCompleter;
   Object? startTurnError;
   Completer<void>? startTurnCompleter;
   String? steeredTurnThreadId;
@@ -97,6 +105,9 @@ class FakeCodexAppServer extends CodexAppServer {
   String threadGoalStatus = 'active';
   JsonMap? threadGoalResponse;
   JsonMap? threadGoalSetResponse;
+  Object? setThreadGoalError;
+  Completer<JsonMap?>? setThreadGoalCompleter;
+  int setThreadGoalCalls = 0;
   final Map<String, Completer<JsonMap?>> threadGoalUpdateCompleters = {};
   int clearThreadGoalCalls = 0;
   String? renamedThreadId;
@@ -179,6 +190,12 @@ class FakeCodexAppServer extends CodexAppServer {
     return modelListResponse;
   }
 
+  @override
+  Future<List<JsonMap>> listCollaborationModes() async {
+    collaborationModeListCalls++;
+    return collaborationModeListResponse;
+  }
+
   /// 返回 App Server 已按层级合并的配置，并记录用于解析项目配置的目录。
   /// Returns App Server's merged configuration and records the workspace used to resolve project layers.
   @override
@@ -250,6 +267,19 @@ class FakeCodexAppServer extends CodexAppServer {
     startedTurnCollaborationMode = collaborationMode;
     if (startTurnCompleter case final completer?) await completer.future;
     if (startTurnError case final error?) throw error;
+  }
+
+  @override
+  Future<void> updateThreadSettings({
+    required String threadId,
+    JsonMap? collaborationMode,
+  }) async {
+    await updateThreadSettingsCompleter?.future;
+    if (updateThreadSettingsError case final error?) throw error;
+    updatedSettingsThreadId = threadId;
+    updatedSettingsCollaborationMode = collaborationMode == null
+        ? null
+        : JsonMap.from(collaborationMode);
   }
 
   @override
@@ -353,6 +383,11 @@ class FakeCodexAppServer extends CodexAppServer {
     required String threadId,
     required String objective,
   }) async {
+    setThreadGoalCalls++;
+    if (setThreadGoalError case final error?) throw error;
+    if (setThreadGoalCompleter case final completer?) {
+      return completer.future;
+    }
     threadGoal = objective;
     threadGoalStatus = 'active';
     return threadGoalSetResponse ?? _threadGoalResult(threadId);
@@ -414,7 +449,13 @@ class FakeCodexAppServer extends CodexAppServer {
   Future<List<JsonMap>> listSkills({
     required String workingDirectory,
     bool forceReload = false,
-  }) async => List.of(skillListResponse);
+  }) async {
+    skillListDirectories.add(workingDirectory);
+    if (skillListCompleters.isNotEmpty) {
+      return skillListCompleters.removeAt(0).future;
+    }
+    return List.of(skillListResponse);
+  }
 
   @override
   Future<JsonMap> listMcpServerStatuses({

@@ -8,10 +8,14 @@ class ThreadViewSnapshot {
   const ThreadViewSnapshot({
     required this.entries,
     required this.fileChanges,
+    this.turnFileChanges,
+    this.fileChangesBeforeTurn,
     required this.turnDiff,
   });
 
   final List<TimelineEntry> entries;
   final List<CodexFileChange> fileChanges;
+  final List<CodexFileChange>? turnFileChanges;
+  final List<CodexFileChange>? fileChangesBeforeTurn;
   final String? turnDiff;
 }

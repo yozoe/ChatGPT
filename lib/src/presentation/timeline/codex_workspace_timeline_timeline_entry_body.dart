@@ -4,6 +4,7 @@ import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_conve
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_user_message_bubble.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_streaming_agent_text.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_agent_markdown.dart';
+import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_goal_completion_summary.dart';
 
 class TimelineEntryBody extends StatelessWidget {
   const TimelineEntryBody(
@@ -14,6 +15,7 @@ class TimelineEntryBody extends StatelessWidget {
     this.preserveViewportOnMarkdownResolve = false,
     this.onOpenSubagent,
     this.onSubmitUserMessageEdit,
+    this.onSetGoal,
   });
 
   final TimelineEntry entry;
@@ -23,12 +25,16 @@ class TimelineEntryBody extends StatelessWidget {
   final VoidCallback? onOpenSubagent;
   final Future<bool> Function(TimelineEntry entry, String text)?
   onSubmitUserMessageEdit;
+  final Future<bool> Function(String text)? onSetGoal;
 
   /// 按时间线条目类型构建消息或系统事件视图。
   /// Builds a message or system-event view based on the timeline entry kind.
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
+    if (entry.activityKind == 'goalCompleted') {
+      return GoalCompletionSummary(label: entry.detail);
+    }
     if (entry.kind == TimelineKind.elapsed) {
       return Semantics(
         label: entry.title,
@@ -48,6 +54,7 @@ class TimelineEntryBody extends StatelessWidget {
       return UserMessageBubble(
         entry: entry,
         onSubmitEdit: onSubmitUserMessageEdit,
+        onSetGoal: onSetGoal,
       );
     }
     if (entry.kind == TimelineKind.activity) {

@@ -85,7 +85,43 @@ List<ConversationTimelineItem> conversationTimelineItems(
     pendingTurnEntries.add(IndexedTimelineEntry(entry, index));
   }
   flushPendingTurnEntries();
-  return items;
+  return compactConsecutiveElapsedItems(items);
+}
+
+/// Keeps long-running Goal sessions readable without discarding per-turn
+/// timing. Three or more adjacent duration-only turns become one disclosure;
+/// turns with messages or activity remain untouched.
+List<ConversationTimelineItem> compactConsecutiveElapsedItems(
+  List<ConversationTimelineItem> items,
+) {
+  final compacted = <ConversationTimelineItem>[];
+  var index = 0;
+  while (index < items.length) {
+    final first = items[index];
+    if (first.entry?.kind != TimelineKind.elapsed) {
+      compacted.add(first);
+      index++;
+      continue;
+    }
+    final elapsedItems = <ConversationTimelineItem>[];
+    final firstIndex = first.entryIndex;
+    while (index < items.length &&
+        items[index].entry?.kind == TimelineKind.elapsed) {
+      elapsedItems.add(items[index]);
+      index++;
+    }
+    if (elapsedItems.length < 3) {
+      compacted.addAll(elapsedItems);
+    } else {
+      compacted.add(
+        ConversationTimelineItem.elapsedGroup(
+          elapsedItems.map((item) => item.entry!).toList(growable: false),
+          firstIndex,
+        ),
+      );
+    }
+  }
+  return compacted;
 }
 
 /// Uses the App Server's authoritative agent-message phase to keep commentary

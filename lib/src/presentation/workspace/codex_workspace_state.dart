@@ -80,6 +80,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   late CodexController _controller;
   double? _settingsReturnTimelineOffset;
   bool _appWasInactive = false;
+  bool _appIsForegrounded = true;
   CodexSideChatSession? _sideChatSession;
 
   Future<void> _openSideChat() async {
@@ -158,6 +159,9 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     _controller.setOpenSettingsHandler(_showSettings);
     _controller.setBrowserInvocationHandler(_handleBrowserInvocation);
     WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _syncUserInputSurfaceState()) setState(() {});
+    });
   }
 
   /// 将嵌入或测试场景替换的控制器同步到监听、动作和时间线缓存。
@@ -173,6 +177,10 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     previousController.setDockActivationHandler(null);
     previousController.setOpenSettingsHandler(null);
     previousController.setBrowserInvocationHandler(null);
+    previousController.setUserInputSurfaceState(
+      foregrounded: false,
+      presentedThreadId: null,
+    );
     _controller = nextController;
     final nextWorkspacePath = _controller.workspacePath;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -190,6 +198,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     _controller.setDockActivationHandler(_handleDockActivation);
     _controller.setOpenSettingsHandler(_showSettings);
     _controller.setBrowserInvocationHandler(_handleBrowserInvocation);
+    _syncUserInputSurfaceState();
     _selectedSubagentThreadId = null;
     _selectedSubagentParentThreadId = null;
     _timelineScrollGeneration++;
@@ -215,6 +224,10 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _controller.setUserInputSurfaceState(
+      foregrounded: false,
+      presentedThreadId: null,
+    );
     _controller.setDockActivationHandler(null);
     _controller.setOpenSettingsHandler(null);
     _controller.setBrowserInvocationHandler(null);
@@ -247,8 +260,13 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       case AppLifecycleState.paused:
       case AppLifecycleState.detached:
         _appWasInactive = true;
+        _appIsForegrounded = false;
+        _syncUserInputSurfaceState();
         return;
       case AppLifecycleState.resumed:
+        _appIsForegrounded = true;
+        final autoResolutionChanged = _syncUserInputSurfaceState();
+        if (autoResolutionChanged && mounted) setState(() {});
         if (!_appWasInactive) return;
         _appWasInactive = false;
         if (_destination != WorkspaceDestination.conversation) return;
@@ -291,6 +309,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   /// 响应控制器更新；显式注入时由工作区重建，Provider 场景仍由 ref.watch 重建。
   /// Responds to controller updates; the workspace rebuilds explicit injections while ref.watch rebuilds provider state.
   void _handleControllerUpdate() {
+    _syncUserInputSurfaceState();
     final workspaceChanged = _synchronizeWorkspaceFileTabs(
       _controller.workspacePath,
     );
@@ -539,10 +558,11 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   ) {
     final controller = _timelineScrollControllers[viewportKey];
     if (controller == null || !controller.hasClients) return;
-    // For a normal downward ListView, `forward` moves the viewport toward
-    // older messages (offset decreases); that is the only user gesture that
-    // pauses follow mode. `reverse` is the user's return toward the latest
-    // content.
+    // Flutter reports `forward` while a normal ListView is being dragged
+    // toward its zero offset. From the latest messages that is the user's
+    // upward/older-content gesture, so pause follow mode. `reverse` is the
+    // return gesture toward the latest messages and may resume following only
+    // once the viewport is close to the end.
     if (direction == ScrollDirection.forward) {
       _timelineFollowsLatest[viewportKey] = false;
       if (_timelineScrollAnimationViewport == viewportKey) {
@@ -712,6 +732,12 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     final scrollController = _timelineScrollControllers[viewportKey];
     if (scrollController == null) return;
     _setTimelineAboveLatest(viewportKey, metrics.extentAfter > 1);
+    if (metrics.extentAfter <= 48) {
+      // Metrics notifications can arrive after the user gesture has ended,
+      // without a final UserScrollNotification carrying the return direction.
+      // Treat the settled bottom as the authoritative latest position.
+      _timelineFollowsLatest[viewportKey] = true;
+    }
     final viewportDimension = metrics.viewportDimension;
     final previousViewportDimension = _timelineViewportDimensions[viewportKey];
     _timelineViewportDimensions[viewportKey] = viewportDimension;
@@ -757,6 +783,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       // arrival order.
       entries: List.unmodifiable(orderAgentMessagePhases(_controller.entries)),
       fileChanges: List.unmodifiable(_controller.fileChanges),
+      turnFileChanges: List.unmodifiable(_controller.turnFileChanges),
       turnDiff: _controller.turnDiff,
       showFileChangeSummary:
           _controller.status != RuntimeStatus.running &&
@@ -1499,6 +1526,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       goal: submission.goal,
       planMode: submission.planMode,
       imagePaths: imagePaths,
+      useManagedWorktree: submission.useManagedWorktree,
+      managedWorktreeId: submission.managedWorktreeId,
     );
     if (sent) _composer.clear();
     return sent;
@@ -2487,22 +2516,50 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   }
 
   Widget _withGlobalShortcuts(CodexController controller, Widget child) {
-    return CallbackShortcuts(
-      bindings: {
-        const SingleActivator(LogicalKeyboardKey.comma, meta: true):
-            _showSettings,
-        const SingleActivator(LogicalKeyboardKey.keyN, meta: true):
-            _startNewConversation,
-        const SingleActivator(LogicalKeyboardKey.keyK, meta: true):
-            _showTaskSearchShortcut,
-        const SingleActivator(LogicalKeyboardKey.escape): () {
-          if (controller.status == RuntimeStatus.running &&
-              controller.activeThreadId != null) {
-            unawaited(controller.stopCurrentTurn());
-          }
+    return Listener(
+      onPointerDown: (_) => _recordUserInputConversationActivity(),
+      onPointerSignal: (_) => _recordUserInputConversationActivity(),
+      child: Focus(
+        canRequestFocus: false,
+        onKeyEvent: (_, _) {
+          _recordUserInputConversationActivity();
+          return KeyEventResult.ignored;
         },
-      },
-      child: child,
+        child: CallbackShortcuts(
+          bindings: {
+            const SingleActivator(LogicalKeyboardKey.comma, meta: true):
+                _showSettings,
+            const SingleActivator(LogicalKeyboardKey.keyN, meta: true):
+                _startNewConversation,
+            const SingleActivator(LogicalKeyboardKey.keyK, meta: true):
+                _showTaskSearchShortcut,
+            const SingleActivator(LogicalKeyboardKey.escape): () {
+              if (controller.status == RuntimeStatus.running &&
+                  controller.activeThreadId != null) {
+                unawaited(controller.stopCurrentTurn());
+              }
+            },
+          },
+          child: child,
+        ),
+      ),
+    );
+  }
+
+  void _recordUserInputConversationActivity() {
+    if (_destination == WorkspaceDestination.conversation) {
+      _controller.recordUserInputConversationActivity();
+    }
+  }
+
+  bool _syncUserInputSurfaceState() {
+    return _controller.setUserInputSurfaceState(
+      foregrounded:
+          _appIsForegrounded &&
+          _destination == WorkspaceDestination.conversation,
+      presentedThreadId: _destination == WorkspaceDestination.conversation
+          ? _controller.activeThreadId
+          : null,
     );
   }
 
@@ -2653,6 +2710,9 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller ?? ref.watch(codexControllerProvider)!;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _syncUserInputSurfaceState()) setState(() {});
+    });
     final workspaceFileTabs = _workspaceFileTabsContainer.read(
       workspaceFileTabsProvider(_workspaceFileTabsArgument),
     );
@@ -2694,6 +2754,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                 LayoutBuilder(
                   builder: (context, constraints) => SettingsPage(
                     controller: controller,
+                    runtimeConfigurationStore:
+                        controller.runtimeConfigurationStore,
                     navigationWidth: _sidebarWidthFor(constraints.maxWidth),
                     themeMode: widget.themeMode,
                     onThemeModeChanged: widget.onThemeModeChanged,
@@ -3060,6 +3122,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                                                 _openSubagentInspector,
                                                             onSubmitUserMessageEdit:
                                                                 _submitEditedUserMessage,
+                                                            onSetGoal: controller
+                                                                .setActiveGoalFromMessage,
                                                             onOpenSideChat:
                                                                 _openSideChat,
                                                             sideChatEnabled:

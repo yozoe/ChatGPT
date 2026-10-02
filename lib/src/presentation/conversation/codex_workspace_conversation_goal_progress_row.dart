@@ -13,21 +13,39 @@ class GoalProgressRow extends StatelessWidget {
   final CodexController controller;
   final CodexThreadGoal goal;
 
-  String get _statusLabel => switch (goal.status) {
-    'paused' => '已暂停',
-    'complete' || 'completed' => '已完成',
-    'blocked' => '需要输入',
-    'usageLimited' => '用量已达上限',
-    'budgetLimited' => '预算已用尽',
-    _ => '进行中',
-  };
+  String _statusLabel(CodexController controller) {
+    if (goal.isBudgetExhausted) return '预算已用尽';
+    if (goal.isActive &&
+        controller.shouldShowPendingUserInput &&
+        controller.pendingUserInput?.threadId == goal.threadId) {
+      return '等待输入';
+    }
+    return switch (goal.status) {
+      'paused' => '已暂停',
+      'complete' || 'completed' => '已完成',
+      'blocked' => '需要输入',
+      'usageLimited' => '用量已达上限',
+      'budgetLimited' => '预算已用尽',
+      _ => controller.activeGoalIsProgressing ? '进行中' : '等待继续',
+    };
+  }
 
   String get _usageLabel {
     final minutes = goal.timeUsedSeconds ~/ 60;
     final time = minutes > 0 ? '$minutes 分钟' : '${goal.timeUsedSeconds} 秒';
     final budget = goal.tokenBudget;
-    if (budget == null || budget <= 0) return time;
-    return '${goal.tokensUsed} / $budget tokens · $time';
+    if (budget == null || budget <= 0) return '累计 $time';
+    return '${goal.tokensUsed} / $budget tokens · 累计 $time';
+  }
+
+  String get _elapsedLabel {
+    final totalSeconds = goal.timeUsedSeconds.clamp(0, 86400000);
+    final hours = totalSeconds ~/ 3600;
+    final minutes = (totalSeconds % 3600) ~/ 60;
+    final seconds = totalSeconds % 60;
+    if (hours > 0) return '${hours}h ${minutes}m ${seconds}s';
+    if (minutes > 0) return '${minutes}m ${seconds}s';
+    return '${seconds}s';
   }
 
   Future<void> _editGoal(BuildContext context) async {
@@ -80,7 +98,18 @@ class GoalProgressRow extends StatelessWidget {
     final palette = YeknomPalette.of(context);
     final busy = controller.goalOperationInProgress;
     final progress = goal.progress;
-    final error = controller.goalOperationError;
+    final error =
+        controller.goalOperationError ?? controller.activeGoalContinuationError;
+    final waiting = goal.isActive && controller.activeGoalIsWaiting;
+    final waitingForUserInput =
+        controller.shouldShowPendingUserInput &&
+        controller.pendingUserInput?.threadId == goal.threadId;
+    if (goal.isActive &&
+        controller.activeGoalIsProgressing &&
+        !waitingForUserInput &&
+        error == null) {
+      return _buildRunningGoalBar(context, palette, busy: busy);
+    }
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
       child: Container(
@@ -113,9 +142,12 @@ class GoalProgressRow extends StatelessWidget {
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        _statusLabel,
+                        _statusLabel(controller),
+                        key: const Key('goal-progress-status'),
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: goal.isPaused
+                          color:
+                              goal.isPaused ||
+                                  !controller.activeGoalIsProgressing
                               ? palette.warning
                               : palette.muted,
                         ),
@@ -174,12 +206,18 @@ class GoalProgressRow extends StatelessWidget {
             else if (!goal.isTerminal || goal.isBlocked)
               IconButton(
                 key: const Key('goal-pause-resume-button'),
-                tooltip: goal.canResume ? '恢复目标' : '暂停目标',
-                onPressed: goal.canResume
+                tooltip: waiting
+                    ? '继续目标'
+                    : goal.canResume
+                    ? '恢复目标'
+                    : '暂停目标',
+                onPressed: waiting
+                    ? controller.continueActiveGoal
+                    : goal.canResume
                     ? controller.resumeActiveGoal
                     : controller.pauseActiveGoal,
                 icon: Icon(
-                  goal.isPaused
+                  goal.isPaused || waiting
                       ? Icons.play_arrow_rounded
                       : Icons.pause_rounded,
                   size: 18,
@@ -223,4 +261,99 @@ class GoalProgressRow extends StatelessWidget {
       ),
     );
   }
+
+  Widget _buildRunningGoalBar(
+    BuildContext context,
+    YeknomPalette palette, {
+    required bool busy,
+  }) => Padding(
+    padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+    child: Container(
+      key: const Key('goal-progress-row-running'),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: palette.raised,
+        border: Border.all(color: palette.border),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.track_changes_outlined, size: 16, color: palette.muted),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Text(
+              '进行中的目标：${goal.objective}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: palette.muted,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            _elapsedLabel,
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: palette.faint, fontSize: 11),
+          ),
+          const SizedBox(width: 2),
+          if (busy)
+            const Padding(
+              padding: EdgeInsets.all(7),
+              child: SizedBox.square(
+                dimension: 14,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            )
+          else
+            IconButton(
+              key: const Key('goal-pause-running-button'),
+              tooltip: '暂停目标',
+              onPressed: controller.pauseActiveGoal,
+              icon: const Icon(Icons.pause_rounded, size: 17),
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+            ),
+          PopupMenuButton<GoalProgressAction>(
+            key: const Key('goal-running-actions-button'),
+            tooltip: '目标操作',
+            enabled: !busy,
+            icon: const Icon(Icons.more_horiz, size: 18),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+            onSelected: (action) {
+              switch (action) {
+                case GoalProgressAction.edit:
+                  unawaited(_editGoal(context));
+                case GoalProgressAction.clear:
+                  unawaited(controller.clearActiveGoal());
+              }
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: GoalProgressAction.edit,
+                child: ListTile(
+                  dense: true,
+                  leading: Icon(Icons.edit_outlined, size: 18),
+                  title: Text('编辑目标'),
+                ),
+              ),
+              PopupMenuItem(
+                value: GoalProgressAction.clear,
+                child: ListTile(
+                  dense: true,
+                  leading: Icon(Icons.close, size: 18),
+                  title: Text('清除目标'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    ),
+  );
 }

@@ -565,9 +565,9 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
           ).showSnackBar(const SnackBar(content: Text('请先切换到该项目再导入历史。')));
         }
       case WorkspaceAction.worktree:
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('永久工作树功能暂未接入。')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Worktrees 设置已接入；永久工作树将在后续版本提供。')),
+        );
       case WorkspaceAction.archive:
         if (workspace.primaryPath != widget.controller.workspacePath) {
           ScaffoldMessenger.of(

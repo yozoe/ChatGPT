@@ -2,6 +2,8 @@ export 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_conve
 export 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_indexed_timeline_entry.dart';
 export 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_completed_turn_disclosure.dart';
 export 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_completed_turn_disclosure_state.dart';
+export 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_elapsed_turn_group.dart';
+export 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_elapsed_turn_group_state.dart';
 export 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_timeline_activity_list.dart';
 export 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_timeline_activity_row.dart';
 export 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_codex_timeline_entry.dart';

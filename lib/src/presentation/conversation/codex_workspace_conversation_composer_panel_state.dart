@@ -24,6 +24,8 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_selected_skill_chip.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_skill_details_dialog.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_composer_context_usage_button.dart';
+import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_sketch_canvas.dart';
+import 'package:chatgpt/src/domain/local_worktree_record.dart';
 
 class ComposerPanelState extends State<ComposerPanel> {
   static const _clipboardFileReader = ClipboardFileReader();
@@ -42,9 +44,11 @@ class ComposerPanelState extends State<ComposerPanel> {
   String? _fileSearchError;
   bool _draggingFiles = false;
   bool _includeWorkspace = false;
+  bool _useManagedWorktree = false;
+  String? _managedWorktreeId;
+  List<LocalWorktreeRecord> _managedWorktrees = const [];
   bool _includeIdeContext = false;
   String? _ideContextWorkspacePath;
-  bool _planMode = false;
   bool _goalMode = false;
   bool _mcpStatusVisible = false;
   bool _codeReviewOptionsVisible = false;
@@ -63,6 +67,7 @@ class ComposerPanelState extends State<ComposerPanel> {
   Timer? _fileSearchDebounce;
   int _fileSearchRequest = 0;
   String _fileSearchWorkspaceKey = '';
+  String? _managedWorktreeWorkspaceKey;
   String? _draftBeforeGoalMode;
   String? _goal;
   String? _goalBeforeGoalMode;
@@ -130,15 +135,25 @@ class ComposerPanelState extends State<ComposerPanel> {
       _includeWorkspace ||
       _includeIdeContext ||
       _goal?.isNotEmpty == true ||
-      _planMode ||
+      controller.composerPlanMode ||
       _selectedSkillPaths.isNotEmpty;
 
   @override
   void initState() {
     super.initState();
     _fileSearchWorkspaceKey = _currentFileSearchWorkspaceKey;
+    _loadManagedWorktrees();
     controller.addListener(_handleControllerChanged);
     composer.addListener(_handleComposerEditingChanged);
+  }
+
+  Future<void> _loadManagedWorktrees() async {
+    final workspaceKey = controller.workspacePath;
+    final records = await controller.listManagedWorktrees(
+      sourceRepository: controller.workspacePath,
+    );
+    if (!mounted || controller.workspacePath != workspaceKey) return;
+    setState(() => _managedWorktrees = records);
   }
 
   @override
@@ -181,6 +196,10 @@ class ComposerPanelState extends State<ComposerPanel> {
     if (_fileSearchWorkspaceKey != fileSearchWorkspaceKey) {
       _fileSearchWorkspaceKey = fileSearchWorkspaceKey;
       _scheduleFileSearch(_currentMentionQuery);
+    }
+    if (_managedWorktreeWorkspaceKey != controller.workspacePath) {
+      _managedWorktreeWorkspaceKey = controller.workspacePath;
+      _loadManagedWorktrees();
     }
     final enabledSkillPaths = controller.skills
         .where((skill) => skill.enabled && skill.path.trim().isNotEmpty)
@@ -308,20 +327,54 @@ class ComposerPanelState extends State<ComposerPanel> {
     }
   }
 
+  ({String marker, String query, int start, int end})?
+  get _activeComposerTrigger {
+    final value = composer.value;
+    final selection = value.selection;
+    if (selection.isValid && !selection.isCollapsed) return null;
+    final caret = selection.isValid ? selection.baseOffset : value.text.length;
+    if (caret < 0 || caret > value.text.length) return null;
+
+    var start = caret;
+    while (start > 0 && !RegExp(r'\s').hasMatch(value.text[start - 1])) {
+      start--;
+    }
+    if (start >= caret) return null;
+    final token = value.text.substring(start, caret);
+    if (token[0] != '/' && token[0] != '@') return null;
+    if (token.substring(1).contains('/') || token.substring(1).contains('@')) {
+      return null;
+    }
+    return (
+      marker: token[0],
+      query: token.substring(1),
+      start: start,
+      end: caret,
+    );
+  }
+
   String? get _currentSlashQuery {
-    final text = composer.text;
-    if (!text.startsWith('/') || text.contains('\n')) return null;
-    final query = text.substring(1);
-    if (query.contains(RegExp(r'\s'))) return null;
-    return query;
+    final trigger = _activeComposerTrigger;
+    return trigger?.marker == '/' ? trigger?.query : null;
   }
 
   String? get _currentMentionQuery {
-    final text = composer.text;
-    if (!text.startsWith('@') || text.contains('\n')) return null;
-    final query = text.substring(1);
-    if (query.contains(RegExp(r'\s'))) return null;
-    return query;
+    final trigger = _activeComposerTrigger;
+    return trigger?.marker == '@' ? trigger?.query : null;
+  }
+
+  void _removeActiveComposerTrigger() {
+    final trigger = _activeComposerTrigger;
+    if (trigger == null) {
+      composer.clear();
+      return;
+    }
+    final nextText = composer.text.replaceRange(trigger.start, trigger.end, '');
+    final nextOffset = trigger.start.clamp(0, nextText.length);
+    composer.value = TextEditingValue(
+      text: nextText,
+      selection: TextSelection.collapsed(offset: nextOffset),
+    );
   }
 
   bool get _showSlashMenu => _currentSlashQuery != null && !_slashMenuDismissed;
@@ -331,125 +384,226 @@ class ComposerPanelState extends State<ComposerPanel> {
 
   bool get _showComposerMenu => _showSlashMenu || _showMentionMenu;
 
-  List<ComposerSlashCommand> get _slashCommands => [
-    ComposerSlashCommand(
-      kind: ComposerSlashCommandKind.workspaceContext,
-      label: 'IDE 上下文',
-      description: controller.hasIdeContext
-          ? '附加当前 IDE 文件、选区和打开标签'
-          : '未连接 IDE 宿主，当前不可用',
-      icon: Icons.auto_awesome_outlined,
-      enabled: controller.hasIdeContext,
-    ),
+  ComposerSlashCommand get _filesCommand => const ComposerSlashCommand(
+    kind: ComposerSlashCommandKind.files,
+    label: '文件和文件夹',
+    description: '',
+    icon: Icons.attach_file,
+    aliases: ['file', 'files', 'folder', 'folders'],
+    surfaces: {ComposerMenuSurface.mention, ComposerMenuSurface.add},
+    surfaceOrder: {ComposerMenuSurface.mention: 0, ComposerMenuSurface.add: 0},
+  );
+
+  ComposerSlashCommand get _recordSkillCommand => const ComposerSlashCommand(
+    kind: ComposerSlashCommandKind.recordSkill,
+    label: '录制技能',
+    description: '当前运行时未提供技能录制协议',
+    icon: Icons.radio_button_checked,
+    aliases: ['record-skill', 'record'],
+    enabled: false,
+    surfaces: {ComposerMenuSurface.mention, ComposerMenuSurface.add},
+    surfaceOrder: {ComposerMenuSurface.mention: 4, ComposerMenuSurface.add: 4},
+  );
+
+  ComposerSlashCommand get _drawCommand => const ComposerSlashCommand(
+    kind: ComposerSlashCommandKind.draw,
+    label: '绘图',
+    description: '绘制草图',
+    icon: Icons.draw_outlined,
+    aliases: ['draw', 'drawing', 'sketch'],
+    enabled: true,
+    surfaces: {ComposerMenuSurface.add},
+    surfaceOrder: {ComposerMenuSurface.add: 5},
+  );
+
+  ComposerSlashCommand get _workspaceContextCommand => ComposerSlashCommand(
+    kind: ComposerSlashCommandKind.workspaceContext,
+    label: 'IDE 上下文',
+    description: controller.hasIdeContext
+        ? '附加当前 IDE 文件、选区和打开标签'
+        : '未连接 IDE 宿主，当前不可用',
+    icon: Icons.auto_awesome_outlined,
+    aliases: const ['ide', 'ide-context', 'context'],
+    enabled: controller.hasIdeContext,
+    surfaces: {ComposerMenuSurface.slash, ComposerMenuSurface.add},
+    surfaceOrder: {ComposerMenuSurface.slash: 0, ComposerMenuSurface.add: 1},
+  );
+
+  ComposerSlashCommand
+  get _mentionWorkspaceCommand => _workspaceContextCommand.copyWith(
+    label:
+        '附加 ${controller.workspacePath == null ? '当前项目' : _pathLabel(controller.workspacePath!)}',
+    description: controller.workspacePath == null ? '请先选择项目' : '',
+    icon: Icons.terminal_outlined,
+    aliases: const ['project', 'workspace', 'current', '当前'],
+    enabled: controller.workspacePath != null,
+    surfaces: {ComposerMenuSurface.mention, ComposerMenuSurface.add},
+    surfaceOrder: {ComposerMenuSurface.mention: 1, ComposerMenuSurface.add: 1},
+  );
+
+  List<ComposerSlashCommand> get _commandCatalog => [
+    _workspaceContextCommand,
+    _filesCommand,
+    _recordSkillCommand,
+    _drawCommand,
     const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.mcpStatus,
       label: 'MCP',
       description: '显示 MCP 服务器状态',
       icon: Icons.hub_outlined,
+      aliases: ['mcp', 'mcp-status'],
+      surfaceOrder: {ComposerMenuSurface.slash: 1},
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.codeReview,
       label: '代码审查',
       description: '审查未提交的更改，或与某个分支进行比较',
       icon: Icons.fact_check_outlined,
+      aliases: const ['review', 'code-review'],
       enabled: controller.canStartCodeReview,
+      surfaceOrder: {ComposerMenuSurface.slash: 2},
+    ),
+    const ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.goal,
+      label: '目标',
+      description: '设置持续目标；建议先使用计划模式明确目标',
+      icon: Icons.track_changes_outlined,
+      aliases: ['goal'],
+      surfaces: {
+        ComposerMenuSurface.slash,
+        ComposerMenuSurface.mention,
+        ComposerMenuSurface.add,
+      },
+      surfaceOrder: {
+        ComposerMenuSurface.slash: 3,
+        ComposerMenuSurface.mention: 2,
+        ComposerMenuSurface.add: 2,
+      },
+    ),
+    ComposerSlashCommand(
+      kind: ComposerSlashCommandKind.planMode,
+      label: '计划模式',
+      description: controller.canSteer
+          ? '任务运行时不可用'
+          : controller.composerPlanMode
+          ? '关闭计划模式'
+          : '为多步骤任务制定计划',
+      icon: Icons.lightbulb_outline,
+      aliases: const ['plan'],
+      enabled: !controller.canSteer,
+      surfaces: {
+        ComposerMenuSurface.slash,
+        ComposerMenuSurface.mention,
+        ComposerMenuSurface.add,
+      },
+      surfaceOrder: {
+        ComposerMenuSurface.slash: 4,
+        ComposerMenuSurface.mention: 3,
+        ComposerMenuSurface.add: 3,
+      },
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.sideChat,
       label: '侧边',
       description: '打开不会中断主任务的临时聊天',
       icon: Icons.add_circle_outline,
+      aliases: const ['side-chat', 'sidechat'],
       enabled:
           controller.activeThreadId != null &&
           controller.workspacePath != null &&
           controller.serverIsRunning &&
           widget.sideChatEnabled,
+      surfaceOrder: {ComposerMenuSurface.slash: 5},
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.forkChat,
       label: '创建聊天分支',
       description: '在当前工作空间或新工作树中创建此聊天的分支',
       icon: Icons.call_split_outlined,
+      aliases: const ['fork', 'fork-chat', 'branch'],
       enabled: controller.canForkActiveThread,
+      surfaceOrder: {ComposerMenuSurface.slash: 6},
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.compact,
       label: '压缩',
       description: _compactDescription,
       icon: Icons.circle_outlined,
+      aliases: const ['compact', 'summarize'],
       enabled: controller.canCompactActiveThread,
+      surfaceOrder: {ComposerMenuSurface.slash: 7},
     ),
     const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.feedback,
       label: '反馈',
       description: '发送有关此聊天的反馈',
       icon: Icons.chat_bubble_outline,
+      aliases: ['feedback'],
+      surfaceOrder: {ComposerMenuSurface.slash: 8},
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.archive,
       label: '归档',
       description: '归档当前聊天',
       icon: Icons.archive_outlined,
+      aliases: const ['archive'],
       enabled: _canArchiveActiveThread,
+      surfaceOrder: {ComposerMenuSurface.slash: 9},
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.reasoning,
       label: '推理',
       description: controller.reasoningEffort.label,
       icon: Icons.psychology_outlined,
+      aliases: const ['reasoning', 'effort'],
       enabled: controller.canSelectReasoningEffort,
+      surfaceOrder: {ComposerMenuSurface.slash: 10},
     ),
     const ComposerSlashCommand(
       kind: ComposerSlashCommandKind.newChat,
       label: '新聊天',
       description: '在同一工作空间中开启空白聊天',
       icon: Icons.add_comment_outlined,
+      aliases: ['new', 'new-chat'],
+      surfaceOrder: {ComposerMenuSurface.slash: 11},
     ),
     ComposerSlashCommand(
       kind: ComposerSlashCommandKind.model,
       label: '模型',
       description: controller.newTaskModelLabel,
       icon: Icons.view_in_ar_outlined,
+      aliases: const ['model'],
       enabled: controller.canSelectModel,
+      surfaceOrder: {ComposerMenuSurface.slash: 12},
     ),
   ];
 
-  List<ComposerSlashCommand> get _mentionCommands => [
-    const ComposerSlashCommand(
-      kind: ComposerSlashCommandKind.files,
-      label: '文件和文件夹',
-      description: '',
-      icon: Icons.attach_file,
-    ),
-    ComposerSlashCommand(
-      kind: ComposerSlashCommandKind.workspaceContext,
-      label:
-          '附加 ${controller.workspacePath == null ? '当前项目' : _pathLabel(controller.workspacePath!)}',
-      description: controller.workspacePath == null ? '请先选择项目' : '',
-      icon: Icons.terminal_outlined,
-      enabled: controller.workspacePath != null,
-    ),
-    const ComposerSlashCommand(
-      kind: ComposerSlashCommandKind.goal,
-      label: '目标',
-      description: '设置要持续追求的目标',
-      icon: Icons.track_changes_outlined,
-    ),
-    ComposerSlashCommand(
-      kind: ComposerSlashCommandKind.planMode,
-      label: '计划模式',
-      description: controller.canSteer ? '任务运行时不可用' : '开启计划模式',
-      icon: Icons.lightbulb_outline,
-      enabled: !controller.canSteer,
-    ),
-    const ComposerSlashCommand(
-      kind: ComposerSlashCommandKind.recordSkill,
-      label: '录制技能',
-      description: '当前运行时未提供技能录制协议',
-      icon: Icons.radio_button_checked,
-      enabled: false,
-    ),
-  ];
+  List<ComposerSlashCommand> _commandsForSurface(ComposerMenuSurface surface) {
+    final commands = <ComposerSlashCommand>[];
+    for (final command in _commandCatalog) {
+      if (!command.supports(surface)) continue;
+      if ((surface == ComposerMenuSurface.mention ||
+              surface == ComposerMenuSurface.add) &&
+          command.kind == ComposerSlashCommandKind.workspaceContext) {
+        continue;
+      }
+      commands.add(command);
+    }
+    if (surface == ComposerMenuSurface.mention ||
+        surface == ComposerMenuSurface.add) {
+      commands.add(_mentionWorkspaceCommand);
+    }
+    return sortComposerCommands(commands, surface);
+  }
+
+  List<ComposerSlashCommand> get _slashCommands =>
+      _commandsForSurface(ComposerMenuSurface.slash);
+
+  List<ComposerSlashCommand> get _mentionCommands =>
+      _commandsForSurface(ComposerMenuSurface.mention);
+
+  List<ComposerSlashCommand> get _addCommands =>
+      _commandsForSurface(ComposerMenuSurface.add);
 
   List<ComposerSlashCommand> get _filteredSlashCommands {
     final query = _currentSlashQuery;
@@ -618,20 +772,20 @@ class ComposerPanelState extends State<ComposerPanel> {
       _selectedSkillPaths.add(skill.path);
       _slashMenuDismissed = true;
     });
-    composer.clear();
+    _removeActiveComposerTrigger();
   }
 
   void _selectFileSearchResult(CodexFileSearchResult result) {
-    composer.clear();
     setState(() => _slashMenuDismissed = true);
+    _removeActiveComposerTrigger();
     _addAttachments([
       ComposerAttachment(path: result.path, isDirectory: result.isDirectory),
     ]);
   }
 
   Future<void> _selectMentionCommand(ComposerSlashCommand command) async {
-    composer.clear();
     setState(() => _slashMenuDismissed = true);
+    _removeActiveComposerTrigger();
     switch (command.kind) {
       case ComposerSlashCommandKind.files:
         await _showAttachmentPicker();
@@ -650,6 +804,8 @@ class ComposerPanelState extends State<ComposerPanel> {
         // The current App Server has no public recording protocol. Keep the
         // command visible as a disabled parity row, but never create a local
         // chip that would imply a recording was started.
+        return;
+      case ComposerSlashCommandKind.draw:
         return;
       case ComposerSlashCommandKind.mcpStatus ||
           ComposerSlashCommandKind.codeReview ||
@@ -723,6 +879,7 @@ class ComposerPanelState extends State<ComposerPanel> {
 
   Future<void> _selectSlashCommand(ComposerSlashCommand command) async {
     setState(() => _slashMenuDismissed = true);
+    _removeActiveComposerTrigger();
     switch (command.kind) {
       case ComposerSlashCommandKind.workspaceContext:
         if (controller.hasIdeContext) {
@@ -731,19 +888,19 @@ class ComposerPanelState extends State<ComposerPanel> {
             _ideContextWorkspacePath = controller.workspacePath;
           });
         }
-        composer.clear();
       case ComposerSlashCommandKind.files:
-        composer.clear();
         await _showAttachmentPicker();
       case ComposerSlashCommandKind.goal:
         _enterGoalMode();
       case ComposerSlashCommandKind.planMode:
         if (controller.canSteer) return;
         _togglePlanMode();
-        composer.clear();
       case ComposerSlashCommandKind.recordSkill:
         // No public App Server recording protocol is available. The row is
         // intentionally disabled and must never create a local success chip.
+        return;
+      case ComposerSlashCommandKind.draw:
+        _showUnavailableSlashCommand('绘图');
         return;
       case ComposerSlashCommandKind.mcpStatus:
         composer.value = const TextEditingValue(
@@ -767,7 +924,6 @@ class ComposerPanelState extends State<ComposerPanel> {
         });
         unawaited(_showCodeReviewOptions());
       case ComposerSlashCommandKind.sideChat:
-        composer.clear();
         final openSideChat = widget.onOpenSideChat;
         if (openSideChat == null) {
           _showUnavailableSlashCommand('侧边聊天界面');
@@ -775,25 +931,18 @@ class ComposerPanelState extends State<ComposerPanel> {
         }
         await openSideChat();
       case ComposerSlashCommandKind.forkChat:
-        composer.clear();
         await _forkActiveThread();
       case ComposerSlashCommandKind.compact:
-        composer.clear();
         await _confirmAndCompactThread();
       case ComposerSlashCommandKind.feedback:
-        composer.clear();
         await _showFeedbackDialog();
       case ComposerSlashCommandKind.archive:
-        composer.clear();
         await _archiveCurrentThread();
       case ComposerSlashCommandKind.reasoning:
-        composer.clear();
         await _showReasoningPicker();
       case ComposerSlashCommandKind.model:
-        composer.clear();
         await _showModelPicker();
       case ComposerSlashCommandKind.newChat:
-        composer.clear();
         controller.createThread();
     }
   }
@@ -1210,6 +1359,24 @@ class ComposerPanelState extends State<ComposerPanel> {
       return false;
     }
     final rawComposerText = composer.text.trim();
+    final planCommand = !_goalMode
+        ? RegExp(
+            r'^/(?:plan|计划模式)(?:\s+([\s\S]+))?$',
+            caseSensitive: false,
+          ).firstMatch(rawComposerText)
+        : null;
+    if (planCommand != null && controller.canSteer) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('任务运行时无法切换计划模式。')));
+      return false;
+    }
+    final inlinePlanPrompt = planCommand?.group(1)?.trim();
+    if (planCommand != null && inlinePlanPrompt?.isNotEmpty != true) {
+      composer.clear();
+      _togglePlanMode();
+      return true;
+    }
     final inlineGoal = !_goalMode
         ? RegExp(
             r'^/(?:goal|目标)\s+(.+)$',
@@ -1217,15 +1384,7 @@ class ComposerPanelState extends State<ComposerPanel> {
             dotAll: true,
           ).firstMatch(rawComposerText)
         : null;
-    final inlinePlan = !_goalMode && !controller.canSteer
-        ? RegExp(
-            r'^/(?:plan|计划模式)\s+(.+)$',
-            caseSensitive: false,
-            dotAll: true,
-          ).firstMatch(rawComposerText)
-        : null;
     final inlineGoalText = inlineGoal?.group(1)?.trim();
-    final inlinePlanPrompt = inlinePlan?.group(1)?.trim();
     final goalText =
         inlineGoalText ?? (_goalMode ? _combinedComposerText : _goal);
     if (goalText != null && goalText.runes.length > 4000) {
@@ -1234,8 +1393,8 @@ class ComposerPanelState extends State<ComposerPanel> {
       ).showSnackBar(const SnackBar(content: Text('目标不能超过 4000 个字符。')));
       return false;
     }
-    if (inlinePlanPrompt?.isNotEmpty == true && !_planMode) {
-      setState(() => _planMode = true);
+    if (inlinePlanPrompt?.isNotEmpty == true && !controller.composerPlanMode) {
+      controller.setComposerPlanMode(true);
     }
     final submission = ComposerSubmission(
       // Codex Goal mode uses the objective as both the first prompt and the
@@ -1249,8 +1408,10 @@ class ComposerPanelState extends State<ComposerPanel> {
       includeWorkspace: _includeWorkspace,
       includeIdeContext: _includeIdeContext,
       goal: goalText,
-      planMode: _planMode,
+      planMode: controller.composerPlanMode,
       skills: _selectedSkills,
+      useManagedWorktree: _useManagedWorktree,
+      managedWorktreeId: _managedWorktreeId,
     );
     final submitted = controller.canSteer
         ? await widget.onQueueSteer(submission)
@@ -1266,6 +1427,8 @@ class ComposerPanelState extends State<ComposerPanel> {
       _pastedTexts.clear();
       _selectedSkillPaths.clear();
       _includeWorkspace = false;
+      _useManagedWorktree = false;
+      _managedWorktreeId = null;
       _includeIdeContext = false;
       _ideContextWorkspacePath = null;
       // A goal is persisted on the thread by the successful submission.  It
@@ -1312,6 +1475,20 @@ class ComposerPanelState extends State<ComposerPanel> {
         if (!controller.canSteer) _togglePlanMode();
       case AddMenuActionKind.recordSkill:
         return;
+      case AddMenuActionKind.draw:
+        final path = await showDialog<String>(
+          context: context,
+          builder: (context) => const SketchCanvasDialog(),
+        );
+        if (path != null && mounted) {
+          _addAttachments([
+            ComposerAttachment(
+              path: path,
+              isDirectory: false,
+              isTemporary: true,
+            ),
+          ]);
+        }
       case AddMenuActionKind.skill:
         final path = action.value;
         if (path == null) return;
@@ -1593,11 +1770,21 @@ class ComposerPanelState extends State<ComposerPanel> {
 
   void _togglePlanMode() {
     if (controller.canSteer) return;
-    setState(() => _planMode = !_planMode);
+    controller.setComposerPlanMode(!controller.composerPlanMode);
   }
 
   List<PopupMenuEntry<AddMenuAction>> _buildAddMenu(BuildContext context) {
     final palette = YeknomPalette.of(context);
+    final commands = {
+      for (final command in _addCommands) command.kind: command,
+    };
+    final filesCommand = commands[ComposerSlashCommandKind.files]!;
+    final workspaceCommand =
+        commands[ComposerSlashCommandKind.workspaceContext]!;
+    final goalCommand = commands[ComposerSlashCommandKind.goal]!;
+    final planCommand = commands[ComposerSlashCommandKind.planMode]!;
+    final recordSkillCommand = commands[ComposerSlashCommandKind.recordSkill]!;
+    final drawCommand = commands[ComposerSlashCommandKind.draw]!;
     final workspace = controller.workspacePath;
     final workspaceName = workspace == null ? '当前项目' : _pathLabel(workspace);
     final entries = <PopupMenuEntry<AddMenuAction>>[
@@ -1605,14 +1792,14 @@ class ComposerPanelState extends State<ComposerPanel> {
       AddMenuItem(
         key: const Key('add-files-menu-item'),
         value: const AddMenuAction(AddMenuActionKind.files),
-        icon: Icons.attach_file,
-        label: '文件和文件夹',
+        icon: filesCommand.icon,
+        label: filesCommand.label,
         selected: _attachments.isNotEmpty,
       ),
       AddMenuItem(
         key: const Key('add-workspace-menu-item'),
         value: const AddMenuAction(AddMenuActionKind.workspace),
-        icon: Icons.terminal_outlined,
+        icon: workspaceCommand.icon,
         label: '附加 $workspaceName',
         selected: _includeWorkspace,
         enabled: workspace != null,
@@ -1620,43 +1807,64 @@ class ComposerPanelState extends State<ComposerPanel> {
       AddMenuItem(
         key: const Key('add-goal-menu-item'),
         value: const AddMenuAction(AddMenuActionKind.goal),
-        icon: Icons.track_changes_outlined,
-        label: '目标',
-        description: _goal ?? '设置要持续追求的目标',
+        icon: goalCommand.icon,
+        label: goalCommand.label,
+        description: _goal ?? goalCommand.description,
         selected: _goal?.isNotEmpty == true,
       ),
       AddMenuItem(
         key: const Key('add-plan-mode-menu-item'),
         value: const AddMenuAction(AddMenuActionKind.plan),
-        icon: Icons.lightbulb_outline,
-        label: '计划模式',
+        icon: planCommand.icon,
+        label: planCommand.label,
         description: controller.canSteer
             ? '任务运行时不可用'
-            : _planMode
+            : controller.composerPlanMode
             ? '已开启计划模式'
             : '开启计划模式',
-        selected: _planMode,
+        selected: controller.composerPlanMode,
         enabled: !controller.canSteer,
       ),
       AddMenuItem(
         key: const Key('record-skill-menu-item'),
         value: const AddMenuAction(AddMenuActionKind.recordSkill),
-        icon: Icons.radio_button_checked,
-        label: '录制技能',
-        description: '当前运行时未提供技能录制协议',
+        icon: recordSkillCommand.icon,
+        label: recordSkillCommand.label,
+        description: recordSkillCommand.description,
         selected: false,
-        enabled: false,
+        enabled: recordSkillCommand.enabled,
+      ),
+      AddMenuItem(
+        key: const Key('draw-menu-item'),
+        value: const AddMenuAction(AddMenuActionKind.draw),
+        icon: drawCommand.icon,
+        label: drawCommand.label,
+        description: drawCommand.description,
+        selected: false,
+        enabled: drawCommand.enabled,
       ),
       AddMenuHeader(label: '插件', palette: palette),
     ];
-    final enabledSkills = controller.skills
-        .where((skill) => skill.enabled)
-        .toList(growable: false);
-    if (controller.skillsLoading && enabledSkills.isEmpty) {
+    final enabledSkills =
+        controller.skills.where((skill) => skill.enabled).toList()
+          ..sort((a, b) {
+            final order = _officialSkillOrder(
+              a,
+            ).compareTo(_officialSkillOrder(b));
+            return order == 0 ? a.label.compareTo(b.label) : order;
+          });
+    final visibleSkills = <CodexSkill>[];
+    final visibleSkillLabels = <String>{};
+    for (final skill in enabledSkills) {
+      if (visibleSkillLabels.add(_officialSkillLabel(skill))) {
+        visibleSkills.add(skill);
+      }
+    }
+    if (controller.skillsLoading && visibleSkills.isEmpty) {
       entries.add(
         AddMenuMessage(key: Key('composer-skills-loading'), label: '正在读取可用技能…'),
       );
-    } else if (enabledSkills.isEmpty) {
+    } else if (visibleSkills.isEmpty) {
       entries.add(
         AddMenuMessage(
           key: const Key('composer-skills-empty'),
@@ -1664,14 +1872,14 @@ class ComposerPanelState extends State<ComposerPanel> {
         ),
       );
     } else {
-      for (final skill in enabledSkills) {
+      for (final skill in visibleSkills) {
         entries.add(
           AddMenuItem(
             key: ValueKey('composer-skill-${skill.name}'),
             value: AddMenuAction(AddMenuActionKind.skill, skill.path),
             icon: _skillIcon(skill.name),
-            label: skill.label,
-            description: skill.summary,
+            label: _officialSkillLabel(skill),
+            description: _officialSkillSummary(skill),
             selected: _selectedSkillPaths.contains(skill.path),
           ),
         );
@@ -1693,6 +1901,54 @@ class ComposerPanelState extends State<ComposerPanel> {
       return Icons.description_outlined;
     }
     return Icons.auto_awesome_outlined;
+  }
+
+  String _officialSkillLabel(CodexSkill skill) {
+    final names = <String>{
+      skill.name.trim().toLowerCase(),
+      if (skill.displayName case final displayName?)
+        displayName.trim().toLowerCase(),
+    };
+    if (names.any(
+      (name) =>
+          name == 'spreadsheets' ||
+          name == 'spreadsheet' ||
+          name == 'excel' ||
+          name == 'openai-spreadsheets',
+    )) {
+      return 'Spreadsheets';
+    }
+    if (names.any((name) => name == 'pdf' || name == 'openai-pdf')) {
+      return 'PDF';
+    }
+    if (names.any(
+      (name) =>
+          name == 'documents' ||
+          name == 'document' ||
+          name == 'openai-documents',
+    )) {
+      return 'Documents';
+    }
+    return skill.label;
+  }
+
+  String _officialSkillSummary(CodexSkill skill) {
+    final label = _officialSkillLabel(skill);
+    return switch (label) {
+      'Documents' => 'Create and edit documents',
+      'PDF' => 'Read, create, and verify PDFs',
+      'Spreadsheets' => 'Create and edit spreadsheets',
+      _ => skill.summary,
+    };
+  }
+
+  int _officialSkillOrder(CodexSkill skill) {
+    return switch (_officialSkillLabel(skill)) {
+      'Documents' => 0,
+      'PDF' => 1,
+      'Spreadsheets' => 2,
+      _ => 100,
+    };
   }
 
   String _pathLabel(String path) {
@@ -2061,7 +2317,7 @@ class ComposerPanelState extends State<ComposerPanel> {
                                       onRemove: () =>
                                           setState(() => _goal = null),
                                     ),
-                                  if (_planMode)
+                                  if (controller.composerPlanMode)
                                     ComposerContextChip(
                                       key: const Key('composer-plan-mode-chip'),
                                       icon: Icons.lightbulb_outline,
@@ -2096,6 +2352,7 @@ class ComposerPanelState extends State<ComposerPanel> {
                               final showGoalMode =
                                   _goalMode && constraints.maxWidth >= 400;
                               final showModel = constraints.maxWidth >= 240;
+                              final showWorktree = constraints.maxWidth >= 520;
                               return Row(
                                 children: [
                                   if (showAttachment)
@@ -2225,6 +2482,59 @@ class ComposerPanelState extends State<ComposerPanel> {
                                       ),
                                     ),
                                   ],
+                                  if (showWorktree &&
+                                      controller.activeThreadId == null &&
+                                      controller.workspacePath != null &&
+                                      controller
+                                              .gitProjectStatus
+                                              ?.isRepository ==
+                                          true) ...[
+                                    const SizedBox(width: 6),
+                                    PopupMenuButton<String>(
+                                      key: const Key(
+                                        'composer-worktree-toggle',
+                                      ),
+                                      onSelected: (value) => setState(() {
+                                        _managedWorktreeId = value.isEmpty
+                                            ? null
+                                            : value;
+                                        _useManagedWorktree = true;
+                                      }),
+                                      itemBuilder: (context) => [
+                                        const PopupMenuItem<String>(
+                                          value: '',
+                                          child: Text('新建工作树'),
+                                        ),
+                                        ..._managedWorktrees.map(
+                                          (record) => PopupMenuItem<String>(
+                                            value: record.worktreeId,
+                                            child: Text(record.worktreeId),
+                                          ),
+                                        ),
+                                      ],
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            Icons.account_tree_outlined,
+                                            size: 15,
+                                            color: _useManagedWorktree
+                                                ? palette.active
+                                                : palette.muted,
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            _useManagedWorktree ? '工作树' : '本地',
+                                            style: TextStyle(
+                                              color: _useManagedWorktree
+                                                  ? palette.active
+                                                  : palette.muted,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
                                   const Spacer(),
                                   if (showModel) ...[
                                     Builder(
@@ -2347,7 +2657,7 @@ class ComposerPanelState extends State<ComposerPanel> {
                   ],
                 ),
               ),
-              if (controller.fileChanges.isNotEmpty)
+              if (controller.turnFileChanges.isNotEmpty)
                 Positioned(
                   key: const Key('composer-file-change-overlay'),
                   top: -18,
@@ -2359,7 +2669,7 @@ class ComposerPanelState extends State<ComposerPanel> {
                   child: IgnorePointer(
                     child: Center(
                       child: ComposerFileChangePill(
-                        changes: controller.fileChanges,
+                        changes: controller.turnFileChanges,
                         turnDiff: controller.turnDiff,
                       ),
                     ),

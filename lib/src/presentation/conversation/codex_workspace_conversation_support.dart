@@ -69,9 +69,14 @@ bool hasCountableDiffStats(String diff) {
   return stats.additions > 0 || stats.deletions > 0;
 }
 
-/// Returns an exact aggregate only when every reported file has a countable
-/// patch. Missing per-file patches may be recovered from the turn-wide Diff,
-/// but only by matching the corresponding file path.
+/// Returns the live aggregate from every currently countable file patch.
+///
+/// App Server file items and `turn/diff/updated` are independent streaming
+/// notifications. A metadata-only or binary file must not hide line counts
+/// already available for the other files while the turn is still running.
+/// Missing per-file patches are recovered from the turn-wide Diff only by
+/// matching the corresponding path; unavailable patches contribute no guessed
+/// lines and can join the aggregate when a later Diff update arrives.
 DiffStats? reliableFileChangeStats(
   List<CodexFileChange> changes,
   String? turnDiff,
@@ -88,6 +93,7 @@ DiffStats? reliableFileChangeStats(
       .replaceFirst(RegExp(r'^/+'), '');
 
   var total = const DiffStats(0, 0);
+  var hasCountablePatch = false;
   for (final change in changes) {
     var patch = change.diff.trim();
     if (patch.isEmpty) {
@@ -106,18 +112,17 @@ DiffStats? reliableFileChangeStats(
           : const <CodexFileChange>[];
       final matches = exactMatches.isNotEmpty ? exactMatches : suffixMatches;
       final recovered = matches.length == 1 ? matches.single : null;
-      if (recovered == null) return null;
+      if (recovered == null) continue;
       patch = recovered.diff;
     }
-    if (!hasCountableDiffStats(patch)) return null;
+    if (!hasCountableDiffStats(patch)) continue;
+    hasCountablePatch = true;
     total += diffStats(patch);
   }
-  return total;
+  return hasCountablePatch ? total : null;
 }
 
-/// Reports whether the available Diff can support an honest line-count total.
-/// A header-only, binary, or metadata-only Diff describes a file change but
-/// does not provide countable added or deleted lines.
+/// Reports whether none of the currently available Diffs has countable lines.
 bool fileChangeStatsUnknown(List<CodexFileChange> changes, String? turnDiff) {
   return reliableFileChangeStats(changes, turnDiff) == null;
 }
@@ -170,7 +175,15 @@ enum AttachmentPickerKind { files, folder }
 
 /// Composer “添加”菜单产生的结构化上下文类型。
 /// Structured context types emitted by the composer add menu.
-enum AddMenuActionKind { files, workspace, goal, plan, recordSkill, skill }
+enum AddMenuActionKind {
+  files,
+  workspace,
+  goal,
+  plan,
+  recordSkill,
+  draw,
+  skill,
+}
 
 /// 将菜单项类型与可选负载组合，避免菜单直接依赖 Composer 私有状态。
 /// Couples a menu action kind with optional payload without exposing Composer private state.

@@ -41,11 +41,14 @@ class CodexThreadGoal {
   bool get isBlocked => status == 'blocked';
   bool get canResume => isPaused || isBlocked;
   bool get isActive => status == 'active';
+  bool get isBudgetExhausted =>
+      tokenBudget != null && tokenBudget! > 0 && tokensUsed >= tokenBudget!;
   bool get isTerminal =>
       status == 'complete' ||
       status == 'completed' ||
       status == 'usageLimited' ||
-      status == 'budgetLimited';
+      status == 'budgetLimited' ||
+      isBudgetExhausted;
 
   double? get progress {
     final budget = tokenBudget;

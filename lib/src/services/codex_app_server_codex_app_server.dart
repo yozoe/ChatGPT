@@ -13,12 +13,23 @@ class CodexAppServer {
   CodexAppServer({
     String? executable,
     @visibleForTesting void Function(JsonMap message)? messageSink,
+    @visibleForTesting String applicationsDirectory = '/Applications',
+    @visibleForTesting String? userApplicationsDirectory,
   }) : _messageSink = messageSink,
+       _applicationsDirectory = applicationsDirectory,
+       _userApplicationsDirectory =
+           userApplicationsDirectory ??
+           switch (Platform.environment['HOME']) {
+             final home? => '$home/Applications',
+             null => null,
+           },
        _executable =
            executable ?? Platform.environment['CODEX_EXECUTABLE'] ?? 'codex';
 
   String _executable;
   final void Function(JsonMap message)? _messageSink;
+  final String _applicationsDirectory;
+  final String? _userApplicationsDirectory;
   final StreamController<ServerEvent> _events =
       StreamController<ServerEvent>.broadcast();
   final Map<int, Completer<JsonMap>> _pending = {};
@@ -236,6 +247,22 @@ class CodexAppServer {
     return models;
   }
 
+  /// Returns the collaboration-mode presets advertised by this runtime.
+  Future<List<JsonMap>> listCollaborationModes() async {
+    final response = await request('collaborationMode/list');
+    _throwIfError(response);
+    final result = response['result'];
+    if (result is! Map || result['data'] is! Iterable) {
+      throw const FormatException(
+        'App Server did not return collaboration mode presets.',
+      );
+    }
+    return (result['data'] as Iterable)
+        .whereType<Map>()
+        .map(JsonMap.from)
+        .toList(growable: false);
+  }
+
   /// 读取指定项目最终生效的 Codex 配置；返回值由 App Server 按官方配置层级合并。
   /// Reads the effective Codex configuration for a workspace after App Server applies the official layer precedence.
   Future<JsonMap> readConfig({String? workingDirectory}) async {
@@ -355,6 +382,18 @@ class CodexAppServer {
         ...additionalInput,
       ],
       'additionalContext': ?additionalContext,
+      'collaborationMode': ?collaborationMode,
+    });
+    _throwIfError(response);
+  }
+
+  /// Updates settings used by subsequent turns in an existing thread.
+  Future<void> updateThreadSettings({
+    required String threadId,
+    JsonMap? collaborationMode,
+  }) async {
+    final response = await request('thread/settings/update', {
+      'threadId': threadId,
       'collaborationMode': ?collaborationMode,
     });
     _throwIfError(response);
@@ -957,18 +996,29 @@ class CodexAppServer {
     if (requested.contains('/')) {
       return await File(requested).exists() ? requested : null;
     }
+    final applicationsDirectory = _applicationsDirectory;
+    final userApplicationsDirectory = _userApplicationsDirectory;
     final home = Platform.environment['HOME'];
     final pathDirectories = (Platform.environment['PATH'] ?? '')
         .split(Platform.pathSeparator)
         .where((directory) => directory.isNotEmpty);
     final candidates = <String>[
-      '/Applications/ChatGPT.app/Contents/Resources/codex',
-      '/Applications/Codex.app/Contents/Resources/codex',
+      '$applicationsDirectory/ChatGPT.app/Contents/Resources/codex',
+      // Recent ChatGPT macOS bundles ship the CLI either as a thin launcher
+      // in codex-cli/bin or as the executable inside CodexCLI.app.
+      '$applicationsDirectory/ChatGPT.app/Contents/Resources/codex-cli/bin/codex',
+      '$applicationsDirectory/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',
+      '$applicationsDirectory/Codex.app/Contents/Resources/codex',
       '/opt/homebrew/bin/codex',
       '/usr/local/bin/codex',
-      if (home != null)
-        '$home/Applications/ChatGPT.app/Contents/Resources/codex',
-      if (home != null) '$home/Applications/Codex.app/Contents/Resources/codex',
+      if (userApplicationsDirectory != null)
+        '$userApplicationsDirectory/ChatGPT.app/Contents/Resources/codex',
+      if (userApplicationsDirectory != null)
+        '$userApplicationsDirectory/ChatGPT.app/Contents/Resources/codex-cli/bin/codex',
+      if (userApplicationsDirectory != null)
+        '$userApplicationsDirectory/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',
+      if (userApplicationsDirectory != null)
+        '$userApplicationsDirectory/Codex.app/Contents/Resources/codex',
       if (home != null) '$home/.local/bin/codex',
       if (home != null) '$home/.codex/bin/codex',
       if (home != null) '$home/.npm-global/bin/codex',

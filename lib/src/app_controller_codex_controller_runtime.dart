@@ -18,12 +18,16 @@ import 'package:chatgpt/src/domain/codex_ide_context.dart';
 import 'package:chatgpt/src/domain/git_project_status.dart';
 import 'package:chatgpt/src/domain/pending_approval.dart';
 import 'package:chatgpt/src/domain/pending_elicitation.dart';
+import 'package:chatgpt/src/domain/pending_plan_implementation_request.dart';
+import 'package:chatgpt/src/domain/pending_user_input.dart';
 import 'package:chatgpt/src/domain/runtime_log_entry.dart';
 import 'package:chatgpt/src/domain/scheduled_task.dart';
 import 'package:chatgpt/src/domain/subagent_thread_view.dart';
 import 'package:chatgpt/src/domain/task_plan.dart';
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/domain/workspace_configuration.dart';
+import 'package:chatgpt/src/domain/thread_environment_binding.dart';
+import 'package:chatgpt/src/domain/local_worktree_record.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/services/codex_clock.dart';
 import 'package:chatgpt/src/services/codex_plugin_store.dart';
@@ -32,6 +36,7 @@ import 'package:chatgpt/src/services/conversation_attachment_store.dart';
 import 'package:chatgpt/src/services/git_project_service.dart';
 import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
+import 'package:chatgpt/src/services/local_worktree_service.dart';
 import 'package:chatgpt/src/services/task_completion_notifier.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_url_normalizer.dart';
 import 'app_controller_support.dart';
@@ -64,6 +69,10 @@ class CodexController extends ChangeNotifier {
   static const _welcomeTitle = '欢迎使用 Codex Desk';
   static const _welcomeDetail =
       '选择本地项目后启动 Codex App Server。模型、Provider 与凭据由 Codex 配置管理。';
+  static const _goalContinuationPrompt =
+      'Continue working on the active goal. Use the available tools to make '
+      'concrete progress. Do not stop until the goal is genuinely complete or '
+      'you need user input.';
 
   CodexController({
     CodexAppServer? server,
@@ -76,6 +85,10 @@ class CodexController extends ChangeNotifier {
     TaskCompletionNotifier? taskCompletionNotifier,
     CodexClock? clock,
     CodexIdeContextBridge? ideContextBridge,
+    Duration userInputForegroundInactivityDuration = const Duration(
+      seconds: 60,
+    ),
+    Duration userInputAutoResolutionDuration = const Duration(seconds: 90),
   }) : _server = server ?? CodexAppServer(),
        _runtimeConfigurationStore =
            runtimeConfigurationStore ??
@@ -94,10 +107,13 @@ class CodexController extends ChangeNotifier {
        _ownsIdeContextBridge = ideContextBridge == null,
        _taskCompletionNotifier =
            taskCompletionNotifier ?? TaskCompletionNotifier(),
-       _clock = clock ?? CodexClock() {
+       _clock = clock ?? CodexClock(),
+       _userInputForegroundInactivityDuration =
+           userInputForegroundInactivityDuration,
+       _userInputAutoResolutionDuration = userInputAutoResolutionDuration {
     _gitOperations = CodexGitOperations(
       service: _gitProjectService,
-      workspace: () => workspacePath,
+      workspace: () => _threadWorkspaceById[activeThreadId] ?? workspacePath,
       isDisposed: () => _disposed,
       notify: notifyListeners,
       messageOf: _messageOf,
@@ -138,7 +154,7 @@ class CodexController extends ChangeNotifier {
       status: () => status,
       serverRunning: () => _server.isRunning,
       executable: () => _server.executable,
-      workspace: () => workspacePath,
+      workspace: () => _threadWorkspaceById[activeThreadId] ?? workspacePath,
       providerLabel: () => providerLabel,
       authLabel: () => authLabel,
       lastError: () => lastError,
@@ -192,6 +208,38 @@ class CodexController extends ChangeNotifier {
   @visibleForTesting
   static RuntimeConfigurationStore? testingRuntimeConfigurationStore;
   final RuntimeConfigurationStore _runtimeConfigurationStore;
+  late final LocalWorktreeService _localWorktreeService = LocalWorktreeService(
+    store: _runtimeConfigurationStore,
+  );
+
+  RuntimeConfigurationStore get runtimeConfigurationStore =>
+      _runtimeConfigurationStore;
+
+  Future<List<LocalWorktreeRecord>> listManagedWorktrees({
+    String? sourceRepository,
+  }) async {
+    final records = await _runtimeConfigurationStore.readWorktreeRecords();
+    if (sourceRepository == null) return records;
+    final canonical = await _resolveExistingPath(sourceRepository);
+    if (canonical == null) return const [];
+    return records
+        .where((record) => record.sourceRepository == canonical)
+        .where(
+          (record) =>
+              record.state == LocalWorktreeState.ready ||
+              record.state == LocalWorktreeState.completed,
+        )
+        .toList(growable: false);
+  }
+
+  Future<String?> _resolveExistingPath(String path) async {
+    try {
+      return await Directory(path).resolveSymbolicLinks();
+    } on FileSystemException {
+      return null;
+    }
+  }
+
   final ConversationHistoryStore _conversationHistoryStore;
   final ConversationAttachmentStore _conversationAttachmentStore;
   final LocalSessionThreadStore _localSessionThreadStore;
@@ -200,6 +248,8 @@ class CodexController extends ChangeNotifier {
   final bool _ownsIdeContextBridge;
   final TaskCompletionNotifier _taskCompletionNotifier;
   final CodexClock _clock;
+  final Duration _userInputForegroundInactivityDuration;
+  final Duration _userInputAutoResolutionDuration;
   late final CodexGitOperations _gitOperations;
   late final CodexRuntimeDiagnostics _runtimeDiagnostics;
   late final CodexAttachmentCoordinator _attachments;
@@ -220,6 +270,7 @@ class CodexController extends ChangeNotifier {
       _ideContextBridge.additionalContext;
   final Map<String, int> _composerTemporaryAttachmentRetains = {};
   final Map<String, CodexFileChange> _fileChangesByPath = {};
+  final Map<String, CodexFileChange> _turnFileChangesByPath = {};
   final Set<String> _turnDiffDerivedFileChangePaths = {};
   final Set<String> _turnExplicitFileChangePaths = {};
   final Set<String> _pinnedThreadIds = {};
@@ -246,6 +297,13 @@ class CodexController extends ChangeNotifier {
   int _subagentViewRequestSequence = 0;
   final Set<String> _completedCommandItemIds = {};
   final Set<String> _completedPlanItemIds = {};
+  final Map<String, PendingPlanImplementationRequest>
+  _planImplementationCandidates = {};
+  final Map<String, PendingPlanImplementationRequest>
+  _pendingPlanImplementations = {};
+  final Set<String> _successfulPlanTurnKeys = {};
+  final Set<String> _rejectedPlanTurnKeys = {};
+  final Set<String> _handledPlanImplementationKeys = {};
   final Set<String> _handledBrowserInvocationIds = {};
   Timer? _deltaNotificationTimer;
   Timer? _historySaveTimer;
@@ -286,12 +344,15 @@ class CodexController extends ChangeNotifier {
   int _archivedThreadRefreshRequest = 0;
   int _mcpServerRefreshRequest = 0;
   int _runtimeMcpStatusRefreshRequest = 0;
+  int _skillsRefreshRequest = 0;
   int _pluginRefreshRequest = 0;
   int _marketplaceRefreshRequest = 0;
   int _gitProjectRefreshRequest = 0;
   int _gitDiffRefreshRequest = 0;
   int _gitReviewRefreshRequest = 0;
   int _codexConfigurationRefreshRequest = 0;
+  int _modelCatalogRefreshRequest = 0;
+  int _collaborationModesRefreshRequest = 0;
   final Set<String> _unarchivingThreadIds = {};
   final Set<String> _archivingThreadIds = {};
   final Set<String> _deletingThreadIds = {};
@@ -309,6 +370,10 @@ class CodexController extends ChangeNotifier {
   Future<void> _approvalModeSave = Future.value();
   Map<String, Set<ReasoningEffort>> _reasoningEffortsByModel = const {};
   String? _catalogDefaultModelId;
+  JsonMap? _planCollaborationModePreset;
+  JsonMap? _defaultCollaborationModePreset;
+  final Map<String, bool> _planModeByThreadId = {};
+  bool _newThreadPlanMode = false;
   String? _configuredModelId;
   String? _configuredProviderId;
   String? _configuredModelSource;
@@ -355,6 +420,10 @@ class CodexController extends ChangeNotifier {
       {};
   final Map<String, TurnSubmission> _runningTurnSubmissions = {};
   final Map<String, FailedTurnRetry> _failedTurnRetries = {};
+  final Map<String, int> _automaticRetryAttempts = {};
+  final Map<String, DateTime> _automaticRetryDeadlines = {};
+  final Map<String, Timer> _automaticRetryTimers = {};
+  final Set<String> _automaticRetryCancelled = {};
   String? _retryingFailedTurnThreadId;
   String? activeThreadId;
   // 初始运行时连接进行期间选中的任务可能不在首个服务端列表中；保留该选择，
@@ -492,8 +561,20 @@ class CodexController extends ChangeNotifier {
   final Map<String, CodexThreadGoal> _threadGoalsById = {};
   final Map<String, int> _threadGoalRevisions = {};
   final Map<String, String> _lastGoalTimelineStatusByThread = {};
+  final Set<String> _goalContinuationPendingThreadIds = {};
+  final Set<String> _goalContinuationAwaitingAcceptanceThreadIds = {};
+  final Set<String> _automaticGoalTurnThreadIds = {};
+  final Set<String> _goalTurnsWithToolCalls = {};
+  final Set<String> _goalContinuationSuppressedThreadIds = {};
+  final Set<String> _goalPauseRequestedThreadIds = {};
+  final Map<String, String> _goalContinuationErrorsByThread = {};
+  final Map<String, JsonMap> _threadCollaborationModesById = {};
   final Map<String, CodexThreadTokenUsage> _threadTokenUsageById = {};
   final Map<String, List<CodexFileChange>> _persistedFileChangesByThreadId = {};
+  final Map<String, List<CodexFileChange>> _persistedTurnFileChangesByThreadId =
+      {};
+  final Map<String, List<CodexFileChange>>
+  _persistedFileChangesBeforeTurnByThreadId = {};
   final Map<String, String?> _persistedTurnDiffByThreadId = {};
   final Set<String> _goalOperationThreadIds = {};
   final Map<String, String> _goalOperationErrorsByThread = {};
@@ -517,6 +598,26 @@ class CodexController extends ChangeNotifier {
   String? get goalOperationError {
     final threadId = activeThreadId;
     return threadId == null ? null : _goalOperationErrorsByThread[threadId];
+  }
+
+  bool get activeGoalIsProgressing {
+    final threadId = activeThreadId;
+    return threadId != null &&
+        (_goalContinuationPendingThreadIds.contains(threadId) ||
+            _automaticGoalTurnThreadIds.contains(threadId) ||
+            isThreadRunning(threadId));
+  }
+
+  bool get activeGoalIsWaiting {
+    final threadId = activeThreadId;
+    return threadId != null &&
+        (_goalContinuationSuppressedThreadIds.contains(threadId) ||
+            _goalContinuationErrorsByThread.containsKey(threadId));
+  }
+
+  String? get activeGoalContinuationError {
+    final threadId = activeThreadId;
+    return threadId == null ? null : _goalContinuationErrorsByThread[threadId];
   }
 
   String? lastError;
@@ -546,6 +647,17 @@ class CodexController extends ChangeNotifier {
     return retry?.submission.workspace == workspacePath ? retry : null;
   }
 
+  FailedTurnRetry? _failedTurnRetryForThread(
+    String? threadId, {
+    bool allowDifferentWorkspace = false,
+  }) {
+    final retry = threadId == null ? null : _failedTurnRetries[threadId];
+    return allowDifferentWorkspace ||
+            retry?.submission.workspace == workspacePath
+        ? retry
+        : null;
+  }
+
   /// Whether the selected failed task still has its exact in-memory inputs.
   /// 当前失败任务是否仍保留可安全原样重发的内存输入。
   bool get hasFailedTurnRetry => _activeFailedTurnRetry != null;
@@ -555,6 +667,9 @@ class CodexController extends ChangeNotifier {
   bool get hasUsageLimitFailure =>
       _activeFailedTurnRetry?.kind == FailedTurnKind.usageLimit;
 
+  bool get hasCapacityRateLimitFailure =>
+      _activeFailedTurnRetry?.kind == FailedTurnKind.capacityRateLimit;
+
   String? get usageLimitFailureError =>
       hasUsageLimitFailure ? _activeFailedTurnRetry?.error : null;
 
@@ -562,9 +677,38 @@ class CodexController extends ChangeNotifier {
       _retryingFailedTurnThreadId != null &&
       _retryingFailedTurnThreadId == activeThreadId;
 
+  bool get hasAutomaticRetry =>
+      activeThreadId != null &&
+      _activeFailedTurnRetry?.kind == FailedTurnKind.capacityRateLimit &&
+      _automaticRetryDeadlines.containsKey(activeThreadId);
+
+  int? get automaticRetrySecondsRemaining {
+    final threadId = activeThreadId;
+    final deadline = threadId == null
+        ? null
+        : _automaticRetryDeadlines[threadId];
+    if (deadline == null) return null;
+    final remaining = deadline.difference(_clock.now()).inSeconds;
+    return remaining < 0 ? 0 : remaining;
+  }
+
+  bool get automaticRetryCancelled =>
+      activeThreadId != null &&
+      _automaticRetryCancelled.contains(activeThreadId);
+
+  void cancelAutomaticRetry() {
+    final threadId = activeThreadId;
+    if (threadId == null) return;
+    _automaticRetryTimers.remove(threadId)?.cancel();
+    _automaticRetryDeadlines.remove(threadId);
+    _automaticRetryCancelled.add(threadId);
+    notifyListeners();
+  }
+
   bool get canRetryFailedTurn =>
       hasFailedTurnRetry &&
       !hasUsageLimitFailure &&
+      (!hasAutomaticRetry || automaticRetryCancelled) &&
       !isRetryingFailedTurn &&
       canSend;
 
@@ -682,13 +826,21 @@ class CodexController extends ChangeNotifier {
       LinkedHashMap();
   final LinkedHashMap<Object, PendingElicitation> _pendingElicitations =
       LinkedHashMap();
-  final List<({Object requestId, bool elicitation})> _pendingRequestOrder = [];
+  final LinkedHashMap<Object, PendingUserInputRequest> _pendingUserInputs =
+      LinkedHashMap();
+  final Map<String, Object> _autoResolvingUserInputByThread = {};
+  final Map<Object, Timer> _userInputAutoResolutionTimers = {};
+  final Map<Object, String> _userInputAutoResolutionStates = {};
+  final Map<Object, DateTime> _userInputAutoResolutionDeadlines = {};
+  final List<({Object requestId, String kind})> _pendingRequestOrder = [];
+  bool _userInputSurfaceForegrounded = false;
+  String? _presentedUserInputThreadId;
 
-  void _queuePendingRequest(Object requestId, {required bool elicitation}) {
+  void _queuePendingRequest(Object requestId, {required String kind}) {
     _pendingRequestOrder.removeWhere(
       (request) => request.requestId == requestId,
     );
-    _pendingRequestOrder.add((requestId: requestId, elicitation: elicitation));
+    _pendingRequestOrder.add((requestId: requestId, kind: kind));
   }
 
   void _removePendingRequest(Object? requestId) {
@@ -699,29 +851,62 @@ class CodexController extends ChangeNotifier {
 
   void _prunePendingRequestOrder() {
     _pendingRequestOrder.removeWhere(
-      (request) => request.elicitation
-          ? !_pendingElicitations.containsKey(request.requestId)
-          : !_pendingApprovals.containsKey(request.requestId),
+      (request) => switch (request.kind) {
+        'userInput' => !_pendingUserInputs.containsKey(request.requestId),
+        'elicitation' => !_pendingElicitations.containsKey(request.requestId),
+        _ => !_pendingApprovals.containsKey(request.requestId),
+      },
     );
+  }
+
+  String? get _preferredPendingRequestKind {
+    _prunePendingRequestOrder();
+    if (_pendingRequestOrder.isEmpty) return null;
+    final activeId = activeThreadId;
+    if (activeId != null) {
+      for (final request in _pendingRequestOrder) {
+        final threadId = switch (request.kind) {
+          'userInput' => _pendingUserInputs[request.requestId]?.threadId,
+          'elicitation' => _pendingElicitations[request.requestId]?.threadId,
+          _ => _pendingApprovals[request.requestId]?.threadId,
+        };
+        final turnId = switch (request.kind) {
+          'userInput' => _pendingUserInputs[request.requestId]?.turnId,
+          'elicitation' => _pendingElicitations[request.requestId]?.turnId,
+          _ => _pendingApprovals[request.requestId]?.turnId,
+        };
+        if (threadId == activeId &&
+            (activeTurnId == null ||
+                turnId == null ||
+                turnId == activeTurnId)) {
+          return request.kind;
+        }
+      }
+      // A background request remains actionable and is rendered with its
+      // owning-task label. Never fall back to a stale request from the active
+      // thread when its turn no longer matches.
+      for (final request in _pendingRequestOrder) {
+        final threadId = switch (request.kind) {
+          'userInput' => _pendingUserInputs[request.requestId]?.threadId,
+          'elicitation' => _pendingElicitations[request.requestId]?.threadId,
+          _ => _pendingApprovals[request.requestId]?.threadId,
+        };
+        if (threadId != activeId) return request.kind;
+      }
+      return null;
+    }
+    return _pendingRequestOrder.first.kind;
   }
 
   /// Whether the next prompt card is an MCP elicitation. Requests belonging
   /// to the visible task take priority; requests within the same priority are
   /// presented in server arrival order.
   bool get shouldShowPendingElicitation {
-    _prunePendingRequestOrder();
-    if (_pendingRequestOrder.isEmpty) return false;
-    final activeId = activeThreadId;
-    if (activeId != null) {
-      for (final request in _pendingRequestOrder) {
-        final threadId = request.elicitation
-            ? _pendingElicitations[request.requestId]?.threadId
-            : _pendingApprovals[request.requestId]?.threadId;
-        if (threadId == activeId) return request.elicitation;
-      }
-    }
-    return _pendingRequestOrder.first.elicitation;
+    return _preferredPendingRequestKind == 'elicitation';
   }
+
+  bool get shouldShowPendingUserInput =>
+      _preferredPendingRequestKind == 'userInput';
 
   /// Prefers an approval for the task currently shown in the workbench. A
   /// background task's approval remains available rather than being replaced
@@ -730,10 +915,18 @@ class CodexController extends ChangeNotifier {
     final activeId = activeThreadId;
     if (activeId != null) {
       for (final approval in _pendingApprovals.values) {
-        if (approval.threadId == activeId) return approval;
+        if (approval.threadId == activeId &&
+            (approval.turnId == null ||
+                activeTurnId == null ||
+                approval.turnId == activeTurnId)) {
+          return approval;
+        }
+      }
+      for (final approval in _pendingApprovals.values) {
+        if (approval.threadId != activeId) return approval;
       }
     }
-    return _pendingApprovals.values.firstOrNull;
+    return activeId == null ? _pendingApprovals.values.firstOrNull : null;
   }
 
   /// Describes the task owning an approval that is not in the current view.
@@ -749,6 +942,81 @@ class CodexController extends ChangeNotifier {
 
   bool approvalResponding = false;
   bool elicitationResponding = false;
+  bool userInputResponding = false;
+  bool planImplementationResponding = false;
+
+  PendingUserInputRequest? get pendingUserInput {
+    final activeId = activeThreadId;
+    if (activeId != null) {
+      for (final request in _pendingUserInputs.values) {
+        if (request.threadId == activeId &&
+            (activeTurnId == null || request.turnId == activeTurnId)) {
+          return request;
+        }
+      }
+      for (final request in _pendingUserInputs.values) {
+        if (request.threadId != activeId) return request;
+      }
+    }
+    return activeId == null ? _pendingUserInputs.values.firstOrNull : null;
+  }
+
+  /// Deadline shown by the official dismiss control during the final
+  /// auto-resolution countdown. Waiting-for-inactivity and snoozed requests
+  /// intentionally expose no deadline.
+  DateTime? get pendingUserInputAutoResolutionDeadline {
+    final request = pendingUserInput;
+    return request == null
+        ? null
+        : _userInputAutoResolutionDeadlines[request.requestId];
+  }
+
+  String? get pendingUserInputTaskLabel {
+    final threadId = pendingUserInput?.threadId;
+    if (threadId == null || threadId == activeThreadId) return null;
+    final title = _cachedThread(threadId)?.title;
+    if (title != null && title.isNotEmpty) return title;
+    final shortId = threadId.length > 12 ? threadId.substring(0, 12) : threadId;
+    return '后台任务 $shortId';
+  }
+
+  bool get canRespondToUserInput =>
+      pendingUserInput != null && !userInputResponding;
+
+  PendingPlanImplementationRequest? get pendingPlanImplementation {
+    final threadId = activeThreadId;
+    return threadId == null ? null : _pendingPlanImplementations[threadId];
+  }
+
+  bool get canRespondToPlanImplementation =>
+      pendingPlanImplementation != null &&
+      !planImplementationResponding &&
+      canSend;
+
+  /// Composer collaboration mode for the selected thread (or the next new
+  /// thread). Official Codex keeps this selection scoped to each conversation.
+  bool get composerPlanMode {
+    final threadId = activeThreadId;
+    return threadId == null
+        ? _newThreadPlanMode
+        : (_planModeByThreadId[threadId] ?? _newThreadPlanMode);
+  }
+
+  void setComposerPlanMode(bool enabled) {
+    if (canSteer || composerPlanMode == enabled) return;
+    final threadId = activeThreadId;
+    if (threadId == null) {
+      _newThreadPlanMode = enabled;
+    } else {
+      _planModeByThreadId[threadId] = enabled;
+      // Goal continuations send the thread's effective collaboration mode
+      // explicitly. Keep that snapshot aligned with the composer selection so
+      // switching away from Plan cannot reuse the previous Plan preset.
+      final mode = _collaborationMode(planMode: enabled);
+      if (mode != null) _threadCollaborationModesById[threadId] = mode;
+    }
+    notifyListeners();
+  }
 
   /// Prefers a request that belongs to the task currently being viewed.
   PendingElicitation? get pendingElicitation {
@@ -823,6 +1091,7 @@ class CodexController extends ChangeNotifier {
   String? _runtimeMcpServerStatusesThreadId;
   List<CodexSkill> skills = const [];
   bool skillsLoading = false;
+  String? _skillsLoadingWorkspace;
   String? skillsError;
   List<CodexMarketplace> marketplaces = const [];
   bool marketplacesLoading = false;
@@ -949,26 +1218,31 @@ class CodexController extends ChangeNotifier {
       _workspaceConfigurations,
     );
     final epoch = ++_workspaceTaskListLoadEpoch;
-    final next = <String, WorkspaceTaskList>{};
-    for (final workspace in workspaces) {
-      if (workspace.primaryPath == activePath) continue;
-      try {
-        final taskList = await readWorkspaceTaskList(workspace.primaryPath);
-        if (_disposed || epoch != _workspaceTaskListLoadEpoch) return;
-        next[workspace.primaryPath] = WorkspaceTaskList(
-          threads: taskList.threads,
-          pinnedIds: taskList.pinnedIds,
-          acknowledgedIds: taskList.acknowledgedIds,
-        );
-      } catch (_) {
-        // Leave an unreadable cache out of the sidebar. Selecting the project
-        // still reports the detailed persistence error through normal restore.
-      }
-    }
+    final entries = await Future.wait(
+      workspaces.where((workspace) => workspace.primaryPath != activePath).map((
+        workspace,
+      ) async {
+        try {
+          final taskList = await readWorkspaceTaskList(workspace.primaryPath);
+          return MapEntry(
+            workspace.primaryPath,
+            WorkspaceTaskList(
+              threads: taskList.threads,
+              pinnedIds: taskList.pinnedIds,
+              acknowledgedIds: taskList.acknowledgedIds,
+            ),
+          );
+        } catch (_) {
+          // Leave an unreadable cache out of the sidebar. Selecting the project
+          // still reports the detailed persistence error through normal restore.
+          return null;
+        }
+      }),
+    );
     if (_disposed || epoch != _workspaceTaskListLoadEpoch) return;
     _workspaceTaskLists
       ..clear()
-      ..addAll(next);
+      ..addEntries(entries.whereType<MapEntry<String, WorkspaceTaskList>>());
     notifyListeners();
   }
 
@@ -1185,6 +1459,8 @@ class CodexController extends ChangeNotifier {
   /// Returns an unmodifiable view of recorded file changes.
   List<CodexFileChange> get fileChanges =>
       List.unmodifiable(_fileChangesByPath.values);
+  List<CodexFileChange> get turnFileChanges =>
+      List.unmodifiable(_turnFileChangesByPath.values);
   String? turnDiff;
 
   /// 撤销只对完整、带文件头的任务 Diff 开放；仅有统计或 hunk 时保持禁用。
@@ -1196,7 +1472,7 @@ class CodexController extends ChangeNotifier {
     final diffChanges = codexFileChangesFromUnifiedDiff(diff);
     final diffCoversTaskSummary =
         diffChanges.isNotEmpty &&
-        fileChanges.every(
+        turnFileChanges.every(
           (taskChange) => diffChanges.any(
             (diffChange) => _sameWorkspaceChangePath(
               taskChange.path,
@@ -1206,7 +1482,7 @@ class CodexController extends ChangeNotifier {
           ),
         ) &&
         diffChanges.every(
-          (diffChange) => fileChanges.any(
+          (diffChange) => turnFileChanges.any(
             (taskChange) => _sameWorkspaceChangePath(
               taskChange.path,
               diffChange.path,
@@ -1216,13 +1492,20 @@ class CodexController extends ChangeNotifier {
         );
     return !hasRunningTasks &&
         !fileChangeUndoRunning &&
-        fileChanges.isNotEmpty &&
+        turnFileChanges.isNotEmpty &&
         diffCoversTaskSummary &&
         !diff.contains(GitProjectService.truncatedDiffMarker) &&
+        _hasApplyableDiffBody(diff) &&
         (diff.contains('diff --git ') ||
             ((diff.startsWith('--- ') || diff.contains('\n--- ')) &&
                 diff.contains('\n+++ ')));
   }
+
+  /// Metadata-only and binary-summary Diffs cannot be safely reverse-applied.
+  /// A complete textual hunk or an explicit Git binary patch is required.
+  bool _hasApplyableDiffBody(String diff) =>
+      diff.contains(RegExp(r'^@@ ', multiLine: true)) ||
+      diff.contains('\nGIT binary patch\n');
 
   /// 返回最近的已脱敏运行时日志；日志仅保留在本次应用进程的内存中。
   /// Returns recent redacted runtime logs; logs are retained only in this app process's memory.
@@ -2013,6 +2296,8 @@ class CodexController extends ChangeNotifier {
     codexConfigurationError = null;
     _reasoningEffortsByModel = const {};
     _catalogDefaultModelId = null;
+    _planCollaborationModePreset = null;
+    _defaultCollaborationModePreset = null;
     modelOptions = const [];
     modelCatalogError = null;
     reasoningEffortOptions = [
@@ -2032,6 +2317,7 @@ class CodexController extends ChangeNotifier {
     String path, {
     bool allowWhileRunning = false,
     bool Function()? isCurrentSelection,
+    bool pathAlreadyValidated = false,
   }) async {
     await _workspaceLoad;
     if (!allowWhileRunning && !canChooseWorkspace) {
@@ -2042,21 +2328,27 @@ class CodexController extends ChangeNotifier {
     }
     final normalized = path.trim();
     if (normalized.isEmpty) return;
-    final directory = Directory(normalized);
-    if (!await directory.exists()) {
-      lastError = '该项目目录不存在：$normalized';
-      _add(TimelineKind.error, '无法选择项目', lastError!);
-      notifyListeners();
-      return;
-    }
-    final canonicalPath = await directory.resolveSymbolicLinks();
-    if (await _isSystemTemporaryDirectory(canonicalPath)) {
-      lastError = '系统临时目录不能作为项目，请选择实际项目文件夹。';
-      _add(TimelineKind.error, '无法选择项目', lastError!);
-      notifyListeners();
-      return;
+    late final String canonicalPath;
+    if (pathAlreadyValidated) {
+      canonicalPath = normalized;
+    } else {
+      final directory = Directory(normalized);
+      if (!await directory.exists()) {
+        lastError = '该项目目录不存在：$normalized';
+        _add(TimelineKind.error, '无法选择项目', lastError!);
+        notifyListeners();
+        return;
+      }
+      canonicalPath = await directory.resolveSymbolicLinks();
+      if (await _isSystemTemporaryDirectory(canonicalPath)) {
+        lastError = '系统临时目录不能作为项目，请选择实际项目文件夹。';
+        _add(TimelineKind.error, '无法选择项目', lastError!);
+        notifyListeners();
+        return;
+      }
     }
     final previousThreadId = activeThreadId;
+    if (previousThreadId != null) _clearAutomaticRetry(previousThreadId);
     if (previousThreadId != null && !isThreadRunning(previousThreadId)) {
       _cacheActiveThreadView(includeUnattached: true);
     }
@@ -2268,6 +2560,7 @@ class CodexController extends ChangeNotifier {
       canonicalPath,
       allowWhileRunning: reuseRuntime,
       isCurrentSelection: isCurrentSelection,
+      pathAlreadyValidated: true,
     );
     if (!isCurrentSelection() || workspacePath != canonicalPath) return false;
     if (preferredThread != null) {
@@ -2281,32 +2574,29 @@ class CodexController extends ChangeNotifier {
       );
     } else if (reuseRuntime) {
       // The App Server already supports requests scoped by working directory.
-      // Keep the shared process alive and refresh only project-owned state.
-      await refreshCodexConfiguration(notify: false);
-      if (!isCurrentSelection()) return false;
-      await _refreshReasoningEffortCapabilities();
-      if (!isCurrentSelection()) return false;
-      if (preferredThread != null) {
-        // The caller supplied an explicit task selection (for example via
-        // openWorkspaceThread) and will resume it after the workspace switch.
-        // Do not also restore the project's cached last task here.
-        unawaited(refreshArchivedThreads());
-        unawaited(refreshSkills(notify: false));
-      } else {
-        // A project switch must remain responsive while another project's turn
-        // is still running. Remote list hydration can be slow or temporarily
-        // blocked; it is safe to reconcile it after the foreground workspace
-        // has switched because every refresh is request/epoch guarded.
-        if (_runningThreadIds.isNotEmpty) {
-          unawaited(refreshThreads());
-          unawaited(refreshArchivedThreads());
-        } else {
-          await refreshThreads();
-          await refreshArchivedThreads();
-        }
+      // Keep the shared process alive. Restore the cached task first; unrelated
+      // project metadata is refreshed concurrently after the switch is visible.
+      if (preferredThread == null) {
         await _resumeRestoredThreadIfNeeded();
-        await refreshSkills(notify: false);
+        if (!isCurrentSelection()) return false;
       }
+      unawaited(
+        Future.wait([
+          () async {
+            await refreshCodexConfiguration(notify: false);
+            if (!isCurrentSelection()) return;
+            await Future.wait([
+              _refreshReasoningEffortCapabilities(
+                expectedWorkspace: canonicalPath,
+              ),
+              _refreshCollaborationModes(expectedWorkspace: canonicalPath),
+            ]);
+          }(),
+          refreshThreads(),
+          refreshArchivedThreads(),
+          refreshSkills(notify: false),
+        ]),
+      );
     }
     return isCurrentSelection();
   }
@@ -3163,6 +3453,7 @@ class CodexController extends ChangeNotifier {
       refreshCodexConfiguration(notify: false),
       refreshAccount(expectedEpoch: connectionEpoch),
       _refreshReasoningEffortCapabilities(expectedEpoch: connectionEpoch),
+      _refreshCollaborationModes(expectedEpoch: connectionEpoch),
       refreshArchivedThreads(),
       refreshThreads(),
       refreshSkills(notify: false),
@@ -3192,6 +3483,8 @@ class CodexController extends ChangeNotifier {
     bool planMode = false,
     List<String> imagePaths = const [],
     bool rollbackUserEntryOnFailure = false,
+    bool useManagedWorktree = false,
+    String? managedWorktreeId,
   }) async {
     final requestRevision = _conversationViewRevision;
     if (!_sendPromptInFlightRevisions.add(requestRevision)) return false;
@@ -3204,6 +3497,8 @@ class CodexController extends ChangeNotifier {
         planMode: planMode,
         imagePaths: imagePaths,
         rollbackUserEntryOnFailure: rollbackUserEntryOnFailure,
+        useManagedWorktree: useManagedWorktree,
+        managedWorktreeId: managedWorktreeId,
       );
     } finally {
       _sendPromptInFlightRevisions.remove(requestRevision);
@@ -3220,13 +3515,15 @@ class CodexController extends ChangeNotifier {
     bool planMode = false,
     List<String> imagePaths = const [],
     bool rollbackUserEntryOnFailure = false,
+    bool useManagedWorktree = false,
+    String? managedWorktreeId,
   }) async {
     final text = prompt.trim();
     final requestWorkspace = workspacePath;
     final requestThread = activeThreadId;
     final requestRevision = _conversationViewRevision;
     if (text.isEmpty || !canSend || requestWorkspace == null) return false;
-    if (planMode && _newThreadModelId == null) {
+    if (planMode && _collaborationMode(planMode: true) == null) {
       lastError = '计划模式需要先从 Codex 运行时读取可用模型。';
       _add(TimelineKind.error, '无法启动计划模式', lastError!);
       notifyListeners();
@@ -3279,7 +3576,55 @@ class CodexController extends ChangeNotifier {
     final persistedImagePaths = persistedAttachments.imagePaths;
     final persistedAdditionalInput = persistedAttachments.additionalInput;
     final createdImagePaths = persistedAttachments.createdImagePaths;
-    final workspace = requestWorkspace;
+    var workspace = requestWorkspace;
+    String? selectedWorktreeId = managedWorktreeId;
+    if ((useManagedWorktree || managedWorktreeId != null) &&
+        requestThread == null) {
+      try {
+        final settings = await _runtimeConfigurationStore
+            .readWorktreeSettings();
+        final projectId = workspaceProjectId ?? requestWorkspace;
+        final records = await _runtimeConfigurationStore.readWorktreeRecords();
+        final existing = managedWorktreeId == null
+            ? null
+            : records
+                  .where((record) => record.worktreeId == managedWorktreeId)
+                  .firstOrNull;
+        final record =
+            existing ??
+            await _localWorktreeService.create(
+              repository: requestWorkspace,
+              rootPath: settings.rootPath,
+              projectId: projectId,
+              fetchBeforeCreate: settings.fetchBeforeCreate,
+            );
+        final canonicalRequestWorkspace = await Directory(
+          requestWorkspace,
+        ).resolveSymbolicLinks();
+        if (existing != null &&
+            existing.sourceRepository != canonicalRequestWorkspace) {
+          throw StateError('所选工作树不属于当前项目。');
+        }
+        if (existing != null && existing.state == LocalWorktreeState.running) {
+          throw StateError('所选工作树正在运行，请选择其他工作树。');
+        }
+        if (existing != null &&
+            (existing.state == LocalWorktreeState.removed ||
+                !await Directory(existing.worktreePath).exists())) {
+          throw StateError('所选工作树已不可用，请刷新列表后重新选择。');
+        }
+        workspace = record.worktreePath;
+        selectedWorktreeId = record.worktreeId;
+      } on Object catch (error) {
+        await _conversationAttachmentStore.delete(
+          persistedAttachments.createdImagePaths,
+        );
+        lastError = '无法创建工作树：${_messageOf(error)}';
+        _add(TimelineKind.error, '无法发送任务', lastError!);
+        notifyListeners();
+        return false;
+      }
+    }
     final previousFileChanges = List<CodexFileChange>.of(fileChanges);
     final previousTurnDiff = turnDiff;
     if (activeThreadId == null) {
@@ -3293,6 +3638,12 @@ class CodexController extends ChangeNotifier {
     }
     status = RuntimeStatus.running;
     lastError = null;
+    if (requestThread != null) {
+      _automaticGoalTurnThreadIds.remove(requestThread);
+      _goalTurnsWithToolCalls.remove(requestThread);
+      _goalContinuationSuppressedThreadIds.remove(requestThread);
+      _goalContinuationErrorsByThread.remove(requestThread);
+    }
     _clearStreamingState();
     _activeTurnStartedAt = DateTime.now();
     final submittedEntry = _add(
@@ -3316,17 +3667,42 @@ class CodexController extends ChangeNotifier {
         config: _newThreadConfig(),
       );
       final threadId = requestedThreadId;
+      if (workspace != requestWorkspace) {
+        final records = await _runtimeConfigurationStore.readWorktreeRecords();
+        final managedRecord = records.where(
+          (record) => record.worktreePath == workspace,
+        );
+        if (managedRecord.isNotEmpty) {
+          await _runtimeConfigurationStore.saveWorktreeRecords(
+            records.map(
+              (record) => record.worktreePath == workspace
+                  ? record.copyWith(
+                      threadId: threadId,
+                      state: LocalWorktreeState.running,
+                      lastUsedAt: DateTime.now(),
+                    )
+                  : record,
+            ),
+          );
+        }
+        final bindings = await _runtimeConfigurationStore
+            .readThreadEnvironmentBindings();
+        final existing = bindings.where(
+          (binding) => binding.threadId != threadId,
+        );
+        await _runtimeConfigurationStore.saveThreadEnvironmentBindings([
+          ...existing,
+          ThreadEnvironmentBinding(
+            threadId: threadId,
+            kind: ThreadEnvironmentKind.managedWorktree,
+            workingDirectory: workspace,
+            worktreeId: selectedWorktreeId,
+          ),
+        ]);
+      }
       final objective = goal?.trim();
-      final collaborationMode = _newThreadModelId == null
-          ? null
-          : <String, dynamic>{
-              'mode': planMode ? 'plan' : 'default',
-              'settings': {
-                'model': _newThreadModelId,
-                'reasoning_effort': reasoningEffort.configValue,
-                'developer_instructions': null,
-              },
-            };
+      final collaborationMode = _collaborationMode(planMode: planMode);
+      _updateThreadCollaborationMode(threadId, collaborationMode);
       final submission = TurnSubmission(
         workspace: workspace,
         threadId: threadId,
@@ -3338,6 +3714,8 @@ class CodexController extends ChangeNotifier {
         imagePaths: persistedImagePaths,
       );
       _failedTurnRetries.remove(threadId);
+      _planModeByThreadId[threadId] = planMode;
+      if (activeThreadId == null) _newThreadPlanMode = false;
       _runningTurnSubmissions[threadId] = submission;
       if (activeThreadId == null) {
         activeThreadId = threadId;
@@ -3408,13 +3786,36 @@ class CodexController extends ChangeNotifier {
       final failedSubmission = requestedThreadId == null
           ? null
           : _runningTurnSubmissions.remove(requestedThreadId);
+      if (requestedThreadId != null && workspace != requestWorkspace) {
+        try {
+          final records = await _runtimeConfigurationStore
+              .readWorktreeRecords();
+          await _runtimeConfigurationStore.saveWorktreeRecords(
+            records.map(
+              (record) => record.worktreePath == workspace
+                  ? record.copyWith(state: LocalWorktreeState.failed)
+                  : record,
+            ),
+          );
+          final bindings = await _runtimeConfigurationStore
+              .readThreadEnvironmentBindings();
+          await _runtimeConfigurationStore.saveThreadEnvironmentBindings(
+            bindings.where((binding) => binding.threadId != requestedThreadId),
+          );
+        } on Object {
+          // Preserve the original turn failure; the record is recoverable from
+          // the Git worktree list on the next reconciliation.
+        }
+      }
       final failureMessage = _messageOf(error);
       if (failedSubmission != null) {
+        final kind = _failedTurnKindFromError(error, failureMessage);
         _failedTurnRetries[failedSubmission.threadId] = FailedTurnRetry(
           submission: failedSubmission,
           error: failureMessage,
-          kind: _failedTurnKindFromError(error, failureMessage),
+          kind: kind,
         );
+        _scheduleAutomaticRetryIfNeeded(failedSubmission.threadId, kind);
       }
       _updateThreadStatus(requestedThreadId, 'systemError');
       // Another task may have become active while this request was awaiting
@@ -3441,32 +3842,47 @@ class CodexController extends ChangeNotifier {
   /// duplicate optimistic user bubble. A task switch while awaiting App
   /// Server is allowed, but the result remains scoped to the original thread.
   /// 原样重发当前失败 turn；等待期间即使切换任务，结果也只归属原线程。
-  Future<bool> retryFailedTurn() async {
-    final retry = _activeFailedTurnRetry;
+  Future<bool> retryFailedTurn({String? threadIdOverride}) async {
+    final retryThreadId = threadIdOverride ?? activeThreadId;
+    final retry = _failedTurnRetryForThread(
+      retryThreadId,
+      allowDifferentWorkspace: threadIdOverride != null,
+    );
     final threadId = retry?.submission.threadId;
     if (retry == null ||
         threadId == null ||
         _retryingFailedTurnThreadId != null ||
-        !canSend ||
-        activeThreadId != threadId) {
+        (threadIdOverride != null && !_server.isRunning) ||
+        (threadIdOverride == null && !canSend) ||
+        (threadIdOverride == null && activeThreadId != threadId)) {
       return false;
     }
     final submission = retry.submission;
+    final isForeground = activeThreadId == threadId;
+    _automaticRetryTimers.remove(threadId)?.cancel();
+    _automaticRetryDeadlines.remove(threadId);
+    _automaticRetryCancelled.remove(threadId);
     _retryingFailedTurnThreadId = threadId;
     _runningTurnSubmissions[threadId] = submission;
     _runningThreadIds.add(threadId);
     _threadWorkspaceById[threadId] = submission.workspace;
-    status = RuntimeStatus.running;
-    lastError = null;
+    final previousFileChanges = List<CodexFileChange>.of(fileChanges);
+    final previousTurnDiff = turnDiff;
+    if (isForeground) {
+      status = RuntimeStatus.running;
+      lastError = null;
+    }
     // A retry continues the same thread-level task-file lifecycle. Retaining
     // the confirmed summary also avoids a failed retry deleting its persisted
     // restart snapshot before App Server accepts the request.
-    _beginFileChangeTurn();
-    _clearStreamingState();
+    if (isForeground) {
+      _beginFileChangeTurn();
+      _clearStreamingState();
+    }
     _activeTurnStartedAt = DateTime.now();
     _acknowledgedCompletedThreadIds.remove(threadId);
     _updateThreadStatus(threadId, 'active');
-    notifyListeners();
+    if (isForeground) notifyListeners();
     try {
       final objective = submission.goal;
       if (objective != null && objective.isNotEmpty) {
@@ -3482,6 +3898,7 @@ class CodexController extends ChangeNotifier {
         collaborationMode: submission.collaborationMode,
       );
       _failedTurnRetries.remove(threadId);
+      _automaticRetryAttempts.remove(threadId);
       return true;
     } catch (error) {
       _runningThreadIds.remove(threadId);
@@ -3493,10 +3910,15 @@ class CodexController extends ChangeNotifier {
         error: message,
         kind: _failedTurnKindFromError(error, message),
       );
+      _scheduleAutomaticRetryIfNeeded(
+        threadId,
+        _failedTurnKindFromError(error, message),
+      );
       _updateThreadStatus(threadId, 'systemError');
       if (activeThreadId == threadId && workspacePath == submission.workspace) {
         status = _server.isRunning ? RuntimeStatus.ready : RuntimeStatus.failed;
         _clearStreamingState();
+        _replaceFileChanges(previousFileChanges, previousTurnDiff);
         lastError = message;
         _add(TimelineKind.error, '重试失败', message);
         if (status == RuntimeStatus.failed) _scheduleRuntimeReconnect();
@@ -3533,12 +3955,18 @@ class CodexController extends ChangeNotifier {
     bool notify = true,
   }) async {
     final workspace = workspacePath;
-    if (!_server.isRunning || workspace == null || skillsLoading) return;
+    if (!_server.isRunning ||
+        workspace == null ||
+        (skillsLoading && _skillsLoadingWorkspace == workspace)) {
+      return;
+    }
+    final request = ++_skillsRefreshRequest;
     if (!pluginSaving) {
       pluginActionError = null;
       pluginActionWarning = null;
     }
     skillsLoading = true;
+    _skillsLoadingWorkspace = workspace;
     skillsError = null;
     if (notify && !_disposed) notifyListeners();
     try {
@@ -3546,17 +3974,28 @@ class CodexController extends ChangeNotifier {
         workingDirectory: workspace,
         forceReload: forceReload,
       );
-      if (_disposed || workspacePath != workspace) return;
+      if (_disposed ||
+          request != _skillsRefreshRequest ||
+          workspacePath != workspace) {
+        return;
+      }
       skills = rows
           .map(CodexSkill.fromJson)
           .whereType<CodexSkill>()
           .toList(growable: false);
     } catch (error) {
-      if (_disposed || workspacePath != workspace) return;
+      if (_disposed ||
+          request != _skillsRefreshRequest ||
+          workspacePath != workspace) {
+        return;
+      }
       skillsError = _messageOf(error);
     } finally {
-      if (!_disposed && workspacePath == workspace) {
+      if (!_disposed &&
+          request == _skillsRefreshRequest &&
+          workspacePath == workspace) {
         skillsLoading = false;
+        _skillsLoadingWorkspace = null;
         if (notify) notifyListeners();
       }
     }
@@ -3580,6 +4019,7 @@ class CodexController extends ChangeNotifier {
       )) {
         return;
       }
+      await _pauseGoalAfterInterruption(threadId);
       _add(TimelineKind.system, '已请求停止', '正在等待 App Server 结束当前任务。');
     } catch (error) {
       if (!_isCurrentTurnRequest(
@@ -3878,6 +4318,8 @@ class CodexController extends ChangeNotifier {
       previousStatus: previous?.status,
       status: _threadGoalsById[threadId]!.status,
     );
+    _goalContinuationSuppressedThreadIds.remove(threadId);
+    _goalContinuationErrorsByThread.remove(threadId);
   }
 
   /// Refreshes the selected thread's persisted goal without delaying its UI.
@@ -3890,10 +4332,12 @@ class CodexController extends ChangeNotifier {
       var changed = false;
       if (rawGoal == null) {
         changed = _threadGoalsById.remove(threadId) != null;
+        _clearGoalContinuationState(threadId);
       } else {
         final goal = CodexThreadGoal.fromJson(rawGoal);
         if (goal.objective.isEmpty) {
           changed = _threadGoalsById.remove(threadId) != null;
+          _clearGoalContinuationState(threadId);
         } else {
           final normalized = _normalizedThreadGoal(
             rawGoal,
@@ -3908,6 +4352,11 @@ class CodexController extends ChangeNotifier {
             previousStatus: previous?.status,
             status: normalized.status,
           );
+          if (normalized.isActive) {
+            _scheduleGoalContinuation(threadId, workspacePath);
+          } else {
+            _clearGoalContinuationState(threadId);
+          }
         }
       }
       if (changed && activeThreadId == threadId) notifyListeners();
@@ -3954,15 +4403,81 @@ class CodexController extends ChangeNotifier {
 
   Future<bool> resumeActiveGoal() => _updateActiveGoal(status: 'active');
 
+  Future<bool> continueActiveGoal() async {
+    final threadId = activeThreadId;
+    if (threadId == null || activeThreadGoal?.isActive != true) return false;
+    _goalContinuationSuppressedThreadIds.remove(threadId);
+    _goalContinuationErrorsByThread.remove(threadId);
+    notifyListeners();
+    _scheduleGoalContinuation(threadId, workspacePath);
+    return true;
+  }
+
   Future<bool> editActiveGoal(String objective) async {
     final normalized = objective.trim();
     if (normalized.isEmpty || normalized.runes.length > 4000) return false;
     return _updateActiveGoal(objective: normalized);
   }
 
+  /// Sets the selected user message as the thread's persistent goal.
+  Future<bool> setActiveGoalFromMessage(String objective) async {
+    final threadId = activeThreadId;
+    final goalWorkspace = workspacePath;
+    final normalized = objective.trim();
+    if (threadId == null || normalized.isEmpty || goalOperationInProgress) {
+      return false;
+    }
+    if (normalized.runes.length > 4000) {
+      _goalOperationErrorsByThread[threadId] = '目标不能超过 4000 个字符。';
+      notifyListeners();
+      return false;
+    }
+    final revision = _nextThreadGoalRevision(threadId);
+    _goalOperationThreadIds.add(threadId);
+    _goalOperationErrorsByThread.remove(threadId);
+    notifyListeners();
+    try {
+      final rawGoal = await _server.setThreadGoal(
+        threadId: threadId,
+        objective: normalized,
+      );
+      if (_threadGoalRevisions[threadId] == revision) {
+        final previous = _threadGoalsById[threadId];
+        _threadGoalsById[threadId] = _normalizedThreadGoal(
+          rawGoal,
+          threadId: threadId,
+          objective: normalized,
+          status: 'active',
+        );
+        _appendGoalLifecycleFeedback(
+          threadId,
+          previousStatus: previous?.status,
+          status: _threadGoalsById[threadId]!.status,
+        );
+        _goalContinuationSuppressedThreadIds.remove(threadId);
+        _goalContinuationErrorsByThread.remove(threadId);
+        _scheduleGoalContinuation(threadId, goalWorkspace);
+      }
+      return true;
+    } catch (error) {
+      final message = _messageOf(error);
+      _goalOperationErrorsByThread[threadId] = message;
+      return false;
+    } finally {
+      _goalOperationThreadIds.remove(threadId);
+      if (_goalPauseRequestedThreadIds.remove(threadId)) {
+        await _pauseGoalAfterInterruption(threadId);
+      } else if (_threadGoalsById[threadId]?.isActive == true) {
+        _scheduleGoalContinuation(threadId, goalWorkspace);
+      }
+      if (!_disposed) notifyListeners();
+    }
+  }
+
   Future<bool> _updateActiveGoal({String? objective, String? status}) async {
     final threadId = activeThreadId;
     final goal = activeThreadGoal;
+    final goalWorkspace = workspacePath;
     if (threadId == null || goal == null || goalOperationInProgress) {
       return false;
     }
@@ -3992,6 +4507,13 @@ class CodexController extends ChangeNotifier {
           previousStatus: goal.status,
           status: updated.status,
         );
+        if (updated.isActive) {
+          _goalContinuationSuppressedThreadIds.remove(threadId);
+          _goalContinuationErrorsByThread.remove(threadId);
+          _scheduleGoalContinuation(threadId, goalWorkspace);
+        } else {
+          _clearGoalContinuationState(threadId);
+        }
       }
       return true;
     } catch (error) {
@@ -3999,6 +4521,11 @@ class CodexController extends ChangeNotifier {
       return false;
     } finally {
       _goalOperationThreadIds.remove(threadId);
+      if (_goalPauseRequestedThreadIds.remove(threadId)) {
+        await _pauseGoalAfterInterruption(threadId);
+      } else if (_threadGoalsById[threadId]?.isActive == true) {
+        _scheduleGoalContinuation(threadId, goalWorkspace);
+      }
       if (!_disposed) notifyListeners();
     }
   }
@@ -4018,6 +4545,7 @@ class CodexController extends ChangeNotifier {
       await _server.clearThreadGoal(threadId: threadId);
       if (_threadGoalRevisions[threadId] == revision) {
         _threadGoalsById.remove(threadId);
+        _clearGoalContinuationState(threadId);
         _appendGoalLifecycleFeedback(
           threadId,
           previousStatus: _lastGoalTimelineStatusByThread[threadId],
@@ -4032,6 +4560,240 @@ class CodexController extends ChangeNotifier {
       _goalOperationThreadIds.remove(threadId);
       if (!_disposed) notifyListeners();
     }
+  }
+
+  void _clearGoalContinuationState(String threadId) {
+    _goalContinuationPendingThreadIds.remove(threadId);
+    _goalContinuationAwaitingAcceptanceThreadIds.remove(threadId);
+    _automaticGoalTurnThreadIds.remove(threadId);
+    _goalTurnsWithToolCalls.remove(threadId);
+    _goalContinuationSuppressedThreadIds.remove(threadId);
+    _goalPauseRequestedThreadIds.remove(threadId);
+    _goalContinuationErrorsByThread.remove(threadId);
+  }
+
+  bool _hasPendingGoalWork(String threadId) =>
+      _pendingApprovals.values.any((value) => value.threadId == threadId) ||
+      _pendingElicitations.values.any((value) => value.threadId == threadId) ||
+      _pendingUserInputs.values.any((value) => value.threadId == threadId) ||
+      _pendingPlanImplementations.containsKey(threadId) ||
+      (threadId == activeThreadId &&
+          (pendingTurnSteerSending || _pendingTurnSteers.isNotEmpty));
+
+  bool _canContinueGoal(String threadId, String workspace) {
+    final goal = _threadGoalsById[threadId];
+    final budget = goal?.tokenBudget;
+    return !_disposed &&
+        _server.isRunning &&
+        goal?.isActive == true &&
+        (budget == null || budget <= 0 || goal!.tokensUsed < budget) &&
+        !_goalContinuationSuppressedThreadIds.contains(threadId) &&
+        !_goalContinuationErrorsByThread.containsKey(threadId) &&
+        !_goalOperationThreadIds.contains(threadId) &&
+        (threadId != activeThreadId || !_resumingThread) &&
+        !_runningThreadIds.contains(threadId) &&
+        !(status == RuntimeStatus.running && activeThreadId == threadId) &&
+        !_hasPendingGoalWork(threadId) &&
+        _planModeByThreadId[threadId] != true &&
+        (threadId != activeThreadId ||
+            (workspacePath == workspace &&
+                status == RuntimeStatus.ready &&
+                _activeThreadAttached &&
+                canSend));
+  }
+
+  void _scheduleGoalContinuation(String threadId, String? workspace) {
+    if (workspace == null ||
+        _goalContinuationPendingThreadIds.contains(threadId) ||
+        !_canContinueGoal(threadId, workspace)) {
+      return;
+    }
+    _goalContinuationPendingThreadIds.add(threadId);
+    if (!_disposed) notifyListeners();
+    unawaited(_dispatchGoalContinuation(threadId, workspace));
+  }
+
+  Future<void> _dispatchGoalContinuation(
+    String threadId,
+    String workspace,
+  ) async {
+    // Yield once so queued steer, goal lifecycle and request notifications
+    // from the completed turn can settle before the safe-boundary check.
+    await Future<void>.delayed(Duration.zero);
+    if (!_goalContinuationPendingThreadIds.contains(threadId) ||
+        !_canContinueGoal(threadId, workspace)) {
+      _goalContinuationPendingThreadIds.remove(threadId);
+      if (!_disposed) notifyListeners();
+      return;
+    }
+    if (!await _refreshGoalBeforeContinuation(threadId)) {
+      _goalContinuationPendingThreadIds.remove(threadId);
+      if (!_disposed) notifyListeners();
+      return;
+    }
+    _goalContinuationPendingThreadIds.remove(threadId);
+    if (!_canContinueGoal(threadId, workspace)) {
+      if (!_disposed) notifyListeners();
+      return;
+    }
+
+    _automaticGoalTurnThreadIds.add(threadId);
+    _goalContinuationAwaitingAcceptanceThreadIds.add(threadId);
+    _goalTurnsWithToolCalls.remove(threadId);
+    _runningThreadIds.add(threadId);
+    _threadWorkspaceById[threadId] = workspace;
+    _planModeByThreadId[threadId] = false;
+    _updateThreadStatus(threadId, 'active');
+    if (activeThreadId == threadId && workspacePath == workspace) {
+      status = RuntimeStatus.running;
+      lastError = null;
+      _beginFileChangeTurn();
+      _clearStreamingState(clearPendingTurnSteer: false);
+      _activeTurnStartedAt = DateTime.now();
+    }
+    _forgetUnidentifiedTurnCompletion(threadId);
+    if (!_disposed) notifyListeners();
+
+    try {
+      await _server.startTurn(
+        threadId: threadId,
+        prompt: _goalContinuationPrompt,
+        workingDirectory: workspace,
+        collaborationMode: _threadCollaborationModesById[threadId],
+      );
+      _goalContinuationAwaitingAcceptanceThreadIds.remove(threadId);
+    } catch (error) {
+      _goalContinuationAwaitingAcceptanceThreadIds.remove(threadId);
+      _automaticGoalTurnThreadIds.remove(threadId);
+      _goalTurnsWithToolCalls.remove(threadId);
+      _runningThreadIds.remove(threadId);
+      _threadWorkspaceById.remove(threadId);
+      final message = _messageOf(error);
+      _goalContinuationErrorsByThread[threadId] = message;
+      _updateThreadStatus(threadId, 'idle');
+      if (activeThreadId == threadId && workspacePath == workspace) {
+        status = _server.isRunning ? RuntimeStatus.ready : RuntimeStatus.failed;
+        _clearStreamingState(clearPendingTurnSteer: false);
+        _add(TimelineKind.error, '目标未能继续', message);
+      } else {
+        _recordRuntimeLog(
+          'Could not continue goal for $threadId: $message',
+          level: RuntimeLogLevel.error,
+        );
+      }
+      if (status == RuntimeStatus.failed) _scheduleRuntimeReconnect();
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  Future<bool> _refreshGoalBeforeContinuation(String threadId) async {
+    final revision = _threadGoalRevisions[threadId] ?? 0;
+    try {
+      final rawGoal = await _server.getThreadGoal(threadId: threadId);
+      if (_disposed) return false;
+      if ((_threadGoalRevisions[threadId] ?? 0) != revision) {
+        return _threadGoalsById[threadId]?.isActive == true;
+      }
+      if (rawGoal == null) {
+        _threadGoalsById.remove(threadId);
+        _clearGoalContinuationState(threadId);
+        return false;
+      }
+      final parsed = CodexThreadGoal.fromJson(rawGoal);
+      if (parsed.objective.isEmpty) {
+        _threadGoalsById.remove(threadId);
+        _clearGoalContinuationState(threadId);
+        return false;
+      }
+      final previous = _threadGoalsById[threadId];
+      final normalized = _normalizedThreadGoal(
+        rawGoal,
+        threadId: threadId,
+        objective: parsed.objective,
+        status: parsed.status,
+      );
+      _threadGoalsById[threadId] = normalized;
+      _appendGoalLifecycleFeedback(
+        threadId,
+        previousStatus: previous?.status,
+        status: normalized.status,
+      );
+      if (!normalized.isActive) _clearGoalContinuationState(threadId);
+      return normalized.isActive;
+    } catch (error) {
+      _goalContinuationErrorsByThread[threadId] = _messageOf(error);
+      return false;
+    }
+  }
+
+  Future<void> _pauseGoalAfterInterruption(String threadId) async {
+    final goal = _threadGoalsById[threadId];
+    if (goal?.isActive != true) {
+      _goalPauseRequestedThreadIds.remove(threadId);
+      return;
+    }
+    if (_goalOperationThreadIds.contains(threadId)) {
+      _goalPauseRequestedThreadIds.add(threadId);
+      _goalContinuationSuppressedThreadIds.add(threadId);
+      if (!_disposed) notifyListeners();
+      return;
+    }
+    _goalPauseRequestedThreadIds.remove(threadId);
+    final revision = _nextThreadGoalRevision(threadId);
+    _goalOperationThreadIds.add(threadId);
+    try {
+      final rawGoal = await _server.updateThreadGoal(
+        threadId: threadId,
+        status: 'paused',
+      );
+      if (_threadGoalRevisions[threadId] != revision) return;
+      final updated = _normalizedThreadGoal(
+        rawGoal,
+        threadId: threadId,
+        objective: goal!.objective,
+        status: 'paused',
+        tokenBudget: goal.tokenBudget,
+        tokensUsed: goal.tokensUsed,
+        timeUsedSeconds: goal.timeUsedSeconds,
+      );
+      _threadGoalsById[threadId] = updated;
+      _clearGoalContinuationState(threadId);
+      _appendGoalLifecycleFeedback(
+        threadId,
+        previousStatus: goal.status,
+        status: updated.status,
+      );
+    } catch (error) {
+      _goalOperationErrorsByThread[threadId] = _messageOf(error);
+    } finally {
+      _goalOperationThreadIds.remove(threadId);
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  void _finishGoalTurn({
+    required String threadId,
+    required String? workspace,
+    required TurnCompletionOutcome outcome,
+    required bool wasAutomaticContinuation,
+    required bool usedTool,
+    required String failureMessage,
+  }) {
+    if (_threadGoalsById[threadId]?.isActive != true) return;
+    if (outcome == TurnCompletionOutcome.stopped) {
+      unawaited(_pauseGoalAfterInterruption(threadId));
+      return;
+    }
+    if (outcome != TurnCompletionOutcome.succeeded) {
+      _goalContinuationErrorsByThread[threadId] = failureMessage;
+      return;
+    }
+    _goalContinuationErrorsByThread.remove(threadId);
+    if (wasAutomaticContinuation && !usedTool) {
+      _goalContinuationSuppressedThreadIds.add(threadId);
+      return;
+    }
+    _scheduleGoalContinuation(threadId, workspace);
   }
 
   /// 停止 App Server 并重置仅在运行期有效的状态。
@@ -4053,14 +4815,27 @@ class CodexController extends ChangeNotifier {
       _pendingNetworkRetryEntriesByThread.clear();
       _runningTurnSubmissions.clear();
       _failedTurnRetries.clear();
+      _clearAllAutomaticRetries();
       _retryingFailedTurnThreadId = null;
+      _goalContinuationPendingThreadIds.clear();
+      _goalContinuationAwaitingAcceptanceThreadIds.clear();
+      _automaticGoalTurnThreadIds.clear();
+      _goalTurnsWithToolCalls.clear();
+      _goalContinuationSuppressedThreadIds.clear();
+      _goalPauseRequestedThreadIds.clear();
+      _goalContinuationErrorsByThread.clear();
+      _threadCollaborationModesById.clear();
       activeThreadId = null;
       _activeThreadAttached = false;
       _pendingApprovals.clear();
       _pendingElicitations.clear();
+      _clearUserInputAutoResolution();
+      _pendingUserInputs.clear();
+      _clearPlanImplementationState();
       _pendingRequestOrder.clear();
       approvalResponding = false;
       elicitationResponding = false;
+      userInputResponding = false;
       _clearStreamingState();
       _add(TimelineKind.system, '运行时连接已关闭', '应用会在需要时自动重新连接。');
     } catch (error) {
@@ -4301,7 +5076,16 @@ class CodexController extends ChangeNotifier {
     _fileChangesByPath
       ..clear()
       ..addEntries(
-        snapshot.fileChanges.map((change) => MapEntry(change.path, change)),
+        (snapshot.threadFileChanges ?? snapshot.fileChanges).map(
+          (change) => MapEntry(_fileChangeKey(change.path), change),
+        ),
+      );
+    _turnFileChangesByPath
+      ..clear()
+      ..addEntries(
+        snapshot.fileChanges.map(
+          (change) => MapEntry(_fileChangeKey(change.path), change),
+        ),
       );
     turnDiff = snapshot.turnDiff;
     _restorePersistedThreadFileSnapshots(snapshot);
@@ -4686,7 +5470,15 @@ class CodexController extends ChangeNotifier {
       if (workspace != null) _threadWorkspaceById[previousThreadId] = workspace;
       _removeCachedThreadView(previousThreadId, workspace: workspacePath);
     }
-    final cachedView = _cachedThreadView(thread.id);
+    // A workspace restore has already populated the selected thread's local
+    // snapshot even though it is not attached to App Server yet. Reuse that
+    // view immediately instead of clearing it and downloading the same history
+    // again before the project switch can finish.
+    final cachedView =
+        _cachedThreadView(thread.id) ??
+        (previousThreadId == thread.id && _threadHistoryInitialized
+            ? _currentThreadViewSnapshot()
+            : null);
     _resumingThread = true;
     final previousThreadAttached = _activeThreadAttached;
     final previousView = previousThreadId == null
@@ -4698,7 +5490,7 @@ class CodexController extends ChangeNotifier {
     final localFileChanges = previousThreadId == thread.id
         ? List<CodexFileChange>.of(fileChanges)
         : List<CodexFileChange>.of(
-            _persistedFileChangesByThreadId[thread.id] ?? const [],
+            _persistedTurnFileChangesByThreadId[thread.id] ?? const [],
           );
     final localTurnDiff = previousThreadId == thread.id
         ? turnDiff
@@ -4732,6 +5524,10 @@ class CodexController extends ChangeNotifier {
           model: thread.model,
           config: null,
         );
+        _updateThreadCollaborationMode(
+          thread.id,
+          resumeResult['collaborationMode'],
+        );
         _activeThreadAttached = true;
         status = RuntimeStatus.ready;
       }
@@ -4750,8 +5546,8 @@ class CodexController extends ChangeNotifier {
           // snapshot before reattaching to App Server. Older servers may
           // return turns without file-change items; retain that durable local
           // summary instead of blanking the task panel during reattach.
-          if (localFileChanges.isNotEmpty && fileChanges.isEmpty) {
-            _replaceFileChanges(localFileChanges, localTurnDiff);
+          if (localFileChanges.isNotEmpty && turnFileChanges.isEmpty) {
+            _replaceTurnFileChanges(localFileChanges, localTurnDiff);
           }
           _restoreMissingCompletedCommands(localTimelineEntries);
           viewLoaded = true;
@@ -4833,6 +5629,10 @@ class CodexController extends ChangeNotifier {
       }
     }
     _resumingThread = false;
+    if (activeThreadId == thread.id &&
+        _threadGoalsById[thread.id]?.isActive == true) {
+      _scheduleGoalContinuation(thread.id, workspacePath);
+    }
     notifyListeners();
   }
 
@@ -5002,6 +5802,7 @@ class CodexController extends ChangeNotifier {
         _removeCachedThreadView(thread.id, workspace: workspace);
         _runningTurnSubmissions.remove(thread.id);
         _failedTurnRetries.remove(thread.id);
+        _clearAutomaticRetry(thread.id);
         if (_retryingFailedTurnThreadId == thread.id) {
           _retryingFailedTurnThreadId = null;
         }
@@ -5075,12 +5876,16 @@ class CodexController extends ChangeNotifier {
       _removeCachedThreadView(thread.id, workspace: workspacePath);
       _userMessageEntriesByThreadId.remove(thread.id);
       _persistedFileChangesByThreadId.remove(thread.id);
+      _persistedTurnFileChangesByThreadId.remove(thread.id);
+      _persistedFileChangesBeforeTurnByThreadId.remove(thread.id);
       _persistedTurnDiffByThreadId.remove(thread.id);
+      _clearPlanImplementationForThread(thread.id);
       _threadTokenUsageById.remove(thread.id);
       _runningTurnIdsByThread.remove(thread.id);
       _pendingNetworkRetryEntriesByThread.remove(thread.id);
       _runningTurnSubmissions.remove(thread.id);
       _failedTurnRetries.remove(thread.id);
+      _clearAutomaticRetry(thread.id);
       if (_retryingFailedTurnThreadId == thread.id) {
         _retryingFailedTurnThreadId = null;
       }
@@ -5353,8 +6158,11 @@ class CodexController extends ChangeNotifier {
   Future<void> respondToApproval({
     required bool accepted,
     bool allowSimilar = false,
+    Object? requestId,
   }) async {
-    final approval = pendingApproval;
+    final approval = requestId == null
+        ? pendingApproval
+        : _pendingApprovals[requestId];
     if (approval == null || approvalResponding) return;
 
     approvalResponding = true;
@@ -5435,6 +6243,327 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// Updates the single visible conversation surface used by the official
+  /// foreground/inactivity auto-resolution policy.
+  bool setUserInputSurfaceState({
+    required bool foregrounded,
+    required String? presentedThreadId,
+  }) {
+    if (_userInputSurfaceForegrounded == foregrounded &&
+        _presentedUserInputThreadId == presentedThreadId) {
+      return false;
+    }
+    _userInputSurfaceForegrounded = foregrounded;
+    _presentedUserInputThreadId = presentedThreadId;
+    var changed = false;
+    for (final entry in _autoResolvingUserInputByThread.entries.toList()) {
+      final requestId = entry.value;
+      if (_userInputAutoResolutionStates[requestId] == 'snoozed') continue;
+      if (_isUserInputThreadForegrounded(entry.key)) {
+        _waitForUserInputInactivity(entry.key, requestId);
+        changed = true;
+      } else if (_userInputAutoResolutionStates[requestId] ==
+          'waiting-for-inactivity') {
+        _startUserInputAutoResolutionCountdown(entry.key, requestId);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /// Restarts the inactivity window while the pending request's conversation
+  /// is both visible and foregrounded.
+  void recordUserInputConversationActivity() {
+    final threadId = _presentedUserInputThreadId;
+    if (threadId == null || !_isUserInputThreadForegrounded(threadId)) return;
+    final requestId = _autoResolvingUserInputByThread[threadId];
+    if (requestId == null ||
+        _userInputAutoResolutionStates[requestId] != 'waiting-for-inactivity') {
+      return;
+    }
+    _waitForUserInputInactivity(threadId, requestId);
+  }
+
+  /// Stops automatic resolution once the user starts interacting with the
+  /// question card, matching the official client's snoozed state.
+  void snoozeUserInput(Object requestId) {
+    final request = _pendingUserInputs[requestId];
+    if (request == null || request.isBlocking) return;
+    if (!_userInputAutoResolutionStates.containsKey(requestId)) return;
+    _userInputAutoResolutionTimers.remove(requestId)?.cancel();
+    _userInputAutoResolutionDeadlines.remove(requestId);
+    _userInputAutoResolutionStates[requestId] = 'snoozed';
+  }
+
+  bool _isUserInputThreadForegrounded(String threadId) =>
+      _userInputSurfaceForegrounded && _presentedUserInputThreadId == threadId;
+
+  void _trackUserInputAutoResolution(PendingUserInputRequest request) {
+    final previousRequestId = _autoResolvingUserInputByThread[request.threadId];
+    if (previousRequestId != null) {
+      _stopUserInputAutoResolution(previousRequestId);
+    }
+    if (request.isBlocking) return;
+    _autoResolvingUserInputByThread[request.threadId] = request.requestId;
+    if (_isUserInputThreadForegrounded(request.threadId)) {
+      _waitForUserInputInactivity(request.threadId, request.requestId);
+    } else {
+      _startUserInputAutoResolutionCountdown(
+        request.threadId,
+        request.requestId,
+      );
+    }
+  }
+
+  void _waitForUserInputInactivity(String threadId, Object requestId) {
+    if (_autoResolvingUserInputByThread[threadId] != requestId) return;
+    _userInputAutoResolutionTimers.remove(requestId)?.cancel();
+    _userInputAutoResolutionDeadlines.remove(requestId);
+    _userInputAutoResolutionStates[requestId] = 'waiting-for-inactivity';
+    _userInputAutoResolutionTimers[requestId] = Timer(
+      _userInputForegroundInactivityDuration,
+      () {
+        if (_disposed ||
+            _autoResolvingUserInputByThread[threadId] != requestId ||
+            _userInputAutoResolutionStates[requestId] !=
+                'waiting-for-inactivity') {
+          return;
+        }
+        _startUserInputAutoResolutionCountdown(threadId, requestId);
+        notifyListeners();
+      },
+    );
+  }
+
+  void _startUserInputAutoResolutionCountdown(
+    String threadId,
+    Object requestId,
+  ) {
+    if (_autoResolvingUserInputByThread[threadId] != requestId) return;
+    _userInputAutoResolutionTimers.remove(requestId)?.cancel();
+    _userInputAutoResolutionStates[requestId] = 'scheduled';
+    _userInputAutoResolutionDeadlines[requestId] = _clock.now().add(
+      _userInputAutoResolutionDuration,
+    );
+    _userInputAutoResolutionTimers[requestId] = Timer(
+      _userInputAutoResolutionDuration,
+      () => _autoResolveUserInput(threadId, requestId),
+    );
+  }
+
+  void _autoResolveUserInput(String threadId, Object requestId) {
+    if (_disposed || _autoResolvingUserInputByThread[threadId] != requestId) {
+      return;
+    }
+    final request = _pendingUserInputs[requestId];
+    _stopUserInputAutoResolution(requestId);
+    if (request == null) return;
+    try {
+      _server.respond(requestId, {'answers': const <String, dynamic>{}});
+      _pendingUserInputs.remove(requestId);
+      _removePendingRequest(requestId);
+    } catch (error) {
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '回答提交失败', lastError!);
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  void _stopUserInputAutoResolution(Object requestId) {
+    _userInputAutoResolutionTimers.remove(requestId)?.cancel();
+    _userInputAutoResolutionStates.remove(requestId);
+    _userInputAutoResolutionDeadlines.remove(requestId);
+    _autoResolvingUserInputByThread.removeWhere(
+      (_, trackedRequestId) => trackedRequestId == requestId,
+    );
+  }
+
+  void _clearUserInputAutoResolution() {
+    for (final timer in _userInputAutoResolutionTimers.values) {
+      timer.cancel();
+    }
+    _userInputAutoResolutionTimers.clear();
+    _userInputAutoResolutionStates.clear();
+    _userInputAutoResolutionDeadlines.clear();
+    _autoResolvingUserInputByThread.clear();
+  }
+
+  void _clearPlanImplementationState() {
+    for (final threadId in _pendingPlanImplementations.keys.toList()) {
+      _removeCachedThreadView(threadId);
+    }
+    _planImplementationCandidates.clear();
+    _pendingPlanImplementations.clear();
+    _successfulPlanTurnKeys.clear();
+    _rejectedPlanTurnKeys.clear();
+    _handledPlanImplementationKeys.clear();
+    planImplementationResponding = false;
+  }
+
+  void _clearPlanImplementationForThread(String threadId) {
+    _pendingPlanImplementations.remove(threadId);
+    _planImplementationCandidates.removeWhere(
+      (_, request) => request.threadId == threadId,
+    );
+    _successfulPlanTurnKeys.removeWhere((key) => key.startsWith('$threadId:'));
+    _rejectedPlanTurnKeys.removeWhere((key) => key.startsWith('$threadId:'));
+    _handledPlanImplementationKeys.removeWhere(
+      (key) => key.startsWith('$threadId:'),
+    );
+  }
+
+  /// Answers the current structured question request from Codex.
+  Future<void> respondToUserInput(JsonMap answers, {Object? requestId}) async {
+    final request = requestId == null
+        ? pendingUserInput
+        : _pendingUserInputs[requestId];
+    if (request == null || userInputResponding) return;
+
+    userInputResponding = true;
+    notifyListeners();
+    try {
+      _server.respond(request.requestId, {'answers': answers});
+      _stopUserInputAutoResolution(request.requestId);
+      _pendingUserInputs.remove(request.requestId);
+      _removePendingRequest(request.requestId);
+    } catch (error) {
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '回答提交失败', lastError!);
+    } finally {
+      userInputResponding = false;
+      notifyListeners();
+    }
+  }
+
+  /// Dismisses a question like the official client: optional requests receive
+  /// an empty answer, while blocking requests interrupt their owning turn.
+  Future<void> dismissUserInput({Object? requestId}) async {
+    final request = requestId == null
+        ? pendingUserInput
+        : _pendingUserInputs[requestId];
+    if (request == null || userInputResponding) return;
+    if (!request.isBlocking) {
+      await respondToUserInput(
+        const <String, dynamic>{},
+        requestId: request.requestId,
+      );
+      return;
+    }
+
+    userInputResponding = true;
+    notifyListeners();
+    try {
+      await _server.interruptTurn(
+        threadId: request.threadId,
+        turnId: request.turnId,
+      );
+    } catch (error) {
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '无法关闭问题', lastError!);
+    } finally {
+      userInputResponding = false;
+      notifyListeners();
+    }
+  }
+
+  /// Starts implementation of the exact plan produced by the completed turn.
+  Future<void> implementCompletedPlan({
+    required String threadId,
+    required String turnId,
+  }) async {
+    final request = _pendingPlanImplementations[threadId];
+    if (request == null ||
+        request.turnId != turnId ||
+        activeThreadId != threadId ||
+        planImplementationResponding) {
+      return;
+    }
+    planImplementationResponding = true;
+    notifyListeners();
+    try {
+      final sent = await sendPrompt(
+        'PLEASE IMPLEMENT THIS PLAN:\n${request.planContent}',
+        planMode: false,
+      );
+      if (sent && _pendingPlanImplementations[threadId]?.turnId == turnId) {
+        _pendingPlanImplementations.remove(threadId);
+      }
+    } finally {
+      planImplementationResponding = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  /// Sends free-form feedback while retaining Plan mode for the next turn.
+  Future<void> submitCompletedPlanFeedback(
+    String feedback, {
+    required String threadId,
+    required String turnId,
+  }) async {
+    final text = feedback.trim();
+    final request = _pendingPlanImplementations[threadId];
+    if (text.isEmpty ||
+        request == null ||
+        request.turnId != turnId ||
+        activeThreadId != threadId ||
+        planImplementationResponding) {
+      return;
+    }
+    planImplementationResponding = true;
+    notifyListeners();
+    try {
+      final sent = await sendPrompt(text, planMode: true);
+      if (sent && _pendingPlanImplementations[threadId]?.turnId == turnId) {
+        _pendingPlanImplementations.remove(threadId);
+      }
+    } finally {
+      planImplementationResponding = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  /// Dismisses a completed plan and changes the thread's next turn to default.
+  Future<void> dismissCompletedPlan({
+    required String threadId,
+    required String turnId,
+  }) async {
+    final request = _pendingPlanImplementations[threadId];
+    if (request == null ||
+        request.turnId != turnId ||
+        activeThreadId != threadId ||
+        planImplementationResponding) {
+      return;
+    }
+    planImplementationResponding = true;
+    notifyListeners();
+    try {
+      final defaultMode = _collaborationMode(planMode: false);
+      await _server.updateThreadSettings(
+        threadId: threadId,
+        collaborationMode: defaultMode,
+      );
+      _planModeByThreadId[threadId] = false;
+      if (defaultMode != null) {
+        _threadCollaborationModesById[threadId] = defaultMode;
+      }
+      _pendingPlanImplementations.remove(threadId);
+    } catch (error) {
+      final message = _messageOf(error);
+      if (activeThreadId == threadId) {
+        lastError = message;
+        _add(TimelineKind.error, 'Could not dismiss plan', message);
+      } else {
+        _recordRuntimeLog(
+          'Could not dismiss plan for $threadId: $message',
+          level: RuntimeLogLevel.error,
+        );
+      }
+    } finally {
+      planImplementationResponding = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
   /// 更新并持久化审批策略；自动模式会立即处理之后收到的审批请求。
   /// Updates and persists the approval policy; auto mode immediately handles later approval requests.
   Future<void> setApprovalMode(ApprovalMode mode) async {
@@ -5506,7 +6635,7 @@ class CodexController extends ChangeNotifier {
           );
         } else {
           _pendingApprovals[browserApproval.requestId] = browserApproval;
-          _queuePendingRequest(browserApproval.requestId, elicitation: false);
+          _queuePendingRequest(browserApproval.requestId, kind: 'approval');
           approvalResponding = false;
           if (browserApproval.threadId == null ||
               browserApproval.threadId == activeThreadId) {
@@ -5516,6 +6645,20 @@ class CodexController extends ChangeNotifier {
               browserApproval.detail,
             );
           }
+        }
+        notifyListeners();
+        return;
+      }
+      if (event.method == 'item/tool/requestUserInput') {
+        final request = PendingUserInputRequest.fromEvent(event);
+        if (request == null) {
+          _server.respondError(event.requestId!, '此用户输入请求格式不受支持。');
+          _add(TimelineKind.error, '无法显示 Codex 问题', '请求格式不受支持。');
+        } else {
+          _pendingUserInputs[request.requestId] = request;
+          _queuePendingRequest(request.requestId, kind: 'userInput');
+          _trackUserInputAutoResolution(request);
+          userInputResponding = false;
         }
         notifyListeners();
         return;
@@ -5533,7 +6676,7 @@ class CodexController extends ChangeNotifier {
           _add(TimelineKind.error, '无法显示 MCP 输入请求', '请求格式不受支持。');
         } else {
           _pendingElicitations[elicitation.requestId] = elicitation;
-          _queuePendingRequest(elicitation.requestId, elicitation: true);
+          _queuePendingRequest(elicitation.requestId, kind: 'elicitation');
           elicitationResponding = false;
           if (elicitation.threadId == null ||
               elicitation.threadId == activeThreadId) {
@@ -5564,7 +6707,7 @@ class CodexController extends ChangeNotifier {
           }
         } else {
           _pendingApprovals[approval.requestId] = approval;
-          _queuePendingRequest(approval.requestId, elicitation: false);
+          _queuePendingRequest(approval.requestId, kind: 'approval');
           approvalResponding = false;
           if (approval.threadId == null ||
               approval.threadId == activeThreadId) {
@@ -5613,6 +6756,9 @@ class CodexController extends ChangeNotifier {
         final threadId = _threadIdFromEvent(event.params);
         final turnId = turn is Map ? _label(turn['id']) : '';
         if (threadId != null) _forgetUnidentifiedTurnCompletion(threadId);
+        if (threadId != null) {
+          _goalContinuationAwaitingAcceptanceThreadIds.remove(threadId);
+        }
         if (threadId != null &&
             turnId.isNotEmpty &&
             isThreadRunning(threadId)) {
@@ -5626,6 +6772,7 @@ class CodexController extends ChangeNotifier {
               DateTime.now();
         }
       case 'item/started':
+        _recordGoalToolCall(event.params);
         _recordStartedLiveActivity(event.params);
       case 'item/reasoning/summaryPartAdded':
         if (_isEventForActiveTurn(event.params)) {
@@ -5650,6 +6797,8 @@ class CodexController extends ChangeNotifier {
       case 'mcpServerStatus/updated':
         _applyMcpServerStatusUpdated(event.params);
       case 'item/completed':
+        _recordGoalToolCall(event.params);
+        _capturePlanImplementationCandidate(event.params);
         if (_isEventForActiveTurn(event.params)) {
           _recordCompletedLiveActivity(event.params);
           _recordCompletedFileChange(event.params['item']);
@@ -5662,6 +6811,13 @@ class CodexController extends ChangeNotifier {
         final currentThreadId = activeThreadId;
         final eventThreadId = _threadIdFromEvent(event.params);
         final eventTurnId = _turnIdFromEvent(event.params);
+        final completionThreadId = eventThreadId ?? currentThreadId;
+        if (completionThreadId != null &&
+            _goalContinuationAwaitingAcceptanceThreadIds.contains(
+              completionThreadId,
+            )) {
+          return;
+        }
         if ((_preparingTurnStart || _turnStartAwaitingAcceptance) &&
             (eventThreadId == null || eventThreadId == currentThreadId)) {
           // A new turn has not been requested yet. A late completion for the
@@ -5764,8 +6920,14 @@ class CodexController extends ChangeNotifier {
           _threadGoalRevisions.remove(deletedThreadId);
           _goalOperationThreadIds.remove(deletedThreadId);
           _goalOperationErrorsByThread.remove(deletedThreadId);
+          _clearGoalContinuationState(deletedThreadId);
+          _threadCollaborationModesById.remove(deletedThreadId);
           _persistedFileChangesByThreadId.remove(deletedThreadId);
+          _persistedTurnFileChangesByThreadId.remove(deletedThreadId);
+          _persistedFileChangesBeforeTurnByThreadId.remove(deletedThreadId);
           _persistedTurnDiffByThreadId.remove(deletedThreadId);
+          _planModeByThreadId.remove(deletedThreadId);
+          _clearPlanImplementationForThread(deletedThreadId);
         }
         unawaited(refreshThreads(allowLocalSessionFallback: false));
         unawaited(refreshArchivedThreads());
@@ -5793,15 +6955,27 @@ class CodexController extends ChangeNotifier {
         status = RuntimeStatus.failed;
         _runningThreadIds.clear();
         _threadWorkspaceById.clear();
+        _goalContinuationPendingThreadIds.clear();
+        _goalContinuationAwaitingAcceptanceThreadIds.clear();
+        _automaticGoalTurnThreadIds.clear();
+        _goalTurnsWithToolCalls.clear();
+        _goalContinuationSuppressedThreadIds.clear();
+        _goalPauseRequestedThreadIds.clear();
+        _goalContinuationErrorsByThread.clear();
+        _threadCollaborationModesById.clear();
         // The next runtime process must attach the retained thread again.
         _activeThreadAttached = false;
         lastError = 'Codex runtime 已退出（code ${event.params['code']}）。';
         _updateThreadStatus(activeThreadId, 'systemError');
         _pendingApprovals.clear();
         _pendingElicitations.clear();
+        _clearUserInputAutoResolution();
+        _pendingUserInputs.clear();
+        _clearPlanImplementationState();
         _pendingRequestOrder.clear();
         approvalResponding = false;
         elicitationResponding = false;
+        userInputResponding = false;
         _clearStreamingState();
         _recordRuntimeLog(lastError!, level: RuntimeLogLevel.error);
         _add(TimelineKind.error, '运行时已断开', lastError!);
@@ -5809,9 +6983,21 @@ class CodexController extends ChangeNotifier {
       case 'serverRequest/resolved':
         _pendingApprovals.remove(event.params['requestId']);
         _pendingElicitations.remove(event.params['requestId']);
+        _stopUserInputAutoResolution(event.params['requestId']);
+        _pendingUserInputs.remove(event.params['requestId']);
         _removePendingRequest(event.params['requestId']);
         approvalResponding = false;
         elicitationResponding = false;
+        userInputResponding = false;
+      case 'thread/settings/updated':
+        final threadId = event.params['threadId']?.toString().trim();
+        final settings = event.params['threadSettings'];
+        if (threadId != null && threadId.isNotEmpty && settings is Map) {
+          _updateThreadCollaborationMode(
+            threadId,
+            settings['collaborationMode'],
+          );
+        }
       case 'skills/changed':
         unawaited(refreshSkills(forceReload: true));
       // Unrecognized notifications are protocol implementation details. In
@@ -5946,6 +7132,33 @@ class CodexController extends ChangeNotifier {
       method == 'turn/diff/updated' ||
       method == 'thread/tokenUsage/updated' ||
       method == 'turn/completed';
+
+  void _recordGoalToolCall(JsonMap params) {
+    final threadId = _threadIdFromEvent(params);
+    final rawItem = params['item'];
+    if (threadId == null ||
+        !_automaticGoalTurnThreadIds.contains(threadId) ||
+        rawItem is! Map) {
+      return;
+    }
+    final type = _label(rawItem['type']);
+    if (switch (type) {
+      'commandExecution' ||
+      'fileChange' ||
+      'mcpToolCall' ||
+      'dynamicToolCall' ||
+      'collabToolCall' ||
+      'subAgentActivity' ||
+      'webSearch' ||
+      'imageView' ||
+      'imageGeneration' ||
+      'sleep' ||
+      'skill' => true,
+      _ => false,
+    }) {
+      _goalTurnsWithToolCalls.add(threadId);
+    }
+  }
 
   String? _turnIdFromEvent(JsonMap params) {
     final direct = _label(params['turnId']);
@@ -6142,6 +7355,18 @@ class CodexController extends ChangeNotifier {
       previousStatus: previous?.status,
       status: _threadGoalsById[threadId]!.status,
     );
+    if (_threadGoalsById[threadId]!.isActive) {
+      if (previous?.isActive != true) {
+        _goalContinuationSuppressedThreadIds.remove(threadId);
+        _goalContinuationErrorsByThread.remove(threadId);
+      }
+      _scheduleGoalContinuation(
+        threadId,
+        _threadWorkspaceById[threadId] ?? workspacePath,
+      );
+    } else {
+      _clearGoalContinuationState(threadId);
+    }
   }
 
   void _applyThreadGoalCleared(JsonMap params) {
@@ -6149,6 +7374,7 @@ class CodexController extends ChangeNotifier {
     if (threadId == null) return;
     _nextThreadGoalRevision(threadId);
     _threadGoalsById.remove(threadId);
+    _clearGoalContinuationState(threadId);
     _goalOperationErrorsByThread.remove(threadId);
     _appendGoalLifecycleFeedback(
       threadId,
@@ -6202,16 +7428,92 @@ class CodexController extends ChangeNotifier {
     }
     _lastGoalTimelineStatusByThread[threadId] = status;
     final detail = switch (status) {
-      'active' => previousStatus == null ? '目标已启动，正在继续' : '目标已恢复，正在继续',
+      'active' => previousStatus == null ? '目标已启动' : '目标已恢复',
       'blocked' => '目标需要你的输入',
       'paused' => '目标已暂停',
-      'complete' || 'completed' => '目标已完成',
+      'complete' || 'completed' => _goalCompletionLabel(threadId),
       'usageLimited' => '目标因用量限制暂停',
       'budgetLimited' => '目标因预算耗尽暂停',
       'cleared' => '目标已清除',
       _ => null,
     };
-    if (detail != null) _add(TimelineKind.system, '目标状态', detail);
+    if (detail != null) {
+      _add(
+        TimelineKind.system,
+        '目标状态',
+        detail,
+        activityKind: status == 'complete' || status == 'completed'
+            ? 'goalCompleted'
+            : null,
+      );
+    }
+  }
+
+  String _goalCompletionLabel(String threadId) {
+    final seconds = _threadGoalsById[threadId]?.timeUsedSeconds ?? 0;
+    final safeSeconds = seconds < 0 ? 0 : seconds;
+    final minutes = safeSeconds ~/ 60;
+    final remainingSeconds = safeSeconds % 60;
+    final duration = minutes > 0
+        ? '${minutes}m ${remainingSeconds}s'
+        : '${remainingSeconds}s';
+    return '已在 $duration 内达成目标';
+  }
+
+  String _planImplementationKey(String threadId, String turnId) =>
+      '$threadId:$turnId';
+
+  /// Retains a completed plan item even when its thread is running in the
+  /// background, then publishes it only after that exact turn succeeds.
+  void _capturePlanImplementationCandidate(JsonMap params) {
+    final rawItem = params['item'];
+    if (rawItem is! Map || rawItem['type']?.toString() != 'plan') return;
+    final threadId = _threadIdFromEvent(params);
+    final turnId = _turnIdFromEvent(params);
+    final planContent = rawItem['text']?.toString().trim() ?? '';
+    if (threadId == null || turnId == null || planContent.isEmpty) return;
+    final request = PendingPlanImplementationRequest(
+      threadId: threadId,
+      turnId: turnId,
+      planContent: planContent,
+    );
+    final key = request.requestKey;
+    if (_handledPlanImplementationKeys.contains(key) ||
+        _rejectedPlanTurnKeys.contains(key)) {
+      return;
+    }
+    _planImplementationCandidates[key] = request;
+    if (_successfulPlanTurnKeys.contains(key)) {
+      _publishPlanImplementation(request);
+    }
+  }
+
+  void _finishPlanImplementationTurn(
+    String? threadId,
+    String? turnId,
+    TurnCompletionOutcome outcome,
+  ) {
+    if (threadId == null || turnId == null) return;
+    final key = _planImplementationKey(threadId, turnId);
+    if (outcome != TurnCompletionOutcome.succeeded ||
+        _planModeByThreadId[threadId] != true) {
+      _planImplementationCandidates.remove(key);
+      _successfulPlanTurnKeys.remove(key);
+      _rejectedPlanTurnKeys.add(key);
+      return;
+    }
+    _rejectedPlanTurnKeys.remove(key);
+    _successfulPlanTurnKeys.add(key);
+    final request = _planImplementationCandidates[key];
+    if (request != null) _publishPlanImplementation(request);
+  }
+
+  void _publishPlanImplementation(PendingPlanImplementationRequest request) {
+    final key = request.requestKey;
+    if (!_handledPlanImplementationKeys.add(key)) return;
+    _planImplementationCandidates.remove(key);
+    _successfulPlanTurnKeys.remove(key);
+    _pendingPlanImplementations[request.threadId] = request;
   }
 
   /// 处理任务结束事件，并采集其中的文件变更与统一 Diff。
@@ -6228,14 +7530,28 @@ class CodexController extends ChangeNotifier {
     // can still render “任务完成” in that window, so notification and Dock
     // feedback must not be skipped solely because the local focus is empty.
     final completedThreadId = activeThreadId ?? _threadIdFromEvent(params);
+    final wasAutomaticGoalContinuation =
+        completedThreadId != null &&
+        _automaticGoalTurnThreadIds.remove(completedThreadId);
+    final goalTurnUsedTool =
+        completedThreadId != null &&
+        _goalTurnsWithToolCalls.remove(completedThreadId);
     final completionKey = _turnCompletionKey(params, completedThreadId);
     if (completionKey != null &&
         !_handledTurnCompletionKeys.add(completionKey)) {
       return;
     }
+    _finishPlanImplementationTurn(
+      completedThreadId,
+      _turnIdFromEvent(params),
+      completionOutcome,
+    );
     final failedTurnError = _findText(turnMap['error']).isNotEmpty
         ? _findText(turnMap['error'])
         : 'Codex 未能完成当前任务。';
+    final goalRemainsActive =
+        completedThreadId != null &&
+        _threadGoalsById[completedThreadId]?.isActive == true;
     _recordTurnCompletionRetry(
       completedThreadId,
       completionOutcome,
@@ -6269,14 +7585,18 @@ class CodexController extends ChangeNotifier {
       case TurnCompletionOutcome.succeeded:
         status = RuntimeStatus.ready;
         _updateThreadStatus(activeThreadId, 'idle');
-        // A newly finished task remains identifiable until the user sees the
-        // end of its timeline or explicitly opens its task row.
-        _setCompletionReminder(
-          completedThreadId,
-          visible: true,
-          completionId: _turnIdFromEvent(params),
-        );
-        _add(TimelineKind.system, '任务完成', '你可以继续在同一线程追问。');
+        if (goalRemainsActive) {
+          _setCompletionReminder(completedThreadId, visible: false);
+        } else {
+          // A newly finished task remains identifiable until the user sees the
+          // end of its timeline or explicitly opens its task row.
+          _setCompletionReminder(
+            completedThreadId,
+            visible: true,
+            completionId: _turnIdFromEvent(params),
+          );
+          _add(TimelineKind.system, '任务完成', '你可以继续在同一线程追问。');
+        }
       case TurnCompletionOutcome.unknown:
         status = RuntimeStatus.ready;
         _updateThreadStatus(activeThreadId, 'idle');
@@ -6289,6 +7609,15 @@ class CodexController extends ChangeNotifier {
     _clearStreamingState(clearPendingTurnSteer: false);
     if (pendingDirection != null) {
       unawaited(_sendPendingTurnSteerAfterCompletion(pendingDirection));
+    } else if (completedThreadId != null) {
+      _finishGoalTurn(
+        threadId: completedThreadId,
+        workspace: workspacePath,
+        outcome: completionOutcome,
+        wasAutomaticContinuation: wasAutomaticGoalContinuation,
+        usedTool: goalTurnUsedTool,
+        failureMessage: failedTurnError,
+      );
     }
   }
 
@@ -6299,8 +7628,17 @@ class CodexController extends ChangeNotifier {
     final threadId = _threadIdFromEvent(params);
     if (threadId == null || !_runningThreadIds.remove(threadId)) return;
     final ownerWorkspace = _threadWorkspaceById.remove(threadId);
+    final wasAutomaticGoalContinuation = _automaticGoalTurnThreadIds.remove(
+      threadId,
+    );
+    final goalTurnUsedTool = _goalTurnsWithToolCalls.remove(threadId);
     final completionStatus = _completionStatusFromParams(params);
     final completionOutcome = _turnCompletionOutcome(completionStatus);
+    _finishPlanImplementationTurn(
+      threadId,
+      _turnIdFromEvent(params),
+      completionOutcome,
+    );
     final completionId = _turnIdFromEvent(params);
     final turn = params['turn'];
     final turnMap = turn is Map
@@ -6322,7 +7660,9 @@ class CodexController extends ChangeNotifier {
     final completedStatus = completionOutcome == TurnCompletionOutcome.failed
         ? 'systemError'
         : 'idle';
-    final showReminder = completionOutcome == TurnCompletionOutcome.succeeded;
+    final showReminder =
+        completionOutcome == TurnCompletionOutcome.succeeded &&
+        _threadGoalsById[threadId]?.isActive != true;
     if (ownerWorkspace != null && ownerWorkspace != workspacePath) {
       if (showReminder) {
         _showCompletionFeedback(threadId, completionId: completionId);
@@ -6345,6 +7685,14 @@ class CodexController extends ChangeNotifier {
       );
     }
     _clearPendingApprovalsForThread(threadId);
+    _finishGoalTurn(
+      threadId: threadId,
+      workspace: ownerWorkspace ?? workspacePath,
+      outcome: completionOutcome,
+      wasAutomaticContinuation: wasAutomaticGoalContinuation,
+      usedTool: goalTurnUsedTool,
+      failureMessage: failedTurnError,
+    );
   }
 
   /// Writes a background completion into the task's owning project instead of
@@ -6484,6 +7832,7 @@ class CodexController extends ChangeNotifier {
     FailedTurnKind kind = FailedTurnKind.retryable,
   }) {
     if (threadId == null) return;
+    unawaited(_markManagedWorktreeCompleted(threadId));
     final turnId = _runningTurnIdsByThread[threadId];
     if (turnId != null) {
       _markNetworkRetryActivitiesHistorical(threadId: threadId, turnId: turnId);
@@ -6496,9 +7845,135 @@ class CodexController extends ChangeNotifier {
         error: error,
         kind: kind,
       );
+      _scheduleAutomaticRetryIfNeeded(threadId, kind);
     } else {
       _failedTurnRetries.remove(threadId);
+      _clearAutomaticRetry(threadId);
     }
+  }
+
+  Future<void> _markManagedWorktreeCompleted(String threadId) async {
+    try {
+      final records = await _runtimeConfigurationStore.readWorktreeRecords();
+      var changed = false;
+      final next = records
+          .map((record) {
+            if (record.threadId != threadId) return record;
+            changed = true;
+            return record.copyWith(
+              state: LocalWorktreeState.completed,
+              lastUsedAt: DateTime.now(),
+            );
+          })
+          .toList(growable: false);
+      if (changed) await _runtimeConfigurationStore.saveWorktreeRecords(next);
+      if (changed) {
+        final settings = await _runtimeConfigurationStore
+            .readWorktreeSettings();
+        if (settings.autoCleanup) {
+          await _localWorktreeService.cleanup(
+            rootPath: settings.rootPath,
+            retentionLimit: settings.retentionLimit,
+            records: next,
+          );
+        }
+      }
+    } on Object {
+      // Completion state is advisory; retain the chat result if persistence fails.
+    }
+  }
+
+  static const List<Duration> _automaticRetryBackoff = [
+    Duration(seconds: 30),
+    Duration(minutes: 1),
+    Duration(minutes: 2),
+    Duration(minutes: 5),
+  ];
+
+  Duration _automaticRetryDelay(String threadId) {
+    final attempt = _automaticRetryAttempts[threadId] ?? 0;
+    return _automaticRetryBackoff[attempt.clamp(
+      0,
+      _automaticRetryBackoff.length - 1,
+    )];
+  }
+
+  void _scheduleAutomaticRetryIfNeeded(String threadId, FailedTurnKind kind) {
+    if (kind != FailedTurnKind.capacityRateLimit ||
+        _automaticRetryCancelled.contains(threadId) ||
+        _disposed) {
+      return;
+    }
+    _automaticRetryTimers.remove(threadId)?.cancel();
+    final delay = _automaticRetryDelay(threadId);
+    _automaticRetryDeadlines[threadId] = _clock.now().add(delay);
+    _automaticRetryTimers[threadId] = Timer.periodic(
+      const Duration(seconds: 1),
+      (timer) {
+        if (_disposed || _automaticRetryCancelled.contains(threadId)) {
+          timer.cancel();
+          return;
+        }
+        if (_clock.now().isBefore(_automaticRetryDeadlines[threadId]!)) {
+          if (activeThreadId == threadId) notifyListeners();
+          return;
+        }
+        if (!_server.isRunning) {
+          if (status == RuntimeStatus.failed) {
+            _scheduleRuntimeReconnect();
+          } else if (!_startingRuntime) {
+            unawaited(
+              startRuntime(
+                waitForWorkspaceData: false,
+                restoreLastThread: false,
+              ),
+            );
+          }
+          _automaticRetryDeadlines[threadId] = _clock.now().add(
+            const Duration(seconds: 1),
+          );
+          if (activeThreadId == threadId) notifyListeners();
+          return;
+        }
+        timer.cancel();
+        _automaticRetryDeadlines.remove(threadId);
+        _automaticRetryTimers.remove(threadId);
+        _automaticRetryAttempts[threadId] =
+            (_automaticRetryAttempts[threadId] ?? 0) + 1;
+        notifyListeners();
+        unawaited(() async {
+          final retried = await retryFailedTurn(threadIdOverride: threadId);
+          if (!retried &&
+              _failedTurnRetries[threadId]?.kind ==
+                  FailedTurnKind.capacityRateLimit &&
+              !_automaticRetryCancelled.contains(threadId) &&
+              !_disposed) {
+            _scheduleAutomaticRetryIfNeeded(
+              threadId,
+              FailedTurnKind.capacityRateLimit,
+            );
+          }
+        }());
+      },
+    );
+    notifyListeners();
+  }
+
+  void _clearAutomaticRetry(String threadId) {
+    _automaticRetryTimers.remove(threadId)?.cancel();
+    _automaticRetryDeadlines.remove(threadId);
+    _automaticRetryAttempts.remove(threadId);
+    _automaticRetryCancelled.remove(threadId);
+  }
+
+  void _clearAllAutomaticRetries() {
+    for (final timer in _automaticRetryTimers.values) {
+      timer.cancel();
+    }
+    _automaticRetryTimers.clear();
+    _automaticRetryDeadlines.clear();
+    _automaticRetryAttempts.clear();
+    _automaticRetryCancelled.clear();
   }
 
   /// Reconciles legacy unscoped completion events after an authoritative
@@ -6743,9 +8218,18 @@ class CodexController extends ChangeNotifier {
     _pendingElicitations.removeWhere(
       (_, elicitation) => elicitation.threadId == threadId,
     );
+    for (final request in _pendingUserInputs.values.where(
+      (request) => request.threadId == threadId,
+    )) {
+      _stopUserInputAutoResolution(request.requestId);
+    }
+    _pendingUserInputs.removeWhere(
+      (_, request) => request.threadId == threadId,
+    );
     _prunePendingRequestOrder();
     approvalResponding = false;
     elicitationResponding = false;
+    userInputResponding = false;
   }
 
   /// Updates a cached task status immediately after a turn changes outcome.
@@ -6766,9 +8250,16 @@ class CodexController extends ChangeNotifier {
   void _appendThreadHistory(JsonMap result) {
     final turns = result['turns'];
     if (turns is! Iterable) return;
+    JsonMap? latestTurn;
+    // A resumed thread owns one cumulative task-file summary. Clear the
+    // previous view once before replaying all turns, then merge each turn's
+    // file changes by path. Clearing inside the loop would leave only the
+    // final turn visible after restart.
+    _clearFileChanges();
     for (final rawTurn in turns) {
       if (rawTurn is! Map) continue;
-      _clearFileChanges();
+      _turnFileChangesByPath.clear();
+      latestTurn = JsonMap.from(rawTurn);
       final rawItems = rawTurn['items'];
       if (rawItems is! Iterable) {
         _appendTurnElapsed(JsonMap.from(rawTurn));
@@ -6780,7 +8271,7 @@ class CodexController extends ChangeNotifier {
         switch (item['type']) {
           case 'userMessage':
             final text = _findText(item['content']);
-            if (text.isNotEmpty) {
+            if (text.isNotEmpty && text != _goalContinuationPrompt) {
               _add(
                 TimelineKind.user,
                 '你',
@@ -6828,6 +8319,39 @@ class CodexController extends ChangeNotifier {
       }
       _appendTurnElapsed(JsonMap.from(rawTurn));
     }
+    _restorePlanImplementationFromHistory(latestTurn);
+  }
+
+  void _restorePlanImplementationFromHistory(JsonMap? turn) {
+    final threadId = activeThreadId;
+    if (threadId == null) return;
+    _pendingPlanImplementations.remove(threadId);
+    if (turn == null || _planModeByThreadId[threadId] != true) {
+      return;
+    }
+    final turnId = _label(turn['id']);
+    final outcome = _turnCompletionOutcome(turn['status']?.toString());
+    final items = turn['items'];
+    if (turnId.isEmpty ||
+        outcome != TurnCompletionOutcome.succeeded ||
+        items is! Iterable) {
+      return;
+    }
+    String? planContent;
+    for (final rawItem in items) {
+      if (rawItem is Map && rawItem['type']?.toString() == 'plan') {
+        final text = rawItem['text']?.toString().trim() ?? '';
+        if (text.isNotEmpty) planContent = text;
+      }
+    }
+    if (planContent == null) return;
+    final request = PendingPlanImplementationRequest(
+      threadId: threadId,
+      turnId: turnId,
+      planContent: planContent,
+    );
+    _handledPlanImplementationKeys.add(request.requestKey);
+    _pendingPlanImplementations[threadId] = request;
   }
 
   /// Records a server-declared current item so the interface can explain the
@@ -8142,17 +9666,22 @@ class CodexController extends ChangeNotifier {
       if (rawChange is! Map) continue;
       final change = CodexFileChange.fromJson(rawChange);
       if (change.path.isEmpty) continue;
-      final previous = _fileChangesByPath[change.path];
+      final key = _fileChangeKey(change.path);
+      final previous = _fileChangesByPath[key];
       if (change.diff.isEmpty && previous != null) {
         // Metadata-only events must not discard that this entry's patch was
         // derived from turn/diff/updated. A later diff update still owns the
         // displayed patch and needs to replace it.
-        _fileChangesByPath[change.path] = previous.copyWith(kind: change.kind);
+        _fileChangesByPath[key] = previous.copyWith(kind: change.kind);
       } else {
-        _turnDiffDerivedFileChangePaths.remove(change.path);
-        _turnExplicitFileChangePaths.add(change.path);
-        _fileChangesByPath[change.path] = change;
+        _turnDiffDerivedFileChangePaths.remove(key);
+        _turnExplicitFileChangePaths.add(key);
+        _fileChangesByPath[key] = change;
       }
+      final turnPrevious = _turnFileChangesByPath[key];
+      _turnFileChangesByPath[key] = change.diff.isEmpty && turnPrevious != null
+          ? turnPrevious.copyWith(kind: change.kind)
+          : change;
       changed = true;
     }
     if (changed) {
@@ -8171,7 +9700,7 @@ class CodexController extends ChangeNotifier {
   Future<void> _hydrateMissingFileChangeDiffs() async {
     final workspace = workspacePath;
     if (workspace == null || _disposed) return;
-    final pending = fileChanges
+    final pending = turnFileChanges
         .where((change) => change.diff.trim().isEmpty)
         .toList(growable: false);
     if (pending.isEmpty) return;
@@ -8201,7 +9730,7 @@ class CodexController extends ChangeNotifier {
         if (target != null) requests.add((source: source, target: target));
       }
       if (requests.isEmpty) return;
-      var hydrated = false;
+      var didHydrate = false;
       for (final request in requests) {
         if (_disposed || workspacePath != workspace) return;
         GitDiffPreview preview;
@@ -8213,16 +9742,19 @@ class CodexController extends ChangeNotifier {
         } catch (_) {
           continue;
         }
-        final current = _fileChangesByPath[request.source.path];
+        final key = _fileChangeKey(request.source.path);
+        final current = _turnFileChangesByPath[key];
         if (current != request.source || preview.content.trim().isEmpty) {
           continue;
         }
-        _fileChangesByPath[request.source.path] = request.source.copyWith(
-          diff: preview.content,
-        );
-        hydrated = true;
+        final hydratedChange = request.source.copyWith(diff: preview.content);
+        _turnFileChangesByPath[key] = hydratedChange;
+        if (_fileChangesByPath[key] != null) {
+          _fileChangesByPath[key] = hydratedChange;
+        }
+        didHydrate = true;
       }
-      if (hydrated) {
+      if (didHydrate) {
         _scheduleConversationHistorySave();
         notifyListeners();
       }
@@ -8251,7 +9783,7 @@ class CodexController extends ChangeNotifier {
     final workspace = workspacePath!;
     final threadId = activeThreadId;
     final diff = turnDiff!;
-    final expectedPaths = fileChanges
+    final expectedPaths = turnFileChanges
         .map((change) => change.path)
         .toList(growable: false);
     fileChangeUndoRunning = true;
@@ -8267,16 +9799,43 @@ class CodexController extends ChangeNotifier {
       if (workspacePath == workspace &&
           activeThreadId == threadId &&
           turnDiff == diff) {
-        _clearFileChanges();
+        final previousThreadFiles =
+            _persistedFileChangesBeforeTurnByThreadId[threadId] ?? const [];
+        _fileChangesByPath
+          ..clear()
+          ..addEntries(
+            previousThreadFiles.map(
+              (change) => MapEntry(_fileChangeKey(change.path), change),
+            ),
+          );
+        _turnFileChangesByPath.clear();
+        turnDiff = null;
+        if (threadId == null || previousThreadFiles.isEmpty) {
+          if (threadId != null) {
+            _persistedFileChangesByThreadId.remove(threadId);
+          }
+        } else {
+          _persistedFileChangesByThreadId[threadId] = List<CodexFileChange>.of(
+            previousThreadFiles,
+          );
+        }
+        _persistedTurnFileChangesByThreadId.remove(threadId);
+        _persistedFileChangesBeforeTurnByThreadId.remove(threadId);
+        _persistedTurnDiffByThreadId.remove(threadId);
         _scheduleConversationHistorySave();
       } else if (workspacePath == workspace && threadId != null) {
         final cacheKey = (workspace: workspace, threadId: threadId);
         final cached = _threadViewCache.remove(cacheKey);
         var detachedSnapshotCleared = false;
         if (cached != null && cached.turnDiff == diff) {
+          final previousThreadFiles =
+              _persistedFileChangesBeforeTurnByThreadId[threadId] ??
+              const <CodexFileChange>[];
           _threadViewCache[cacheKey] = ThreadViewSnapshot(
             entries: cached.entries,
-            fileChanges: const [],
+            fileChanges: previousThreadFiles,
+            turnFileChanges: const [],
+            fileChangesBeforeTurn: null,
             turnDiff: null,
           );
           detachedSnapshotCleared = true;
@@ -8284,7 +9843,17 @@ class CodexController extends ChangeNotifier {
           _threadViewCache[cacheKey] = cached;
         }
         if (_persistedTurnDiffByThreadId[threadId] == diff) {
-          _persistedFileChangesByThreadId.remove(threadId);
+          final previousThreadFiles =
+              _persistedFileChangesBeforeTurnByThreadId[threadId] ??
+              const <CodexFileChange>[];
+          if (previousThreadFiles.isEmpty) {
+            _persistedFileChangesByThreadId.remove(threadId);
+          } else {
+            _persistedFileChangesByThreadId[threadId] =
+                List<CodexFileChange>.of(previousThreadFiles);
+          }
+          _persistedTurnFileChangesByThreadId.remove(threadId);
+          _persistedFileChangesBeforeTurnByThreadId.remove(threadId);
           _persistedTurnDiffByThreadId.remove(threadId);
           detachedSnapshotCleared = true;
         }
@@ -8322,12 +9891,33 @@ class CodexController extends ChangeNotifier {
     return source == '$root/$target' || target == '$root/$source';
   }
 
+  /// Returns a stable workspace-relative key for task-file aggregation.
+  /// App Server may alternate between absolute and relative paths, and may
+  /// use either slash style. The original path remains on the value for UI.
+  String _fileChangeKey(String path) {
+    var normalized = path
+        .replaceAll('\\', '/')
+        .replaceFirst(RegExp(r'^\./'), '');
+    final workspace = workspacePath;
+    if (workspace != null) {
+      final root = workspace
+          .replaceAll('\\', '/')
+          .replaceFirst(RegExp(r'/$'), '');
+      if (normalized == root) return '';
+      if (normalized.startsWith('$root/')) {
+        normalized = normalized.substring(root.length + 1);
+      }
+    }
+    return normalized;
+  }
+
   /// 规范化并保存当前任务的统一 Diff。
   /// Normalizes and stores the current turn's unified diff.
   void _updateTurnDiff(Object? rawDiff) {
     final diff = rawDiff?.toString() ?? '';
     turnDiff = diff.isEmpty ? null : diff;
     for (final path in _turnDiffDerivedFileChangePaths) {
+      _turnFileChangesByPath.remove(path);
       _fileChangesByPath.remove(path);
     }
     _turnDiffDerivedFileChangePaths.clear();
@@ -8340,16 +9930,19 @@ class CodexController extends ChangeNotifier {
     // per-file task snapshot from its Git headers so the environment card,
     // timeline summary, and review panel do not disagree about this turn.
     for (final change in codexFileChangesFromUnifiedDiff(diff)) {
-      final previous = _fileChangesByPath[change.path];
+      final key = _fileChangeKey(change.path);
+      final previous = _turnFileChangesByPath[key];
       final patchIsDerived =
           previous == null ||
           previous.diff.trim().isEmpty ||
-          !_turnExplicitFileChangePaths.contains(change.path);
-      _fileChangesByPath[change.path] = patchIsDerived
+          !_turnExplicitFileChangePaths.contains(key);
+      final next = patchIsDerived
           ? previous?.copyWith(diff: change.diff) ?? change
           : previous;
+      _turnFileChangesByPath[key] = next;
+      _fileChangesByPath[key] = next;
       if (patchIsDerived) {
-        _turnDiffDerivedFileChangePaths.add(change.path);
+        _turnDiffDerivedFileChangePaths.add(key);
       }
     }
     _scheduleConversationHistorySave();
@@ -8448,6 +10041,75 @@ class CodexController extends ChangeNotifier {
       _configuredModelId ??
       _catalogDefaultModelId;
 
+  JsonMap? _collaborationMode({required bool planMode}) {
+    final preset = planMode
+        ? _planCollaborationModePreset
+        : _defaultCollaborationModePreset;
+    final presetModel = _nonEmptyConfigString(preset?['model']);
+    final model = presetModel ?? _newThreadModelId;
+    if (model == null) return null;
+    final presetHasEffort = preset?.containsKey('reasoning_effort') == true;
+    return {
+      'mode': planMode ? 'plan' : 'default',
+      'settings': {
+        'model': model,
+        'reasoning_effort': presetHasEffort
+            ? preset!['reasoning_effort']
+            : reasoningEffort.configValue,
+        'developer_instructions': null,
+      },
+    };
+  }
+
+  void _updateThreadCollaborationMode(String threadId, Object? value) {
+    if (value is! Map) return;
+    _threadCollaborationModesById[threadId] = JsonMap.from(value);
+    final mode = value['mode']?.toString();
+    if (mode == 'plan' || mode == 'default') {
+      _planModeByThreadId[threadId] = mode == 'plan';
+    }
+  }
+
+  Future<void> _refreshCollaborationModes({
+    int? expectedEpoch,
+    String? expectedWorkspace,
+  }) async {
+    final request = ++_collaborationModesRefreshRequest;
+    bool isCurrentRequest() =>
+        !_disposed &&
+        request == _collaborationModesRefreshRequest &&
+        (expectedEpoch == null || _isCurrentRuntimeConnection(expectedEpoch)) &&
+        (expectedWorkspace == null || workspacePath == expectedWorkspace);
+    try {
+      final modes = await _server.listCollaborationModes();
+      if (!isCurrentRequest()) return;
+      JsonMap? plan;
+      JsonMap? standard;
+      for (final mode in modes) {
+        switch (mode['mode']?.toString()) {
+          case 'plan':
+            plan ??= JsonMap.from(mode);
+          case 'default':
+            standard ??= JsonMap.from(mode);
+        }
+      }
+      _planCollaborationModePreset = plan;
+      _defaultCollaborationModePreset = standard;
+    } catch (error) {
+      if (!isCurrentRequest()) return;
+      // Older App Server builds do not expose this experimental endpoint.
+      // Keep the protocol-compatible locally constructed mode as fallback.
+      _recordRuntimeLog(
+        '无法加载协作模式预设：${_messageOf(error)}',
+        level: RuntimeLogLevel.warning,
+      );
+    }
+  }
+
+  @visibleForTesting
+  Future<void> refreshCollaborationModesForTesting() =>
+      _refreshCollaborationModes();
+
   /// 判断指定或默认模型是否支持给定的推理强度。
   /// Determines whether the specified or default model supports a reasoning effort.
   bool _supportsReasoningEffort(String? modelId, ReasoningEffort effort) {
@@ -8457,13 +10119,19 @@ class CodexController extends ChangeNotifier {
 
   /// 从模型列表刷新可用推理强度，并降级失效的已保存选择。
   /// Refreshes available reasoning efforts from models and downgrades an invalid saved choice.
-  Future<void> _refreshReasoningEffortCapabilities({int? expectedEpoch}) async {
+  Future<void> _refreshReasoningEffortCapabilities({
+    int? expectedEpoch,
+    String? expectedWorkspace,
+  }) async {
+    final request = ++_modelCatalogRefreshRequest;
+    bool isCurrentRequest() =>
+        !_disposed &&
+        request == _modelCatalogRefreshRequest &&
+        (expectedEpoch == null || _isCurrentRuntimeConnection(expectedEpoch)) &&
+        (expectedWorkspace == null || workspacePath == expectedWorkspace);
     try {
       final models = await _server.listModels();
-      if (expectedEpoch != null &&
-          !_isCurrentRuntimeConnection(expectedEpoch)) {
-        return;
-      }
+      if (!isCurrentRequest()) return;
       final capabilities = <String, Set<ReasoningEffort>>{};
       final optionsById = <String, CodexModelOption>{};
       String? defaultModelId;
@@ -8526,10 +10194,7 @@ class CodexController extends ChangeNotifier {
         }
       }
     } catch (error) {
-      if (expectedEpoch != null &&
-          !_isCurrentRuntimeConnection(expectedEpoch)) {
-        return;
-      }
+      if (!isCurrentRequest()) return;
       _reasoningEffortsByModel = const {};
       modelOptions = const [];
       _catalogDefaultModelId = null;
@@ -8912,7 +10577,16 @@ class CodexController extends ChangeNotifier {
       _fileChangesByPath
         ..clear()
         ..addEntries(
-          snapshot.fileChanges.map((change) => MapEntry(change.path, change)),
+          (snapshot.threadFileChanges ?? snapshot.fileChanges).map(
+            (change) => MapEntry(_fileChangeKey(change.path), change),
+          ),
+        );
+      _turnFileChangesByPath
+        ..clear()
+        ..addEntries(
+          snapshot.fileChanges.map(
+            (change) => MapEntry(_fileChangeKey(change.path), change),
+          ),
         );
       turnDiff = snapshot.turnDiff;
       _restorePersistedThreadFileSnapshots(snapshot);
@@ -9177,7 +10851,16 @@ class CodexController extends ChangeNotifier {
     _fileChangesByPath
       ..clear()
       ..addEntries(
-        snapshot.fileChanges.map((change) => MapEntry(change.path, change)),
+        (snapshot.threadFileChanges ?? snapshot.fileChanges).map(
+          (change) => MapEntry(_fileChangeKey(change.path), change),
+        ),
+      );
+    _turnFileChangesByPath
+      ..clear()
+      ..addEntries(
+        snapshot.fileChanges.map(
+          (change) => MapEntry(_fileChangeKey(change.path), change),
+        ),
       );
     turnDiff = snapshot.turnDiff;
     _restorePersistedThreadFileSnapshots(snapshot);
@@ -9198,15 +10881,34 @@ class CodexController extends ChangeNotifier {
         for (final entry in snapshot.fileChangesByThreadId.entries)
           entry.key: List<CodexFileChange>.of(entry.value),
       });
+    _persistedTurnFileChangesByThreadId
+      ..clear()
+      ..addAll({
+        for (final entry in snapshot.turnFileChangesByThreadId.entries)
+          entry.key: List<CodexFileChange>.of(entry.value),
+      });
+    _persistedFileChangesBeforeTurnByThreadId
+      ..clear()
+      ..addAll({
+        for (final entry in snapshot.fileChangesBeforeTurnByThreadId.entries)
+          entry.key: List<CodexFileChange>.of(entry.value),
+      });
     _persistedTurnDiffByThreadId
       ..clear()
       ..addAll(snapshot.turnDiffByThreadId);
     final threadId = activeThreadId;
-    if (threadId != null && fileChanges.isNotEmpty) {
+    if (threadId != null) {
       _persistedFileChangesByThreadId[threadId] = List<CodexFileChange>.of(
         fileChanges,
       );
       _persistedTurnDiffByThreadId[threadId] = turnDiff;
+      _persistedTurnFileChangesByThreadId[threadId] = List<CodexFileChange>.of(
+        turnFileChanges,
+      );
+      if (!_persistedFileChangesBeforeTurnByThreadId.containsKey(threadId) &&
+          turnFileChanges.isEmpty) {
+        _persistedFileChangesBeforeTurnByThreadId.remove(threadId);
+      }
     }
   }
 
@@ -9221,17 +10923,31 @@ class CodexController extends ChangeNotifier {
     final turnDiffByThreadId = <String, String?>{
       ..._persistedTurnDiffByThreadId,
     };
-    if (activeThreadId != null && fileChanges.isNotEmpty) {
+    if (activeThreadId != null) {
       fileChangesByThreadId[activeThreadId!] = List<CodexFileChange>.of(
         fileChanges,
       );
       turnDiffByThreadId[activeThreadId!] = turnDiff;
     }
+    final turnFileChangesByThreadId = <String, List<CodexFileChange>>{
+      for (final entry in _persistedTurnFileChangesByThreadId.entries)
+        entry.key: List<CodexFileChange>.of(entry.value),
+    };
+    final fileChangesBeforeTurnByThreadId = <String, List<CodexFileChange>>{
+      for (final entry in _persistedFileChangesBeforeTurnByThreadId.entries)
+        entry.key: List<CodexFileChange>.of(entry.value),
+    };
+    if (activeThreadId != null) {
+      turnFileChangesByThreadId[activeThreadId!] = List<CodexFileChange>.of(
+        turnFileChanges,
+      );
+    }
     return ConversationHistorySnapshot(
       threads: List.of(threads),
       archivedThreads: List.of(archivedThreads),
       entries: List.of(entries),
-      fileChanges: List.of(fileChanges),
+      fileChanges: List.of(turnFileChanges),
+      threadFileChanges: List.of(fileChanges),
       pinnedThreadIds: Set.of(_pinnedThreadIds),
       acknowledgedCompletedThreadIds: Set.of(_acknowledgedCompletedThreadIds),
       turnDiff: turnDiff,
@@ -9243,6 +10959,8 @@ class CodexController extends ChangeNotifier {
           entry.key: List<TimelineEntry>.of(entry.value),
       },
       fileChangesByThreadId: fileChangesByThreadId,
+      turnFileChangesByThreadId: turnFileChangesByThreadId,
+      fileChangesBeforeTurnByThreadId: fileChangesBeforeTurnByThreadId,
       turnDiffByThreadId: turnDiffByThreadId,
     );
   }
@@ -9251,6 +10969,7 @@ class CodexController extends ChangeNotifier {
   /// Clears the current task's file-change collection and unified diff.
   void _clearFileChanges() {
     _fileChangesByPath.clear();
+    _turnFileChangesByPath.clear();
     _turnDiffDerivedFileChangePaths.clear();
     _turnExplicitFileChangePaths.clear();
     turnDiff = null;
@@ -9258,14 +10977,39 @@ class CodexController extends ChangeNotifier {
     final threadId = activeThreadId;
     if (threadId != null) {
       _persistedFileChangesByThreadId.remove(threadId);
+      _persistedTurnFileChangesByThreadId.remove(threadId);
+      _persistedFileChangesBeforeTurnByThreadId.remove(threadId);
       _persistedTurnDiffByThreadId.remove(threadId);
     }
   }
 
   /// Starts a new turn without discarding the thread-level task-file summary.
   void _beginFileChangeTurn() {
+    final threadId = activeThreadId;
+    if (threadId != null) {
+      _persistedFileChangesBeforeTurnByThreadId[threadId] =
+          List<CodexFileChange>.of(fileChanges);
+    }
+    _turnFileChangesByPath.clear();
     _turnDiffDerivedFileChangePaths.clear();
     _turnExplicitFileChangePaths.clear();
+    // Line statistics belong strictly to the new turn. The previous turn's
+    // summary remains in [fileChanges] but must not leak into the Composer
+    // while this turn is waiting for its first Diff notification.
+    turnDiff = null;
+    fileChangeUndoError = null;
+  }
+
+  void _replaceTurnFileChanges(
+    Iterable<CodexFileChange> changes,
+    String? diff,
+  ) {
+    _turnFileChangesByPath
+      ..clear()
+      ..addEntries(
+        changes.map((change) => MapEntry(_fileChangeKey(change.path), change)),
+      );
+    turnDiff = diff;
     fileChangeUndoError = null;
   }
 
@@ -9274,7 +11018,14 @@ class CodexController extends ChangeNotifier {
   void _replaceFileChanges(Iterable<CodexFileChange> changes, String? diff) {
     _fileChangesByPath
       ..clear()
-      ..addEntries(changes.map((change) => MapEntry(change.path, change)));
+      ..addEntries(
+        changes.map((change) => MapEntry(_fileChangeKey(change.path), change)),
+      );
+    _turnFileChangesByPath
+      ..clear()
+      ..addEntries(
+        changes.map((change) => MapEntry(_fileChangeKey(change.path), change)),
+      );
     turnDiff = diff;
     fileChangeUndoError = null;
   }
@@ -9293,13 +11044,20 @@ class CodexController extends ChangeNotifier {
     _threadViewCache
       ..remove(key)
       ..[key] = _currentThreadViewSnapshot();
-    if (fileChanges.isNotEmpty) {
+    if (fileChanges.isNotEmpty ||
+        turnFileChanges.isNotEmpty ||
+        turnDiff != null) {
       _persistedFileChangesByThreadId[id] = List<CodexFileChange>.of(
         fileChanges,
+      );
+      _persistedTurnFileChangesByThreadId[id] = List<CodexFileChange>.of(
+        turnFileChanges,
       );
       _persistedTurnDiffByThreadId[id] = turnDiff;
     } else {
       _persistedFileChangesByThreadId.remove(id);
+      _persistedTurnFileChangesByThreadId.remove(id);
+      _persistedFileChangesBeforeTurnByThreadId.remove(id);
       _persistedTurnDiffByThreadId.remove(id);
     }
     while (_threadViewCache.length > _maximumThreadViewCacheEntries) {
@@ -9334,6 +11092,13 @@ class CodexController extends ChangeNotifier {
   ThreadViewSnapshot _currentThreadViewSnapshot() => ThreadViewSnapshot(
     entries: List.unmodifiable(_entries),
     fileChanges: List.unmodifiable(fileChanges),
+    turnFileChanges: List.unmodifiable(turnFileChanges),
+    fileChangesBeforeTurn: activeThreadId == null
+        ? null
+        : List.unmodifiable(
+            _persistedFileChangesBeforeTurnByThreadId[activeThreadId!] ??
+                const [],
+          ),
     turnDiff: turnDiff,
   );
 
@@ -9355,8 +11120,21 @@ class CodexController extends ChangeNotifier {
     _fileChangesByPath
       ..clear()
       ..addEntries(
-        snapshot.fileChanges.map((change) => MapEntry(change.path, change)),
+        snapshot.fileChanges.map(
+          (change) => MapEntry(_fileChangeKey(change.path), change),
+        ),
       );
+    _turnFileChangesByPath
+      ..clear()
+      ..addEntries(
+        (snapshot.turnFileChanges ?? snapshot.fileChanges).map(
+          (change) => MapEntry(_fileChangeKey(change.path), change),
+        ),
+      );
+    if (activeThreadId != null && snapshot.fileChangesBeforeTurn != null) {
+      _persistedFileChangesBeforeTurnByThreadId[activeThreadId!] =
+          List<CodexFileChange>.of(snapshot.fileChangesBeforeTurn!);
+    }
     turnDiff = snapshot.turnDiff;
   }
 
@@ -9462,14 +11240,28 @@ class CodexController extends ChangeNotifier {
         .toLowerCase()
         .replaceAll(RegExp(r'[^a-z0-9]'), '');
     final normalizedMessage = message.trim().toLowerCase();
-    return identifier.contains('usagelimit') ||
-            identifier.contains('quotaexceeded') ||
-            identifier.contains('insufficientquota') ||
-            normalizedMessage.contains('usage limit') ||
-            normalizedMessage.contains('exceeded your current quota') ||
-            normalizedMessage == 'quota exceeded'
-        ? FailedTurnKind.usageLimit
-        : FailedTurnKind.retryable;
+    final isUsageLimit =
+        identifier.contains('usagelimit') ||
+        identifier.contains('quotaexceeded') ||
+        identifier.contains('insufficientquota') ||
+        normalizedMessage.contains('usage limit') ||
+        normalizedMessage.contains('exceeded your current quota') ||
+        normalizedMessage == 'quota exceeded';
+    if (isUsageLimit) return FailedTurnKind.usageLimit;
+    if (identifier == '429' ||
+        identifier.contains('ratelimit') ||
+        identifier.contains('toomanyrequests') ||
+        identifier.contains('modelatcapacity') ||
+        identifier.contains('capacity') ||
+        normalizedMessage.contains('selected model is at capacity') ||
+        normalizedMessage.contains('model is at capacity') ||
+        normalizedMessage.contains('rate limit') ||
+        normalizedMessage.contains('too many requests') ||
+        normalizedMessage.contains('http 429') ||
+        normalizedMessage == '429') {
+      return FailedTurnKind.capacityRateLimit;
+    }
+    return FailedTurnKind.retryable;
   }
 
   /// 判断路径是否指向剪贴板导入的临时图片。
@@ -9651,6 +11443,8 @@ class CodexController extends ChangeNotifier {
     _historySaveTimer?.cancel();
     _runtimeReconnectTimer?.cancel();
     _runtimeReconnectTimer = null;
+    _clearAllAutomaticRetries();
+    _clearUserInputAutoResolution();
     _scheduledTaskCoordinator.dispose();
     for (final timer in _subagentRefreshTimers.values) {
       timer.cancel();
