@@ -32,21 +32,26 @@ class ComposerContextChip extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           if (thumbnailPath case final thumbnail?)
-            InkWell(
-              key: const Key('composer-image-thumbnail'),
-              onTap: onPreview,
-              borderRadius: BorderRadius.circular(7),
-              child: ClipRRect(
+            Semantics(
+              button: true,
+              enabled: onPreview != null,
+              label: '预览 $label',
+              child: InkWell(
+                key: const Key('composer-image-thumbnail'),
+                onTap: onPreview,
                 borderRadius: BorderRadius.circular(7),
-                child: SizedBox(
-                  width: 34,
-                  height: 34,
-                  child: Image.file(
-                    File(thumbnail),
-                    fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) => ColoredBox(
-                      color: palette.field,
-                      child: Icon(icon, size: 18, color: palette.muted),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(7),
+                  child: SizedBox(
+                    width: 34,
+                    height: 34,
+                    child: Image.file(
+                      File(thumbnail),
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) => ColoredBox(
+                        color: palette.field,
+                        child: Icon(icon, size: 18, color: palette.muted),
+                      ),
                     ),
                   ),
                 ),
@@ -64,15 +69,20 @@ class ComposerContextChip extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 3),
-          InkWell(
-            onTap: onRemove,
-            borderRadius: BorderRadius.circular(8),
-            child: Padding(
-              padding: const EdgeInsets.all(2),
-              child: Icon(
-                Icons.close,
-                size: 14,
-                color: onRemove == null ? palette.faint : palette.muted,
+          Semantics(
+            button: true,
+            enabled: onRemove != null,
+            label: '移除 $label',
+            child: InkWell(
+              onTap: onRemove,
+              borderRadius: BorderRadius.circular(8),
+              child: Padding(
+                padding: const EdgeInsets.all(2),
+                child: Icon(
+                  Icons.close,
+                  size: 14,
+                  color: onRemove == null ? palette.faint : palette.muted,
+                ),
               ),
             ),
           ),
