@@ -11,6 +11,10 @@ import 'package:chatgpt/src/domain/codex_mcp_server.dart';
 import 'package:chatgpt/src/domain/git_project_status.dart';
 import 'package:chatgpt/src/domain/scheduled_task.dart';
 import 'package:chatgpt/src/domain/workspace_configuration.dart';
+import 'package:chatgpt/src/domain/local_worktree_record.dart';
+import 'package:chatgpt/src/domain/thread_environment_binding.dart';
+import 'package:chatgpt/src/domain/worktree_handoff_checkpoint.dart';
+import 'package:chatgpt/src/domain/worktree_settings.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/services/codex_plugin_store.dart';
 import 'package:chatgpt/src/services/conversation_history_store.dart';
@@ -47,6 +51,21 @@ class FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
   Set<String>? savedPinnedWorkspaces;
   List<ScheduledTask> scheduledTasks = [];
   List<ScheduledTask>? savedScheduledTasks;
+
+  @override
+  Future<List<ThreadEnvironmentBinding>>
+  readThreadEnvironmentBindings() async => const [];
+
+  @override
+  Future<List<LocalWorktreeRecord>> readWorktreeRecords() async => const [];
+
+  @override
+  Future<WorktreeSettings> readWorktreeSettings() async =>
+      WorktreeSettings.defaults();
+
+  @override
+  Future<List<WorktreeHandoffCheckpoint>>
+  readWorktreeHandoffCheckpoints() async => const [];
 
   /// 模拟未保存自定义 CLI 路径。
   /// Simulates no saved custom CLI path.

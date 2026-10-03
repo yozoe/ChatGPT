@@ -5742,12 +5742,26 @@ class CodexController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    String? unavailableWorktree;
-    try {
-      unavailableWorktree = await _restoreThreadEnvironmentBinding(thread.id);
-    } on Object {
-      // A missing local binding must not prevent a normal App Server resume;
-      // the source project remains the safe fallback execution directory.
+    final bindingRestore = _restoreThreadEnvironmentBinding(
+      thread.id,
+    ).then((value) => value, onError: (_) => null);
+    unawaited(
+      bindingRestore.then((unavailableWorktree) {
+        if (_disposed || unavailableWorktree == null) return;
+        if (activeThreadId != thread.id) return;
+        _add(
+          TimelineKind.error,
+          '工作树不可用',
+          '无法恢复任务绑定的工作树：$unavailableWorktree。请在设置中恢复后重试。',
+        );
+        notifyListeners();
+      }),
+    );
+    final needsThreadRefresh = _cachedThreadView(thread.id) == null;
+    if (needsThreadRefresh) {
+      threadsLoading = true;
+      threadsError = null;
+      notifyListeners();
     }
     _clearThreadWriterConflict();
     _clearArchivedThreadRestore();
@@ -5901,16 +5915,10 @@ class CodexController extends ChangeNotifier {
       if (cachedView == null) {
         await refreshThreads();
       }
-      if (unavailableWorktree != null) {
-        _add(
-          TimelineKind.error,
-          '工作树不可用',
-          '无法恢复任务绑定的工作树：$unavailableWorktree。请在设置中恢复后重试。',
-        );
-      }
       _appendPendingNetworkRetryEntries(thread.id);
       if (viewLoaded) _cacheActiveThreadView();
     } catch (error) {
+      if (needsThreadRefresh) threadsLoading = false;
       activeThreadId = previousThreadId;
       _activeThreadAttached = previousThreadAttached;
       final previousIsStillRunning =
