@@ -1,8 +1,15 @@
 import 'dart:async';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_error_policy.dart';
+import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_download.dart';
+import 'package:chatgpt/src/presentation/browser/browser_download_cancellation.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_url_normalizer.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_workspace_page.dart';
+import 'package:chatgpt/src/services/browser_history_store.dart';
+import 'package:chatgpt/src/domain/browser_tab_snapshot.dart';
+import 'package:chatgpt/src/services/browser_download_store.dart';
+import 'package:chatgpt/src/services/browser_session_store.dart';
 import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -19,6 +26,8 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
   final Map<int, InAppWebViewController> _webViews = {};
   final Map<int, int> _popupWindowIds = {};
   final Set<int> _discardedPopupWindowIds = {};
+  final Set<int> _invalidatedTabs = {};
+  final Set<int> _restoredTabLoadStarted = {};
   final Map<int, String> _urls = {};
   final Map<int, String> _titles = {};
   final Map<int, bool> _loading = {};
@@ -27,17 +36,124 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
   final Map<int, String> _errors = {};
   final Map<int, String> _loadingUrls = {};
   final Map<int, int> _navigationRequestGenerations = {};
+  final Map<int, int> _downloadOperations = {};
+  final Map<int, BrowserDownloadCancellation> _downloadCancellations = {};
+  final Set<String> _activeDownloadKeys = {};
   int _activeTab = 0;
   int _nextTab = 1;
   int _nextNavigationRequestGeneration = 0;
+  int _nextDownloadOperation = 0;
+  Timer? _downloadMessageTimer;
   String? _requestedInitialUrl;
   bool _showImportBanner = true;
+  String? _downloadMessage;
+  late BrowserHistoryStore _historyStore;
+  late BrowserDownloadStore _downloadStore;
+  late BrowserSessionStore _sessionStore;
+  bool _sessionRestoreCompleted = false;
+  Future<void> _sessionSaveQueue = Future<void>.value();
 
   bool get _activeLoading => _loading[_activeTab] ?? false;
+
+  Future<void> _restoreSession() async {
+    final saved = await _sessionStore.read();
+    if (!mounted ||
+        !widget.restoreTabs ||
+        (widget.initialUrl?.trim().isNotEmpty ?? false) ||
+        _urls.isNotEmpty) {
+      _sessionRestoreCompleted = true;
+      return;
+    }
+    if (saved != null) {
+      final safeTabs = <BrowserTabSnapshot>[];
+      for (final tab in saved.tabs) {
+        final uri = normalizeBrowserUrl(tab.url);
+        if (uri != null && await widget.urlSafetyChecker(uri)) {
+          safeTabs.add(
+            BrowserTabSnapshot(
+              url: uri.replace(userInfo: '').toString(),
+              title: tab.title,
+            ),
+          );
+        }
+      }
+      if (mounted && safeTabs.isNotEmpty && !(_requestedInitialUrl != null)) {
+        setState(() {
+          _tabs
+            ..clear()
+            ..addAll(List<int>.generate(safeTabs.length, (index) => index));
+          _nextTab = safeTabs.length;
+          _activeTab = saved.activeIndex.clamp(0, safeTabs.length - 1);
+          _urls
+            ..clear()
+            ..addEntries(
+              safeTabs.asMap().entries.map(
+                (entry) => MapEntry(entry.key, entry.value.url),
+              ),
+            );
+          _titles
+            ..clear()
+            ..addEntries(
+              safeTabs.asMap().entries.map(
+                (entry) => MapEntry(entry.key, entry.value.title),
+              ),
+            );
+          _setAddress(_urls[_activeTab] ?? '');
+        });
+      }
+    }
+    _sessionRestoreCompleted = true;
+    if (mounted && widget.initialUrl?.trim().isNotEmpty != true) {
+      final tabIds = widget.restoreTabNavigation != null
+          ? _tabs.toList(growable: false)
+          : _webViews.keys.toList(growable: false);
+      for (final tabId in tabIds) {
+        unawaited(_loadRestoredTabIfReady(tabId));
+      }
+    }
+    if (mounted && widget.initialUrl != null) {
+      unawaited(_loadInitialUrlIfReady());
+    }
+  }
+
+  void _persistSession() {
+    if (!widget.restoreTabs || !_sessionRestoreCompleted) return;
+    final tabs = _tabs
+        .map((tabId) {
+          final url = normalizeBrowserUrl(_urls[tabId] ?? '');
+          if (url == null) return null;
+          return BrowserTabSnapshot(
+            url: url.replace(userInfo: '').toString(),
+            title: _titles[tabId] ?? '新标签页',
+          );
+        })
+        .whereType<BrowserTabSnapshot>()
+        .toList(growable: false);
+    final activeIndex = tabs.isEmpty
+        ? 0
+        : _tabs.indexOf(_activeTab).clamp(0, tabs.length - 1);
+    _sessionSaveQueue = _sessionSaveQueue
+        .catchError((_) {})
+        .then((_) => _sessionStore.save(tabs: tabs, activeIndex: activeIndex));
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _historyStore = widget.historyStore ?? BrowserHistoryStore();
+    _downloadStore = widget.downloadStore ?? BrowserDownloadStore();
+    _sessionStore = widget.sessionStore ?? BrowserSessionStore();
+    if (widget.restoreTabs) unawaited(_restoreSession());
+    if (!widget.restoreTabs) _sessionRestoreCompleted = true;
+  }
 
   @override
   void didUpdateWidget(covariant BrowserWorkspacePage oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!oldWidget.restoreTabs && widget.restoreTabs) {
+      _sessionRestoreCompleted = false;
+      unawaited(_restoreSession());
+    }
     if (oldWidget.isVisible && !widget.isVisible) {
       _addressFocus.unfocus();
     }
@@ -50,6 +166,12 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
 
   @override
   void dispose() {
+    for (final cancellation in _downloadCancellations.values) {
+      cancellation.cancel();
+    }
+    _downloadCancellations.clear();
+    _persistSession();
+    _downloadMessageTimer?.cancel();
     _address.dispose();
     _addressFocus.dispose();
     super.dispose();
@@ -128,6 +250,43 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
     }
   }
 
+  Future<void> _loadRestoredTabIfReady(int tabId) async {
+    if (!mounted ||
+        widget.initialUrl?.trim().isNotEmpty == true ||
+        !_sessionRestoreCompleted ||
+        !_tabs.contains(tabId) ||
+        (_webViews[tabId] == null && widget.restoreTabNavigation == null) ||
+        !_restoredTabLoadStarted.add(tabId)) {
+      return;
+    }
+    final value = _urls[tabId];
+    final uri = value == null ? null : normalizeBrowserUrl(value);
+    if (uri == null) return;
+    final restoreTabNavigation = widget.restoreTabNavigation;
+    if (restoreTabNavigation != null) {
+      final requestGeneration = _beginNavigationRequest(tabId);
+      final safe = await widget.urlSafetyChecker(uri);
+      if (!mounted ||
+          !_tabs.contains(tabId) ||
+          _navigationRequestGenerations[tabId] != requestGeneration) {
+        return;
+      }
+      if (!safe) {
+        _setError(tabId, '已阻止无法确认安全性的地址。');
+        return;
+      }
+      try {
+        await restoreTabNavigation(tabId, uri);
+      } catch (error) {
+        if (mounted && _tabs.contains(tabId)) {
+          _setError(tabId, '无法恢复此标签页：$error');
+        }
+      }
+      return;
+    }
+    await _navigateTab(tabId, uri);
+  }
+
   void _setError(int tabId, String message) {
     if (!mounted || !_tabs.contains(tabId)) return;
     setState(() => _errors[tabId] = message);
@@ -152,6 +311,7 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
   bool _isCurrentWebView(int tabId, InAppWebViewController? controller) =>
       mounted &&
       _tabs.contains(tabId) &&
+      !_invalidatedTabs.contains(tabId) &&
       (controller == null || identical(controller, _webViews[tabId]));
 
   void _setAddress(String value) {
@@ -176,6 +336,7 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
       _activeTab = tabId;
       _address.clear();
     });
+    _persistSession();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || _activeTab != tabId || !_tabs.contains(tabId)) return;
       _focusAddress();
@@ -188,12 +349,15 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
       _activeTab = tabId;
       _setAddress(_urls[tabId] ?? '');
     });
+    _persistSession();
   }
 
   void _closeTab(int tabId) {
     final index = _tabs.indexOf(tabId);
     if (index < 0) return;
+    _invalidateTab(tabId);
     if (_tabs.length == 1) {
+      if (widget.restoreTabs) unawaited(_sessionStore.clear());
       widget.onOpenConversation();
       return;
     }
@@ -208,12 +372,23 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
       _canGoBack.remove(tabId);
       _canGoForward.remove(tabId);
       _errors.remove(tabId);
-      _navigationRequestGenerations.remove(tabId);
       if (_activeTab == tabId) {
         _activeTab = _tabs[index.clamp(0, _tabs.length - 1)];
         _setAddress(_urls[_activeTab] ?? '');
       }
     });
+    _persistSession();
+  }
+
+  /// Invalidates every asynchronous callback that belongs to a tab before it
+  /// is removed from the workspace. The WebView plugin may still deliver
+  /// navigation, title, history, error, or download callbacks after close.
+  void _invalidateTab(int tabId) {
+    _invalidatedTabs.add(tabId);
+    _navigationRequestGenerations[tabId] = ++_nextNavigationRequestGeneration;
+    _downloadCancellations.remove(tabId)?.cancel();
+    _downloadOperations.remove(tabId);
+    _restoredTabLoadStarted.remove(tabId);
   }
 
   Future<void> openInDefaultBrowser() async {
@@ -229,6 +404,120 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
     } catch (error) {
       _setError(tabId, '无法在系统默认浏览器中打开此地址：$error');
     }
+  }
+
+  Future<void> handleDownloadStart(
+    int tabId,
+    DownloadStartRequest request,
+    InAppWebViewController? controller,
+  ) async {
+    if (!_isCurrentWebView(tabId, controller)) return;
+    final downloadKey =
+        '$tabId:${request.url}:${request.suggestedFilename ?? ''}';
+    if (!_activeDownloadKeys.add(downloadKey)) return;
+    try {
+      await _handleDownloadStartOnce(tabId, request, controller);
+    } finally {
+      _activeDownloadKeys.remove(downloadKey);
+    }
+  }
+
+  Future<void> _handleDownloadStartOnce(
+    int tabId,
+    DownloadStartRequest request,
+    InAppWebViewController? controller,
+  ) async {
+    if (!_isCurrentWebView(tabId, controller)) return;
+    final source = Uri.tryParse(request.url.toString());
+    if (source == null || !await widget.urlSafetyChecker(source)) {
+      if (!mounted || !_isCurrentWebView(tabId, controller)) return;
+      _showDownloadMessage('已阻止不安全的下载地址。');
+      return;
+    }
+    if (!mounted || !_isCurrentWebView(tabId, controller)) return;
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('下载文件？'),
+        content: Text(
+          '来源：${source.host}\n文件：${browserDownloadSuggestedFilename(request.suggestedFilename)}\n\n下载前仍需选择保存位置。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('继续'),
+          ),
+        ],
+      ),
+    );
+    if (!_isCurrentWebView(tabId, controller) || approved != true) return;
+    final operation = ++_nextDownloadOperation;
+    _downloadOperations[tabId] = operation;
+    final cancellation = BrowserDownloadCancellation();
+    _downloadCancellations[tabId] = cancellation;
+    _showDownloadMessage('正在等待选择下载位置…');
+    try {
+      final saveDownload = widget.downloadSaver ?? saveBrowserDownload;
+      final savedPath = await saveDownload(
+        request: request,
+        urlSafetyChecker: widget.urlSafetyChecker,
+        downloadDirectory: widget.downloadDirectory,
+        askForLocation: widget.askBeforeDownload,
+        cancellation: cancellation,
+        pickLocation: (suggestedName) => getSaveLocation(
+          suggestedName: suggestedName,
+          confirmButtonText: '保存',
+          canCreateDirectories: false,
+        ),
+      );
+      if (!_isCurrentWebView(tabId, controller) ||
+          _downloadOperations[tabId] != operation) {
+        return;
+      }
+      if (savedPath != null && !cancellation.isCancelled) {
+        try {
+          await _downloadStore.record(url: source, filePath: savedPath);
+        } catch (error) {
+          _showDownloadMessage('下载已保存，但记录失败：$error');
+          return;
+        }
+      }
+      _showDownloadMessage(
+        savedPath == null || cancellation.isCancelled
+            ? '已取消下载。'
+            : '下载已保存：$savedPath',
+      );
+    } catch (error) {
+      if (!_isCurrentWebView(tabId, controller) ||
+          _downloadOperations[tabId] != operation) {
+        return;
+      }
+      _showDownloadMessage(cancellation.isCancelled ? '已取消下载。' : '下载失败：$error');
+    } finally {
+      if (identical(_downloadCancellations[tabId], cancellation)) {
+        _downloadCancellations.remove(tabId);
+      }
+    }
+  }
+
+  void cancelActiveDownload() {
+    if (_downloadCancellations.isEmpty) return;
+    final tabId = _downloadCancellations.keys.first;
+    _downloadCancellations[tabId]?.cancel();
+    _showDownloadMessage('正在取消下载…');
+  }
+
+  void _showDownloadMessage(String message) {
+    if (!mounted) return;
+    _downloadMessageTimer?.cancel();
+    setState(() => _downloadMessage = message);
+    _downloadMessageTimer = Timer(const Duration(seconds: 8), () {
+      if (mounted) setState(() => _downloadMessage = null);
+    });
   }
 
   Future<void> goBack() async {
@@ -284,8 +573,8 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
     } catch (_) {}
   }
 
-  void updateUrl(int tabId, WebUri? url) {
-    if (!mounted || url == null || !_tabs.contains(tabId)) return;
+  void updateUrl(int tabId, WebUri? url, {InAppWebViewController? controller}) {
+    if (url == null || !_isCurrentWebView(tabId, controller)) return;
     if (url.scheme == 'about' || url.scheme == 'data') return;
     if (!isBrowserWebUri(url)) {
       _setError(tabId, '已阻止指向本机或私有网络的地址。');
@@ -369,6 +658,7 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
         _address.clear();
       }
     });
+    _persistSession();
     return true;
   }
 
@@ -409,7 +699,7 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
       _loading[tabId] = true;
       if (url != null) _loadingUrls[tabId] = url.toString();
     });
-    updateUrl(tabId, url);
+    updateUrl(tabId, url, controller: controller);
   }
 
   void handleNavigationStopped(
@@ -425,7 +715,374 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
       _loading[tabId] = false;
       _loadingUrls.remove(tabId);
     });
-    updateUrl(tabId, url);
+    updateUrl(tabId, url, controller: controller);
+    if (url != null) {
+      unawaited(_recordHistory(url, _titles[tabId]));
+      _persistSession();
+    }
+  }
+
+  void handleTitleChanged(
+    int tabId,
+    String? title, {
+    InAppWebViewController? controller,
+  }) {
+    if (!_isCurrentWebView(tabId, controller)) return;
+    final nextTitle = title?.trim();
+    setState(() {
+      _titles[tabId] = nextTitle?.isNotEmpty == true ? nextTitle! : '新标签页';
+    });
+    _persistSession();
+  }
+
+  void handleVisitedHistoryUpdate(
+    int tabId,
+    WebUri? url, {
+    InAppWebViewController? controller,
+  }) {
+    if (!_isCurrentWebView(tabId, controller)) return;
+    updateUrl(tabId, url, controller: controller);
+    if (url != null) {
+      unawaited(_recordHistory(url, _titles[tabId]));
+      _persistSession();
+    }
+  }
+
+  Future<void> _recordHistory(WebUri url, String? title) =>
+      _historyStore.record(uri: Uri.parse(url.toString()), title: title);
+
+  Future<void> showBrowserHistory() async {
+    final entries = await _historyStore.read();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        var query = '';
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final filtered = entries
+                .where((entry) {
+                  final haystack = '${entry.title}\n${entry.url}'.toLowerCase();
+                  return haystack.contains(query.trim().toLowerCase());
+                })
+                .toList(growable: false);
+            return AlertDialog(
+              title: const Text('浏览历史'),
+              content: SizedBox(
+                width: 520,
+                height: 420,
+                child: Column(
+                  children: [
+                    TextField(
+                      key: const Key('browser-history-search'),
+                      autofocus: true,
+                      decoration: const InputDecoration(
+                        prefixIcon: Icon(Icons.search),
+                        hintText: '搜索标题或网址',
+                      ),
+                      onChanged: (value) => setDialogState(() => query = value),
+                    ),
+                    const SizedBox(height: 8),
+                    Expanded(
+                      child: filtered.isEmpty
+                          ? Center(
+                              child: Text(
+                                entries.isEmpty ? '暂无浏览历史' : '没有匹配的历史记录',
+                              ),
+                            )
+                          : ListView.builder(
+                              itemCount: filtered.length,
+                              itemBuilder: (context, index) {
+                                final entry = filtered[index];
+                                return ListTile(
+                                  title: Text(entry.title),
+                                  subtitle: Text(entry.url),
+                                  trailing: IconButton(
+                                    tooltip: '删除此记录',
+                                    icon: const Icon(Icons.delete_outline),
+                                    onPressed: () async {
+                                      await _historyStore.remove(entry.url);
+                                      if (dialogContext.mounted) {
+                                        Navigator.of(dialogContext).pop();
+                                      }
+                                    },
+                                  ),
+                                  onTap: () {
+                                    Navigator.of(dialogContext).pop();
+                                    final uri = Uri.tryParse(entry.url);
+                                    if (uri != null) {
+                                      unawaited(_navigateTab(_activeTab, uri));
+                                    }
+                                  },
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                if (entries.isNotEmpty)
+                  TextButton(
+                    key: const Key('browser-clear-history'),
+                    onPressed: () async {
+                      final confirmed = await showDialog<bool>(
+                        context: dialogContext,
+                        builder: (confirmContext) => AlertDialog(
+                          title: const Text('清空浏览历史？'),
+                          content: const Text('这只会删除应用内的历史记录，不会删除下载文件。'),
+                          actions: [
+                            TextButton(
+                              onPressed: () =>
+                                  Navigator.of(confirmContext).pop(false),
+                              child: const Text('取消'),
+                            ),
+                            FilledButton(
+                              onPressed: () =>
+                                  Navigator.of(confirmContext).pop(true),
+                              child: const Text('清空'),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (confirmed == true) {
+                        await _historyStore.clear();
+                        if (dialogContext.mounted) {
+                          Navigator.of(dialogContext).pop();
+                        }
+                      }
+                    },
+                    child: const Text('清空历史'),
+                  ),
+                TextButton(
+                  key: const Key('browser-close-history-dialog'),
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('关闭'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> clearBrowsingData() async {
+    if (!mounted) return;
+    final selection = await showDialog<Set<String>>(
+      context: context,
+      builder: (dialogContext) {
+        final selected = <String>{'website', 'cache', 'history', 'downloads'};
+        return StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            title: const Text('清除浏览数据？'),
+            content: SizedBox(
+              width: 460,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('选择要清除的范围。已保存的下载文件不会被删除。'),
+                  ),
+                  CheckboxListTile(
+                    key: const Key('browser-clear-website-data'),
+                    dense: true,
+                    title: const Text('Cookie 和网站存储'),
+                    value: selected.contains('website'),
+                    onChanged: (value) => setDialogState(() {
+                      if (value == true) {
+                        selected.add('website');
+                      } else {
+                        selected.remove('website');
+                      }
+                    }),
+                  ),
+                  CheckboxListTile(
+                    key: const Key('browser-clear-cache'),
+                    dense: true,
+                    title: const Text('缓存'),
+                    value: selected.contains('cache'),
+                    onChanged: (value) => setDialogState(() {
+                      if (value == true) {
+                        selected.add('cache');
+                      } else {
+                        selected.remove('cache');
+                      }
+                    }),
+                  ),
+                  CheckboxListTile(
+                    key: const Key('browser-clear-history-data'),
+                    dense: true,
+                    title: const Text('浏览历史和导航历史'),
+                    value: selected.contains('history'),
+                    onChanged: (value) => setDialogState(() {
+                      if (value == true) {
+                        selected.add('history');
+                      } else {
+                        selected.remove('history');
+                      }
+                    }),
+                  ),
+                  CheckboxListTile(
+                    key: const Key('browser-clear-download-data'),
+                    dense: true,
+                    title: const Text('下载记录'),
+                    value: selected.contains('downloads'),
+                    onChanged: (value) => setDialogState(() {
+                      if (value == true) {
+                        selected.add('downloads');
+                      } else {
+                        selected.remove('downloads');
+                      }
+                    }),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: selected.isEmpty
+                    ? null
+                    : () => Navigator.of(dialogContext).pop(selected),
+                child: const Text('清除'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (selection == null || selection.isEmpty || !mounted) return;
+    final failures = <String>[];
+    if (selection.contains('website')) {
+      try {
+        final clearWebsiteData = widget.clearWebsiteData;
+        if (clearWebsiteData != null) {
+          await clearWebsiteData();
+        } else {
+          await CookieManager.instance().deleteAllCookies();
+          await WebStorageManager.instance().deleteAllData();
+        }
+      } catch (error) {
+        failures.add('Cookie/网站存储：$error');
+      }
+    }
+    if (selection.contains('cache')) {
+      try {
+        final clearCache = widget.clearCache;
+        if (clearCache != null) {
+          await clearCache();
+        } else {
+          await InAppWebViewController.clearAllCache();
+        }
+      } catch (error) {
+        failures.add('缓存：$error');
+      }
+    }
+    if (selection.contains('history')) {
+      try {
+        final clearNavigationHistory = widget.clearNavigationHistory;
+        if (clearNavigationHistory != null) {
+          await clearNavigationHistory();
+        } else {
+          for (final controller in _webViews.values) {
+            await controller.clearHistory();
+          }
+        }
+        await _historyStore.clear();
+      } catch (error) {
+        failures.add('历史：$error');
+      }
+    }
+    if (selection.contains('downloads')) {
+      try {
+        await _downloadStore.clear();
+      } catch (error) {
+        failures.add('下载记录：$error');
+      }
+    }
+    if (failures.isEmpty) {
+      _showDownloadMessage('已清除所选浏览数据（下载文件未删除）。');
+    } else {
+      _showDownloadMessage('部分浏览数据清除失败：${failures.join('；')}');
+    }
+  }
+
+  Future<void> showDownloadRecords() async {
+    final records = await _downloadStore.read();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('下载记录'),
+        content: SizedBox(
+          width: 560,
+          height: 360,
+          child: records.isEmpty
+              ? const Center(child: Text('暂无下载记录'))
+              : ListView.builder(
+                  itemCount: records.length,
+                  itemBuilder: (context, index) {
+                    final record = records[index];
+                    return ListTile(
+                      title: Text(record.fileName),
+                      subtitle: Text('${record.filePath}\n${record.url}'),
+                      isThreeLine: true,
+                      trailing: IconButton(
+                        tooltip: '删除记录（不删除文件）',
+                        icon: const Icon(Icons.delete_outline),
+                        onPressed: () async {
+                          await _downloadStore.remove(record.filePath);
+                          if (dialogContext.mounted) {
+                            Navigator.of(dialogContext).pop();
+                          }
+                        },
+                      ),
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          if (records.isNotEmpty)
+            TextButton(
+              key: const Key('browser-clear-download-records'),
+              onPressed: () async {
+                final confirmed = await showDialog<bool>(
+                  context: dialogContext,
+                  builder: (confirmContext) => AlertDialog(
+                    title: const Text('清空下载记录？'),
+                    content: const Text('只清除记录，不删除已保存的文件。'),
+                    actions: [
+                      TextButton(
+                        onPressed: () =>
+                            Navigator.of(confirmContext).pop(false),
+                        child: const Text('取消'),
+                      ),
+                      FilledButton(
+                        onPressed: () => Navigator.of(confirmContext).pop(true),
+                        child: const Text('清空'),
+                      ),
+                    ],
+                  ),
+                );
+                if (confirmed == true) {
+                  await _downloadStore.clear();
+                  if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+                }
+              },
+              child: const Text('清空记录'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
   }
 
   void handleNavigationError(
@@ -501,13 +1158,18 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
         mediaPlaybackRequiresUserGesture: true,
         javaScriptCanOpenWindowsAutomatically: true,
         supportMultipleWindows: true,
+        useOnDownloadStart: true,
         useShouldOverrideUrlLoading: true,
       ),
       onWebViewCreated: (controller) {
         if (!mounted || !_tabs.contains(tabId)) return;
         _webViews[tabId] = controller;
         unawaited(refreshNavigationState(tabId));
-        if (tabId == _activeTab) unawaited(_loadInitialUrlIfReady());
+        if (widget.initialUrl?.trim().isNotEmpty == true) {
+          if (tabId == _activeTab) unawaited(_loadInitialUrlIfReady());
+        } else {
+          unawaited(_loadRestoredTabIfReady(tabId));
+        }
       },
       onLoadStart: (controller, url) {
         if (!mounted || !_tabs.contains(tabId)) return;
@@ -528,16 +1190,19 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
       onLoadStop: (controller, url) =>
           handleNavigationStopped(tabId, url, controller: controller),
       onTitleChanged: (controller, title) {
-        if (!mounted || !_tabs.contains(tabId)) return;
-        final nextTitle = title?.trim();
-        setState(() {
-          _titles[tabId] = nextTitle?.isNotEmpty == true ? nextTitle! : '新标签页';
-        });
+        handleTitleChanged(tabId, title, controller: controller);
       },
-      onUpdateVisitedHistory: (controller, url, isReload) =>
-          updateUrl(tabId, url),
+      onUpdateVisitedHistory: (controller, url, isReload) {
+        handleVisitedHistoryUpdate(tabId, url, controller: controller);
+      },
       onReceivedError: (controller, request, error) =>
           handleNavigationError(tabId, request, error, controller: controller),
+      onPermissionRequest: (controller, request) async => PermissionResponse(
+        resources: request.resources,
+        action: PermissionResponseAction.DENY,
+      ),
+      onDownloadStartRequest: (controller, request) =>
+          unawaited(handleDownloadStart(tabId, request, controller)),
       onCreateWindow: (controller, action) async {
         return handleCreateWindow(tabId, action);
       },
@@ -552,13 +1217,18 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
     required String tooltip,
     required IconData icon,
     required VoidCallback? onPressed,
-  }) => IconButton(
-    key: key,
-    tooltip: tooltip,
-    onPressed: onPressed,
-    icon: Icon(icon, size: 16),
-    padding: EdgeInsets.zero,
-    constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+  }) => Semantics(
+    button: true,
+    enabled: onPressed != null,
+    label: tooltip,
+    child: IconButton(
+      key: key,
+      tooltip: tooltip,
+      onPressed: onPressed,
+      icon: Icon(icon, size: 16),
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+    ),
   );
 
   Widget _buildTabStrip(YeknomPalette palette) => SizedBox(
@@ -573,46 +1243,58 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
             itemBuilder: (context, index) {
               final tabId = _tabs[index];
               final selected = tabId == _activeTab;
+              final title = _titles[tabId] ?? '新标签页';
               return Padding(
                 padding: const EdgeInsets.only(right: 4),
-                child: Material(
-                  color: selected ? palette.field : Colors.transparent,
-                  borderRadius: BorderRadius.circular(7),
-                  child: InkWell(
-                    key: ValueKey('browser-tab-$tabId'),
-                    onTap: () => _selectTab(tabId),
+                child: Semantics(
+                  container: true,
+                  button: true,
+                  selected: selected,
+                  label: '标签页：$title',
+                  hint: selected ? '当前标签页' : '切换到此标签页',
+                  child: Material(
+                    color: selected ? palette.field : Colors.transparent,
                     borderRadius: BorderRadius.circular(7),
-                    child: SizedBox(
-                      width: 156,
-                      child: Row(
-                        children: [
-                          const SizedBox(width: 10),
-                          Icon(Icons.language, size: 13, color: palette.muted),
-                          const SizedBox(width: 7),
-                          Expanded(
-                            child: Text(
-                              _titles[tabId] ?? '新标签页',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: palette.trace,
+                    child: InkWell(
+                      key: ValueKey('browser-tab-$tabId'),
+                      onTap: () => _selectTab(tabId),
+                      borderRadius: BorderRadius.circular(7),
+                      child: SizedBox(
+                        width: 156,
+                        child: Row(
+                          children: [
+                            const SizedBox(width: 10),
+                            Icon(
+                              Icons.language,
+                              size: 13,
+                              color: palette.muted,
+                            ),
+                            const SizedBox(width: 7),
+                            Expanded(
+                              child: Text(
+                                title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: palette.trace,
+                                ),
                               ),
                             ),
-                          ),
-                          IconButton(
-                            key: ValueKey('browser-close-tab-$tabId'),
-                            tooltip: '关闭标签页 (⌘W)',
-                            onPressed: () => _closeTab(tabId),
-                            icon: const Icon(Icons.close, size: 13),
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints.tightFor(
-                              width: 28,
-                              height: 28,
+                            IconButton(
+                              key: ValueKey('browser-close-tab-$tabId'),
+                              tooltip: '关闭标签页 (⌘W)',
+                              onPressed: () => _closeTab(tabId),
+                              icon: const Icon(Icons.close, size: 13),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints.tightFor(
+                                width: 28,
+                                height: 28,
+                              ),
                             ),
-                          ),
-                          const SizedBox(width: 2),
-                        ],
+                            const SizedBox(width: 2),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -663,44 +1345,49 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
         ),
         const SizedBox(width: 8),
         Expanded(
-          child: SizedBox(
-            height: 30,
-            child: TextField(
-              key: const Key('browser-address'),
-              focusNode: _addressFocus,
-              controller: _address,
-              textInputAction: TextInputAction.go,
-              onSubmitted: (_) => unawaited(navigateFromAddress()),
-              style: const TextStyle(fontSize: 12),
-              decoration: InputDecoration(
-                hintText: '搜索或输入网址',
-                hintStyle: TextStyle(color: palette.faint),
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 4,
-                ),
-                filled: true,
-                fillColor: palette.field,
-                prefixIcon: _urls.containsKey(_activeTab)
-                    ? Icon(Icons.lock_outline, size: 13, color: palette.muted)
-                    : null,
-                prefixIconConstraints: const BoxConstraints(minWidth: 31),
-                suffixIcon: _activeLoading
-                    ? const Padding(
-                        padding: EdgeInsets.all(7),
-                        child: SizedBox.square(
-                          dimension: 12,
-                          child: CircularProgressIndicator(strokeWidth: 1.5),
-                        ),
-                      )
-                    : null,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(color: palette.border),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(color: palette.border),
+          child: Semantics(
+            textField: true,
+            label: '地址栏',
+            hint: '搜索或输入网址',
+            child: SizedBox(
+              height: 30,
+              child: TextField(
+                key: const Key('browser-address'),
+                focusNode: _addressFocus,
+                controller: _address,
+                textInputAction: TextInputAction.go,
+                onSubmitted: (_) => unawaited(navigateFromAddress()),
+                style: const TextStyle(fontSize: 12),
+                decoration: InputDecoration(
+                  hintText: '搜索或输入网址',
+                  hintStyle: TextStyle(color: palette.faint),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 4,
+                  ),
+                  filled: true,
+                  fillColor: palette.field,
+                  prefixIcon: _urls.containsKey(_activeTab)
+                      ? Icon(Icons.lock_outline, size: 13, color: palette.muted)
+                      : null,
+                  prefixIconConstraints: const BoxConstraints(minWidth: 31),
+                  suffixIcon: _activeLoading
+                      ? const Padding(
+                          padding: EdgeInsets.all(7),
+                          child: SizedBox.square(
+                            dimension: 12,
+                            child: CircularProgressIndicator(strokeWidth: 1.5),
+                          ),
+                        )
+                      : null,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide(color: palette.border),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide(color: palette.border),
+                  ),
                 ),
               ),
             ),
@@ -724,11 +1411,17 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
             if (value == 'new') _newTab();
             if (value == 'external') unawaited(openInDefaultBrowser());
             if (value == 'close') _closeTab(_activeTab);
+            if (value == 'history') unawaited(showBrowserHistory());
+            if (value == 'clear-data') unawaited(clearBrowsingData());
+            if (value == 'downloads') unawaited(showDownloadRecords());
           },
           itemBuilder: (context) => [
             const PopupMenuItem(value: 'new', child: Text('新建标签页    ⌘T')),
             if (_urls.containsKey(_activeTab))
               const PopupMenuItem(value: 'external', child: Text('在默认浏览器中打开')),
+            const PopupMenuItem(value: 'history', child: Text('浏览历史')),
+            const PopupMenuItem(value: 'downloads', child: Text('下载记录')),
+            const PopupMenuItem(value: 'clear-data', child: Text('清除浏览数据')),
             const PopupMenuItem(value: 'close', child: Text('关闭标签页    ⌘W')),
           ],
         ),
@@ -788,6 +1481,56 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
     ),
   );
 
+  Widget _buildDownloadBanner(YeknomPalette palette) {
+    final message = _downloadMessage;
+    if (message == null) return const SizedBox.shrink();
+    return Semantics(
+      container: true,
+      liveRegion: true,
+      label: '下载状态：$message',
+      child: Container(
+        key: const Key('browser-download-banner'),
+        constraints: const BoxConstraints(minHeight: 42),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(
+          color: palette.raised,
+          border: Border(bottom: BorderSide(color: palette.border)),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.download_done_outlined, size: 16, color: palette.signal),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                message,
+                style: TextStyle(fontSize: 11, color: palette.trace),
+              ),
+            ),
+            IconButton(
+              key: _downloadCancellations.isNotEmpty
+                  ? const Key('browser-cancel-download')
+                  : null,
+              tooltip: '取消下载',
+              onPressed: _downloadCancellations.isEmpty
+                  ? null
+                  : cancelActiveDownload,
+              icon: const Icon(Icons.stop_circle_outlined, size: 15),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints.tightFor(width: 28, height: 28),
+            ),
+            IconButton(
+              tooltip: '关闭下载提示',
+              onPressed: () => setState(() => _downloadMessage = null),
+              icon: const Icon(Icons.close, size: 15),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints.tightFor(width: 28, height: 28),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _showChromeImportBoundary() => showDialog<void>(
     context: context,
     builder: (context) => AlertDialog(
@@ -825,62 +1568,80 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
     ),
   );
 
-  Widget _buildPageBody(YeknomPalette palette) => Stack(
-    fit: StackFit.expand,
-    children: [
-      IndexedStack(
-        index: _tabs.indexOf(_activeTab),
-        children: [
-          for (final tabId in _tabs)
-            Stack(
-              fit: StackFit.expand,
-              children: [
-                buildWebView(tabId),
-                if (!_urls.containsKey(tabId) &&
-                    !_popupWindowIds.containsKey(tabId))
-                  ColoredBox(
-                    color: palette.bench,
-                    child: _buildEmptyState(palette),
-                  ),
-              ],
-            ),
-        ],
-      ),
-      for (final windowId in _discardedPopupWindowIds)
-        _buildDiscardedPopupWindow(windowId),
-      if (_errors[_activeTab] case final error?)
-        Positioned(
-          left: 16,
-          right: 16,
-          bottom: 16,
-          child: Material(
-            color: palette.raised,
-            borderRadius: BorderRadius.circular(8),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-              child: Row(
+  Widget _buildPageBody(YeknomPalette palette) => Semantics(
+    key: const Key('browser-page-body'),
+    container: true,
+    label: '网页内容',
+    child: Stack(
+      fit: StackFit.expand,
+      children: [
+        IndexedStack(
+          index: _tabs.indexOf(_activeTab),
+          children: [
+            for (final tabId in _tabs)
+              Stack(
+                fit: StackFit.expand,
                 children: [
-                  Icon(Icons.error_outline, size: 16, color: palette.fault),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(error, style: const TextStyle(fontSize: 12)),
-                  ),
-                  if (_urls.containsKey(_activeTab))
-                    TextButton(
-                      onPressed: () => unawaited(reloadOrStop()),
-                      child: const Text('重试'),
+                  buildWebView(tabId),
+                  if (!_urls.containsKey(tabId) &&
+                      !_popupWindowIds.containsKey(tabId))
+                    ColoredBox(
+                      color: palette.bench,
+                      child: _buildEmptyState(palette),
                     ),
-                  IconButton(
-                    tooltip: '关闭错误提示',
-                    onPressed: () => setState(() => _errors.remove(_activeTab)),
-                    icon: const Icon(Icons.close, size: 15),
-                  ),
                 ],
+              ),
+          ],
+        ),
+        for (final windowId in _discardedPopupWindowIds)
+          _buildDiscardedPopupWindow(windowId),
+        if (_errors[_activeTab] case final error?)
+          Positioned(
+            left: 16,
+            right: 16,
+            bottom: 16,
+            child: Semantics(
+              key: const Key('browser-error-banner'),
+              container: true,
+              liveRegion: true,
+              label: '浏览器错误：$error',
+              child: Material(
+                color: palette.raised,
+                borderRadius: BorderRadius.circular(8),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 9,
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.error_outline, size: 16, color: palette.fault),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          error,
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      ),
+                      if (_urls.containsKey(_activeTab))
+                        TextButton(
+                          onPressed: () => unawaited(reloadOrStop()),
+                          child: const Text('重试'),
+                        ),
+                      IconButton(
+                        tooltip: '关闭错误提示',
+                        onPressed: () =>
+                            setState(() => _errors.remove(_activeTab)),
+                        icon: const Icon(Icons.close, size: 15),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
-        ),
-    ],
+      ],
+    ),
   );
 
   @override
@@ -900,18 +1661,23 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
         autofocus: widget.isVisible,
         canRequestFocus: widget.isVisible,
         descendantsAreFocusable: widget.isVisible,
-        child: Material(
-          key: const Key('browser-workspace-page'),
-          color: palette.bench,
-          child: Column(
-            children: [
-              _buildTabStrip(palette),
-              Divider(height: 1, color: palette.border),
-              _buildToolbar(palette),
-              Divider(height: 1, color: palette.border),
-              if (_showImportBanner) _buildImportBanner(palette),
-              Expanded(child: _buildPageBody(palette)),
-            ],
+        child: Semantics(
+          container: true,
+          label: '内置浏览器工作区',
+          child: Material(
+            key: const Key('browser-workspace-page'),
+            color: palette.bench,
+            child: Column(
+              children: [
+                _buildTabStrip(palette),
+                Divider(height: 1, color: palette.border),
+                _buildToolbar(palette),
+                Divider(height: 1, color: palette.border),
+                if (_showImportBanner) _buildImportBanner(palette),
+                _buildDownloadBanner(palette),
+                Expanded(child: _buildPageBody(palette)),
+              ],
+            ),
           ),
         ),
       ),

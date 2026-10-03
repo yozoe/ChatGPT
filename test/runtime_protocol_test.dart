@@ -842,6 +842,7 @@ void main() {
       await primary.resolveSymbolicLinks(),
       await additional.resolveSymbolicLinks(),
     ]);
+    expect(server.startedDynamicTools, browserDynamicToolSpecs);
 
     controller
       ..status = RuntimeStatus.ready
@@ -864,6 +865,25 @@ void main() {
       'runtimeWorkspaceRoots': ['/primary', '/shared'],
     });
     expect(threadId, 'thread-with-roots');
+  });
+
+  test('encodes browser dynamic tools in a new thread request', () async {
+    final server = ProtocolCaptureCodexAppServer();
+    await server.startThread(
+      workingDirectory: '/primary',
+      dynamicTools: browserDynamicToolSpecs,
+    );
+
+    final dynamicTools = server.requestedParams?['dynamicTools'];
+    expect(dynamicTools, browserDynamicToolSpecs);
+    expect(
+      (dynamicTools as List).single['tools'],
+      contains(
+        predicate<JsonMap>(
+          (tool) => tool['name'] == 'open' && tool['type'] == 'function',
+        ),
+      ),
+    );
   });
 
   test('encodes composer context in the turn start request', () async {

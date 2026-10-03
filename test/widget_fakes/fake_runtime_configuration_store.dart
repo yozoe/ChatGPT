@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:chatgpt/src/app_controller.dart';
+import 'package:chatgpt/src/domain/browser_link_open_mode.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
 import 'package:chatgpt/src/domain/codex_plugin.dart';
 import 'package:chatgpt/src/domain/codex_skill.dart';
@@ -33,6 +34,14 @@ class FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
   String? savedApprovalMode;
   bool browserEnabled = true;
   bool? savedBrowserEnabled;
+  BrowserLinkOpenMode browserLinkOpenMode = BrowserLinkOpenMode.system;
+  BrowserLinkOpenMode? savedBrowserLinkOpenMode;
+  String? browserDownloadDirectory;
+  String? savedBrowserDownloadDirectory;
+  bool browserAskBeforeDownload = true;
+  bool? savedBrowserAskBeforeDownload;
+  bool browserRestoreTabs = false;
+  bool? savedBrowserRestoreTabs;
   bool clearedWorkspace = false;
   Set<String> pinnedWorkspaces = {};
   Set<String>? savedPinnedWorkspaces;
@@ -178,6 +187,44 @@ class FakeRuntimeConfigurationStore extends RuntimeConfigurationStore {
   Future<void> saveBrowserEnabled(bool enabled) async {
     browserEnabled = enabled;
     savedBrowserEnabled = enabled;
+  }
+
+  @override
+  Future<BrowserLinkOpenMode> readBrowserLinkOpenMode() async =>
+      browserLinkOpenMode;
+
+  @override
+  Future<void> saveBrowserLinkOpenMode(BrowserLinkOpenMode mode) async {
+    browserLinkOpenMode = mode;
+    savedBrowserLinkOpenMode = mode;
+  }
+
+  @override
+  Future<String?> readBrowserDownloadDirectory() async =>
+      browserDownloadDirectory;
+
+  @override
+  Future<void> saveBrowserDownloadDirectory(String? directory) async {
+    browserDownloadDirectory = directory;
+    savedBrowserDownloadDirectory = directory;
+  }
+
+  @override
+  Future<bool> readBrowserAskBeforeDownload() async => browserAskBeforeDownload;
+
+  @override
+  Future<void> saveBrowserAskBeforeDownload(bool ask) async {
+    browserAskBeforeDownload = ask;
+    savedBrowserAskBeforeDownload = ask;
+  }
+
+  @override
+  Future<bool> readBrowserRestoreTabs() async => browserRestoreTabs;
+
+  @override
+  Future<void> saveBrowserRestoreTabs(bool restore) async {
+    browserRestoreTabs = restore;
+    savedBrowserRestoreTabs = restore;
   }
 }
 // ignore_for_file: unused_import, unnecessary_import

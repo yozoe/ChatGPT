@@ -159,11 +159,11 @@
 
 ## 待办
 
-### P0：发布与可靠性
+### 已交付记录：发布与可靠性
+
+以下条目是历史交付记录，不属于当前计划阶段，也不再作为后续开发门槛。
 
 - `已完成` 建立未签名 Release 打包流程：`build_dmg.sh` 会按 `pubspec.yaml` 版本生成 DMG，发布说明见 `RELEASE_NOTES.md`；2026-08-21 已生成并通过 `hdiutil verify` 校验。
-- `待办` 在干净 macOS 用户账户或测试机完成 DMG 安装回归；步骤见 [RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)，需要人工操作安装后的应用。
-- `受阻` 完成首次 Developer ID 签名和 notarization 提交。`build_dmg.sh` 已支持签名应用与 DMG、`notarytool` 提交、staple 和 Gatekeeper 评估；仍需提供 Apple Developer 证书、Keychain notary profile 与发布权限，未具备前只能生成未签名 DMG。
 - `已完成` 为安装脚本增加“仅构建、不安装”和“仅安装、不构建”参数；正常退出请求被取消时会对目标应用进程回退使用 `SIGTERM`，且仅在 `/Applications` 不可写时请求管理员权限。
 - `已完成` 增加 CLI 不可用的启动失败、可复制脱敏诊断和重试回归测试。
 - `已完成` 稳定回归测试基线：计划任务校验与排期弹层共用可注入时钟，过去时间测试不再依赖系统日期、时区或 12/24 小时制；取消竞态直接驱动待分发任务，Markdown 工作区预览按目标 Tab 和内容状态等待，方向调整附件竞态等待 Fake App Server 的明确调用信号。`flutter analyze`、默认并发完整 `flutter test`（当前拆分后 499 项）与单并发基线均通过。
@@ -191,10 +191,14 @@
 
 - `待办` 按 [AGENT_DEFAULT_SETTINGS_PLAN.md](docs/development-plans/AGENT_DEFAULT_SETTINGS_PLAN.md) 对齐官方“智能体默认设置”：先读取最终生效配置及来源，再补齐批准策略、沙盒、网页搜索、输出详细程度和推理摘要；未获 App Server 协议支持的字段保持只读，不以提示词模拟设置行为。
 - `已完成` 按 [IN_APP_BROWSER_DEVELOPMENT.md](docs/development-plans/IN_APP_BROWSER_DEVELOPMENT.md) 完成 macOS `WKWebView` 阶段 0 技术验证，并保留会话右侧的浏览器工作区 Tab 承载层；设置入口只展示智能体调用能力边界，不手动创建 WebView。
-- `已完成` 完成内置浏览器基础工作区：浏览器作为会话右侧工作区的平级 Tab 打开，不替换会话页。右上角菜单可直接创建并打开浏览器，已交付紧凑标签栏、地址搜索、多标签、网页新窗口转标签、页面标题、导航/刷新/停止/外部打开、错误反馈、空状态、Chrome 数据隔离说明和 macOS 常用快捷键。收起右栏、切换工作区 Tab 或进入其他一级页时保留 WebView 和页内标签，隐藏时退出焦点链且不拦截快捷键；展开/收起动画的中间宽度不布局完整浏览器 chrome。每次主框架跳转与重定向都会执行 URL 和 DNS 私网检查；最终重定向 URL 会结束加载状态，同标签用户与智能体导航共享请求版本，迟到回调不会覆盖较新导航。页内标签仅在当前应用生命周期内保活，不承诺跨重启恢复。与官方客户端的完整协议、链接路由、下载和视觉行为仍以 [IN_APP_BROWSER_DEVELOPMENT.md](docs/development-plans/IN_APP_BROWSER_DEVELOPMENT.md) 后续验收为准。
+- `已完成` 完成内置浏览器基础工作区：浏览器作为会话右侧工作区的平级 Tab 打开，不替换会话页。右上角菜单可直接创建并打开浏览器，已交付紧凑标签栏、地址搜索、多标签、网页新窗口转标签、页面标题、导航/刷新/停止/外部打开、错误反馈、空状态、Chrome 数据隔离说明和 macOS 常用快捷键。收起右栏、切换工作区 Tab 或进入其他一级页时保留 WebView 和页内标签，隐藏时退出焦点链且不拦截快捷键；展开/收起动画的中间宽度不布局完整浏览器 chrome。每次主框架跳转与重定向都会执行 URL 和 DNS 私网检查；最终重定向 URL 会结束加载状态，同标签用户与智能体导航共享请求版本，迟到回调不会覆盖较新导航。页内标签默认仅在当前应用生命周期内保活，用户可显式开启只恢复地址与标题的跨重启恢复。与官方客户端的完整协议和视觉行为仍以 [IN_APP_BROWSER_DEVELOPMENT.md](docs/development-plans/IN_APP_BROWSER_DEVELOPMENT.md) 后续验收为准。
 - `已完成` 修复网页 `target="_blank"` / `window.open()` 新窗口竞态：新标签直接绑定 WebView 插件从 WebKit 回调传入的 `windowId`，不再于原生 WebView 尚未就绪时提前加载而显示空页；被安全策略拒绝的弹窗会被消费并释放，不会改导原页，`window.close()` 会关闭对应标签，关闭标签同步释放窗口绑定。智能体导航以标签和 revision 隔离迟到检查，每个标签仅允许与当前获准 URL 匹配的主框架完成或错误回调更新导航状态。
-- `进行中` 按 [IN_APP_BROWSER_DEVELOPMENT.md](docs/development-plans/IN_APP_BROWSER_DEVELOPMENT.md) 完成智能体按需唤起适配：设置提供持久化总开关，只有可回复的 `browser/open`、`browser/navigate` 请求才显示 Codex 风格底部权限卡片，并在用户允许后打开内置浏览器工作区加载具有主机名的 HTTP/HTTPS 页面；嵌套请求地址会在卡片中完整显示，相同 URL 的每次已批准导航都会重新执行，关闭开关会拒绝并清理等待中的浏览器审批。`browser` / `computer-use` 活动和无 ID 通知不会绕过确认自行导航。完整公开协议接入、链接打开位置偏好、独立浏览数据/历史、下载确认与受控下载路径仍待交付。不共享 Chrome/Safari 登录态，不自动向 Codex 发送页面数据，浏览器受控能力另行进行协议与安全评审。
-- `进行中` 浏览器实际导航前会解析域名并拒绝解析到回环、私网、链路本地或多播地址的主机；重定向继续经过同一策略复核。
+- `已完成` 浏览器实际导航前会解析域名并拒绝解析到回环、私网、链路本地或多播地址的主机；重定向继续经过同一策略复核。关闭标签时会同步失效导航、标题、历史、错误和下载异步回调，避免迟到事件写回已关闭标签；已接入 App Server `thread/start.dynamicTools` 注册的 `browser` namespace，以及 `item/tool/call` 的受限动态浏览器工具名、URL 提取、审批响应和导航闭环。审批通过但工作区回调正在切换或重新挂载时，已批准 URL 会在当前运行时短暂排队并在 handler 重连后回放；关闭浏览器能力或运行时退出会清空该队列。Flutter 平台 contract 测试已确认 `Cmd+R` 调用活动 WebView controller 的 `reload()`、下载/弹窗/导航策略配置和媒体权限默认拒绝；原生 RunnerTests 已验证真实 `WKWebView` 加载、`reload()`、停止加载、不可达地址错误回传、delegate 解除、视图卸载、测试 Cookie 的定向清理、accessibility role/tree contract、窗口 AX children 包含 WebView 和本机 HTTP attachment 的 `WKDownload` 委托回调；真实 Flutter/WebKit platform view 创建和本机 HTTP attachment → `onDownloadStartRequest` 的插件到 Dart 回调、下载成功/取消/HTTP 失败组合也有 macOS integration test。Flutter 语义树和外部 AX 审计已覆盖浏览器关键节点及真实 WebKit 网页后代。
+- `已完成` 动态浏览器工具协议已依据 App Server schema 收敛为客户端注册的 `browser` namespace（`open`、`navigate`），并保留点号、斜杠、下划线、连字符和冒号分隔的受限兼容解析；allowlist 仍严格拒绝未知工具。真实本机 HTTP 下载的失败、取消、重定向、重名和默认下载路径目录边界已有测试；macOS integration 已验证真实 WebKit attachment 到 Dart 的下载成功、取消和 HTTP 失败路径，原生 `WKDownload` 委托回调、platform view 回调和外部系统 AX 宿主对子孙节点的递归审计也有真实测试。
+- `已完成` 浏览器下载支持用户确认、可配置默认目录（必须是目录）、每次询问保存位置开关、原生保存位置选择、重定向安全复核、临时文件原子落盘、进行中传输取消和既有文件保护；加密下载记录支持查看、单条删除和清空，删除记录不会删除实际文件，HTTP 失败和取消不会提交记录。
+- `已完成` 浏览器标签支持显式开启的跨重启恢复；恢复的安全 HTTP/HTTPS 标签会在 WebView 创建后实际导航，只恢复地址和标题，不恢复 Cookie、网站存储或登录状态，默认关闭。
+- `已完成` 回复中的 HTTP/HTTPS Markdown 链接会通过工作区级浏览器路由复用保活浏览器 Tab；浏览器能力关闭或链接不是网页地址时回退系统默认应用，项目内文件和 Markdown 预览边界保持不变。
+- `已完成` “集成 > 浏览器”新增网页链接打开位置偏好，默认系统浏览器并可切换为内置浏览器；偏好写入独立运行时配置，智能体主动请求不受该用户链接偏好影响。
 - `已完成` 用户消息气泡保持右侧对齐，内部单行与换行文本维持自然左对齐；超过 16 行的长文本默认省略折叠，支持“显示更多 / 显示较少”原位切换；悬停时在时间旁提供复制和修改入口，修改会原位展开 Codex 风格内联编辑器，支持取消和发送，修订内容作为下一轮任务提交（运行中则排入调整方向），不修改既有会话审计记录。
 - `已完成` 收紧“已运行命令”等活动摘要与展开明细的上下间距，减少时间线活动清单的空白。
 - `已完成` 本次 [CODEX_COMPOSER_PARITY_PLAN.md](docs/development-plans/CODEX_COMPOSER_PARITY_PLAN.md) 范围内的 Composer 与任务文件开发：`@` / `/` 的真实动作、筛选、键盘、结构化输入、`fuzzyFileSearch`、Goal/Plan/Skill、代码审查、聊天分支、主动压缩、反馈、侧边聊天、上下文用量、IDE 宿主通道、任务文件跨轮持久化、撤销和重启恢复均已接入并通过本地测试。官方桌面菜单与视觉对照、任务文件最终范围及具体 IDE 插件已移至 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](docs/development-plans/CODEX_COMPOSER_PARITY_FOLLOWUP.md)。
@@ -244,4 +248,8 @@
 
 ## 下一项建议
 
-优先在干净 macOS 用户账户或测试机执行 DMG 安装回归；取得 Apple Developer 凭据后，再完成首次签名、公证与 notarized DMG 回归。
+内置浏览器智能体调用闭环（P1）已完成：已接通 App Server `thread/start.dynamicTools` 的客户端 `browser` namespace 注册、`item/tool/call` 动态浏览器工具、权限卡片、导航安全、媒体权限拒绝、历史、浏览数据、下载和标签恢复，并通过 Flutter 平台 contract、Flutter 语义树遍历、真实 WebKit integration、外部 AX 宿主与原生 RunnerTests 验证快捷键、WebView 加载/刷新/错误回传、视图卸载、Cookie 定向清理、下载成功/取消/HTTP 失败、宿主 AX contract 及真实网页 `AXWebArea` 后代。
+
+本轮已完成真实插件组合端到端的下载成功、取消、HTTP 失败和系统可观测 accessibility contract 验收；`tool/macos_browser_ax_audit.swift` 外部 AX 审计工具配合 `integration_test/browser_ax_host_test.dart` 保活宿主，已在真实 Flutter/WebKit 页面上观察到 `AXWebArea`、文本和链接后代，浏览器闭关验收完成。
+
+Flutter 语义树审计已补齐浏览器工作区关键节点与可点击标签检查；外部系统 AX 宿主也已递归验证 WebKit 独立进程网页子孙节点，浏览器 v1 闭关没有剩余验收项。

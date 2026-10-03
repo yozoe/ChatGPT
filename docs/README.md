@@ -18,7 +18,7 @@
 | --- | --- | --- | --- |
 | **待开发** | [LOCAL_WORKTREE_DEVELOPMENT.md](development-plans/LOCAL_WORKTREE_DEVELOPMENT.md) | 本地 checkout / detached worktree 创建、任务绑定、事务回滚；随后再做增量 Handoff、永久工作树和清理策略 | `ROADMAP.md` P1 本地工作树 |
 | **待开发** | [ANDROID_SCREEN_BRIDGE_TECHNICAL_PLAN.md](development-plans/ANDROID_SCREEN_BRIDGE_TECHNICAL_PLAN.md) | ADB 发现、设备会话、观察—操作闭环、Device Broker 隔离；目前仍是技术方案，不代表已有 Android 功能 | 待纳入路线图后实施 |
-| **进行中** | [IN_APP_BROWSER_DEVELOPMENT.md](development-plans/IN_APP_BROWSER_DEVELOPMENT.md) | 完整 browser tool 协议、链接打开偏好、独立历史/浏览数据、下载确认与受控路径 | `ROADMAP.md` P1 内置浏览器后续阶段 |
+| **已交付** | [IN_APP_BROWSER_DEVELOPMENT.md](development-plans/IN_APP_BROWSER_DEVELOPMENT.md) | 已接入客户端注册的 `browser` namespace 与 `item/tool/call` 闭环；真实 Flutter/WebKit 组合 smoke、插件到 Dart 下载回调及成功/取消/HTTP 失败组合、HTTP 下载边界、原生 `WKDownload` 委托、Flutter 语义树遍历、WebKit/AXUIElement contract 和真实网页 AX 子孙节点审计均已覆盖 | `ROADMAP.md` P1 内置浏览器后续阶段 |
 | **待开发 / 验收** | [CODEX_COMPOSER_PARITY_FOLLOWUP.md](development-plans/CODEX_COMPOSER_PARITY_FOLLOWUP.md) | 官方桌面行为矩阵、视觉并排、任务文件最终范围、真实 IDE 插件验证 | Composer 后续验收，不扩大当前实现承诺 |
 | **进行中 / 建议** | [PROJECT_OPTIMIZATION_RECOMMENDATIONS.md](development-plans/PROJECT_OPTIMIZATION_RECOMMENDATIONS.md) | 核心状态拆分、缩小 Widget 重建范围、原生层测试和剩余测试治理 | 采用前需拆成路线图任务 |
 | **待开发** | [AGENT_DEFAULT_SETTINGS_PLAN.md](development-plans/AGENT_DEFAULT_SETTINGS_PLAN.md) | 对齐官方“智能体默认设置”：批准策略、沙盒、网页搜索、输出详细程度和推理摘要 | `ROADMAP.md` P1 设置一致性任务 |

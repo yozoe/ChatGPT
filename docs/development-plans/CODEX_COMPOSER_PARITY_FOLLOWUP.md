@@ -74,7 +74,7 @@
 审计日期：2026-09-13。
 
 - 已核对 [README.md](../../README.md)、[ROADMAP.md](../../ROADMAP.md)、[RELEASE_NOTES.md](../../RELEASE_NOTES.md)、本目录下的 Composer/浏览器/工作树计划，以及 [CODEX_COMPOSER_PARITY_BASELINE.md](../CODEX_COMPOSER_PARITY_BASELINE.md) 的状态用语；已将“完整复刻”“完全一致”等无直接证据的表述收紧为“接入公开协议”“采用 Codex 风格”或“待官方验收”。
-- 已核对浏览器边界：只有可回复的 `browser/open`、`browser/navigate` 请求在用户批准后才会导航；`computer-use` 活动和无 ID 通知只展示状态，不会自动打开网页。
+- 已核对浏览器边界：只有可回复的 `browser/open`、`browser/navigate` 请求和受限命名的 `item/tool/call` 动态浏览器工具在用户批准后才会导航；`computer-use` 活动和无 ID 通知只展示状态，不会自动打开网页。
 - 已核对录制技能边界：当前运行时没有公开录制协议，入口保持禁用，不使用 `skill-creator` 加提示词模拟录制。
 - 已执行 `git diff --check` 和仓库 Markdown 本地链接检查，当前均通过。
 - 当前 shell 未发现可直接执行的 `codex` CLI（`command -v codex` 无结果）；因此基线中的 0.154 alpha Schema 仍作为已登记证据保留，但本轮没有声称完成新的协议复现或稳定版兼容性验证。

@@ -10,6 +10,7 @@ import 'package:chatgpt/src/presentation/files/codex_workspace_files_workspace_p
 import 'package:chatgpt/src/presentation/files/workspace_source_file_preview.dart';
 import 'package:chatgpt/src/presentation/agents/codex_workspace_agents_page.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_desktop_side_panel.dart';
+import 'package:chatgpt/src/presentation/workspace/browser_link_open_scope.dart';
 import 'package:chatgpt/src/presentation/workspace/workspace_file_open_scope.dart';
 import 'package:chatgpt/src/presentation/workspace/workspace_file_tabs_notifier.dart';
 import 'package:chatgpt/src/presentation/workspace/workspace_file_tabs_state.dart';
@@ -304,6 +305,17 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       _activeSidePanelTab = 'browser';
       _sidePanelCollapsed = false;
     });
+  }
+
+  Future<bool> _openBrowserLink(Uri uri) async {
+    if (!mounted || !_controller.browserEnabled) {
+      return false;
+    }
+    if (_controller.browserLinkOpenMode != BrowserLinkOpenMode.inApp) {
+      return false;
+    }
+    _handleBrowserInvocation(uri.toString());
+    return true;
   }
 
   /// 响应控制器更新；显式注入时由工作区重建，Provider 场景仍由 ref.watch 重建。
@@ -2726,6 +2738,9 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
             onOpenConversation: _returnToMainTask,
             initialUrl: _browserInitialUrl,
             navigationRevision: _browserNavigationRevision,
+            downloadDirectory: controller.browserDownloadDirectory,
+            askBeforeDownload: controller.browserAskBeforeDownload,
+            restoreTabs: controller.browserRestoreTabs,
             isVisible:
                 _destination == WorkspaceDestination.conversation &&
                 !_sidePanelCollapsed &&
@@ -3055,83 +3070,88 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                                         WorkspaceFileOpenScope(
                                                           onOpenFile:
                                                               _openWorkspaceFile,
-                                                          child: ConversationPane(
-                                                            controller:
-                                                                controller,
-                                                            composer: _composer,
-                                                            timelinePages:
-                                                                _timelinePages,
-                                                            timelineScrollControllers:
-                                                                _timelineScrollControllers,
-                                                            activeTimelinePageKey:
-                                                                _displayedThreadKey,
-                                                            threadHistoryLoading:
-                                                                _threadHistoryLoading,
-                                                            fileChangeSummaryExpanded:
-                                                                (pageKey) =>
-                                                                    _fileChangeSummaryExpanded[pageKey] ??
-                                                                    false,
-                                                            onFileChangeSummaryExpandedChanged:
-                                                                (
-                                                                  pageKey,
-                                                                  expanded,
-                                                                ) {
-                                                                  setState(() {
-                                                                    _fileChangeSummaryExpanded[pageKey] =
-                                                                        expanded;
-                                                                  });
-                                                                },
-                                                            activityExpanded:
-                                                                (
-                                                                  pageKey,
-                                                                  activityId,
-                                                                ) =>
-                                                                    _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
-                                                                    false,
-                                                            onTimelineMetricsChanged:
-                                                                _handleTimelineMetricsChanged,
-                                                            onTimelineUserScrollDirection:
-                                                                _handleTimelineUserScrollDirection,
-                                                            showScrollToBottom:
-                                                                _timelineIsAboveLatest[_displayedThreadKey] ??
-                                                                false,
-                                                            onScrollToBottom:
-                                                                _scrollTimelineToBottom,
-                                                            onActivityExpandedChanged:
-                                                                (
-                                                                  pageKey,
-                                                                  activityId,
-                                                                  expanded,
-                                                                ) {
-                                                                  setState(() {
-                                                                    _activityListExpanded['${pageKey.storageKey}/$activityId'] =
-                                                                        expanded;
-                                                                  });
-                                                                },
-                                                            onSend: _send,
-                                                            onQueueSteer:
-                                                                _queueDirection,
-                                                            onReview: () =>
-                                                                _showCodeReview(
-                                                                  CodeReviewSource
-                                                                      .latestTurn,
-                                                                ),
-                                                            onUndo:
-                                                                _undoFileChanges,
-                                                            onOpenSubagent:
-                                                                _openSubagentInspector,
-                                                            onSubmitUserMessageEdit:
-                                                                _submitEditedUserMessage,
-                                                            onSetGoal: controller
-                                                                .setActiveGoalFromMessage,
-                                                            onOpenSideChat:
-                                                                _openSideChat,
-                                                            sideChatEnabled:
-                                                                !_reviewOpen &&
-                                                                _sideChatSession ==
-                                                                    null &&
-                                                                controller
-                                                                    .canOpenSideChat,
+                                                          child: BrowserLinkOpenScope(
+                                                            onOpenBrowserLink:
+                                                                _openBrowserLink,
+                                                            child: ConversationPane(
+                                                              controller:
+                                                                  controller,
+                                                              composer:
+                                                                  _composer,
+                                                              timelinePages:
+                                                                  _timelinePages,
+                                                              timelineScrollControllers:
+                                                                  _timelineScrollControllers,
+                                                              activeTimelinePageKey:
+                                                                  _displayedThreadKey,
+                                                              threadHistoryLoading:
+                                                                  _threadHistoryLoading,
+                                                              fileChangeSummaryExpanded:
+                                                                  (pageKey) =>
+                                                                      _fileChangeSummaryExpanded[pageKey] ??
+                                                                      false,
+                                                              onFileChangeSummaryExpandedChanged:
+                                                                  (
+                                                                    pageKey,
+                                                                    expanded,
+                                                                  ) {
+                                                                    setState(() {
+                                                                      _fileChangeSummaryExpanded[pageKey] =
+                                                                          expanded;
+                                                                    });
+                                                                  },
+                                                              activityExpanded:
+                                                                  (
+                                                                    pageKey,
+                                                                    activityId,
+                                                                  ) =>
+                                                                      _activityListExpanded['${pageKey.storageKey}/$activityId'] ??
+                                                                      false,
+                                                              onTimelineMetricsChanged:
+                                                                  _handleTimelineMetricsChanged,
+                                                              onTimelineUserScrollDirection:
+                                                                  _handleTimelineUserScrollDirection,
+                                                              showScrollToBottom:
+                                                                  _timelineIsAboveLatest[_displayedThreadKey] ??
+                                                                  false,
+                                                              onScrollToBottom:
+                                                                  _scrollTimelineToBottom,
+                                                              onActivityExpandedChanged:
+                                                                  (
+                                                                    pageKey,
+                                                                    activityId,
+                                                                    expanded,
+                                                                  ) {
+                                                                    setState(() {
+                                                                      _activityListExpanded['${pageKey.storageKey}/$activityId'] =
+                                                                          expanded;
+                                                                    });
+                                                                  },
+                                                              onSend: _send,
+                                                              onQueueSteer:
+                                                                  _queueDirection,
+                                                              onReview: () =>
+                                                                  _showCodeReview(
+                                                                    CodeReviewSource
+                                                                        .latestTurn,
+                                                                  ),
+                                                              onUndo:
+                                                                  _undoFileChanges,
+                                                              onOpenSubagent:
+                                                                  _openSubagentInspector,
+                                                              onSubmitUserMessageEdit:
+                                                                  _submitEditedUserMessage,
+                                                              onSetGoal: controller
+                                                                  .setActiveGoalFromMessage,
+                                                              onOpenSideChat:
+                                                                  _openSideChat,
+                                                              sideChatEnabled:
+                                                                  !_reviewOpen &&
+                                                                  _sideChatSession ==
+                                                                      null &&
+                                                                  controller
+                                                                      .canOpenSideChat,
+                                                            ),
                                                           ),
                                                         ),
                                                         if (_threadHistoryLoading)

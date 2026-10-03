@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
+import 'package:chatgpt/src/domain/browser_link_open_mode.dart';
 import 'package:chatgpt/src/domain/codex_thread_goal.dart';
 import 'package:chatgpt/src/domain/codex_thread_token_usage.dart';
 import 'package:chatgpt/src/domain/codex_plugin.dart';
@@ -305,6 +306,14 @@ class CodexController extends ChangeNotifier {
   final Set<String> _rejectedPlanTurnKeys = {};
   final Set<String> _handledPlanImplementationKeys = {};
   final Set<String> _handledBrowserInvocationIds = {};
+  // Keep an approved navigation until the retained browser workspace has
+  // reattached its handler. Workspace/settings transitions can briefly leave
+  // this callback unset; dropping the URL would acknowledge a tool call
+  // without actually opening the requested page.
+  final List<String> _queuedBrowserInvocations = <String>[];
+  // “允许所有网站” is intentionally scoped to the current runtime session.
+  // Keep it in memory so it never becomes a persisted browser bypass.
+  bool _browserAllowAllSites = false;
   Timer? _deltaNotificationTimer;
   Timer? _historySaveTimer;
   Future<void> _historySave = Future.value();
@@ -511,6 +520,12 @@ class CodexController extends ChangeNotifier {
   /// Registers the workspace callback used when the agent requests a browser navigation.
   void setBrowserInvocationHandler(void Function(String url)? handler) {
     _browserInvocationHandler = handler;
+    if (handler == null || _queuedBrowserInvocations.isEmpty) return;
+    final queued = List<String>.of(_queuedBrowserInvocations);
+    _queuedBrowserInvocations.clear();
+    for (final url in queued) {
+      handler(url);
+    }
   }
 
   void Function(String url)? _browserInvocationHandler;
@@ -1042,7 +1057,15 @@ class CodexController extends ChangeNotifier {
       pendingElicitation != null && !elicitationResponding;
   ApprovalMode approvalMode = ApprovalMode.manual;
   bool browserEnabled = true;
+  BrowserLinkOpenMode browserLinkOpenMode = BrowserLinkOpenMode.system;
+  String? browserDownloadDirectory;
+  bool browserAskBeforeDownload = true;
+  bool browserRestoreTabs = false;
   bool _browserEnabledChangedBeforeLoad = false;
+  bool _browserLinkOpenModeChangedBeforeLoad = false;
+  bool _browserDownloadDirectoryChangedBeforeLoad = false;
+  bool _browserAskBeforeDownloadChangedBeforeLoad = false;
+  bool _browserRestoreTabsChangedBeforeLoad = false;
   bool _approvalModeChangedBeforeLoad = false;
   ReasoningEffort reasoningEffort = ReasoningEffort.defaultValue;
   List<ReasoningEffort> reasoningEffortOptions = const [
@@ -3272,6 +3295,7 @@ class CodexController extends ChangeNotifier {
         modelProvider: null,
         model: _modelOverrideForNewThread,
         config: _newThreadConfig(),
+        dynamicTools: browserDynamicToolSpecs,
       );
       if (_disposed ||
           activeThreadId != originalThreadId ||
@@ -3665,6 +3689,7 @@ class CodexController extends ChangeNotifier {
         modelProvider: null,
         model: _modelOverrideForNewThread,
         config: _newThreadConfig(),
+        dynamicTools: browserDynamicToolSpecs,
       );
       final threadId = requestedThreadId;
       if (workspace != requestWorkspace) {
@@ -4801,6 +4826,9 @@ class CodexController extends ChangeNotifier {
   Future<void> stopRuntime() async {
     if (status == RuntimeStatus.stopped && !_server.isRunning) return;
     _runtimeConnectionEpoch++;
+    _handledBrowserInvocationIds.clear();
+    _queuedBrowserInvocations.clear();
+    _browserAllowAllSites = false;
     _invalidateSubagentViewsForRuntimeChange();
     _runtimeReconnectTimer?.cancel();
     _runtimeReconnectTimer = null;
@@ -6173,6 +6201,7 @@ class CodexController extends ChangeNotifier {
         _approvalResult(approval, accepted, allowSimilar: allowSimilar),
       );
       if (accepted && approval.kind == ApprovalKind.browser) {
+        if (allowSimilar) _browserAllowAllSites = true;
         final url = _browserUrlFromParams(approval.params);
         if (url != null) _emitBrowserInvocationForApproval(approval, url);
       }
@@ -6204,7 +6233,12 @@ class CodexController extends ChangeNotifier {
     if (!browserEnabled) return;
     final key = 'approval:${approval.requestId}:$url';
     if (!_handledBrowserInvocationIds.add(key)) return;
-    _browserInvocationHandler?.call(url);
+    final handler = _browserInvocationHandler;
+    if (handler == null) {
+      _queuedBrowserInvocations.add(url);
+      return;
+    }
+    handler(url);
   }
 
   /// Responds to a structured input or URL confirmation requested by an MCP
@@ -6605,6 +6639,8 @@ class CodexController extends ChangeNotifier {
     browserEnabled = enabled;
     if (!enabled) {
       _handledBrowserInvocationIds.clear();
+      _queuedBrowserInvocations.clear();
+      _browserAllowAllSites = false;
       _rejectPendingBrowserApprovals();
     }
     notifyListeners();
@@ -6617,22 +6653,118 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// Sets where user-activated HTTP(S) links should open.
+  Future<void> setBrowserLinkOpenMode(BrowserLinkOpenMode mode) async {
+    _browserLinkOpenModeChangedBeforeLoad = true;
+    browserLinkOpenMode = mode;
+    notifyListeners();
+    try {
+      await _runtimeConfigurationStore.saveBrowserLinkOpenMode(mode);
+    } catch (error) {
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '无法保存网页链接打开位置', lastError!);
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  /// Sets the optional default directory for browser downloads.
+  Future<void> setBrowserDownloadDirectory(String? directory) async {
+    _browserDownloadDirectoryChangedBeforeLoad = true;
+    browserDownloadDirectory = directory?.trim().isEmpty == true
+        ? null
+        : directory?.trim();
+    notifyListeners();
+    try {
+      await _runtimeConfigurationStore.saveBrowserDownloadDirectory(
+        browserDownloadDirectory,
+      );
+    } catch (error) {
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '无法保存下载目录', lastError!);
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  /// Sets whether each browser download must ask for a destination.
+  Future<void> setBrowserAskBeforeDownload(bool ask) async {
+    _browserAskBeforeDownloadChangedBeforeLoad = true;
+    browserAskBeforeDownload = ask;
+    notifyListeners();
+    try {
+      await _runtimeConfigurationStore.saveBrowserAskBeforeDownload(ask);
+    } catch (error) {
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '无法保存下载确认设置', lastError!);
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  /// Sets the explicit opt-in for restoring browser tabs after relaunch.
+  Future<void> setBrowserRestoreTabs(bool restore) async {
+    _browserRestoreTabsChangedBeforeLoad = true;
+    browserRestoreTabs = restore;
+    notifyListeners();
+    try {
+      await _runtimeConfigurationStore.saveBrowserRestoreTabs(restore);
+    } catch (error) {
+      lastError = _messageOf(error);
+      _add(TimelineKind.error, '无法保存标签恢复设置', lastError!);
+      if (!_disposed) notifyListeners();
+    }
+  }
+
   /// 路由 App Server 事件，并更新时间线、审批和运行时状态。
   /// Routes an App Server event and updates timeline, approval, and runtime state.
   void _handleServerEvent(ServerEvent event) {
     if (_disposed) return;
     if (event.isServerRequest) {
+      final isDynamicBrowserTool =
+          event.method == 'item/tool/call' &&
+          PendingApproval.isBrowserToolCall(event.params);
       if (event.method == 'browser/open' ||
-          event.method == 'browser/navigate') {
+          event.method == 'browser/navigate' ||
+          isDynamicBrowserTool) {
         final browserApproval = PendingApproval.fromEvent(event);
         if (!browserEnabled) {
-          _server.respondError(event.requestId!, '内置浏览器调用已在设置中关闭。');
+          if (isDynamicBrowserTool && browserApproval != null) {
+            _server.respond(
+              browserApproval.requestId,
+              _approvalResult(browserApproval, false),
+            );
+          } else {
+            _server.respondError(event.requestId!, '内置浏览器调用已在设置中关闭。');
+          }
         } else if (browserApproval == null ||
             _browserUrlFromParams(event.params) == null) {
-          _server.respondError(
-            event.requestId!,
-            '此浏览器请求缺少有效的 HTTP 或 HTTPS 地址。',
-          );
+          if (isDynamicBrowserTool && browserApproval != null) {
+            _server.respond(
+              browserApproval.requestId,
+              _approvalResult(browserApproval, false),
+            );
+          } else {
+            _server.respondError(
+              event.requestId!,
+              '此浏览器请求缺少有效的 HTTP 或 HTTPS 地址。',
+            );
+          }
+        } else if (_browserAllowAllSites) {
+          try {
+            _server.respond(
+              browserApproval.requestId,
+              _approvalResult(browserApproval, true, allowSimilar: true),
+            );
+            final url = _browserUrlFromParams(browserApproval.params);
+            if (url != null) {
+              _emitBrowserInvocationForApproval(browserApproval, url);
+            }
+            if (browserApproval.threadId == null ||
+                browserApproval.threadId == activeThreadId) {
+              _add(TimelineKind.system, '已自动允许浏览器访问', browserApproval.title);
+            }
+          } catch (error) {
+            lastError = _messageOf(error);
+            _add(TimelineKind.error, '自动允许浏览器访问失败', lastError!);
+          }
         } else {
           _pendingApprovals[browserApproval.requestId] = browserApproval;
           _queuePendingRequest(browserApproval.requestId, kind: 'approval');
@@ -6691,12 +6823,37 @@ class CodexController extends ChangeNotifier {
         _server.respondError(event.requestId!, '此客户端暂不支持 ${event.method}。');
         _add(TimelineKind.error, '未支持的运行时请求', event.method);
       } else {
+        if (approval.kind == ApprovalKind.browser) {
+          final url = _browserUrlFromParams(approval.params);
+          if (!browserEnabled) {
+            _server.respond(
+              approval.requestId,
+              _approvalResult(approval, false),
+            );
+            _add(TimelineKind.system, '已拒绝浏览器调用', '内置浏览器调用已在设置中关闭。');
+            notifyListeners();
+            return;
+          }
+          if (url == null) {
+            _server.respondError(
+              approval.requestId,
+              '此浏览器请求缺少有效的 HTTP 或 HTTPS 地址。',
+            );
+            _add(TimelineKind.error, '无法打开浏览器地址', '请求缺少有效的 HTTP 或 HTTPS 地址。');
+            notifyListeners();
+            return;
+          }
+        }
         if (approvalMode == ApprovalMode.autoApprove) {
           try {
             _server.respond(
               approval.requestId,
               _approvalResult(approval, true),
             );
+            if (approval.kind == ApprovalKind.browser) {
+              final url = _browserUrlFromParams(approval.params);
+              if (url != null) _emitBrowserInvocationForApproval(approval, url);
+            }
             if (approval.threadId == null ||
                 approval.threadId == activeThreadId) {
               _add(TimelineKind.system, '已自动批准本次操作', approval.title);
@@ -6944,6 +7101,8 @@ class CodexController extends ChangeNotifier {
         // A restarted runtime may legitimately reuse request IDs. Do not let
         // stale de-duplication state suppress the first navigation after reconnect.
         _handledBrowserInvocationIds.clear();
+        _queuedBrowserInvocations.clear();
+        _browserAllowAllSites = false;
         _invalidateSubagentViewsForRuntimeChange();
         for (final turn in _runningTurnIdsByThread.entries.toList()) {
           _markNetworkRetryActivitiesHistorical(
@@ -7015,6 +7174,14 @@ class CodexController extends ChangeNotifier {
     if (value is String) {
       final uri = normalizeBrowserUrl(value);
       if (uri != null) return uri.toString();
+      final trimmed = value.trim();
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        try {
+          return _browserUrlFromParams(jsonDecode(trimmed));
+        } catch (_) {
+          // Treat malformed JSON strings as ordinary non-URL values.
+        }
+      }
       return null;
     }
     if (value is! Map) return null;
@@ -7026,6 +7193,8 @@ class CodexController extends ChangeNotifier {
       'target_url',
       'initialUrl',
       'initial_url',
+      'arguments',
+      'args',
     ];
     for (final key in directKeys) {
       final candidate = _browserUrlFromParams(value[key]);
@@ -7249,6 +7418,17 @@ class CodexController extends ChangeNotifier {
         approval.kind == ApprovalKind.permissions ||
         approval.kind == ApprovalKind.browser;
     final persist = accepted && allowSimilar && persistentApproval;
+    if (approval.kind == ApprovalKind.browser &&
+        approval.method == 'item/tool/call') {
+      return {
+        'success': accepted,
+        'contentItems': accepted
+            ? const <JsonMap>[]
+            : <JsonMap>[
+                {'type': 'inputText', 'text': '浏览器调用已被用户拒绝。'},
+              ],
+      };
+    }
     return switch (approval.kind) {
       ApprovalKind.command || ApprovalKind.fileChange => {
         'decision': accepted
@@ -9980,7 +10160,11 @@ class CodexController extends ChangeNotifier {
         _runtimeConfigurationStore.readPinnedWorkspaces(),
         _runtimeConfigurationStore.readApprovalMode(),
         _runtimeConfigurationStore.readBrowserEnabled(),
+        _runtimeConfigurationStore.readBrowserLinkOpenMode(),
         _runtimeConfigurationStore.readScheduledTasks(),
+        _runtimeConfigurationStore.readBrowserDownloadDirectory(),
+        _runtimeConfigurationStore.readBrowserAskBeforeDownload(),
+        _runtimeConfigurationStore.readBrowserRestoreTabs(),
       ]);
       final executable = values[0] as String?;
       if (executable != null && executable.trim().isNotEmpty) {
@@ -10003,7 +10187,19 @@ class CodexController extends ChangeNotifier {
       if (!_browserEnabledChangedBeforeLoad) {
         browserEnabled = values[5] as bool? ?? true;
       }
-      _scheduledTaskCoordinator.load(values[6] as List<ScheduledTask>);
+      if (!_browserLinkOpenModeChangedBeforeLoad) {
+        browserLinkOpenMode = values[6] as BrowserLinkOpenMode;
+      }
+      _scheduledTaskCoordinator.load(values[7] as List<ScheduledTask>);
+      if (!_browserDownloadDirectoryChangedBeforeLoad) {
+        browserDownloadDirectory = values[8] as String?;
+      }
+      if (!_browserAskBeforeDownloadChangedBeforeLoad) {
+        browserAskBeforeDownload = values[9] as bool? ?? true;
+      }
+      if (!_browserRestoreTabsChangedBeforeLoad) {
+        browserRestoreTabs = values[10] as bool? ?? false;
+      }
     } catch (error) {
       runtimeError = '无法读取已保存的运行时配置：${_messageOf(error)}';
     }
@@ -11452,6 +11648,7 @@ class CodexController extends ChangeNotifier {
     _subagentRefreshTimers.clear();
     _stopCollaborationBridge();
     _runtimeConnectionEpoch++;
+    _queuedBrowserInvocations.clear();
     unawaited(_saveConversationHistory());
     _disposed = true;
     _releaseAllTemporaryAttachments();

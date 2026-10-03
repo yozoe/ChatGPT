@@ -9,6 +9,45 @@ import 'codex_app_server_codex_runtime_probe.dart';
 import 'codex_app_server_server_event.dart';
 import 'codex_app_server_exception.dart';
 
+/// Dynamic tools exposed to new App Server threads when in-app browser access
+/// is enabled. The schema mirrors the current App Server `DynamicToolSpec`
+/// contract: one namespace with explicit `open` and `navigate` functions.
+const browserDynamicToolSpecs = <JsonMap>[
+  {
+    'type': 'namespace',
+    'name': 'browser',
+    'description': 'Open or navigate the Codex Desk in-app browser.',
+    'tools': [
+      {
+        'type': 'function',
+        'name': 'open',
+        'description': 'Open an HTTP or HTTPS URL in the in-app browser.',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'url': {'type': 'string', 'format': 'uri'},
+          },
+          'required': ['url'],
+          'additionalProperties': false,
+        },
+      },
+      {
+        'type': 'function',
+        'name': 'navigate',
+        'description': 'Navigate the in-app browser to an HTTP or HTTPS URL.',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'url': {'type': 'string', 'format': 'uri'},
+          },
+          'required': ['url'],
+          'additionalProperties': false,
+        },
+      },
+    ],
+  },
+];
+
 class CodexAppServer {
   CodexAppServer({
     String? executable,
@@ -346,6 +385,7 @@ class CodexAppServer {
     String? modelProvider,
     String? model,
     JsonMap? config,
+    List<JsonMap>? dynamicTools,
   }) async {
     final response = await request('thread/start', {
       'cwd': workingDirectory,
@@ -353,6 +393,7 @@ class CodexAppServer {
       'modelProvider': ?modelProvider,
       'model': ?model,
       'config': ?config,
+      'dynamicTools': ?dynamicTools,
     });
     _throwIfError(response);
     final result = JsonMap.from(response['result'] as Map);

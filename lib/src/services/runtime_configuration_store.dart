@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:chatgpt/src/domain/workspace_configuration.dart';
+import 'package:chatgpt/src/domain/browser_link_open_mode.dart';
 import 'package:chatgpt/src/domain/scheduled_task.dart';
 import 'package:chatgpt/src/domain/worktree_settings.dart';
 import 'package:chatgpt/src/domain/local_worktree_record.dart';
@@ -23,6 +24,12 @@ class RuntimeConfigurationStore {
   static const _modelKey = 'codex_desk.model.selected.v1';
   static const _approvalModeKey = 'codex_desk.approval_mode.v1';
   static const _browserEnabledKey = 'codex_desk.browser.enabled.v1';
+  static const _browserLinkOpenModeKey = 'codex_desk.browser.link_open_mode.v1';
+  static const _browserDownloadDirectoryKey =
+      'codex_desk.browser.download_directory.v1';
+  static const _browserAskBeforeDownloadKey =
+      'codex_desk.browser.ask_before_download.v1';
+  static const _browserRestoreTabsKey = 'codex_desk.browser.restore_tabs.v1';
   static const _scheduledTasksKey = 'codex_desk.scheduled_tasks.v1';
   static const _worktreeSettingsKey = 'codex_desk.worktrees.settings.v1';
   static const _worktreeRecordsKey = 'codex_desk.worktrees.records.v1';
@@ -193,6 +200,57 @@ class RuntimeConfigurationStore {
   Future<void> saveBrowserEnabled(bool enabled) {
     return _storage.write(key: _browserEnabledKey, value: enabled.toString());
   }
+
+  /// Reads where user-activated web links should open.
+  Future<BrowserLinkOpenMode> readBrowserLinkOpenMode() async {
+    final stored = await _storage.read(key: _browserLinkOpenModeKey);
+    return browserLinkOpenModeFromStorage(stored);
+  }
+
+  /// Saves the destination for user-activated web links.
+  Future<void> saveBrowserLinkOpenMode(BrowserLinkOpenMode mode) {
+    return _storage.write(
+      key: _browserLinkOpenModeKey,
+      value: browserLinkOpenModeStorageValue(mode),
+    );
+  }
+
+  /// Reads the user-selected default directory for browser downloads.
+  Future<String?> readBrowserDownloadDirectory() =>
+      _storage.read(key: _browserDownloadDirectoryKey);
+
+  /// Saves or clears the default browser download directory.
+  Future<void> saveBrowserDownloadDirectory(String? directory) {
+    if (directory == null || directory.trim().isEmpty) {
+      return _storage.delete(key: _browserDownloadDirectoryKey);
+    }
+    return _storage.write(
+      key: _browserDownloadDirectoryKey,
+      value: directory.trim(),
+    );
+  }
+
+  /// Reads whether downloads should ask for a destination every time.
+  Future<bool> readBrowserAskBeforeDownload() async {
+    final stored = await _storage.read(key: _browserAskBeforeDownloadKey);
+    if (stored == null) return true;
+    return stored.trim().toLowerCase() != 'false';
+  }
+
+  /// Saves the browser download confirmation preference.
+  Future<void> saveBrowserAskBeforeDownload(bool ask) =>
+      _storage.write(key: _browserAskBeforeDownloadKey, value: ask.toString());
+
+  /// Reads whether the browser may restore its tabs on the next launch.
+  Future<bool> readBrowserRestoreTabs() async {
+    final stored = await _storage.read(key: _browserRestoreTabsKey);
+    if (stored == null) return false;
+    return stored.trim().toLowerCase() == 'true';
+  }
+
+  /// Saves the explicit opt-in browser tab restore preference.
+  Future<void> saveBrowserRestoreTabs(bool restore) =>
+      _storage.write(key: _browserRestoreTabsKey, value: restore.toString());
 
   /// Reads locally scheduled prompts. Invalid entries are ignored so a damaged
   /// single schedule does not prevent the rest of the application from loading.

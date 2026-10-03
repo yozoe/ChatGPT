@@ -59,6 +59,7 @@ class FakeCodexAppServer extends CodexAppServer {
   String? startedModelProvider;
   String? startedModel;
   JsonMap? startedConfig;
+  List<JsonMap>? startedDynamicTools;
   List<JsonMap> skillListResponse = <JsonMap>[];
   final List<String> skillListDirectories = [];
   final List<Completer<List<JsonMap>>> skillListCompleters = [];
@@ -232,12 +233,14 @@ class FakeCodexAppServer extends CodexAppServer {
     String? modelProvider,
     String? model,
     JsonMap? config,
+    List<JsonMap>? dynamicTools,
   }) async {
     startedThreadDirectory = workingDirectory;
     startedRuntimeWorkspaceRoots = runtimeWorkspaceRoots;
     startedModelProvider = modelProvider;
     startedModel = model;
     startedConfig = config;
+    startedDynamicTools = dynamicTools;
     if (startThreadCompleter case final completer?) return completer.future;
     return startThreadResponseIds.isEmpty
         ? 'new-thread'

@@ -68,6 +68,34 @@ class PendingApproval {
     ].join('\n');
   }
 
+  /// Returns whether a dynamic App Server tool is an explicit browser action.
+  ///
+  /// Dynamic tools are identified by the tool name rather than by a dedicated
+  /// JSON-RPC method. Keep this allowlist narrow so computer-use activities or
+  /// arbitrary tools cannot acquire browser navigation semantics accidentally.
+  static bool isBrowserToolName(Object? value) {
+    final normalized = value?.toString().trim().toLowerCase().replaceAll(
+      RegExp(r'[.\/:_-]'),
+      '',
+    );
+    return normalized == 'browser' ||
+        normalized == 'browseropen' ||
+        normalized == 'browsernavigate' ||
+        normalized == 'openbrowser' ||
+        normalized == 'navigatebrowser';
+  }
+
+  /// Returns whether a dynamic tool call names the browser namespace and an
+  /// allowed browser action. App Server may send either a single combined
+  /// tool name or separate `namespace`/`tool` fields.
+  static bool isBrowserToolCall(JsonMap params) {
+    if (isBrowserToolName(params['tool'])) return true;
+    final namespace = params['namespace']?.toString().trim().toLowerCase();
+    final tool = params['tool']?.toString().trim().toLowerCase();
+    return namespace == 'browser' &&
+        (tool == 'open' || tool == 'navigate' || tool == 'browser');
+  }
+
   /// 将可识别的 App Server 审批请求转换为待处理审批。
   /// Converts a recognized App Server approval request into a pending approval.
   static PendingApproval? fromEvent(ServerEvent event) {
@@ -78,6 +106,8 @@ class PendingApproval {
       'item/fileChange/requestApproval' => ApprovalKind.fileChange,
       'item/permissions/requestApproval' => ApprovalKind.permissions,
       'browser/open' || 'browser/navigate' => ApprovalKind.browser,
+      'item/tool/call' =>
+        isBrowserToolCall(event.params) ? ApprovalKind.browser : null,
       _ => null,
     };
     if (kind == null) return null;

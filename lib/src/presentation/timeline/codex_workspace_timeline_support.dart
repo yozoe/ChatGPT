@@ -4,6 +4,7 @@ import 'package:markdown/markdown.dart' as md;
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
 import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions.dart';
 import 'package:chatgpt/src/presentation/timeline/codex_workspace_timeline_agent_linked_image.dart';
+import 'package:chatgpt/src/presentation/workspace/browser_link_open_scope.dart';
 import 'package:chatgpt/src/presentation/workspace/workspace_file_open_scope.dart';
 
 /// Couples a timeline entry to its stable source index while it is grouped.
@@ -409,6 +410,7 @@ Future<void> openAgentMarkdownDestination(
   required String? workspacePath,
 }) async {
   final openWorkspaceFile = WorkspaceFileOpenScope.maybeOf(context);
+  final browserLinkOpener = BrowserLinkOpenScope.maybeOf(context);
   // A reference resolved while rendering is presentation data only. Always
   // authorize the target again at activation time so a file replaced by a
   // symbolic link cannot escape the workspace boundary.
@@ -438,7 +440,14 @@ Future<void> openAgentMarkdownDestination(
   final opened = await openAgentMarkdownLink(
     href: href,
     workspacePath: workspacePath,
-    launch: (uri) => launchUrl(uri, mode: LaunchMode.externalApplication),
+    launch: (uri) async {
+      if ((uri.scheme == 'http' || uri.scheme == 'https') &&
+          browserLinkOpener != null &&
+          await browserLinkOpener(uri)) {
+        return true;
+      }
+      return launchUrl(uri, mode: LaunchMode.externalApplication);
+    },
   );
   if (!opened && context.mounted) {
     ScaffoldMessenger.of(

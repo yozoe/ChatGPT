@@ -253,6 +253,14 @@ class ApprovalPanel extends StatelessWidget {
           (uri.scheme == 'http' || uri.scheme == 'https')) {
         return uri.toString();
       }
+      final trimmed = value.trim();
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        try {
+          return _browserUrlFromParams(jsonDecode(trimmed));
+        } catch (_) {
+          // Ignore malformed encoded arguments and keep the card safe.
+        }
+      }
       return null;
     }
     if (value is! Map) return null;
@@ -264,6 +272,8 @@ class ApprovalPanel extends StatelessWidget {
       'target_url',
       'initialUrl',
       'initial_url',
+      'arguments',
+      'args',
     ];
     for (final key in directKeys) {
       final candidate = _browserUrlFromParams(value[key]);

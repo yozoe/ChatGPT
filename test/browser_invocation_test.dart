@@ -2,17 +2,23 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
+import 'package:flutter/services.dart';
 import 'package:chatgpt/src/app_controller.dart';
+import 'package:chatgpt/src/domain/browser_link_open_mode.dart';
+import 'package:chatgpt/src/domain/browser_tab_snapshot.dart';
 import 'package:chatgpt/src/domain/pending_approval.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_approval_panel.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_workspace_page.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_workspace_page_state.dart';
+import 'package:chatgpt/src/presentation/browser/browser_download_cancellation.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_error_policy.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_url_normalizer.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'widget_fakes/fake_runtime_configuration_store.dart';
+import 'widget_fakes/fake_browser_session_store.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -86,6 +92,326 @@ void main() {
     expect(openedUrl, 'https://example.com');
     expect(writes.single['id'], 42);
     expect(writes.single['result'], {'accepted': true, 'scope': 'turn'});
+  });
+
+  test(
+    'routes the official dynamic browser tool call through approval',
+    () async {
+      final writes = <JsonMap>[];
+      final controller = CodexController(
+        server: CodexAppServer(messageSink: writes.add),
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      );
+      addTearDown(controller.dispose);
+      String? openedUrl;
+      controller.setBrowserInvocationHandler((url) => openedUrl = url);
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/tool/call',
+          requestId: 'dynamic-browser-1',
+          params: {
+            'tool': 'browser.open',
+            'threadId': 'thread-1',
+            'turnId': 'turn-1',
+            'arguments': {'url': 'https://example.com/from-tool'},
+          },
+        ),
+      );
+
+      expect(controller.pendingApproval?.kind, ApprovalKind.browser);
+      expect(openedUrl, isNull);
+
+      await controller.respondToApproval(accepted: true);
+
+      expect(openedUrl, 'https://example.com/from-tool');
+      expect(writes.single['id'], 'dynamic-browser-1');
+      expect(writes.single['result'], {
+        'success': true,
+        'contentItems': const <JsonMap>[],
+      });
+    },
+  );
+
+  test(
+    'replays an approved browser call when the workspace handler reattaches',
+    () async {
+      final writes = <JsonMap>[];
+      final controller = CodexController(
+        server: CodexAppServer(messageSink: writes.add),
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      );
+      addTearDown(controller.dispose);
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/tool/call',
+          requestId: 'dynamic-browser-queued',
+          params: {
+            'callId': 'call-queued',
+            'threadId': 'thread-queued',
+            'turnId': 'turn-queued',
+            'tool': 'browser.open',
+            'arguments': {'url': 'https://example.com/queued'},
+          },
+        ),
+      );
+
+      await controller.respondToApproval(accepted: true);
+      expect(writes.single['result'], {
+        'success': true,
+        'contentItems': const <JsonMap>[],
+      });
+
+      final opened = <String>[];
+      controller.setBrowserInvocationHandler(opened.add);
+      expect(opened, ['https://example.com/queued']);
+    },
+  );
+
+  test(
+    'declines a dynamic browser tool call when browser access is disabled',
+    () async {
+      final writes = <JsonMap>[];
+      final controller = CodexController(
+        server: CodexAppServer(messageSink: writes.add),
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      );
+      addTearDown(controller.dispose);
+      await controller.setBrowserEnabled(false);
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/tool/call',
+          requestId: 'dynamic-browser-disabled',
+          params: {
+            'tool': 'browser.navigate',
+            'arguments': {'url': 'https://example.com/disabled'},
+          },
+        ),
+      );
+
+      expect(writes.single['id'], 'dynamic-browser-disabled');
+      expect(writes.single['result'], {
+        'success': false,
+        'contentItems': [
+          {'type': 'inputText', 'text': '浏览器调用已被用户拒绝。'},
+        ],
+      });
+      expect(controller.pendingApproval, isNull);
+    },
+  );
+
+  test(
+    'reuses a session grant for subsequent dynamic browser tool calls',
+    () async {
+      final writes = <JsonMap>[];
+      final controller = CodexController(
+        server: CodexAppServer(messageSink: writes.add),
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      );
+      addTearDown(controller.dispose);
+      final opened = <String>[];
+      controller.setBrowserInvocationHandler(opened.add);
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/tool/call',
+          requestId: 'dynamic-browser-grant',
+          params: {
+            'tool': 'browser.open',
+            'arguments': {'url': 'https://example.com/grant'},
+          },
+        ),
+      );
+      await controller.respondToApproval(accepted: true, allowSimilar: true);
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/tool/call',
+          requestId: 'dynamic-browser-follow-up',
+          params: {
+            'tool': 'browser.navigate',
+            'arguments': {'url': 'https://example.com/follow-up'},
+          },
+        ),
+      );
+
+      expect(opened, [
+        'https://example.com/grant',
+        'https://example.com/follow-up',
+      ]);
+      expect(controller.pendingApproval, isNull);
+      expect(writes.map((message) => message['id']), [
+        'dynamic-browser-grant',
+        'dynamic-browser-follow-up',
+      ]);
+    },
+  );
+
+  test(
+    'accepts namespaced dynamic browser tools with encoded arguments',
+    () async {
+      final writes = <JsonMap>[];
+      final controller = CodexController(
+        server: CodexAppServer(messageSink: writes.add),
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      );
+      addTearDown(controller.dispose);
+      String? openedUrl;
+      controller.setBrowserInvocationHandler((url) => openedUrl = url);
+
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'item/tool/call',
+          requestId: 'dynamic-browser-namespaced',
+          params: {
+            'namespace': 'browser',
+            'tool': 'open',
+            'arguments': '{"url":"https://example.com/namespaced"}',
+          },
+        ),
+      );
+
+      expect(controller.pendingApproval?.kind, ApprovalKind.browser);
+      await controller.respondToApproval(accepted: true);
+
+      expect(openedUrl, 'https://example.com/namespaced');
+      expect(writes.single['result'], {
+        'success': true,
+        'contentItems': const <JsonMap>[],
+      });
+    },
+  );
+
+  test('accepts colon-delimited dynamic browser tool names', () async {
+    final writes = <JsonMap>[];
+    final controller = CodexController(
+      server: CodexAppServer(messageSink: writes.add),
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    addTearDown(controller.dispose);
+    String? openedUrl;
+    controller.setBrowserInvocationHandler((url) => openedUrl = url);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'item/tool/call',
+        requestId: 'dynamic-browser-colon',
+        params: {
+          'tool': 'browser:open',
+          'arguments': {'url': 'https://example.com/colon'},
+        },
+      ),
+    );
+
+    expect(controller.pendingApproval?.kind, ApprovalKind.browser);
+    await controller.respondToApproval(accepted: true);
+
+    expect(openedUrl, 'https://example.com/colon');
+    expect(writes.single['result'], {
+      'success': true,
+      'contentItems': const <JsonMap>[],
+    });
+  });
+
+  test('allows subsequent browser requests for the runtime session', () async {
+    final writes = <JsonMap>[];
+    final controller = CodexController(
+      server: CodexAppServer(messageSink: writes.add),
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    addTearDown(controller.dispose);
+    final opened = <String>[];
+    controller.setBrowserInvocationHandler(opened.add);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'browser/open',
+        requestId: 'browser-session-first',
+        params: {'url': 'https://example.com/first'},
+      ),
+    );
+    await controller.respondToApproval(accepted: true, allowSimilar: true);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'browser/navigate',
+        requestId: 'browser-session-second',
+        params: {'url': 'https://example.com/second'},
+      ),
+    );
+
+    expect(controller.pendingApproval, isNull);
+    expect(opened, ['https://example.com/first', 'https://example.com/second']);
+    expect(writes.map((message) => message['id']), [
+      'browser-session-first',
+      'browser-session-second',
+    ]);
+    expect(
+      writes.map((message) => message['result']),
+      everyElement({'accepted': true, 'scope': 'session'}),
+    );
+  });
+
+  test('clears the browser session grant when the runtime exits', () async {
+    final writes = <JsonMap>[];
+    final controller = CodexController(
+      server: CodexAppServer(messageSink: writes.add),
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    addTearDown(controller.dispose);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'browser/open',
+        requestId: 'browser-session-grant',
+        params: {'url': 'https://example.com/grant'},
+      ),
+    );
+    await controller.respondToApproval(accepted: true, allowSimilar: true);
+    controller.handleServerEventForTesting(
+      const ServerEvent(method: 'runtime/exited', params: {'code': 1}),
+    );
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'browser/open',
+        requestId: 'browser-after-restart',
+        params: {'url': 'https://example.com/after-restart'},
+      ),
+    );
+
+    expect(controller.pendingApproval?.requestId, 'browser-after-restart');
+  });
+
+  test('persists the user preference for Markdown web links', () async {
+    final store = FakeRuntimeConfigurationStore();
+    final firstController = CodexController(runtimeConfigurationStore: store);
+    await firstController.waitForInitialConfiguration();
+    await firstController.setBrowserLinkOpenMode(BrowserLinkOpenMode.inApp);
+    expect(store.savedBrowserLinkOpenMode, BrowserLinkOpenMode.inApp);
+    firstController.dispose();
+
+    final restoredController = CodexController(
+      runtimeConfigurationStore: store,
+    );
+    await restoredController.waitForInitialConfiguration();
+    expect(restoredController.browserLinkOpenMode, BrowserLinkOpenMode.inApp);
+    restoredController.dispose();
+  });
+
+  test('persists browser download and tab restore preferences', () async {
+    final store = FakeRuntimeConfigurationStore();
+    final controller = CodexController(runtimeConfigurationStore: store);
+    await controller.waitForInitialConfiguration();
+    await controller.setBrowserDownloadDirectory('/tmp/browser-downloads');
+    await controller.setBrowserAskBeforeDownload(false);
+    await controller.setBrowserRestoreTabs(true);
+
+    expect(store.savedBrowserDownloadDirectory, '/tmp/browser-downloads');
+    expect(store.savedBrowserAskBeforeDownload, isFalse);
+    expect(store.savedBrowserRestoreTabs, isTrue);
+    controller.dispose();
   });
 
   testWidgets(
@@ -217,6 +543,152 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('browser-close-tab-0')));
     expect(returnedToConversation, isTrue);
+  });
+
+  testWidgets('ignores callbacks that arrive after a tab is closed', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(home: BrowserWorkspacePage(onOpenConversation: () {})),
+    );
+    final state = tester.state<BrowserWorkspacePageState>(
+      find.byType(BrowserWorkspacePage),
+    );
+    final staleUrl = WebUri('https://example.com/stale');
+    final staleError = WebResourceError(
+      type: WebResourceErrorType.CANNOT_CONNECT_TO_HOST,
+      description: 'late closed-tab failure',
+    );
+
+    await tester.tap(find.byKey(const Key('browser-new-tab')));
+    await tester.pump();
+    state.handleNavigationStarted(0, staleUrl);
+    await tester.tap(find.byKey(const ValueKey('browser-close-tab-0')));
+    await tester.pump();
+
+    state.handleNavigationStopped(0, staleUrl);
+    state.handleNavigationError(
+      0,
+      WebResourceRequest(url: staleUrl, isForMainFrame: true),
+      staleError,
+    );
+    state.handleTitleChanged(0, '迟到标题');
+    state.handleVisitedHistoryUpdate(0, staleUrl);
+    await tester.pump();
+
+    expect(find.text('late closed-tab failure'), findsNothing);
+    expect(find.text('迟到标题'), findsNothing);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('browser-address')))
+          .controller
+          ?.text,
+      isEmpty,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('does not commit a download after its tab is closed', (
+    tester,
+  ) async {
+    final transfer = Completer<String?>();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BrowserWorkspacePage(
+          onOpenConversation: () {},
+          urlSafetyChecker: (_) async => true,
+          downloadSaver:
+              ({
+                required request,
+                required urlSafetyChecker,
+                required pickLocation,
+                downloadDirectory,
+                askForLocation = true,
+                cancellation,
+              }) => transfer.future,
+        ),
+      ),
+    );
+    final state = tester.state<BrowserWorkspacePageState>(
+      find.byType(BrowserWorkspacePage),
+    );
+    final download = DownloadStartRequest(
+      url: WebUri('https://example.com/file.txt'),
+      contentLength: 1,
+      suggestedFilename: 'file.txt',
+    );
+
+    await tester.tap(find.byKey(const Key('browser-new-tab')));
+    await tester.pump();
+    final pending = state.handleDownloadStart(0, download, null);
+    await tester.pump();
+    await tester.tap(find.text('继续'));
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('browser-close-tab-0')));
+    await tester.pump();
+    transfer.complete('/tmp/file.txt');
+    await pending;
+    await tester.pump();
+
+    expect(find.textContaining('下载已保存'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('lets the browser banner cancel an active download', (
+    tester,
+  ) async {
+    final transfer = Completer<String?>();
+    BrowserDownloadCancellation? activeCancellation;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BrowserWorkspacePage(
+          onOpenConversation: () {},
+          urlSafetyChecker: (_) async => true,
+          downloadSaver:
+              ({
+                required request,
+                required urlSafetyChecker,
+                required pickLocation,
+                downloadDirectory,
+                askForLocation = true,
+                BrowserDownloadCancellation? cancellation,
+              }) {
+                activeCancellation = cancellation;
+                return transfer.future;
+              },
+        ),
+      ),
+    );
+    final state = tester.state<BrowserWorkspacePageState>(
+      find.byType(BrowserWorkspacePage),
+    );
+    final download = DownloadStartRequest(
+      url: WebUri('https://example.com/active.txt'),
+      contentLength: 1,
+      suggestedFilename: 'active.txt',
+    );
+    final pending = state.handleDownloadStart(0, download, null);
+    await tester.pump();
+    await tester.tap(find.text('继续'));
+    await tester.pump();
+    expect(activeCancellation, isNotNull);
+    expect(find.byKey(const Key('browser-cancel-download')), findsOneWidget);
+    expect(
+      tester
+          .getSemantics(find.byKey(const Key('browser-download-banner')))
+          .label,
+      contains('下载状态：'),
+    );
+
+    await tester.tap(find.byKey(const Key('browser-cancel-download')));
+    expect(activeCancellation!.isCancelled, isTrue);
+    transfer.complete('/tmp/active.txt');
+    await pending;
+    await tester.pump();
+
+    expect(find.text('已取消下载。'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('binds a webpage popup to its new browser tab', (tester) async {
@@ -561,6 +1033,84 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('restores saved tabs through the navigation lifecycle', (
+    tester,
+  ) async {
+    final navigated = <({int tabId, Uri uri})>[];
+    final sessionStore = FakeBrowserSessionStore(
+      snapshot: (
+        tabs: const [
+          BrowserTabSnapshot(url: 'https://example.com/one', title: 'One'),
+          BrowserTabSnapshot(url: 'https://example.com/two', title: 'Two'),
+        ],
+        activeIndex: 1,
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BrowserWorkspacePage(
+          onOpenConversation: () {},
+          restoreTabs: true,
+          sessionStore: sessionStore,
+          urlSafetyChecker: (_) async => true,
+          restoreTabNavigation: (tabId, uri) async {
+            navigated.add((tabId: tabId, uri: uri));
+          },
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(navigated, [
+      (tabId: 0, uri: Uri.parse('https://example.com/one')),
+      (tabId: 1, uri: Uri.parse('https://example.com/two')),
+    ]);
+    expect(find.byKey(const Key('browser-tab-0')), findsOneWidget);
+    expect(find.byKey(const Key('browser-tab-1')), findsOneWidget);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('browser-address')))
+          .controller
+          ?.text,
+      'https://example.com/two',
+    );
+  });
+
+  testWidgets('drops a late restored-tab safety result after disposal', (
+    tester,
+  ) async {
+    final safetyCheck = Completer<bool>();
+    final navigated = <Uri>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BrowserWorkspacePage(
+          onOpenConversation: () {},
+          restoreTabs: true,
+          sessionStore: FakeBrowserSessionStore(
+            snapshot: (
+              tabs: const [
+                BrowserTabSnapshot(
+                  url: 'https://example.com/late',
+                  title: 'Late',
+                ),
+              ],
+              activeIndex: 0,
+            ),
+          ),
+          urlSafetyChecker: (_) => safetyCheck.future,
+          restoreTabNavigation: (_, uri) async => navigated.add(uri),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pumpWidget(const SizedBox());
+    safetyCheck.complete(true);
+    await tester.pump();
+
+    expect(navigated, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('explains the Chrome import privacy boundary', (tester) async {
     await tester.pumpWidget(
       MaterialApp(home: BrowserWorkspacePage(onOpenConversation: () {})),
@@ -586,6 +1136,123 @@ void main() {
     expect(find.byKey(const Key('browser-new-tab')), findsOneWidget);
     expect(find.byKey(const Key('browser-more-menu')), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('exposes browser semantics and keyboard navigation', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    await tester.pumpWidget(
+      MaterialApp(home: BrowserWorkspacePage(onOpenConversation: () {})),
+    );
+
+    final semanticsOwner =
+        tester.binding.renderViews.single.owner!.semanticsOwner;
+    expect(semanticsOwner, isNotNull);
+    final semanticsData = <SemanticsData>[];
+    bool collectSemantics(SemanticsNode node) {
+      semanticsData.add(node.getSemanticsData());
+      node.visitChildren(collectSemantics);
+      return true;
+    }
+
+    final rootSemanticsNode = semanticsOwner!.rootSemanticsNode;
+    expect(rootSemanticsNode, isNotNull);
+    collectSemantics(rootSemanticsNode!);
+    final labels = semanticsData.map((data) => data.label).toSet();
+    expect(labels.any((label) => label.contains('内置浏览器工作区')), isTrue);
+    expect(labels.any((label) => label.contains('标签页：新标签页')), isTrue);
+    expect(labels.any((label) => label.contains('地址栏')), isTrue);
+    expect(labels.any((label) => label.contains('网页内容')), isTrue);
+    final unlabeledTapNodes = semanticsData
+        .where(
+          (data) =>
+              data.hasAction(SemanticsAction.tap) &&
+              data.label.trim().isEmpty &&
+              data.tooltip.trim().isEmpty,
+        )
+        .toList(growable: false);
+    expect(unlabeledTapNodes, isEmpty);
+
+    expect(
+      tester
+          .getSemantics(find.byKey(const Key('browser-workspace-page')))
+          .label,
+      contains('内置浏览器工作区'),
+    );
+    expect(
+      tester.getSemantics(find.byKey(const Key('browser-tab-0'))).label,
+      contains('标签页：新标签页'),
+    );
+    expect(
+      tester.getSemantics(find.byKey(const Key('browser-address'))).label,
+      contains('地址栏'),
+    );
+    expect(tester.getSemantics(find.bySemanticsLabel('后退')).label, '后退');
+    expect(tester.getSemantics(find.bySemanticsLabel('前进')).label, '前进');
+    expect(
+      tester.getSemantics(find.bySemanticsLabel(RegExp('刷新'))).label,
+      contains('刷新'),
+    );
+    expect(
+      tester.getSemantics(find.bySemanticsLabel(RegExp('新建标签页'))).label,
+      contains('新建标签页'),
+    );
+    expect(
+      tester.getSemantics(find.byKey(const Key('browser-page-body'))).label,
+      contains('网页内容'),
+    );
+    final state = tester.state<BrowserWorkspacePageState>(
+      find.byType(BrowserWorkspacePage),
+    );
+    state.handleNavigationStarted(0, WebUri('https://example.com/failed'));
+    state.handleNavigationError(
+      0,
+      WebResourceRequest(
+        url: WebUri('https://example.com/failed'),
+        isForMainFrame: true,
+      ),
+      WebResourceError(
+        type: WebResourceErrorType.CANNOT_CONNECT_TO_HOST,
+        description: '无法连接测试地址',
+      ),
+    );
+    await tester.pump();
+    expect(
+      tester.getSemantics(find.byKey(const Key('browser-error-banner'))).label,
+      contains('无法连接测试地址'),
+    );
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyL);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump();
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('browser-address')))
+          .focusNode
+          ?.hasFocus,
+      isTrue,
+    );
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyT);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump();
+    expect(find.byKey(const Key('browser-tab-1')), findsOneWidget);
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyW);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump();
+    expect(find.byKey(const Key('browser-tab-1')), findsNothing);
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyR);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    semantics.dispose();
   });
 
   testWidgets('replays an approved navigation when the URL is unchanged', (
@@ -740,5 +1407,87 @@ void main() {
       ),
     );
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('declines a browser permission request with Escape', (
+    tester,
+  ) async {
+    var declines = 0;
+    const approval = PendingApproval(
+      requestId: 45,
+      method: 'browser/open',
+      kind: ApprovalKind.browser,
+      params: {'url': 'https://example.com'},
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ApprovalPanel(
+            approval: approval,
+            taskLabel: null,
+            enabled: true,
+            onAccept: () async {},
+            onAllowSimilar: () async {},
+            onDecline: () async => declines++,
+          ),
+        ),
+      ),
+    );
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+
+    expect(declines, 1);
+  });
+
+  testWidgets('clears only the selected browser data ranges', (tester) async {
+    final cleared = <String>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BrowserWorkspacePage(
+          onOpenConversation: () {},
+          clearWebsiteData: () async => cleared.add('website'),
+          clearCache: () async => cleared.add('cache'),
+          clearNavigationHistory: () async => cleared.add('history'),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('browser-more-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('清除浏览数据'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('browser-clear-website-data')));
+    await tester.tap(find.byKey(const Key('browser-clear-history-data')));
+    await tester.tap(find.byKey(const Key('browser-clear-download-data')));
+    await tester.tap(find.text('清除').last);
+    await tester.pumpAndSettle();
+
+    expect(cleared, ['cache']);
+    expect(find.textContaining('已清除所选浏览数据'), findsOneWidget);
+  });
+
+  testWidgets('reports native browser data cleanup failures', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BrowserWorkspacePage(
+          onOpenConversation: () {},
+          clearCache: () async => throw StateError('cache unavailable'),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('browser-more-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('清除浏览数据'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('browser-clear-website-data')));
+    await tester.tap(find.byKey(const Key('browser-clear-history-data')));
+    await tester.tap(find.byKey(const Key('browser-clear-download-data')));
+    await tester.tap(find.text('清除').last);
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('部分浏览数据清除失败：缓存'), findsOneWidget);
   });
 }

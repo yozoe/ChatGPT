@@ -4,6 +4,7 @@ import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversati
 import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -254,6 +255,52 @@ void main() {
           .controller
           ?.text,
       'retained-across-destinations.example',
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('does not let a hidden browser intercept browser shortcuts', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1800, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = CodexController(
+      server: CodexAppServer(messageSink: (_) {}),
+    );
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(home: CodexWorkspace(controller: controller)),
+      ),
+    );
+
+    await tester.tap(find.byTooltip('展开右侧工作区'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('浏览器'));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('browser-address')));
+    await tester.tap(find.byTooltip('收起右侧工作区'));
+    await tester.pumpAndSettle();
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyT);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyR);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump();
+
+    final hiddenBrowser = find.byKey(
+      const Key('browser-workspace-page'),
+      skipOffstage: false,
+    );
+    expect(hiddenBrowser, findsOneWidget);
+    expect(
+      find.descendant(
+        of: hiddenBrowser,
+        matching: find.byKey(const Key('browser-tab-1'), skipOffstage: false),
+      ),
+      findsNothing,
     );
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
