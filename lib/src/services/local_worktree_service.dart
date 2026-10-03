@@ -44,6 +44,8 @@ class LocalWorktreeService {
     String? worktreeId,
     String? baseRef,
     bool fetchBeforeCreate = false,
+    String? baseCommitOverride,
+    bool carryTrackedChanges = true,
   }) async {
     if (!Directory(rootPath).isAbsolute) {
       throw StateError('工作树根目录必须是绝对路径。');
@@ -71,10 +73,17 @@ class LocalWorktreeService {
       final selectedRef = baseRef?.trim().isNotEmpty == true
           ? baseRef!.trim()
           : 'HEAD';
-      final head = await _run(repository, ['rev-parse', selectedRef]);
+      final head = await _run(repository, [
+        'rev-parse',
+        baseCommitOverride ?? selectedRef,
+      ]);
       if (head.exitCode != 0) throw StateError('无法确定仓库当前提交。');
-      final currentHead = await _run(repository, const ['rev-parse', 'HEAD']);
-      if (currentHead.exitCode != 0) throw StateError('无法确定仓库当前提交。');
+      final currentHead = carryTrackedChanges
+          ? await _run(repository, const ['rev-parse', 'HEAD'])
+          : null;
+      if (currentHead != null && currentHead.exitCode != 0) {
+        throw StateError('无法确定仓库当前提交。');
+      }
       final record = LocalWorktreeRecord(
         worktreeId: id,
         projectId: projectId,
@@ -104,7 +113,8 @@ class LocalWorktreeService {
         if (add.exitCode != 0) {
           throw StateError('创建工作树失败，请检查 Git 仓库状态后重试。');
         }
-        if (head.stdout.trim() == currentHead.stdout.trim()) {
+        if (carryTrackedChanges &&
+            head.stdout.trim() == currentHead?.stdout.trim()) {
           await _carryTrackedChanges(source: canonicalSource, target: target);
         }
         await _copyWorktreeIncludes(source: canonicalSource, target: target);
@@ -345,6 +355,9 @@ class LocalWorktreeService {
       rootPath: rootPath,
       projectId: record.projectId,
       worktreeId: record.worktreeId,
+      baseRef: record.baseRef,
+      baseCommitOverride: record.baseCommit,
+      carryTrackedChanges: false,
     );
     final records = await _store.readWorktreeRecords();
     await _store.saveWorktreeRecords(

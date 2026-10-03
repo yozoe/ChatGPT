@@ -219,4 +219,56 @@ void main() {
       LocalWorktreeState.foreign,
     );
   });
+
+  test(
+    'restores from the recorded base commit instead of current HEAD',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-worktree-restore-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final repository = await Directory('${root.path}/repo').create();
+      final worktrees = await Directory('${root.path}/worktrees').create();
+      await runGit(repository, ['init', '-q']);
+      await runGit(repository, ['config', 'user.email', 'test@example.com']);
+      await runGit(repository, ['config', 'user.name', 'Codex Test']);
+      await File('${repository.path}/state.txt').writeAsString('base\n');
+      await runGit(repository, ['add', '.']);
+      await runGit(repository, ['commit', '-qm', 'base']);
+      final store = RuntimeConfigurationStore(
+        storage: CodexKeychainStorage(developmentDirectory: root),
+      );
+      final service = LocalWorktreeService(store: store);
+      final record = await service.create(
+        repository: repository.path,
+        rootPath: worktrees.path,
+        projectId: 'project-1',
+      );
+      await runGit(repository, ['checkout', '-qb', 'later']);
+      await File('${repository.path}/state.txt').writeAsString('later\n');
+      await runGit(repository, ['add', '.']);
+      await runGit(repository, ['commit', '-qm', 'later']);
+      await runGit(repository, ['checkout', '-q', 'later']);
+      await store.saveWorktreeRecords([
+        record.copyWith(state: LocalWorktreeState.removed),
+      ]);
+      await Process.run('git', [
+        'worktree',
+        'remove',
+        '--force',
+        record.worktreePath,
+      ], workingDirectory: repository.path);
+
+      final restored = await service.restore(
+        record: record.copyWith(state: LocalWorktreeState.removed),
+        rootPath: worktrees.path,
+      );
+
+      expect(
+        await File('${restored.worktreePath}/state.txt').readAsString(),
+        'base\n',
+      );
+      expect(restored.baseCommit, record.baseCommit);
+    },
+  );
 }
