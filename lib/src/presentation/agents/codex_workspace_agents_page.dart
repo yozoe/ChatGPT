@@ -177,41 +177,46 @@ class AgentsPage extends StatelessWidget {
     agent,
   }) {
     final palette = YeknomPalette.of(context);
-    return InkWell(
-      key: Key('agents-open-${agent.threadId}'),
-      onTap: agent.external
-          ? null
-          : () => onOpenSubagent(
-              threadId: agent.threadId,
-              title: agent.title,
-              status: agent.status,
-              prompt: agent.prompt,
-            ),
-      borderRadius: BorderRadius.circular(8),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
-        child: Row(
-          children: [
-            SubagentAvatar(agentId: agent.threadId, size: 16),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                agent.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+    return Semantics(
+      button: true,
+      enabled: !agent.external,
+      label: '${agent.title}，${agent.status}',
+      child: InkWell(
+        key: Key('agents-open-${agent.threadId}'),
+        onTap: agent.external
+            ? null
+            : () => onOpenSubagent(
+                threadId: agent.threadId,
+                title: agent.title,
+                status: agent.status,
+                prompt: agent.prompt,
+              ),
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+          child: Row(
+            children: [
+              SubagentAvatar(agentId: agent.threadId, size: 16),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  agent.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyMedium?.copyWith(color: palette.trace),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Text(
+                _relativeTime(agent.createdAt),
                 style: Theme.of(
                   context,
-                ).textTheme.bodyMedium?.copyWith(color: palette.trace),
+                ).textTheme.bodySmall?.copyWith(color: palette.muted),
               ),
-            ),
-            const SizedBox(width: 16),
-            Text(
-              _relativeTime(agent.createdAt),
-              style: Theme.of(
-                context,
-              ).textTheme.bodySmall?.copyWith(color: palette.muted),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

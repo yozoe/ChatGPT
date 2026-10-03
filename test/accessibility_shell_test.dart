@@ -1,6 +1,12 @@
 import 'package:chatgpt/src/app_controller.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_side_panel_tabs.dart';
+import 'package:chatgpt/src/presentation/workspace/codex_workspace_side_panel_launcher.dart';
+import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_library_tab_button.dart';
+import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_extension_settings_tab_button.dart';
+import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_scheduled_suggestion_row.dart';
+import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_scheduled_task_suggestion.dart';
+import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_task_search_action_tile.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
@@ -111,6 +117,84 @@ void main() {
       _findSemanticsData(tester, '审查').hasAction(SemanticsAction.tap),
       isTrue,
     );
+    semantics.dispose();
+  });
+
+  testWidgets(
+    'workspace launchers and library tabs expose selection semantics',
+    (tester) async {
+      final semantics = tester.ensureSemantics();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Column(
+            children: [
+              WorkspaceSidePanelLauncher(onSelect: (_) {}),
+              LibraryTabButton(label: '插件', selected: true, onTap: _noop),
+              ExtensionSettingsTabButton(
+                label: 'MCP',
+                count: 2,
+                selected: false,
+                onTap: _noop,
+              ),
+            ],
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final data = _collectSemantics(tester);
+      for (final label in ['审查', '终端', '浏览器', '文件', '插件', 'MCP，2']) {
+        final item = data.firstWhere(
+          (entry) => entry.label.contains(label),
+          orElse: () => throw TestFailure('Missing semantics label: $label'),
+        );
+        expect(item.hasAction(SemanticsAction.tap), isTrue, reason: label);
+      }
+      expect(
+        _findSemanticsData(tester, '插件').flagsCollection.isSelected.toString(),
+        'Tristate.isTrue',
+      );
+      semantics.dispose();
+    },
+  );
+
+  testWidgets('scheduled suggestions and search actions are labeled buttons', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Column(
+          children: [
+            ScheduledSuggestionRow(
+              suggestion: ScheduledTaskSuggestion(
+                icon: Icons.schedule,
+                color: Colors.blue,
+                title: '每日摘要',
+                schedule: '每天 09:00',
+                prompt: '整理今天的任务',
+              ),
+              onTap: _noop,
+            ),
+            TaskSearchActionTile(
+              icon: Icons.add,
+              label: '新聊天',
+              shortcut: '⌘N',
+              onTap: _noop,
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pump();
+    final data = _collectSemantics(tester);
+    for (final label in ['每日摘要', '新聊天']) {
+      final item = data.firstWhere(
+        (entry) => entry.label.contains(label),
+        orElse: () => throw TestFailure('Missing semantics label: $label'),
+      );
+      expect(item.hasAction(SemanticsAction.tap), isTrue, reason: label);
+    }
     semantics.dispose();
   });
 }

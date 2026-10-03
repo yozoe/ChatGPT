@@ -15,46 +15,50 @@ class ScheduledSuggestionRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 13),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(suggestion.icon, color: suggestion.color, size: 23),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text.rich(
-                      TextSpan(
-                        text: suggestion.title,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                        children: [
-                          TextSpan(
-                            text: '  ${suggestion.schedule}',
-                            style: TextStyle(
-                              color: palette.muted,
-                              fontWeight: FontWeight.w400,
+    return Semantics(
+      button: true,
+      label: '${suggestion.title}，${suggestion.schedule}，${suggestion.prompt}',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 13),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(suggestion.icon, color: suggestion.color, size: 23),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text.rich(
+                        TextSpan(
+                          text: suggestion.title,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                          children: [
+                            TextSpan(
+                              text: '  ${suggestion.schedule}',
+                              style: TextStyle(
+                                color: palette.muted,
+                                fontWeight: FontWeight.w400,
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      suggestion.prompt,
-                      style: TextStyle(color: palette.muted),
-                    ),
-                  ],
+                      const SizedBox(height: 4),
+                      Text(
+                        suggestion.prompt,
+                        style: TextStyle(color: palette.muted),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

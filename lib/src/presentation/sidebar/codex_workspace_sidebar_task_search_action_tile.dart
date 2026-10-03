@@ -21,33 +21,38 @@ class TaskSearchActionTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: enabled ? onTap : null,
-        borderRadius: BorderRadius.circular(14),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-          child: Row(
-            children: [
-              Icon(
-                icon,
-                size: 16,
-                color: enabled ? palette.trace : palette.faint,
-              ),
-              const SizedBox(width: 13),
-              Expanded(
-                child: Text(
-                  label,
-                  style: TextStyle(
-                    color: enabled ? palette.trace : palette.faint,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      label: '$label，快捷键 $shortcut',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: enabled ? onTap : null,
+          borderRadius: BorderRadius.circular(14),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            child: Row(
+              children: [
+                Icon(
+                  icon,
+                  size: 16,
+                  color: enabled ? palette.trace : palette.faint,
+                ),
+                const SizedBox(width: 13),
+                Expanded(
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      color: enabled ? palette.trace : palette.faint,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
-              ),
-              TaskSearchShortcut(label: shortcut),
-            ],
+                TaskSearchShortcut(label: shortcut),
+              ],
+            ),
           ),
         ),
       ),

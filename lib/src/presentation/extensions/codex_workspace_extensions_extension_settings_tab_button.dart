@@ -18,20 +18,25 @@ class ExtensionSettingsTabButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
-    return Material(
-      color: selected ? palette.raised : Colors.transparent,
-      borderRadius: BorderRadius.circular(9),
-      child: InkWell(
-        onTap: onTap,
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: '$label，$count',
+      child: Material(
+        color: selected ? palette.raised : Colors.transparent,
         borderRadius: BorderRadius.circular(9),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          child: Text(
-            '$label  $count',
-            style: TextStyle(
-              color: selected ? palette.trace : palette.muted,
-              fontSize: 14,
-              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(9),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            child: Text(
+              '$label  $count',
+              style: TextStyle(
+                color: selected ? palette.trace : palette.muted,
+                fontSize: 14,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              ),
             ),
           ),
         ),
