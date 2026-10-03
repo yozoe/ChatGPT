@@ -6,17 +6,21 @@ import 'package:cryptography/cryptography.dart' show Hmac, SecretKey;
 import 'package:chatgpt/src/domain/local_worktree_record.dart';
 import 'package:chatgpt/src/domain/worktree_snapshot.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
+import 'package:chatgpt/src/services/worktree_metadata_store.dart';
 import 'package:chatgpt/src/services/worktree_snapshot_store.dart';
 
 class LocalWorktreeService {
   LocalWorktreeService({
     RuntimeConfigurationStore? store,
     WorktreeSnapshotStore? snapshotStore,
+    WorktreeMetadataStore? metadataStore,
   }) : _store = store ?? RuntimeConfigurationStore(),
-       _snapshotStore = snapshotStore ?? WorktreeSnapshotStore(store: store);
+       _snapshotStore = snapshotStore ?? WorktreeSnapshotStore(store: store),
+       _metadataStore = metadataStore ?? WorktreeMetadataStore();
 
   final RuntimeConfigurationStore _store;
   final WorktreeSnapshotStore _snapshotStore;
+  final WorktreeMetadataStore _metadataStore;
   final Map<String, Future<void>> _locks = {};
   static Future<void> _ownershipKeyLock = Future<void>.value();
 
@@ -124,8 +128,21 @@ class LocalWorktreeService {
           await _carryTrackedChanges(source: canonicalSource, target: target);
         }
         await _copyWorktreeIncludes(source: canonicalSource, target: target);
+        await _metadataStore.write(
+          rootPath: canonicalRoot.path,
+          record: signedRecord,
+        );
         await _upsertRecord(signedRecord);
       } on Object {
+        try {
+          await _metadataStore.delete(
+            rootPath: canonicalRoot.path,
+            worktreeId: id,
+          );
+        } on Object {
+          // Preserve the original creation error and leave evidence for
+          // conservative reconciliation on the next startup.
+        }
         await _run(canonicalSource.path, [
           'worktree',
           'remove',
@@ -198,6 +215,17 @@ class LocalWorktreeService {
             : item,
       ),
     );
+    // Keep the manifest until the durable removed record exists; if this
+    // cleanup fails, the manifest remains useful evidence for recovery.
+    try {
+      await _metadataStore.delete(
+        rootPath: root.path,
+        worktreeId: record.worktreeId,
+      );
+    } on Object {
+      // A stale manifest cannot authorize deletion without a matching Git
+      // worktree, so preserve it for manual cleanup rather than retrying.
+    }
   }
 
   /// Reconciles a persisted record with canonical paths and Git's authoritative
@@ -244,6 +272,14 @@ class LocalWorktreeService {
       await _saveState(record, LocalWorktreeState.foreign);
       return LocalWorktreeState.foreign;
     } else if (record.ownershipMac != await _ownershipMac(record)) {
+      await _saveState(record, LocalWorktreeState.foreign);
+      return LocalWorktreeState.foreign;
+    }
+    final metadata = await _metadataStore.read(
+      rootPath: root.path,
+      worktreeId: record.worktreeId,
+    );
+    if (metadata == null || !_metadataMatches(metadata, record)) {
       await _saveState(record, LocalWorktreeState.foreign);
       return LocalWorktreeState.foreign;
     }
@@ -305,6 +341,24 @@ class LocalWorktreeService {
         (item) => item.worktreeId == record.worktreeId ? record : item,
       ),
     );
+  }
+
+  bool _metadataMatches(
+    Map<String, Object?> metadata,
+    LocalWorktreeRecord record,
+  ) {
+    if (metadata['version'] != 1 ||
+        metadata['worktreeId'] != record.worktreeId ||
+        metadata['projectId'] != record.projectId ||
+        metadata['sourceRepository'] != record.sourceRepository ||
+        metadata['worktreePath'] != record.worktreePath ||
+        metadata['baseCommit'] != record.baseCommit ||
+        metadata['ownershipNonce'] != record.ownershipNonce ||
+        metadata['ownershipMac'] != record.ownershipMac) {
+      return false;
+    }
+    return metadata['baseRef']?.toString() == record.baseRef &&
+        metadata['gitCommonDirectory']?.toString() == record.gitCommonDirectory;
   }
 
   Future<void> _upsertRecord(LocalWorktreeRecord record) async {

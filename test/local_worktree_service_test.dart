@@ -58,6 +58,14 @@ void main() {
         await File('${record.worktreePath}/ignored.secret').readAsString(),
         'secret',
       );
+      final metadata = File(
+        '${worktrees.path}/.codex-worktree-metadata/${record.worktreeId}.json',
+      );
+      expect(metadata.existsSync(), isTrue);
+      expect(
+        jsonDecode(await metadata.readAsString())['worktreePath'],
+        record.worktreePath,
+      );
       final porcelain = await service.list(repository.path);
       expect(
         porcelain.any((entry) => entry['path'] == record.worktreePath),
@@ -186,6 +194,47 @@ void main() {
     );
   });
 
+  test(
+    'requires the external worktree manifest during reconciliation',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-worktree-meta-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final repository = await Directory('${root.path}/repo').create();
+      final worktrees = await Directory('${root.path}/worktrees').create();
+      await runGit(repository, ['init', '-q']);
+      await runGit(repository, ['config', 'user.email', 'test@example.com']);
+      await runGit(repository, ['config', 'user.name', 'Codex Test']);
+      await File('${repository.path}/tracked.txt').writeAsString('ok\n');
+      await runGit(repository, ['add', '.']);
+      await runGit(repository, ['commit', '-qm', 'initial']);
+      final service = LocalWorktreeService(
+        store: RuntimeConfigurationStore(
+          storage: CodexKeychainStorage(developmentDirectory: root),
+        ),
+      );
+      final record = await service.create(
+        repository: repository.path,
+        rootPath: worktrees.path,
+        projectId: 'project-1',
+      );
+      await File(
+        '${worktrees.path}/.codex-worktree-metadata/${record.worktreeId}.json',
+      ).delete();
+
+      expect(
+        await service.reconcile(record: record, rootPath: worktrees.path),
+        LocalWorktreeState.foreign,
+      );
+      await expectLater(
+        service.remove(record: record, rootPath: worktrees.path),
+        throwsStateError,
+      );
+      expect(Directory(record.worktreePath).existsSync(), isTrue);
+    },
+  );
+
   test('does not promote an interrupted creating record to ready', () async {
     final root = await Directory.systemTemp.createTemp(
       'codex-worktree-recover-',
@@ -313,6 +362,12 @@ void main() {
       expect(removed.state, LocalWorktreeState.removed);
       expect(removed.snapshotId, isNotNull);
       expect(removed.snapshotDigest, isNotNull);
+      expect(
+        File(
+          '${worktrees.path}/.codex-worktree-metadata/${record.worktreeId}.json',
+        ).existsSync(),
+        isFalse,
+      );
       final snapshotFile = File(
         '${worktrees.path}/.codex-snapshots/${removed.snapshotId}.json',
       );
