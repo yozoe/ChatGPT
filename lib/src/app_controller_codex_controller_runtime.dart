@@ -182,9 +182,14 @@ class CodexController extends ChangeNotifier {
       currentWorkspace: () => workspacePath,
       selectWorkspace: selectWorkspaceAndReconnect,
       canSend: () => status == RuntimeStatus.ready,
-      send: (prompt) async {
+      currentThreadId: () => activeThreadId,
+      // Scheduled prompts always start a fresh task in the source project;
+      // they never reuse a chat-owned managed worktree.
+      currentWorktreeId: () => null,
+      currentExecutionWorkspace: () => workspacePath,
+      send: (task) async {
         createThread();
-        return sendPrompt(prompt);
+        return sendPrompt(task.prompt);
       },
       reportError: (title, detail) {
         lastError = detail;
@@ -3640,6 +3645,11 @@ class CodexController extends ChangeNotifier {
     required DateTime runAt,
   }) async {
     await _runtimeLoad;
+    if (activeThreadUsesManagedWorktree) {
+      lastError = '托管工作树任务不能安排定时发送；请先切换到本地项目。';
+      notifyListeners();
+      return false;
+    }
     return _scheduledTaskCoordinator.schedule(prompt: prompt, runAt: runAt);
   }
 

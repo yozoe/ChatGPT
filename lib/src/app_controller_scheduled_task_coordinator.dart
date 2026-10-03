@@ -16,7 +16,10 @@ class ScheduledTaskCoordinator {
     required String? Function() currentWorkspace,
     required Future<bool> Function(String workspace) selectWorkspace,
     required bool Function() canSend,
-    required Future<bool> Function(String prompt) send,
+    required Future<bool> Function(ScheduledTask task) send,
+    required String? Function() currentThreadId,
+    required String? Function() currentWorktreeId,
+    required String? Function() currentExecutionWorkspace,
     required void Function(String title, String detail) reportError,
     required void Function(String title, String detail) reportSystem,
     required void Function() notifyChanged,
@@ -29,6 +32,9 @@ class ScheduledTaskCoordinator {
        _selectWorkspace = selectWorkspace,
        _canSend = canSend,
        _send = send,
+       _currentThreadId = currentThreadId,
+       _currentWorktreeId = currentWorktreeId,
+       _currentExecutionWorkspace = currentExecutionWorkspace,
        _reportError = reportError,
        _reportSystem = reportSystem,
        _notifyChanged = notifyChanged,
@@ -41,7 +47,10 @@ class ScheduledTaskCoordinator {
   final String? Function() _currentWorkspace;
   final Future<bool> Function(String workspace) _selectWorkspace;
   final bool Function() _canSend;
-  final Future<bool> Function(String prompt) _send;
+  final Future<bool> Function(ScheduledTask task) _send;
+  final String? Function() _currentThreadId;
+  final String? Function() _currentWorktreeId;
+  final String? Function() _currentExecutionWorkspace;
   final void Function(String title, String detail) _reportError;
   final void Function(String title, String detail) _reportSystem;
   final void Function() _notifyChanged;
@@ -83,6 +92,9 @@ class ScheduledTaskCoordinator {
       workspacePath: workspace,
       prompt: text,
       runAt: runAt,
+      threadId: _currentThreadId(),
+      worktreeId: _currentWorktreeId(),
+      executionWorkspace: _currentExecutionWorkspace(),
     );
     _tasks.add(task);
     _sort();
@@ -181,7 +193,7 @@ class ScheduledTaskCoordinator {
     _dispatchingIds.add(id);
     late final bool sent;
     try {
-      sent = await _send(task.prompt);
+      sent = await _send(task);
     } finally {
       _dispatchingIds.remove(id);
     }

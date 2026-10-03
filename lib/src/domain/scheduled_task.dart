@@ -13,12 +13,18 @@ class ScheduledTask {
     required this.workspacePath,
     required this.prompt,
     required this.runAt,
+    this.threadId,
+    this.worktreeId,
+    this.executionWorkspace,
   });
 
   final String id;
   final String workspacePath;
   final String prompt;
   final DateTime runAt;
+  final String? threadId;
+  final String? worktreeId;
+  final String? executionWorkspace;
 
   /// 验证持久化记录后恢复计划任务；不完整记录不会进入调度器。
   /// Restores a task only after validating persisted fields, keeping invalid records out of the scheduler.
@@ -39,15 +45,21 @@ class ScheduledTask {
       workspacePath: workspacePath,
       prompt: prompt,
       runAt: runAt.toLocal(),
+      threadId: value['threadId']?.toString(),
+      worktreeId: value['worktreeId']?.toString(),
+      executionWorkspace: value['executionWorkspace']?.toString(),
     );
   }
 
   /// 以 UTC 保存触发时间，避免本地时区变化改变计划含义。
   /// Stores trigger time in UTC so local time-zone changes do not alter the schedule.
-  Map<String, String> toJson() => {
+  Map<String, Object?> toJson() => {
     'id': id,
     'workspacePath': workspacePath,
     'prompt': prompt,
     'runAt': runAt.toUtc().toIso8601String(),
+    if (threadId != null) 'threadId': threadId,
+    if (worktreeId != null) 'worktreeId': worktreeId,
+    if (executionWorkspace != null) 'executionWorkspace': executionWorkspace,
   };
 }
