@@ -3,6 +3,7 @@
 ## Unreleased
 
 - 本地工作树现在会在托管根目录旁原子保存第二份身份清单，并在创建、对账和删除前校验清单与应用记录、Git 登记及完整性字段；清单缺失或不一致时会保守标记为 `foreign` 并拒绝删除。该清单仍不是 Keychain 或独立外部权威所有权证明。
+- 配置详情现在会显示 App Server 实际返回的当前 profile 及其来源；profile 仍保持只读，未把未经协议确认的切换行为伪装成可用控件。
 
 - 收敛 Composer 一致性开发目标：仓库内已实现并测试的能力归入 [CODEX_COMPOSER_PARITY_PLAN.md](docs/development-plans/CODEX_COMPOSER_PARITY_PLAN.md)，官方客户端实测、视觉并排、任务文件最终范围和具体 IDE 插件迁移到独立的 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](docs/development-plans/CODEX_COMPOSER_PARITY_FOLLOWUP.md)，便于后续单独验收。
 

@@ -1897,6 +1897,22 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                   ),
                   const SizedBox(height: 14),
                   Text(
+                    '当前 profile',
+                    style: Theme.of(context).textTheme.labelMedium,
+                  ),
+                  const SizedBox(height: 4),
+                  SelectableText(
+                    controller.agentDefaultSettings.profile ?? '默认 profile',
+                    key: const Key('codex-configured-profile'),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '来源：${controller.agentDefaultSettings.profileSource ?? '由 Codex 配置管理'}',
+                    key: const Key('codex-configured-profile-source'),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
                     '用户配置文件',
                     style: Theme.of(context).textTheme.labelMedium,
                   ),

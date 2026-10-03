@@ -31,10 +31,13 @@ void main() {
     final snapshot = AgentDefaultSettingsSnapshot.fromConfig({
       'modelVerbosity': 'high',
       'modelReasoningSummary': 'concise',
+      'profile': 'work',
     }, null);
 
     expect(snapshot.modelVerbosity.value, 'high');
     expect(snapshot.reasoningSummary.value, 'concise');
+    expect(snapshot.profile, 'work');
+    expect(snapshot.profileSource, isNull);
     expect(snapshot.sources, containsPair('model_verbosity', isNull));
   });
 

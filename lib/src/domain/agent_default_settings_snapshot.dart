@@ -15,6 +15,8 @@ class AgentDefaultSettingsSnapshot {
     required this.reasoningSummary,
     required this.sources,
     required this.userConfigVersion,
+    this.profile,
+    this.profileSource,
   });
 
   factory AgentDefaultSettingsSnapshot.fromConfig(
@@ -96,6 +98,7 @@ class AgentDefaultSettingsSnapshot {
     const webSearchKeys = ['web_search', 'webSearch'];
     const verbosityKeys = ['model_verbosity', 'modelVerbosity'];
     const summaryKeys = ['model_reasoning_summary', 'modelReasoningSummary'];
+    const profileKeys = ['profile', 'profile_name', 'profileName'];
     return AgentDefaultSettingsSnapshot(
       approvalPolicy: AgentSettingField(
         availability: availability(approvalKeys),
@@ -130,6 +133,8 @@ class AgentDefaultSettingsSnapshot {
         'model_reasoning_summary': source(summaryKeys),
       },
       userConfigVersion: userVersion(),
+      profile: read(profileKeys),
+      profileSource: source(profileKeys),
     );
   }
 
@@ -161,6 +166,8 @@ class AgentDefaultSettingsSnapshot {
     ),
     sources: {},
     userConfigVersion: null,
+    profile: null,
+    profileSource: null,
   );
 
   final AgentSettingField approvalPolicy;
@@ -170,6 +177,14 @@ class AgentDefaultSettingsSnapshot {
   final AgentSettingField reasoningSummary;
   final Map<String, String?> sources;
   final int? userConfigVersion;
+
+  /// The effective profile name when the runtime exposes one.
+  /// 运行时暴露 profile 时的最终 profile 名称。
+  final String? profile;
+
+  /// The configuration origin for the effective profile.
+  /// 最终 profile 的配置来源。
+  final String? profileSource;
 
   String displayValue(AgentSettingField field, {String inherited = '继承默认值'}) {
     return switch (field.availability) {

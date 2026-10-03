@@ -272,10 +272,14 @@ void main() {
             'approval_policy': null,
             'sandbox_mode': 'workspace-write',
             'web_search': 'cached',
+            'profile': 'work',
           },
           'origins': {
             'sandbox_mode': {
               'name': {'type': 'project'},
+            },
+            'profile': {
+              'name': {'type': 'user', 'file': '/tmp/config.toml'},
             },
           },
         };
@@ -300,6 +304,8 @@ void main() {
       );
       expect(controller.agentDefaultSettings.sandboxMode.source, '项目配置');
       expect(controller.agentDefaultSettings.webSearch.value, 'cached');
+      expect(controller.agentDefaultSettings.profile, 'work');
+      expect(controller.agentDefaultSettings.profileSource, '/tmp/config.toml');
       expect(
         controller.agentDefaultSettings.modelVerbosity.availability.name,
         'missing',

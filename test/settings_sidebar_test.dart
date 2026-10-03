@@ -206,5 +206,6 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('codex-configuration-dialog')), findsOneWidget);
     expect(find.text('打开 config.toml'), findsOneWidget);
+    expect(find.byKey(const Key('codex-configured-profile')), findsOneWidget);
   });
 }
