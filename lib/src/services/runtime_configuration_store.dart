@@ -6,6 +6,7 @@ import 'package:chatgpt/src/domain/scheduled_task.dart';
 import 'package:chatgpt/src/domain/worktree_settings.dart';
 import 'package:chatgpt/src/domain/local_worktree_record.dart';
 import 'package:chatgpt/src/domain/thread_environment_binding.dart';
+import 'package:chatgpt/src/domain/worktree_handoff_checkpoint.dart';
 import 'codex_keychain_storage.dart';
 
 /// 将本机 Codex Desk 偏好保存到项目目录之外。
@@ -37,6 +38,8 @@ class RuntimeConfigurationStore {
   static const _worktreeOwnershipKey = 'codex_desk.worktrees.ownership_key.v1';
   static const _worktreeSnapshotEncryptionKey =
       'codex_desk.worktrees.snapshot_encryption_key.v1';
+  static const _worktreeHandoffKey =
+      'codex_desk.worktrees.handoff_checkpoints.v1';
 
   final CodexKeychainStorage _storage;
 
@@ -345,6 +348,32 @@ class RuntimeConfigurationStore {
   ) => _storage.write(
     key: _threadBindingsKey,
     value: jsonEncode(bindings.map((binding) => binding.toJson()).toList()),
+  );
+
+  Future<List<WorktreeHandoffCheckpoint>>
+  readWorktreeHandoffCheckpoints() async {
+    final stored = await _storage.read(key: _worktreeHandoffKey);
+    if (stored == null || stored.trim().isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(stored);
+      if (decoded is! List) return const [];
+      return decoded
+          .whereType<Map>()
+          .map(WorktreeHandoffCheckpoint.fromJson)
+          .where((checkpoint) => checkpoint.threadId.isNotEmpty)
+          .toList(growable: false);
+    } on Object {
+      return const [];
+    }
+  }
+
+  Future<void> saveWorktreeHandoffCheckpoints(
+    Iterable<WorktreeHandoffCheckpoint> checkpoints,
+  ) => _storage.write(
+    key: _worktreeHandoffKey,
+    value: jsonEncode(
+      checkpoints.map((checkpoint) => checkpoint.toJson()).toList(),
+    ),
   );
 
   Future<String?> readWorktreeOwnershipKey() =>

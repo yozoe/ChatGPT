@@ -161,6 +161,16 @@ class Inspector extends StatelessWidget {
                       trailing: Icon(Icons.expand_more, color: palette.muted),
                       onTap: onShowGitProject,
                     ),
+                    if (controller.canHandoffActiveThread)
+                      InspectorActionRow(
+                        icon: Icons.swap_horiz_outlined,
+                        label: controller.activeThreadUsesManagedWorktree
+                            ? '移交到本地项目'
+                            : '移交到工作树',
+                        onTap: () async {
+                          await controller.handoffActiveThread();
+                        },
+                      ),
                     KeyedSubtree(
                       key: branchAnchorKey,
                       child: InspectorActionRow(

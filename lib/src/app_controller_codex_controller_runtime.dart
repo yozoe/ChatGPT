@@ -39,6 +39,7 @@ import 'package:chatgpt/src/services/git_project_service.dart';
 import 'package:chatgpt/src/services/local_session_thread_store.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'package:chatgpt/src/services/local_worktree_service.dart';
+import 'package:chatgpt/src/services/worktree_handoff_service.dart';
 import 'package:chatgpt/src/services/task_completion_notifier.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_url_normalizer.dart';
 import 'app_controller_support.dart';
@@ -213,6 +214,8 @@ class CodexController extends ChangeNotifier {
   late final LocalWorktreeService _localWorktreeService = LocalWorktreeService(
     store: _runtimeConfigurationStore,
   );
+  late final WorktreeHandoffService _worktreeHandoffService =
+      WorktreeHandoffService(store: _runtimeConfigurationStore);
 
   RuntimeConfigurationStore get runtimeConfigurationStore =>
       _runtimeConfigurationStore;
@@ -436,6 +439,7 @@ class CodexController extends ChangeNotifier {
   // App Server. This lets the foreground project change without losing the
   // background task's routing or completion reminder.
   final Map<String, String> _threadWorkspaceById = {};
+  final Map<String, String> _managedWorktreeIdByThread = {};
   final Map<String, String> _runningTurnIdsByThread = {};
   final Map<String, List<TimelineEntry>> _pendingNetworkRetryEntriesByThread =
       {};
@@ -1298,6 +1302,19 @@ class CodexController extends ChangeNotifier {
   /// Returns the actual directory used by the active thread, including a managed worktree.
   /// 返回当前线程实际使用的目录，包括托管工作树路径。
   String get activeExecutionWorkspace => _activeExecutionWorkspace;
+
+  bool get canHandoffActiveThread =>
+      activeThreadId != null &&
+      !hasRunningTasks &&
+      _managedWorktreeIdByThread.containsKey(activeThreadId);
+
+  bool get activeThreadUsesManagedWorktree {
+    final threadId = activeThreadId;
+    if (threadId == null || !_managedWorktreeIdByThread.containsKey(threadId)) {
+      return false;
+    }
+    return _threadWorkspaceById[threadId] != workspacePath;
+  }
 
   List<String>? _runtimeWorkspaceRootsFor(String executionWorkspace) {
     final roots = workspaceRoots;
@@ -2968,6 +2985,67 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// Moves a stopped task and only the changes made since the last checkpoint
+  /// between its local checkout and managed worktree.
+  Future<bool> handoffActiveThread() async {
+    final threadId = activeThreadId;
+    final worktreeId = threadId == null
+        ? null
+        : _managedWorktreeIdByThread[threadId];
+    if (threadId == null || worktreeId == null || hasRunningTasks) {
+      lastError = hasRunningTasks
+          ? '任务运行期间不能进行 Worktree Handoff。'
+          : '当前任务没有可移交的托管工作树。';
+      notifyListeners();
+      return false;
+    }
+    final records = await _runtimeConfigurationStore.readWorktreeRecords();
+    final record = records
+        .where((item) => item.worktreeId == worktreeId)
+        .firstOrNull;
+    final sourceRepository = record?.sourceRepository;
+    if (record == null || sourceRepository == null) {
+      lastError = '找不到任务绑定的工作树记录，请先刷新 Worktrees。';
+      notifyListeners();
+      return false;
+    }
+    final toLocal = activeThreadUsesManagedWorktree;
+    try {
+      await _worktreeHandoffService.handoff(
+        threadId: threadId,
+        direction: toLocal ? 'worktreeToLocal' : 'localToWorktree',
+      );
+      final target = toLocal ? sourceRepository : record.worktreePath;
+      _threadWorkspaceById[threadId] = target;
+      final bindings = await _runtimeConfigurationStore
+          .readThreadEnvironmentBindings();
+      await _runtimeConfigurationStore.saveThreadEnvironmentBindings([
+        ...bindings.where((binding) => binding.threadId != threadId),
+        ThreadEnvironmentBinding(
+          threadId: threadId,
+          kind: toLocal
+              ? ThreadEnvironmentKind.local
+              : ThreadEnvironmentKind.managedWorktree,
+          workingDirectory: target,
+          worktreeId: worktreeId,
+        ),
+      ]);
+      lastError = null;
+      _add(
+        TimelineKind.system,
+        toLocal ? '已移交到本地项目' : '已移交到工作树',
+        'Worktree generation 已递增，未覆盖冲突文件。',
+      );
+      notifyListeners();
+      return true;
+    } on Object catch (error) {
+      lastError = 'Worktree Handoff 失败：${_messageOf(error)}';
+      _add(TimelineKind.error, 'Worktree Handoff 失败', lastError!);
+      notifyListeners();
+      return false;
+    }
+  }
+
   /// Resolves a selected local project directory while enforcing project-path policy.
   Future<String?> _canonicalProjectDirectory(String path) async {
     final canonicalPath = await _workspacePaths.canonicalProjectDirectory(path);
@@ -3909,6 +3987,15 @@ class CodexController extends ChangeNotifier {
             worktreeId: selectedWorktreeId,
           ),
         ]);
+        if (selectedWorktreeId != null) {
+          _managedWorktreeIdByThread[threadId] = selectedWorktreeId;
+          await _worktreeHandoffService.initialize(
+            threadId: threadId,
+            worktreeId: selectedWorktreeId,
+            localPath: requestWorkspace,
+            worktreePath: workspace,
+          );
+        }
       }
       final objective = goal?.trim();
       final collaborationMode = _collaborationMode(planMode: planMode);
@@ -5914,6 +6001,7 @@ class CodexController extends ChangeNotifier {
       );
     }
     _threadWorkspaceById[threadId] = canonicalRecord;
+    _managedWorktreeIdByThread[threadId] = worktreeId;
     return null;
   }
 
