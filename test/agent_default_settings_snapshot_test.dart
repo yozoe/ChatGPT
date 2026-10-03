@@ -59,4 +59,20 @@ void main() {
 
     expect(snapshot.userConfigVersion, 7);
   });
+
+  test(
+    'retains granular policy values without presenting them as scalar enums',
+    () {
+      final snapshot = AgentDefaultSettingsSnapshot.fromConfig({
+        'approval_policy': {'type': 'granular', 'network': 'on-request'},
+      }, null);
+
+      expect(
+        snapshot.approvalPolicy.availability,
+        AgentSettingAvailability.explicit,
+      );
+      expect(snapshot.approvalPolicy.isScalarValue, isFalse);
+      expect(snapshot.approvalPolicy.value, contains('granular'));
+    },
+  );
 }

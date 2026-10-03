@@ -1043,7 +1043,8 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
         : options[field.value] ?? field.value!;
     final editable =
         widget.controller.agentDefaultSettingsWriteSupported &&
-        field.isRuntimeExposed;
+        field.isRuntimeExposed &&
+        field.isScalarValue;
     if (!editable) {
       return Text(display, style: TextStyle(color: palette.muted));
     }

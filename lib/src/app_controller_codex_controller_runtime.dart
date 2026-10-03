@@ -5888,9 +5888,13 @@ class CodexController extends ChangeNotifier {
       );
     }
     final records = await _runtimeConfigurationStore.readWorktreeRecords();
-    final record = records
-        .where((item) => item.worktreeId == worktreeId)
-        .firstOrNull;
+    LocalWorktreeRecord? record;
+    for (final candidate in records) {
+      if (candidate.worktreeId == worktreeId) {
+        record = candidate;
+        break;
+      }
+    }
     final validState =
         record != null &&
         (record.state == LocalWorktreeState.ready ||
@@ -5901,7 +5905,6 @@ class CodexController extends ChangeNotifier {
         ? null
         : await _resolveExistingPath(record.worktreePath);
     if (!validState ||
-        record == null ||
         canonicalBinding == null ||
         canonicalRecord == null ||
         canonicalBinding != canonicalRecord) {

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'agent_setting_field.dart';
 import 'agent_setting_availability.dart';
 
@@ -26,7 +28,20 @@ class AgentDefaultSettingsSnapshot {
   ]) {
     String? read(List<String> keys) {
       for (final key in keys) {
-        if (config.containsKey(key)) return config[key]?.toString();
+        if (!config.containsKey(key)) continue;
+        final value = config[key];
+        if (value == null) return null;
+        if (value is String || value is num || value is bool) {
+          return value.toString();
+        }
+        return jsonEncode(value);
+      }
+      return null;
+    }
+
+    Object? raw(List<String> keys) {
+      for (final key in keys) {
+        if (config.containsKey(key)) return config[key];
       }
       return null;
     }
@@ -104,26 +119,31 @@ class AgentDefaultSettingsSnapshot {
         availability: availability(approvalKeys),
         value: read(approvalKeys),
         source: source(approvalKeys),
+        rawValue: raw(approvalKeys),
       ),
       sandboxMode: AgentSettingField(
         availability: availability(sandboxKeys),
         value: read(sandboxKeys),
         source: source(sandboxKeys),
+        rawValue: raw(sandboxKeys),
       ),
       webSearch: AgentSettingField(
         availability: availability(webSearchKeys),
         value: read(webSearchKeys),
         source: source(webSearchKeys),
+        rawValue: raw(webSearchKeys),
       ),
       modelVerbosity: AgentSettingField(
         availability: availability(verbosityKeys),
         value: read(verbosityKeys),
         source: source(verbosityKeys),
+        rawValue: raw(verbosityKeys),
       ),
       reasoningSummary: AgentSettingField(
         availability: availability(summaryKeys),
         value: read(summaryKeys),
         source: source(summaryKeys),
+        rawValue: raw(summaryKeys),
       ),
       sources: {
         'approval_policy': source(approvalKeys),
