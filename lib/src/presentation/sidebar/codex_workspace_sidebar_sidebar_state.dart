@@ -1159,7 +1159,7 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
                     child: SidebarMenuAction(
                       key: const Key('sidebar-settings-button'),
                       icon: Icons.settings_outlined,
-                      label: 'custom',
+                      label: '设置',
                       selected:
                           widget.destination == WorkspaceDestination.settings,
                       onTap: widget.onShowSettings,

@@ -79,66 +79,71 @@ class WorkspaceSidePanelTabs extends StatelessWidget {
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 2,
                               ),
-                              child: Material(
-                                color: entry == activeTab
-                                    ? palette.selected
-                                    : Colors.transparent,
-                                borderRadius: BorderRadius.circular(8),
-                                child: InkWell(
-                                  key: ValueKey('side-panel-tab-$entry'),
+                              child: Semantics(
+                                button: true,
+                                selected: entry == activeTab,
+                                label: labels[entry] ?? entry,
+                                child: Material(
+                                  color: entry == activeTab
+                                      ? palette.selected
+                                      : Colors.transparent,
                                   borderRadius: BorderRadius.circular(8),
-                                  onTap: () => onSelect(entry),
-                                  child: Padding(
-                                    padding: EdgeInsets.only(
-                                      left: 10,
-                                      right: closableTabs.contains(entry)
-                                          ? 2
-                                          : 10,
-                                      top: 4,
-                                      bottom: 4,
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        ConstrainedBox(
-                                          constraints: const BoxConstraints(
-                                            maxWidth: 180,
-                                          ),
-                                          child: Text(
-                                            labels[entry] ?? entry,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: TextStyle(
-                                              color: entry == activeTab
-                                                  ? palette.trace
-                                                  : palette.muted,
-                                              fontSize: 12,
-                                              fontWeight: entry == activeTab
-                                                  ? FontWeight.w600
-                                                  : FontWeight.w500,
+                                  child: InkWell(
+                                    key: ValueKey('side-panel-tab-$entry'),
+                                    borderRadius: BorderRadius.circular(8),
+                                    onTap: () => onSelect(entry),
+                                    child: Padding(
+                                      padding: EdgeInsets.only(
+                                        left: 10,
+                                        right: closableTabs.contains(entry)
+                                            ? 2
+                                            : 10,
+                                        top: 4,
+                                        bottom: 4,
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          ConstrainedBox(
+                                            constraints: const BoxConstraints(
+                                              maxWidth: 180,
+                                            ),
+                                            child: Text(
+                                              labels[entry] ?? entry,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                color: entry == activeTab
+                                                    ? palette.trace
+                                                    : palette.muted,
+                                                fontSize: 12,
+                                                fontWeight: entry == activeTab
+                                                    ? FontWeight.w600
+                                                    : FontWeight.w500,
+                                              ),
                                             ),
                                           ),
-                                        ),
-                                        if (closableTabs.contains(entry))
-                                          IconButton(
-                                            key: ValueKey(
-                                              'side-panel-tab-close-$entry',
+                                          if (closableTabs.contains(entry))
+                                            IconButton(
+                                              key: ValueKey(
+                                                'side-panel-tab-close-$entry',
+                                              ),
+                                              tooltip: '关闭文件',
+                                              onPressed: () =>
+                                                  onClose?.call(entry),
+                                              icon: const Icon(
+                                                Icons.close,
+                                                size: 14,
+                                              ),
+                                              padding: EdgeInsets.zero,
+                                              constraints:
+                                                  const BoxConstraints.tightFor(
+                                                    width: 26,
+                                                    height: 26,
+                                                  ),
                                             ),
-                                            tooltip: '关闭文件',
-                                            onPressed: () =>
-                                                onClose?.call(entry),
-                                            icon: const Icon(
-                                              Icons.close,
-                                              size: 14,
-                                            ),
-                                            padding: EdgeInsets.zero,
-                                            constraints:
-                                                const BoxConstraints.tightFor(
-                                                  width: 26,
-                                                  height: 26,
-                                                ),
-                                          ),
-                                      ],
+                                        ],
+                                      ),
                                     ),
                                   ),
                                 ),

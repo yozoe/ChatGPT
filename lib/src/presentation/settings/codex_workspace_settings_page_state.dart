@@ -548,25 +548,30 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
     bool trailingArrow = false,
   }) {
     final palette = YeknomPalette.of(context);
-    return InkWell(
-      key: Key('settings-nav-$label'),
-      onTap: onTap ?? () => _select(label),
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        height: 40,
-        padding: const EdgeInsets.symmetric(horizontal: 12),
-        decoration: BoxDecoration(
-          color: selected ? palette.selected : Colors.transparent,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Row(
-          children: [
-            Icon(icon, size: 18, color: palette.trace),
-            const SizedBox(width: 12),
-            Expanded(child: Text(label)),
-            if (trailingArrow)
-              Icon(Icons.arrow_outward, size: 16, color: palette.muted),
-          ],
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: label,
+      child: InkWell(
+        key: Key('settings-nav-$label'),
+        onTap: onTap ?? () => _select(label),
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          height: 40,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            color: selected ? palette.selected : Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, size: 18, color: palette.trace),
+              const SizedBox(width: 12),
+              Expanded(child: Text(label)),
+              if (trailingArrow)
+                Icon(Icons.arrow_outward, size: 16, color: palette.muted),
+            ],
+          ),
         ),
       ),
     );
@@ -612,7 +617,10 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                     details,
                     if (trailing != null) ...[
                       const SizedBox(height: 12),
-                      Align(alignment: Alignment.centerLeft, child: trailing),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Semantics(label: title, child: trailing),
+                      ),
                     ],
                   ],
                 )
@@ -622,7 +630,7 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                     Expanded(child: details),
                     if (trailing != null) ...[
                       const SizedBox(width: 24),
-                      trailing,
+                      Semantics(label: title, child: trailing),
                     ],
                   ],
                 ),
