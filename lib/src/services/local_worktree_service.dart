@@ -75,28 +75,6 @@ class LocalWorktreeService {
       if (head.exitCode != 0) throw StateError('无法确定仓库当前提交。');
       final currentHead = await _run(repository, const ['rev-parse', 'HEAD']);
       if (currentHead.exitCode != 0) throw StateError('无法确定仓库当前提交。');
-      final add = await _run(repository, [
-        'worktree',
-        'add',
-        '--detach',
-        target.path,
-        head.stdout.trim(),
-      ]);
-      if (add.exitCode != 0) throw StateError('创建工作树失败，请检查 Git 仓库状态后重试。');
-      try {
-        if (head.stdout.trim() == currentHead.stdout.trim()) {
-          await _carryTrackedChanges(source: canonicalSource, target: target);
-        }
-        await _copyWorktreeIncludes(source: canonicalSource, target: target);
-      } catch (error) {
-        await _run(canonicalSource.path, [
-          'worktree',
-          'remove',
-          '--force',
-          target.path,
-        ]);
-        throw StateError('无法把当前本地改动带入工作树：$error');
-      }
       final record = LocalWorktreeRecord(
         worktreeId: id,
         projectId: projectId,
@@ -112,9 +90,25 @@ class LocalWorktreeService {
       final signedRecord = record.copyWith(
         ownershipMac: await _ownershipMac(record),
       );
+      await _upsertRecord(
+        signedRecord.copyWith(state: LocalWorktreeState.creating),
+      );
       try {
-        final records = await _store.readWorktreeRecords();
-        await _store.saveWorktreeRecords([...records, signedRecord]);
+        final add = await _run(repository, [
+          'worktree',
+          'add',
+          '--detach',
+          target.path,
+          head.stdout.trim(),
+        ]);
+        if (add.exitCode != 0) {
+          throw StateError('创建工作树失败，请检查 Git 仓库状态后重试。');
+        }
+        if (head.stdout.trim() == currentHead.stdout.trim()) {
+          await _carryTrackedChanges(source: canonicalSource, target: target);
+        }
+        await _copyWorktreeIncludes(source: canonicalSource, target: target);
+        await _upsertRecord(signedRecord);
       } on Object {
         await _run(canonicalSource.path, [
           'worktree',
@@ -122,6 +116,7 @@ class LocalWorktreeService {
           '--force',
           target.path,
         ]);
+        await _removeRecord(id);
         rethrow;
       }
       return signedRecord;
@@ -225,6 +220,35 @@ class LocalWorktreeService {
     return LocalWorktreeState.foreign;
   }
 
+  /// Resolves a provisional creation left behind by an interrupted process.
+  /// A registered or partially present path is never promoted to ready because
+  /// initialization may have stopped before tracked changes and include files
+  /// were verified. Such paths remain visible as foreign for manual review.
+  Future<LocalWorktreeState> recoverCreating({
+    required LocalWorktreeRecord record,
+  }) async {
+    if (record.state != LocalWorktreeState.creating) {
+      throw StateError('只有 creating 状态的工作树可以恢复创建事务。');
+    }
+    try {
+      final path = Directory(record.worktreePath);
+      if (!await path.exists()) {
+        await _saveState(record, LocalWorktreeState.failed);
+        return LocalWorktreeState.failed;
+      }
+      // A present path is conservatively foreign even when Git no longer
+      // lists it: it may contain a partially copied include or patch.
+      await _saveState(record, LocalWorktreeState.foreign);
+      return LocalWorktreeState.foreign;
+    } on FileSystemException {
+      await _saveState(record, LocalWorktreeState.failed);
+      return LocalWorktreeState.failed;
+    } on Object {
+      await _saveState(record, LocalWorktreeState.foreign);
+      return LocalWorktreeState.foreign;
+    }
+  }
+
   Future<void> _saveState(
     LocalWorktreeRecord record,
     LocalWorktreeState state,
@@ -246,6 +270,25 @@ class LocalWorktreeService {
       records.map(
         (item) => item.worktreeId == record.worktreeId ? record : item,
       ),
+    );
+  }
+
+  Future<void> _upsertRecord(LocalWorktreeRecord record) async {
+    final records = await _store.readWorktreeRecords();
+    final exists = records.any((item) => item.worktreeId == record.worktreeId);
+    await _store.saveWorktreeRecords(
+      exists
+          ? records.map(
+              (item) => item.worktreeId == record.worktreeId ? record : item,
+            )
+          : [...records, record],
+    );
+  }
+
+  Future<void> _removeRecord(String worktreeId) async {
+    final records = await _store.readWorktreeRecords();
+    await _store.saveWorktreeRecords(
+      records.where((item) => item.worktreeId != worktreeId),
     );
   }
 

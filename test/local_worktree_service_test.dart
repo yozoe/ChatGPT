@@ -184,4 +184,39 @@ void main() {
       LocalWorktreeState.foreign,
     );
   });
+
+  test('does not promote an interrupted creating record to ready', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'codex-worktree-recover-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final repository = await Directory('${root.path}/repo').create();
+    final worktrees = await Directory('${root.path}/worktrees').create();
+    await runGit(repository, ['init', '-q']);
+    await runGit(repository, ['config', 'user.email', 'test@example.com']);
+    await runGit(repository, ['config', 'user.name', 'Codex Test']);
+    await File('${repository.path}/tracked.txt').writeAsString('ok\n');
+    await runGit(repository, ['add', '.']);
+    await runGit(repository, ['commit', '-qm', 'initial']);
+    final store = RuntimeConfigurationStore(
+      storage: CodexKeychainStorage(developmentDirectory: root),
+    );
+    final service = LocalWorktreeService(store: store);
+    final record = await service.create(
+      repository: repository.path,
+      rootPath: worktrees.path,
+      projectId: 'project-1',
+    );
+    final provisional = record.copyWith(state: LocalWorktreeState.creating);
+    await store.saveWorktreeRecords([provisional]);
+
+    expect(
+      await service.recoverCreating(record: provisional),
+      LocalWorktreeState.foreign,
+    );
+    expect(
+      (await store.readWorktreeRecords()).single.state,
+      LocalWorktreeState.foreign,
+    );
+  });
 }

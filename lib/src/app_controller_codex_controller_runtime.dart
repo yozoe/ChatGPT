@@ -220,7 +220,15 @@ class CodexController extends ChangeNotifier {
   Future<List<LocalWorktreeRecord>> listManagedWorktrees({
     String? sourceRepository,
   }) async {
-    final records = await _runtimeConfigurationStore.readWorktreeRecords();
+    var records = await _runtimeConfigurationStore.readWorktreeRecords();
+    for (final record in records.where(
+      (record) => record.state == LocalWorktreeState.creating,
+    )) {
+      await _localWorktreeService.recoverCreating(record: record);
+    }
+    if (records.any((record) => record.state == LocalWorktreeState.creating)) {
+      records = await _runtimeConfigurationStore.readWorktreeRecords();
+    }
     if (sourceRepository == null) return records;
     final canonical = await _resolveExistingPath(sourceRepository);
     if (canonical == null) return const [];
