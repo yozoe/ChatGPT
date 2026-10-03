@@ -523,29 +523,45 @@ class CodeReviewPanelState extends State<CodeReviewPanel> {
                       ),
                       if (!inlineNavigation && _navigationOverlayOpen)
                         Positioned.fill(
-                          child: GestureDetector(
-                            key: const Key('review-navigation-scrim'),
-                            onTap: () =>
-                                setState(() => _navigationOverlayOpen = false),
-                            child: ColoredBox(
-                              color: Colors.black.withValues(alpha: 0.22),
-                              child: Align(
-                                alignment: Alignment.centerRight,
-                                child: GestureDetector(
-                                  onTap: () {},
-                                  child: Container(
-                                    key: const Key('review-navigation-overlay'),
-                                    width: math.min(280, constraints.maxWidth),
-                                    decoration: BoxDecoration(
-                                      color: palette.module,
-                                      border: Border(
-                                        left: BorderSide(color: palette.border),
+                          child: Semantics(
+                            button: true,
+                            label: '关闭文件导航',
+                            child: GestureDetector(
+                              key: const Key('review-navigation-scrim'),
+                              onTap: () => setState(
+                                () => _navigationOverlayOpen = false,
+                              ),
+                              child: ColoredBox(
+                                color: Colors.black.withValues(alpha: 0.22),
+                                child: Align(
+                                  alignment: Alignment.centerRight,
+                                  child: Semantics(
+                                    container: true,
+                                    label: '文件导航面板',
+                                    child: GestureDetector(
+                                      onTap: () {},
+                                      child: Container(
+                                        key: const Key(
+                                          'review-navigation-overlay',
+                                        ),
+                                        width: math.min(
+                                          280,
+                                          constraints.maxWidth,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: palette.module,
+                                          border: Border(
+                                            left: BorderSide(
+                                              color: palette.border,
+                                            ),
+                                          ),
+                                        ),
+                                        child: _buildNavigation(
+                                          context,
+                                          palette,
+                                          filtered,
+                                        ),
                                       ),
-                                    ),
-                                    child: _buildNavigation(
-                                      context,
-                                      palette,
-                                      filtered,
                                     ),
                                   ),
                                 ),
