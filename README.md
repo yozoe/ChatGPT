@@ -83,6 +83,7 @@
 - 恢复托管工作树线程时会同时校验持久化 binding、工作树记录、canonical 路径、目录存在性和可用状态；绑定失效时不会把缺失目录传给 App Server，而会保留源项目并提示从 Worktrees 设置恢复。
 - 任务环境信息中新增安全的 Worktree Handoff：停止任务后只迁移 generation 检查点之后的增量，双端同一路径各自修改时先报冲突，不会覆盖目标改动；成功后持久化递增检查点并切换线程执行目录。
 - 设置导航和主壳层的无障碍回归现在还验证交互节点具备按钮语义，防止只有可点击但不可键盘/读屏识别的控件漏网。
+- 设置导航移除了重复的“Worktrees（待开发）”占位项，Worktrees 现在只保留真实可用的管理页面入口。
 - 浏览器闭环补充验证：真实 macOS WebKit attachment 事件已覆盖插件到 Dart 的成功、取消和 HTTP 失败传输路径；原生 WebKit 已增加 accessibility tree contract smoke，并通过 `AXUIElement` 验证窗口层级、角色集合和窗口 AX children。外部 AX 审计宿主在真实 Flutter/WebKit 页面上递归观察到 `AXWebArea`、`AXGroup`、`AXStaticText` 和 `AXLink` 后代，完整 WebKit 子树验收已完成。
 - 新增 `tool/macos_browser_ax_audit.swift` 外部系统 AX 审计工具及 `integration_test/browser_ax_host_test.dart` 保活宿主：在辅助功能权限已授予的宿主中递归读取目标应用的 `AXChildren`、`AXContents` 和可见子树，输出真实网页后代角色和子节点数量。
 - Flutter 侧无障碍回归现在遍历浏览器语义树，覆盖工作区、标签、地址栏、导航按钮、网页内容、错误和下载状态，并拒绝无标签/无 tooltip 的可点击节点。

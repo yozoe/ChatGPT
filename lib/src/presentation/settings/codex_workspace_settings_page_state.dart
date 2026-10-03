@@ -2138,10 +2138,6 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                           label: '环境（待开发）',
                           icon: Icons.computer_outlined,
                         ),
-                        _navItem(
-                          label: 'Worktrees（待开发）',
-                          icon: Icons.call_split_outlined,
-                        ),
                         _sectionLabel('已归档'),
                         _navItem(
                           label: '已归档的聊天',
