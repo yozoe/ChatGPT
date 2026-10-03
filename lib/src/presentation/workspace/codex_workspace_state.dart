@@ -1905,6 +1905,27 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                     controller.codexUserConfigPath,
                     key: const Key('codex-configuration-path'),
                   ),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      key: const Key('codex-open-config-file'),
+                      onPressed: () async {
+                        final path = controller.codexUserConfigPath;
+                        final opened = await launchUrl(
+                          Uri.file(path),
+                          mode: LaunchMode.externalApplication,
+                        );
+                        if (!opened && context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('无法打开 config.toml。')),
+                          );
+                        }
+                      },
+                      icon: const Icon(Icons.open_in_new, size: 16),
+                      label: const Text('打开 config.toml'),
+                    ),
+                  ),
                   const SizedBox(height: 14),
                   Text(
                     '“已读取”表示模型和 Provider 已由 Codex 运行时解析；凭据、网络和 Base URL 是否可用，仍需成功创建一次任务才能确认。',

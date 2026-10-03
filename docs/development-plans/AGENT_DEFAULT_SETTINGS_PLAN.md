@@ -26,7 +26,7 @@
 | 网页搜索 | 时间线可显示网页搜索活动；浏览器有独立启用开关 | 官方 Schema 已提供 `disabled`、`cached`、`indexed`、`live`；尚未作为默认设置暴露，不能与内置浏览器混用 |
 | 输出详细程度 | 设置页显示“模型默认” | 官方 Schema 已提供 `low`、`medium`、`high`；尚未读取或发送 verbosity 配置 |
 | 推理摘要 | 已接收并渲染运行时摘要 | 官方 Schema 已提供 `auto`、`concise`、`detailed`、`none`；尚未实现偏好控制 |
-| 用户配置 | 已通过 App Server `config/read` 读取模型、Provider 和来源；设置页可查看状态 | 需要扩展非敏感字段映射、配置 profile 语义和打开 `config.toml` 的明确入口 |
+| 用户配置 | 已通过 App Server `config/read` 读取模型、Provider 和来源；设置页可查看状态，并可用系统默认应用打开用户 `config.toml` | 配置 profile 语义和官方桌面端打开动作仍待实测 |
 
 当前项目已经具备配置读取基础：`CodexAppServer.readConfig()` 调用 `config/read`（`includeLayers: false`），控制器从返回的 `config` 和 `origins` 提取模型、Provider 及来源。官方 0.154.0-alpha Schema 还明确提供 `config/value/write`、`config/batchWrite` 和上述设置字段；后续应在这个边界上增量扩展。由于项目当前基线仍是 0.153.4，必须先验证旧运行时对字段和写入方法的兼容性；若响应未提供某字段，必须保留只读降级，不从本地活动或提示词推断。
 

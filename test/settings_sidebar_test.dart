@@ -190,7 +190,6 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('查看模型与 Provider 状态'), findsOneWidget);
-    expect(find.text('查看生效的 config.toml'), findsNothing);
 
     await tester.tap(
       find.byKey(const Key('settings-configuration-approval-mode')),
@@ -206,5 +205,6 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('codex-configuration-dialog')), findsOneWidget);
+    expect(find.text('打开 config.toml'), findsOneWidget);
   });
 }
