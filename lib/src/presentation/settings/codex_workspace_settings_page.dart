@@ -11,6 +11,8 @@ class SettingsPage extends ConsumerStatefulWidget {
     required this.navigationWidth,
     required this.themeMode,
     required this.onThemeModeChanged,
+    required this.highContrast,
+    required this.onHighContrastChanged,
     required this.onChooseWorkspace,
     required this.onShowCodexConfiguration,
     required this.onConfigureRuntime,
@@ -28,6 +30,8 @@ class SettingsPage extends ConsumerStatefulWidget {
   final double navigationWidth;
   final ThemeMode themeMode;
   final ValueChanged<ThemeMode>? onThemeModeChanged;
+  final bool highContrast;
+  final ValueChanged<bool>? onHighContrastChanged;
   final VoidCallback onChooseWorkspace;
   final Future<void> Function() onShowCodexConfiguration;
   final Future<void> Function() onConfigureRuntime;

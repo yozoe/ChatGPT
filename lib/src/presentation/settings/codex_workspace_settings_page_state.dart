@@ -882,6 +882,16 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                     ),
                     Divider(height: 1, color: palette.border),
                     _settingRow(
+                      title: '高对比度主题',
+                      description: '提高文字、边框和控件状态的对比度，保持当前明暗模式与配色。',
+                      trailing: Switch(
+                        key: const Key('settings-high-contrast'),
+                        value: widget.highContrast,
+                        onChanged: widget.onHighContrastChanged,
+                      ),
+                    ),
+                    Divider(height: 1, color: palette.border),
+                    _settingRow(
                       title: 'Dock 图标',
                       description: '选择应用在 Dock 中使用的图标',
                       trailing: Wrap(

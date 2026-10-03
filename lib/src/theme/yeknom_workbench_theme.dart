@@ -6,19 +6,51 @@ abstract final class YeknomWorkbenchTheme {
   static ThemeData light({
     YeknomPalette? palette,
     YeknomColorPreset preset = YeknomColorPreset.midnight,
-  }) => _build(Brightness.light, palette: palette, preset: preset);
+    bool highContrast = false,
+  }) => _build(
+    Brightness.light,
+    palette: palette,
+    preset: preset,
+    highContrast: highContrast,
+  );
 
   static ThemeData dark({
     YeknomPalette? palette,
     YeknomColorPreset preset = YeknomColorPreset.midnight,
-  }) => _build(Brightness.dark, palette: palette, preset: preset);
+    bool highContrast = false,
+  }) => _build(
+    Brightness.dark,
+    palette: palette,
+    preset: preset,
+    highContrast: highContrast,
+  );
 
   static ThemeData _build(
     Brightness brightness, {
     YeknomPalette? palette,
     required YeknomColorPreset preset,
+    required bool highContrast,
   }) {
-    final colors = palette ?? YeknomPalette.fromPreset(preset, brightness);
+    final baseColors = palette ?? YeknomPalette.fromPreset(preset, brightness);
+    final colors = highContrast
+        ? baseColors.copyWith(
+            trace: brightness == Brightness.dark
+                ? const Color(0xFFFFFFFF)
+                : const Color(0xFF000000),
+            muted: brightness == Brightness.dark
+                ? const Color(0xFFE8E8E8)
+                : const Color(0xFF303030),
+            faint: brightness == Brightness.dark
+                ? const Color(0xFFBDBDBD)
+                : const Color(0xFF505050),
+            border: brightness == Brightness.dark
+                ? const Color(0xFF8A8A8A)
+                : const Color(0xFF6A6A6A),
+            controlBorder: brightness == Brightness.dark
+                ? const Color(0xFFBDBDBD)
+                : const Color(0xFF404040),
+          )
+        : baseColors;
     final dark = brightness == Brightness.dark;
     final base = ThemeData(useMaterial3: true, brightness: brightness);
     final scheme =

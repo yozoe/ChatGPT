@@ -2774,6 +2774,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                     navigationWidth: _sidebarWidthFor(constraints.maxWidth),
                     themeMode: widget.themeMode,
                     onThemeModeChanged: widget.onThemeModeChanged,
+                    highContrast: widget.highContrast,
+                    onHighContrastChanged: widget.onHighContrastChanged,
                     onChooseWorkspace: _showWorkspaceDirectories,
                     onShowCodexConfiguration: _showCodexConfiguration,
                     onConfigureRuntime: _showRuntime,

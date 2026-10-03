@@ -34,11 +34,13 @@ class ThemePreferencesNotifier extends Notifier<CodexThemePreferences> {
     ThemeMode? mode,
     YeknomColorPreset? preset,
     double? sidebarWidth,
+    bool? highContrast,
   }) {
     final next = state.copyWith(
       mode: mode,
       preset: preset,
       sidebarWidth: sidebarWidth,
+      highContrast: highContrast,
     );
     if (next == state) return Future<void>.value();
     state = next;

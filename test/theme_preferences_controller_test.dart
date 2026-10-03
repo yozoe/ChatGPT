@@ -26,13 +26,18 @@ void main() {
 
     await container
         .read(themePreferencesProvider.notifier)
-        .update(mode: ThemeMode.light, preset: YeknomColorPreset.cobalt);
+        .update(
+          mode: ThemeMode.light,
+          preset: YeknomColorPreset.cobalt,
+          highContrast: true,
+        );
 
     expect(
       container.read(themePreferencesProvider),
       const CodexThemePreferences(
         mode: ThemeMode.light,
         preset: YeknomColorPreset.cobalt,
+        highContrast: true,
       ),
     );
     expect(store.saved, [container.read(themePreferencesProvider)]);

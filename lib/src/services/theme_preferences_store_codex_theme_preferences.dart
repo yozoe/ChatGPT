@@ -7,6 +7,7 @@ final class CodexThemePreferences {
     required this.mode,
     required this.preset,
     this.sidebarWidth = defaultSidebarWidth,
+    this.highContrast = false,
   });
 
   static const defaultSidebarWidth = 250.0;
@@ -15,26 +16,31 @@ final class CodexThemePreferences {
     mode: ThemeMode.dark,
     preset: YeknomColorPreset.midnight,
     sidebarWidth: defaultSidebarWidth,
+    highContrast: false,
   );
 
   final ThemeMode mode;
   final YeknomColorPreset preset;
   final double sidebarWidth;
+  final bool highContrast;
 
   CodexThemePreferences copyWith({
     ThemeMode? mode,
     YeknomColorPreset? preset,
     double? sidebarWidth,
+    bool? highContrast,
   }) => CodexThemePreferences(
     mode: mode ?? this.mode,
     preset: preset ?? this.preset,
     sidebarWidth: sidebarWidth ?? this.sidebarWidth,
+    highContrast: highContrast ?? this.highContrast,
   );
 
   Map<String, Object> toJson() => <String, Object>{
     'themeMode': mode.name,
     'colorPreset': preset.name,
     'sidebarWidth': sidebarWidth,
+    'highContrast': highContrast,
   };
 
   factory CodexThemePreferences.fromJson(Object? value) {
@@ -52,6 +58,7 @@ final class CodexThemePreferences {
           ((value['sidebarWidth'] as num?)?.toDouble() ?? defaults.sidebarWidth)
               .clamp(210.0, 420.0)
               .toDouble(),
+      highContrast: value['highContrast'] == true,
     );
   }
 
@@ -60,8 +67,9 @@ final class CodexThemePreferences {
       other is CodexThemePreferences &&
       other.mode == mode &&
       other.preset == preset &&
-      other.sidebarWidth == sidebarWidth;
+      other.sidebarWidth == sidebarWidth &&
+      other.highContrast == highContrast;
 
   @override
-  int get hashCode => Object.hash(mode, preset, sidebarWidth);
+  int get hashCode => Object.hash(mode, preset, sidebarWidth, highContrast);
 }

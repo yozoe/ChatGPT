@@ -37,6 +37,8 @@ class CodexWorkspace extends ConsumerStatefulWidget {
     this.onSidebarWidthChanged,
     this.onThemeModeChanged,
     this.onThemePresetChanged,
+    this.highContrast = false,
+    this.onHighContrastChanged,
     super.key,
   });
 
@@ -49,6 +51,8 @@ class CodexWorkspace extends ConsumerStatefulWidget {
   final ValueChanged<double>? onSidebarWidthChanged;
   final ValueChanged<ThemeMode>? onThemeModeChanged;
   final ValueChanged<YeknomColorPreset>? onThemePresetChanged;
+  final bool highContrast;
+  final ValueChanged<bool>? onHighContrastChanged;
 
   /// 创建承载工作区页面状态的 State 对象。
   /// Creates the State object that owns workspace-page state.

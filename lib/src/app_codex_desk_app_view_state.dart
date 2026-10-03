@@ -27,10 +27,15 @@ class CodexDeskAppViewState extends ConsumerState<CodexDeskAppView> {
     unawaited(_updateThemePreferences(sidebarWidth: value));
   }
 
+  void _setHighContrast(bool value) {
+    unawaited(_updateThemePreferences(highContrast: value));
+  }
+
   Future<void> _updateThemePreferences({
     ThemeMode? mode,
     YeknomColorPreset? preset,
     double? sidebarWidth,
+    bool? highContrast,
   }) async {
     try {
       await ref
@@ -52,16 +57,24 @@ class CodexDeskAppViewState extends ConsumerState<CodexDeskAppView> {
       title: 'Codex Desk',
       debugShowCheckedModeBanner: false,
       scaffoldMessengerKey: _messengerKey,
-      theme: YeknomWorkbenchTheme.light(preset: preferences.preset).copyWith(
-        tooltipTheme: const TooltipThemeData(
-          waitDuration: codexHoverPopupDelay,
-        ),
-      ),
-      darkTheme: YeknomWorkbenchTheme.dark(preset: preferences.preset).copyWith(
-        tooltipTheme: const TooltipThemeData(
-          waitDuration: codexHoverPopupDelay,
-        ),
-      ),
+      theme:
+          YeknomWorkbenchTheme.light(
+            preset: preferences.preset,
+            highContrast: preferences.highContrast,
+          ).copyWith(
+            tooltipTheme: const TooltipThemeData(
+              waitDuration: codexHoverPopupDelay,
+            ),
+          ),
+      darkTheme:
+          YeknomWorkbenchTheme.dark(
+            preset: preferences.preset,
+            highContrast: preferences.highContrast,
+          ).copyWith(
+            tooltipTheme: const TooltipThemeData(
+              waitDuration: codexHoverPopupDelay,
+            ),
+          ),
       themeMode: preferences.mode,
       home: CodexWorkspace(
         themeMode: preferences.mode,
@@ -69,6 +82,8 @@ class CodexDeskAppViewState extends ConsumerState<CodexDeskAppView> {
         initialSidebarWidth: preferences.sidebarWidth,
         onThemeModeChanged: _setThemeMode,
         onThemePresetChanged: _setThemePreset,
+        highContrast: preferences.highContrast,
+        onHighContrastChanged: _setHighContrast,
         onSidebarWidthChanged: _setSidebarWidth,
       ),
     );

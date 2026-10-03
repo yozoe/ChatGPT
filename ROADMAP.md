@@ -243,7 +243,7 @@
 - `已完成` 将 Dock badge 的计数显示边界抽为可导入的原生纯逻辑；负数/零不显示、正常计数和 99 上限均由 RunnerTests 验证。
 - `已完成` 收紧 macOS Dock 徽标的 MethodChannel 参数边界：兼容旧版 `visible` 与整数 `count`，缺失字段或类型错误会返回明确原生错误而非静默清除徽标，并由 RunnerTests 覆盖。
 - `已完成` 建立 macOS GitHub Actions CI：格式检查、`flutter analyze`、`flutter test`、原生 `RunnerTests` 和 macOS Debug 构建；主题 Token 已迁入项目内维护，不再依赖仓库外本机路径或外部 UI Kit。
-- `进行中` 完善键盘导航、焦点顺序、语义标签和高对比度主题；本阶段新增操作均有文字标签或 tooltip，完整无障碍审计待后续集中执行。
+- `进行中` 完善键盘导航、焦点顺序、语义标签和高对比度主题；浏览器工作区已完成 Flutter 语义树与 macOS AX 审计，本轮新增全局高对比度主题开关并持久化应用到文字、边框和控件状态，完整全局审计与剩余设置项仍待集中执行。
 - `已完成` 评估 Windows / Linux 平台支持；结论和启动前置条件见 [PLATFORM_SUPPORT.md](docs/PLATFORM_SUPPORT.md)，在 macOS 发布前不启动实现。
 
 ## 下一项建议

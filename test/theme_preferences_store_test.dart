@@ -73,6 +73,23 @@ void main() {
       }
     }
   });
+
+  test('high contrast themes strengthen text and border contrast', () {
+    final normal = YeknomWorkbenchTheme.light();
+    final high = YeknomWorkbenchTheme.light(highContrast: true);
+    final normalPalette = normal.extension<YeknomPalette>()!;
+    final highPalette = high.extension<YeknomPalette>()!;
+
+    expect(highPalette.trace, const Color(0xFF000000));
+    expect(
+      highPalette.controlBorder.computeLuminance(),
+      lessThan(normalPalette.controlBorder.computeLuminance()),
+    );
+    expect(
+      highPalette.muted.computeLuminance(),
+      lessThan(normalPalette.muted.computeLuminance()),
+    );
+  });
 }
 
 double _contrastRatio(Color first, Color second) {
