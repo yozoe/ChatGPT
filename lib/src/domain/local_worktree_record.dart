@@ -92,6 +92,7 @@ class LocalWorktreeRecord {
 
   LocalWorktreeRecord copyWith({
     String? threadId,
+    String? branch,
     LocalWorktreeState? state,
     DateTime? lastUsedAt,
     String? ownershipNonce,
@@ -112,7 +113,7 @@ class LocalWorktreeRecord {
     ownershipMac: ownershipMac ?? this.ownershipMac,
     snapshotId: snapshotId ?? this.snapshotId,
     snapshotDigest: snapshotDigest ?? this.snapshotDigest,
-    branch: branch,
+    branch: branch ?? this.branch,
     state: state ?? this.state,
     createdAt: createdAt,
     lastUsedAt: lastUsedAt ?? this.lastUsedAt,

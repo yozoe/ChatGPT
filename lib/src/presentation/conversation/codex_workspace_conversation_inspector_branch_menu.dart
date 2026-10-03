@@ -11,8 +11,8 @@ Future<void> showInspectorBranchMenu(
   required BuildContext anchorContext,
   required CodexController controller,
 }) async {
-  final workspace = controller.workspacePath;
-  if (workspace == null) return;
+  final workspace = controller.activeExecutionWorkspace;
+  if (workspace.isEmpty) return;
   final currentBranch = controller.gitProjectStatus?.branch;
   final changedFiles = controller.gitProjectStatus?.changes.length ?? 0;
   List<String> branches = const [];
@@ -24,7 +24,7 @@ Future<void> showInspectorBranchMenu(
   }
   if (!context.mounted ||
       !anchorContext.mounted ||
-      controller.workspacePath != workspace) {
+      controller.activeExecutionWorkspace != workspace) {
     return;
   }
 
@@ -123,8 +123,7 @@ Future<void> showInspectorBranchMenu(
                           style: TextStyle(color: palette.trace, fontSize: 13),
                           decoration: InputDecoration(
                             isDense: true,
-                            hintText:
-                                '搜索${workspaceName(controller.workspacePath)}分支',
+                            hintText: '搜索${workspaceName(workspace)}分支',
                             hintStyle: TextStyle(
                               color: palette.muted,
                               fontSize: 13,
@@ -308,7 +307,7 @@ Future<void> showInspectorBranchMenu(
   if (!context.mounted ||
       selection == null ||
       selection.branch == currentBranch ||
-      controller.workspacePath != workspace) {
+      controller.activeExecutionWorkspace != workspace) {
     return;
   }
 
@@ -316,7 +315,7 @@ Future<void> showInspectorBranchMenu(
     final branch = await showCreateInspectorBranchDialog(context);
     if (!context.mounted ||
         branch == null ||
-        controller.workspacePath != workspace) {
+        controller.activeExecutionWorkspace != workspace) {
       return;
     }
     final succeeded = await controller.createAndCheckoutGitBranch(

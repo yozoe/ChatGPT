@@ -1295,6 +1295,10 @@ class CodexController extends ChangeNotifier {
   String get _activeExecutionWorkspace =>
       _threadWorkspaceById[activeThreadId] ?? workspacePath ?? '';
 
+  /// Returns the actual directory used by the active thread, including a managed worktree.
+  /// 返回当前线程实际使用的目录，包括托管工作树路径。
+  String get activeExecutionWorkspace => _activeExecutionWorkspace;
+
   List<String>? _runtimeWorkspaceRootsFor(String executionWorkspace) {
     final roots = workspaceRoots;
     if (roots.isEmpty) return null;
@@ -1612,14 +1616,19 @@ class CodexController extends ChangeNotifier {
 
   /// 检出已有本地分支，并在成功后刷新 Git 摘要。
   /// Checks out an existing local branch and refreshes the Git summary on success.
-  Future<bool> checkoutGitBranch(String branch, {required String workspace}) {
-    if (workspacePath != workspace) return Future.value(false);
-    return _gitOperations.run(
+  Future<bool> checkoutGitBranch(
+    String branch, {
+    required String workspace,
+  }) async {
+    if (!_canMutateGitWorkspace(workspace)) return false;
+    final succeeded = await _gitOperations.run(
       () => _gitProjectService.checkoutBranch(
         workspace: workspace,
         branch: branch,
       ),
     );
+    if (succeeded) await _recordManagedWorktreeBranch(workspace, branch);
+    return succeeded;
   }
 
   /// 创建并检出新的本地分支，并在成功后刷新 Git 摘要。
@@ -1627,14 +1636,46 @@ class CodexController extends ChangeNotifier {
   Future<bool> createAndCheckoutGitBranch(
     String branch, {
     required String workspace,
-  }) {
-    if (workspacePath != workspace) return Future.value(false);
-    return _gitOperations.run(
+  }) async {
+    if (!_canMutateGitWorkspace(workspace)) return false;
+    final succeeded = await _gitOperations.run(
       () => _gitProjectService.createAndCheckoutBranch(
         workspace: workspace,
         branch: branch,
       ),
     );
+    if (succeeded) await _recordManagedWorktreeBranch(workspace, branch);
+    return succeeded;
+  }
+
+  bool _canMutateGitWorkspace(String workspace) {
+    if (workspace != _activeExecutionWorkspace && workspacePath != workspace) {
+      return false;
+    }
+    if (hasRunningTasks) {
+      gitOperationError = '任务运行期间不能切换或创建工作树分支。';
+      notifyListeners();
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> _recordManagedWorktreeBranch(
+    String workspace,
+    String branch,
+  ) async {
+    final records = await _runtimeConfigurationStore.readWorktreeRecords();
+    var changed = false;
+    final next = <LocalWorktreeRecord>[];
+    for (final record in records) {
+      if (record.worktreePath == workspace) {
+        changed = true;
+        next.add(record.copyWith(branch: branch));
+      } else {
+        next.add(record);
+      }
+    }
+    if (changed) await _runtimeConfigurationStore.saveWorktreeRecords(next);
   }
 
   /// 暂存一个文件，然后刷新当前工作区的 Git 摘要。

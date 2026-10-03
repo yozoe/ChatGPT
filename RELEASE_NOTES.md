@@ -5,6 +5,7 @@
 - 本地工作树现在会在托管根目录旁原子保存第二份身份清单，并在创建、对账和删除前校验清单与应用记录、Git 登记及完整性字段；清单缺失或不一致时会保守标记为 `foreign` 并拒绝删除。该清单仍不是 Keychain 或独立外部权威所有权证明。
 - 配置详情现在会显示 App Server 实际返回的当前 profile 及其来源；profile 仍保持只读，未把未经协议确认的切换行为伪装成可用控件。
 - 无障碍回归新增设置多个页面的可点击节点遍历；浏览器设置开关、工作树刷新和钩子刷新现在提供明确的读屏标签，缺少标签的交互节点会在测试中失败。
+- 工作树任务的分支菜单现在针对线程实际执行目录操作；创建或切换分支会更新托管工作树记录，运行中任务会拒绝分支变更。
 
 - 收敛 Composer 一致性开发目标：仓库内已实现并测试的能力归入 [CODEX_COMPOSER_PARITY_PLAN.md](docs/development-plans/CODEX_COMPOSER_PARITY_PLAN.md)，官方客户端实测、视觉并排、任务文件最终范围和具体 IDE 插件迁移到独立的 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](docs/development-plans/CODEX_COMPOSER_PARITY_FOLLOWUP.md)，便于后续单独验收。
 

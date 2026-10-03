@@ -3,7 +3,10 @@ import 'dart:io';
 
 import 'package:chatgpt/src/app_controller.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
+import 'package:chatgpt/src/domain/local_worktree_record.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
+import 'package:chatgpt/src/services/codex_keychain_storage.dart';
+import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'widget_test_fakes.dart';
@@ -42,6 +45,53 @@ ServerEvent tokenUsageEvent({
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test(
+    'creates a branch in the active managed worktree and records it',
+    () async {
+      final root = await Directory.systemTemp.createTemp('worktree-branch-');
+      addTearDown(() => root.delete(recursive: true));
+      final worktree = '${root.path}/task-1';
+      final store = RuntimeConfigurationStore(
+        storage: CodexKeychainStorage(developmentDirectory: root),
+      );
+      final record = LocalWorktreeRecord(
+        worktreeId: 'task-1',
+        projectId: 'project-1',
+        sourceRepository: '/workspace',
+        worktreePath: worktree,
+        baseCommit: 'abc123',
+        state: LocalWorktreeState.completed,
+        createdAt: DateTime.utc(2026),
+        threadId: 'thread-1',
+      );
+      await store.saveWorktreeRecords([record]);
+      final git = FakeGitProjectService();
+      final controller = CodexController(
+        server: FakeCodexAppServer(),
+        runtimeConfigurationStore: store,
+        gitProjectService: git,
+      );
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = worktree
+        ..status = RuntimeStatus.ready;
+
+      expect(
+        await controller.createAndCheckoutGitBranch(
+          'feature/worktree',
+          workspace: worktree,
+        ),
+        isTrue,
+      );
+      expect(git.createdBranchWorkspace, worktree);
+      expect(
+        (await store.readWorktreeRecords()).single.branch,
+        'feature/worktree',
+      );
+      controller.dispose();
+    },
+  );
 
   test('keeps authoritative context usage scoped to its thread and turn', () {
     final controller = CodexController(server: FakeCodexAppServer())
