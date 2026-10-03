@@ -56,6 +56,7 @@ class LocalWorktreeService {
     bool fetchBeforeCreate = false,
     String? baseCommitOverride,
     bool carryTrackedChanges = true,
+    bool isPermanent = false,
   }) async {
     if (!Directory(rootPath).isAbsolute) {
       throw StateError('工作树根目录必须是绝对路径。');
@@ -103,6 +104,7 @@ class LocalWorktreeService {
         baseRef: selectedRef == 'HEAD' ? null : selectedRef,
         gitCommonDirectory: commonDirectory,
         ownershipNonce: _newNonce(),
+        isPermanent: isPermanent,
         state: LocalWorktreeState.ready,
         createdAt: DateTime.now(),
       );
@@ -353,6 +355,7 @@ class LocalWorktreeService {
         metadata['sourceRepository'] != record.sourceRepository ||
         metadata['worktreePath'] != record.worktreePath ||
         metadata['baseCommit'] != record.baseCommit ||
+        (metadata['isPermanent'] == true) != record.isPermanent ||
         metadata['ownershipNonce'] != record.ownershipNonce ||
         metadata['ownershipMac'] != record.ownershipMac) {
       return false;
@@ -391,7 +394,8 @@ class LocalWorktreeService {
             .where(
               (record) =>
                   record.state == LocalWorktreeState.completed &&
-                  record.threadId != null,
+                  record.threadId != null &&
+                  !record.isPermanent,
             )
             .toList()
           ..sort(
@@ -556,7 +560,7 @@ class LocalWorktreeService {
     final payload = utf8.encode(
       'v1|${record.worktreeId}|${record.projectId}|${record.sourceRepository}|'
       '${record.worktreePath}|${record.gitCommonDirectory}|${record.ownershipNonce}'
-      '$snapshotPart',
+      '|${record.isPermanent}$snapshotPart',
     );
     final mac = await Hmac.sha256().calculateMac(
       payload,

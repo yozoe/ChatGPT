@@ -30,6 +30,7 @@ class WorktreeMetadataStore {
       'sourceRepository': record.sourceRepository,
       'worktreePath': record.worktreePath,
       'baseCommit': record.baseCommit,
+      if (record.isPermanent) 'isPermanent': true,
       if (record.baseRef != null) 'baseRef': record.baseRef,
       if (record.gitCommonDirectory != null)
         'gitCommonDirectory': record.gitCommonDirectory,

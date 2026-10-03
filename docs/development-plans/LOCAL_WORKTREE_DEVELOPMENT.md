@@ -1,6 +1,6 @@
 # Codex 风格本地工作树开发文档
 
-> 状态：进行中。首版本地工作树已接入：新任务可在 Composer 选择托管工作树，首次发送时创建 detached Git worktree，绑定真实执行目录，并在创建时携带已跟踪本地改动、`.worktreeinclude` 与 `AGENTS.override.md`；创建阶段会先保存 `creating` provisional 记录，完成初始化后才进入 `ready`，并在工作树根目录旁的 `.codex-worktree-metadata/` 原子写入第二份身份清单；记录已增加 nonce 与 HMAC-SHA256 完整性校验，创建、对账和删除都要求清单与应用记录一致。恢复已按记录的精确 `baseCommit` 重建，并在删除前为 tracked patch、受控 untracked/忽略文件创建 AES-GCM 加密快照，恢复成功后删除快照文件。快照密钥、HMAC 密钥和应用记录仍在应用专用本地存储中，清单也不是独立 Keychain 或外部权威所有权证明；Handoff、永久工作树和已安排任务隔离仍未交付。
+> 状态：进行中。首版本地工作树已接入：新任务可在 Composer 选择托管工作树，首次发送时创建 detached Git worktree，绑定真实执行目录，并在创建时携带已跟踪本地改动、`.worktreeinclude` 与 `AGENTS.override.md`；项目菜单也可创建独立登记的永久工作树，自动清理会跳过永久记录；创建阶段会先保存 `creating` provisional 记录，完成初始化后才进入 `ready`，并在工作树根目录旁的 `.codex-worktree-metadata/` 原子写入第二份身份清单；记录已增加 nonce 与 HMAC-SHA256 完整性校验，创建、对账和删除都要求清单与应用记录一致。恢复已按记录的精确 `baseCommit` 重建，并在删除前为 tracked patch、受控 untracked/忽略文件创建 AES-GCM 加密快照，恢复成功后删除快照文件。快照密钥、HMAC 密钥和应用记录仍在应用专用本地存储中，清单也不是独立 Keychain 或外部权威所有权证明；Handoff 和已安排任务隔离仍未交付。
 > 适用范围：Codex Desk macOS Flutter 工作台
 > 官方行为基线：[OpenAI Worktrees](https://learn.chatgpt.com/docs/environments/git-worktrees)
 

@@ -1006,6 +1006,28 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     );
   }
 
+  Future<void> _createPermanentWorktreeFor(String primaryPath) async {
+    if (primaryPath != _controller.workspacePath) {
+      final switched = await _controller.selectWorkspaceAndReconnect(
+        primaryPath,
+      );
+      if (!switched) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(_controller.lastError ?? '无法切换到该项目。')),
+          );
+        }
+        return;
+      }
+    }
+    final created = await _controller.createPermanentWorktree();
+    if (!created && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_controller.lastError ?? '无法创建永久工作树。')),
+      );
+    }
+  }
+
   /// 选择并添加一个附加工作区目录。
   /// Selects and adds an additional workspace directory.
   Future<bool> _addWorkspaceDirectory() async {
@@ -2981,6 +3003,8 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
                                   onEditWorkspace: _showEditWorkspaceDialog,
                                   onCreateWorkspace: () =>
                                       unawaited(_createWorkspace()),
+                                  onCreatePermanentWorktree:
+                                      _createPermanentWorktreeFor,
                                   onConfigureRuntime: _showRuntime,
                                   onRenameThread: _renameThread,
                                   onArchiveThread: _archiveThread,

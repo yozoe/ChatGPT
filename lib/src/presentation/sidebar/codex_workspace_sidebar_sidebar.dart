@@ -12,6 +12,7 @@ class Sidebar extends StatefulWidget {
     required this.onChooseWorkspace,
     required this.onEditWorkspace,
     required this.onCreateWorkspace,
+    required this.onCreatePermanentWorktree,
     required this.onConfigureRuntime,
     required this.onRenameThread,
     required this.onArchiveThread,
@@ -37,6 +38,7 @@ class Sidebar extends StatefulWidget {
   final VoidCallback onChooseWorkspace;
   final void Function(String primaryPath) onEditWorkspace;
   final VoidCallback onCreateWorkspace;
+  final Future<void> Function(String primaryPath) onCreatePermanentWorktree;
   final Future<void> Function() onConfigureRuntime;
   final Future<void> Function(CodexThread thread) onRenameThread;
   final Future<void> Function(CodexThread thread) onArchiveThread;

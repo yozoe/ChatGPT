@@ -140,6 +140,7 @@
 - 本地 Worktree 首版进入可用流程：Composer 可在新任务中选择托管工作树，首次发送时创建项目外 detached Git worktree，绑定线程的真实执行目录，并携带已跟踪本地改动、`.worktreeinclude` 和 `AGENTS.override.md`；任务完成后按保留策略清理。起始分支、Handoff、永久工作树和完整外部所有权校验仍在开发中。
 - Worktree Composer 入口新增起始基准选择：可回到本地、从当前分支创建，或打开分支选择对话框从其他引用创建 detached 工作树；记录保留基准引用，跨提交创建时不会误带入源 checkout 的未提交补丁。
 - Worktree 清理增加 Git 对账边界：删除前校验 canonical 路径、common directory 和精确 worktree 登记；目录缺失或外部变更会保留记录并标记为 missing/foreign，不会继续删除。
+- 项目菜单现在可以创建永久工作树：它会以独立项目登记并长期保留，托管工作树的自动清理不会删除永久工作树；运行中的项目会明确拒绝创建。
 - Worktree 所有权记录增加随机 nonce 和 HMAC-SHA256 完整性校验；已签名的本地记录字段被篡改时会标记为 foreign 并拒绝清理。该校验目前使用应用专用本地存储中的密钥与记录，尚不是应用外权威元数据或 macOS Keychain 隔离。
 - Worktree 创建增加 `creating` provisional 记录：初始化完成前不会暴露为 ready；应用在下一次枚举时会把中断后仍存在的半成品标记为 foreign，把缺失目录标记为 failed，避免把未完成初始化的目录交给任务执行。
 - Worktree 恢复现在使用记录中的精确 `baseCommit` 创建 detached 工作树，即使源仓库分支已经前进，也不会把恢复结果错误地建立在当前 `HEAD` 上。

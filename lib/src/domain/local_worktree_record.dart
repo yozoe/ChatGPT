@@ -26,6 +26,7 @@ class LocalWorktreeRecord {
     this.snapshotDigest,
     this.threadId,
     this.branch,
+    this.isPermanent = false,
     this.lastUsedAt,
   });
 
@@ -42,6 +43,7 @@ class LocalWorktreeRecord {
   final String? snapshotId;
   final String? snapshotDigest;
   final String? branch;
+  final bool isPermanent;
   final LocalWorktreeState state;
   final DateTime createdAt;
   final DateTime? lastUsedAt;
@@ -61,6 +63,7 @@ class LocalWorktreeRecord {
         snapshotId: json['snapshotId']?.toString(),
         snapshotDigest: json['snapshotDigest']?.toString(),
         branch: json['branch']?.toString(),
+        isPermanent: json['isPermanent'] == true,
         state: LocalWorktreeState.values.firstWhere(
           (value) => value.name == json['state'],
           orElse: () => LocalWorktreeState.failed,
@@ -85,6 +88,7 @@ class LocalWorktreeRecord {
     if (snapshotId != null) 'snapshotId': snapshotId,
     if (snapshotDigest != null) 'snapshotDigest': snapshotDigest,
     if (branch != null) 'branch': branch,
+    if (isPermanent) 'isPermanent': true,
     'state': state.name,
     'createdAt': createdAt.toIso8601String(),
     if (lastUsedAt != null) 'lastUsedAt': lastUsedAt!.toIso8601String(),
@@ -93,6 +97,7 @@ class LocalWorktreeRecord {
   LocalWorktreeRecord copyWith({
     String? threadId,
     String? branch,
+    bool? isPermanent,
     LocalWorktreeState? state,
     DateTime? lastUsedAt,
     String? ownershipNonce,
@@ -114,6 +119,7 @@ class LocalWorktreeRecord {
     snapshotId: snapshotId ?? this.snapshotId,
     snapshotDigest: snapshotDigest ?? this.snapshotDigest,
     branch: branch ?? this.branch,
+    isPermanent: isPermanent ?? this.isPermanent,
     state: state ?? this.state,
     createdAt: createdAt,
     lastUsedAt: lastUsedAt ?? this.lastUsedAt,
@@ -131,6 +137,7 @@ class LocalWorktreeRecord {
     ownershipNonce: ownershipNonce,
     ownershipMac: ownershipMac,
     branch: branch,
+    isPermanent: isPermanent,
     state: state,
     createdAt: createdAt,
     lastUsedAt: lastUsedAt,

@@ -20,6 +20,59 @@ Future<void> runGit(Directory directory, List<String> args) async {
 
 void main() {
   test(
+    'persists permanent worktree identity and excludes it from cleanup',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-worktree-permanent-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final repository = await Directory('${root.path}/repo').create();
+      final worktrees = await Directory('${root.path}/worktrees').create();
+      await runGit(repository, ['init', '-q']);
+      await runGit(repository, ['config', 'user.email', 'test@example.com']);
+      await runGit(repository, ['config', 'user.name', 'Codex Test']);
+      await File('${repository.path}/tracked.txt').writeAsString('ok\n');
+      await runGit(repository, ['add', '.']);
+      await runGit(repository, ['commit', '-qm', 'initial']);
+      final store = RuntimeConfigurationStore(
+        storage: CodexKeychainStorage(developmentDirectory: root),
+      );
+      final service = LocalWorktreeService(store: store);
+      final permanent = await service.create(
+        repository: repository.path,
+        rootPath: worktrees.path,
+        projectId: 'project-1',
+        isPermanent: true,
+      );
+      final managed = await service.create(
+        repository: repository.path,
+        rootPath: worktrees.path,
+        projectId: 'project-1',
+      );
+      expect(permanent.isPermanent, isTrue);
+      expect(
+        LocalWorktreeRecord.fromJson(permanent.toJson()).isPermanent,
+        isTrue,
+      );
+      final records = [
+        permanent.copyWith(state: LocalWorktreeState.completed),
+        managed.copyWith(state: LocalWorktreeState.completed),
+      ];
+      await store.saveWorktreeRecords(records);
+      expect(
+        await service.cleanup(
+          rootPath: worktrees.path,
+          retentionLimit: 1,
+          records: records,
+        ),
+        isEmpty,
+      );
+      expect(Directory(permanent.worktreePath).existsSync(), isTrue);
+      expect(Directory(managed.worktreePath).existsSync(), isTrue);
+    },
+  );
+
+  test(
     'creates a detached worktree and carries tracked and included files',
     () async {
       final root = await Directory.systemTemp.createTemp('codex-worktree-');

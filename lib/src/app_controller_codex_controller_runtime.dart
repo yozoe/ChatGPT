@@ -2919,6 +2919,55 @@ class CodexController extends ChangeNotifier {
     }
   }
 
+  /// Creates a persistent Git worktree and registers it as a standalone
+  /// project. Persistent worktrees are never tied to a chat and are excluded
+  /// from managed-worktree retention cleanup.
+  Future<bool> createPermanentWorktree({String name = ''}) async {
+    await _workspaceLoad;
+    final repository = workspacePath;
+    if (repository == null || repository.trim().isEmpty || hasRunningTasks) {
+      lastError = hasRunningTasks ? '任务运行期间不能创建永久工作树。' : '请先打开一个本地项目。';
+      notifyListeners();
+      return false;
+    }
+    try {
+      final settings = await _runtimeConfigurationStore.readWorktreeSettings();
+      final projectId = workspaceProjectId ?? repository;
+      final record = await _localWorktreeService.create(
+        repository: repository,
+        rootPath: settings.rootPath,
+        projectId: projectId,
+        isPermanent: true,
+      );
+      final created = await createWorkspace(
+        record.worktreePath,
+        name: name.trim().isEmpty ? '永久工作树' : name.trim(),
+      );
+      if (!created) {
+        try {
+          await _localWorktreeService.remove(
+            record: record,
+            rootPath: settings.rootPath,
+            force: true,
+          );
+        } catch (_) {
+          // Preserve the project registration error and leave the record for
+          // conservative reconciliation if cleanup cannot be verified.
+        }
+        return false;
+      }
+      lastError = null;
+      _add(TimelineKind.system, '已创建永久工作树', record.worktreePath);
+      notifyListeners();
+      return true;
+    } on Object catch (error) {
+      lastError = '无法创建永久工作树：${_messageOf(error)}';
+      _add(TimelineKind.error, '永久工作树创建失败', lastError!);
+      notifyListeners();
+      return false;
+    }
+  }
+
   /// Resolves a selected local project directory while enforcing project-path policy.
   Future<String?> _canonicalProjectDirectory(String path) async {
     final canonicalPath = await _workspacePaths.canonicalProjectDirectory(path);
