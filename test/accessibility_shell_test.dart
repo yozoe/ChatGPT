@@ -30,13 +30,12 @@ void main() {
 
     final data = _collectSemantics(tester);
     for (final label in ['新对话', '设置']) {
-      expect(
-        data.any(
-          (item) => item.label.contains(label) || item.tooltip.contains(label),
-        ),
-        isTrue,
-        reason: label,
+      final item = data.firstWhere(
+        (item) => item.label.contains(label) || item.tooltip.contains(label),
+        orElse: () => throw TestFailure('Missing semantics label: $label'),
       );
+      expect(item.hasAction(SemanticsAction.tap), isTrue, reason: label);
+      expect(item.flagsCollection.isButton, isTrue, reason: label);
     }
 
     final unlabeledTapNodes = _collectSemantics(tester)
@@ -48,6 +47,33 @@ void main() {
         )
         .toList();
     expect(unlabeledTapNodes, isEmpty);
+    semantics.dispose();
+  });
+
+  testWidgets('settings navigation exposes keyboard-focusable semantics', (
+    tester,
+  ) async {
+    final controller = CodexController(server: CodexAppServer())
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    final semantics = tester.ensureSemantics();
+    await tester.pumpWidget(
+      MaterialApp(home: CodexWorkspace(controller: controller)),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('sidebar-settings-button')));
+    await tester.pump();
+
+    final data = _collectSemantics(tester);
+    for (final label in ['返回应用', '常规', '外观', '配置', '浏览器']) {
+      final item = data.firstWhere(
+        (entry) => entry.label.contains(label),
+        orElse: () =>
+            throw TestFailure('Missing focus semantics label: $label'),
+      );
+      expect(item.hasAction(SemanticsAction.tap), isTrue, reason: label);
+      expect(item.flagsCollection.isButton, isTrue, reason: label);
+    }
     semantics.dispose();
   });
 

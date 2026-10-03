@@ -81,6 +81,7 @@
 - 全局壳层无障碍回归覆盖侧栏设置/帮助入口、设置返回与分类导航、高对比度开关、右侧工作区 Tab、工作区启动器、插件/MCP 标签、已安排任务建议、任务搜索动作、搜索结果、环境信息操作行、Composer 附件预览/移除动作、项目源目录管理、任务历史行、空项目引导和代码审查文件导航行；本轮又补齐文件树文件/文件夹、审查目录、分支选择器、创建分支入口、代码审查范围选项以及窄窗口审查覆盖层的 label、selected、enabled 语义，并遍历设置中的常规、外观、配置、插件、浏览器、Worktrees、钩子和归档页面，拒绝无标签/无 tooltip 的可点击节点。窄窗口下这些控件仍保留可读名称和选中状态；完整跨页面键盘焦点顺序审计仍在进行。
 - 永久工作树入口已接入：项目菜单可从当前项目创建独立的长期工作树项目，托管工作树自动清理不会删除永久记录；运行中的项目会拒绝创建并给出原因。
 - 恢复托管工作树线程时会同时校验持久化 binding、工作树记录、canonical 路径、目录存在性和可用状态；绑定失效时不会把缺失目录传给 App Server，而会保留源项目并提示从 Worktrees 设置恢复。
+- 设置导航和主壳层的无障碍回归现在还验证交互节点具备按钮语义，防止只有可点击但不可键盘/读屏识别的控件漏网。
 - 浏览器闭环补充验证：真实 macOS WebKit attachment 事件已覆盖插件到 Dart 的成功、取消和 HTTP 失败传输路径；原生 WebKit 已增加 accessibility tree contract smoke，并通过 `AXUIElement` 验证窗口层级、角色集合和窗口 AX children。外部 AX 审计宿主在真实 Flutter/WebKit 页面上递归观察到 `AXWebArea`、`AXGroup`、`AXStaticText` 和 `AXLink` 后代，完整 WebKit 子树验收已完成。
 - 新增 `tool/macos_browser_ax_audit.swift` 外部系统 AX 审计工具及 `integration_test/browser_ax_host_test.dart` 保活宿主：在辅助功能权限已授予的宿主中递归读取目标应用的 `AXChildren`、`AXContents` 和可见子树，输出真实网页后代角色和子节点数量。
 - Flutter 侧无障碍回归现在遍历浏览器语义树，覆盖工作区、标签、地址栏、导航按钮、网页内容、错误和下载状态，并拒绝无标签/无 tooltip 的可点击节点。
