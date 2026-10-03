@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
+import 'package:cryptography/cryptography.dart' show Hmac, SecretKey;
 import 'package:chatgpt/src/domain/local_worktree_record.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 
@@ -9,6 +12,7 @@ class LocalWorktreeService {
 
   final RuntimeConfigurationStore _store;
   final Map<String, Future<void>> _locks = {};
+  static Future<void> _ownershipKeyLock = Future<void>.value();
 
   Future<List<Map<String, String>>> list(String repository) async {
     final result = await _run(repository, const [
@@ -101,12 +105,16 @@ class LocalWorktreeService {
         baseCommit: head.stdout.trim(),
         baseRef: selectedRef == 'HEAD' ? null : selectedRef,
         gitCommonDirectory: commonDirectory,
+        ownershipNonce: _newNonce(),
         state: LocalWorktreeState.ready,
         createdAt: DateTime.now(),
       );
+      final signedRecord = record.copyWith(
+        ownershipMac: await _ownershipMac(record),
+      );
       try {
         final records = await _store.readWorktreeRecords();
-        await _store.saveWorktreeRecords([...records, record]);
+        await _store.saveWorktreeRecords([...records, signedRecord]);
       } on Object {
         await _run(canonicalSource.path, [
           'worktree',
@@ -116,7 +124,7 @@ class LocalWorktreeService {
         ]);
         rethrow;
       }
-      return record;
+      return signedRecord;
     });
   }
 
@@ -194,6 +202,22 @@ class LocalWorktreeService {
       await _saveState(record, LocalWorktreeState.foreign);
       return LocalWorktreeState.foreign;
     }
+    if (record.ownershipNonce == null && record.ownershipMac == null) {
+      final upgraded = record.copyWith(
+        gitCommonDirectory: common,
+        ownershipNonce: _newNonce(),
+        ownershipMac: null,
+      );
+      await _saveRecord(
+        upgraded.copyWith(ownershipMac: await _ownershipMac(upgraded)),
+      );
+    } else if (record.ownershipNonce == null || record.ownershipMac == null) {
+      await _saveState(record, LocalWorktreeState.foreign);
+      return LocalWorktreeState.foreign;
+    } else if (record.ownershipMac != await _ownershipMac(record)) {
+      await _saveState(record, LocalWorktreeState.foreign);
+      return LocalWorktreeState.foreign;
+    }
     final entries = await list(source.path);
     final registered = entries.any((entry) => entry['path'] == worktree.path);
     if (registered) return record.state;
@@ -212,6 +236,15 @@ class LocalWorktreeService {
         (item) => item.worktreeId == record.worktreeId
             ? item.copyWith(state: state)
             : item,
+      ),
+    );
+  }
+
+  Future<void> _saveRecord(LocalWorktreeRecord record) async {
+    final records = await _store.readWorktreeRecords();
+    await _store.saveWorktreeRecords(
+      records.map(
+        (item) => item.worktreeId == record.worktreeId ? record : item,
       ),
     );
   }
@@ -327,6 +360,40 @@ class LocalWorktreeService {
           : '${Directory(repository).path}${Platform.pathSeparator}$value',
     );
     return (await _canonicalDirectory(directory)).path;
+  }
+
+  String _newNonce() {
+    final bytes = List<int>.generate(32, (_) => Random.secure().nextInt(256));
+    return base64UrlEncode(bytes);
+  }
+
+  Future<String> _ownershipMac(LocalWorktreeRecord record) async {
+    final key = await _readOrCreateOwnershipKey();
+    final payload = utf8.encode(
+      'v1|${record.worktreeId}|${record.projectId}|${record.sourceRepository}|'
+      '${record.worktreePath}|${record.gitCommonDirectory}|${record.ownershipNonce}',
+    );
+    final mac = await Hmac.sha256().calculateMac(
+      payload,
+      secretKey: SecretKey(utf8.encode(key)),
+    );
+    return base64UrlEncode(mac.bytes);
+  }
+
+  Future<String> _readOrCreateOwnershipKey() async {
+    final previous = _ownershipKeyLock;
+    final completer = Completer<void>();
+    _ownershipKeyLock = completer.future;
+    try {
+      await previous;
+      final stored = await _store.readWorktreeOwnershipKey();
+      if (stored != null && stored.isNotEmpty) return stored;
+      final generated = _newNonce();
+      await _store.saveWorktreeOwnershipKey(generated);
+      return generated;
+    } finally {
+      completer.complete();
+    }
   }
 
   Future<void> _carryTrackedChanges({

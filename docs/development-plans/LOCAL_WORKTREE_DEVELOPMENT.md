@@ -1,6 +1,6 @@
 # Codex 风格本地工作树开发文档
 
-> 状态：进行中。首版本地工作树已接入：新任务可在 Composer 选择托管工作树，首次发送时创建 detached Git worktree，绑定真实执行目录，并在创建时携带已跟踪本地改动、`.worktreeinclude` 与 `AGENTS.override.md`；安全快照、Handoff、永久工作树和完整外部所有权证明仍未交付。
+> 状态：进行中。首版本地工作树已接入：新任务可在 Composer 选择托管工作树，首次发送时创建 detached Git worktree，绑定真实执行目录，并在创建时携带已跟踪本地改动、`.worktreeinclude` 与 `AGENTS.override.md`；记录已增加 nonce 与 HMAC-SHA256 完整性校验，但密钥和记录仍在应用专用本地存储中，安全快照、Handoff、永久工作树和应用外权威所有权证明仍未交付。
 > 适用范围：Codex Desk macOS Flutter 工作台
 > 官方行为基线：[OpenAI Worktrees](https://learn.chatgpt.com/docs/environments/git-worktrees)
 
@@ -64,9 +64,9 @@ Codex Desk 不得删除或接管其他客户端创建的工作树。默认目录
 $CODEX_HOME/worktrees/codex-desk/<worktree-id>/
 ```
 
-若无法可靠取得 `$CODEX_HOME`，回退到应用 Application Support 下的 `worktrees/`。每个目录包含一份便于诊断的所有权清单，但它不是删除授权的唯一来源。应用同时在工作树根目录之外的 `WorktreeMetadataStore` 保存权威所有权记录，并为每个工作树生成随机 nonce；目录内清单使用保存在 macOS Keychain 中的每安装密钥执行 HMAC-SHA256，覆盖 schema version、worktree ID、source project ID、canonical worktree path、canonical Git common directory 和 nonce。
+若无法可靠取得 `$CODEX_HOME`，回退到应用 Application Support 下的 `worktrees/`。目标设计要求每个目录包含一份便于诊断的所有权清单，但它不是删除授权的唯一来源。当前实现尚未建立应用外的 `WorktreeMetadataStore`；它在应用专用本地存储中保存每个工作树的随机 nonce、canonical 路径、Git common directory 和 HMAC-SHA256，作为篡改检测而非独立所有权授权。密钥目前也沿用该本地存储，尚未达到 macOS Keychain 隔离。
 
-`ready` 及之后状态的清理器仅在以下信息全部一致时处理该目录：外部权威记录、有效 HMAC、canonical path、Git common directory，以及 `git worktree list --porcelain` 中的精确记录。密钥不可用、记录缺失、路径经过符号链接跳转或任一字段不符时，工作树进入 `foreign`，只能由用户查看或手动处理，应用不得删除。目录内普通 JSON 清单即使可读写，也不能单独证明所有权。
+`ready` 及之后状态的清理器当前仅在以下信息全部一致时处理该目录：本地记录中的有效 HMAC、canonical path、Git common directory，以及 `git worktree list --porcelain` 中的精确记录。密钥不可用、记录缺失、路径经过符号链接跳转或任一字段不符时，工作树进入 `foreign`，只能由用户查看或手动处理，应用不得删除。应用外权威记录和 Keychain 密钥属于尚未交付的加强边界，不能把当前 HMAC 描述为独立所有权证明。
 
 `creating` 状态使用独立的恢复授权，因为进程可能在 `git worktree add` 成功后、目录清单写入前退出。只有启动前已提交的 provisional 记录仍为当前 operation、记录中的随机 nonce 和精确 canonical staging path 未变、common directory 匹配，并且启动对账能证明该路径是 operation 开始后新增的唯一 Git worktree 记录时，才允许补写 HMAC 清单或通过 `git worktree remove` 回滚；路径已预先存在、记录不唯一或任一证据不符时仍进入 `foreign`，不得删除。
 
@@ -89,7 +89,7 @@ $CODEX_HOME/worktrees/codex-desk/<worktree-id>/
 - 默认最多保留最近 15 个托管工作树；
 - 多附加目录项目明确显示隔离边界。
 
-当前首版已覆盖 Composer 选择、首次发送时惰性创建、执行目录绑定、当前/其他引用的起始基准选择、完成后保留/自动清理、Git common directory/canonical 路径对账、工作树设置持久化和恢复入口；仍需补齐外部权威所有权/HMAC、快照恢复和 Handoff 后才能将整项任务标记为已完成。
+当前首版已覆盖 Composer 选择、首次发送时惰性创建、执行目录绑定、当前/其他引用的起始基准选择、完成后保留/自动清理、Git common directory/canonical 路径对账、工作树记录的 HMAC 篡改检测、工作树设置持久化和恢复入口；仍需补齐应用外权威所有权、快照恢复和 Handoff 后才能将整项任务标记为已完成。
 
 ### 4.2 第二阶段
 

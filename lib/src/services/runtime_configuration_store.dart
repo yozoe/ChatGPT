@@ -34,6 +34,7 @@ class RuntimeConfigurationStore {
   static const _worktreeSettingsKey = 'codex_desk.worktrees.settings.v1';
   static const _worktreeRecordsKey = 'codex_desk.worktrees.records.v1';
   static const _threadBindingsKey = 'codex_desk.worktrees.thread_bindings.v1';
+  static const _worktreeOwnershipKey = 'codex_desk.worktrees.ownership_key.v1';
 
   final CodexKeychainStorage _storage;
 
@@ -343,4 +344,10 @@ class RuntimeConfigurationStore {
     key: _threadBindingsKey,
     value: jsonEncode(bindings.map((binding) => binding.toJson()).toList()),
   );
+
+  Future<String?> readWorktreeOwnershipKey() =>
+      _storage.read(key: _worktreeOwnershipKey);
+
+  Future<void> saveWorktreeOwnershipKey(String value) =>
+      _storage.write(key: _worktreeOwnershipKey, value: value);
 }

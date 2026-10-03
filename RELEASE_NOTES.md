@@ -126,6 +126,7 @@
 - 本地 Worktree 首版进入可用流程：Composer 可在新任务中选择托管工作树，首次发送时创建项目外 detached Git worktree，绑定线程的真实执行目录，并携带已跟踪本地改动、`.worktreeinclude` 和 `AGENTS.override.md`；任务完成后按保留策略清理。起始分支、Handoff、永久工作树和完整外部所有权校验仍在开发中。
 - Worktree Composer 入口新增起始基准选择：可回到本地、从当前分支创建，或打开分支选择对话框从其他引用创建 detached 工作树；记录保留基准引用，跨提交创建时不会误带入源 checkout 的未提交补丁。
 - Worktree 清理增加 Git 对账边界：删除前校验 canonical 路径、common directory 和精确 worktree 登记；目录缺失或外部变更会保留记录并标记为 missing/foreign，不会继续删除。
+- Worktree 所有权记录增加随机 nonce 和 HMAC-SHA256 完整性校验；已签名的本地记录字段被篡改时会标记为 foreign 并拒绝清理。该校验目前使用应用专用本地存储中的密钥与记录，尚不是应用外权威元数据或 macOS Keychain 隔离。
 - 内置浏览器智能体调用闭环扩展到 App Server `item/tool/call` 动态工具：仅识别受限的 `browser` / `browser.open` / `browser.navigate` 等工具名或 `namespace: browser` + `tool: open|navigate` 形状，并从 `arguments`（包括 JSON 字符串）提取 HTTP/HTTPS 地址，沿用权限卡片、会话授权和导航安全；动态工具会收到结构化成功/拒绝响应，`computer-use` 活动和无 ID 通知仍不会自动导航。
 - 动态浏览器工具名兼容点号、斜杠、下划线、连字符和冒号分隔形式；allowlist 仍保持严格，未识别工具不会获得网页导航权限。
 - 内置浏览器补充网页内容、下载状态和取消操作的辅助技术语义；`⌘R` 的 Flutter 快捷键现已通过平台 controller contract 测试覆盖，原生 WebKit 也覆盖实际刷新和不可达页面错误回传。
