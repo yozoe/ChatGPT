@@ -14,6 +14,7 @@ class ComposerSubmission {
     required this.skills,
     this.useManagedWorktree = false,
     this.managedWorktreeId,
+    this.managedWorktreeBaseRef,
   });
 
   /// The immutable composer text captured when the user submits.
@@ -27,6 +28,7 @@ class ComposerSubmission {
   final List<CodexSkill> skills;
   final bool useManagedWorktree;
   final String? managedWorktreeId;
+  final String? managedWorktreeBaseRef;
 
   bool get hasContext =>
       attachments.isNotEmpty ||

@@ -64,4 +64,46 @@ void main() {
       );
     },
   );
+
+  test('creates a detached worktree from the selected base branch', () async {
+    final root = await Directory.systemTemp.createTemp('codex-worktree-ref-');
+    addTearDown(() => root.delete(recursive: true));
+    final repository = await Directory('${root.path}/repo').create();
+    final worktrees = await Directory('${root.path}/worktrees').create();
+    await runGit(repository, ['init', '-q']);
+    await runGit(repository, ['config', 'user.email', 'test@example.com']);
+    await runGit(repository, ['config', 'user.name', 'Codex Test']);
+    await File('${repository.path}/base.txt').writeAsString('base\n');
+    await runGit(repository, ['add', '.']);
+    await runGit(repository, ['commit', '-qm', 'initial']);
+    await runGit(repository, ['branch', 'feature']);
+
+    final service = LocalWorktreeService(
+      store: RuntimeConfigurationStore(
+        storage: CodexKeychainStorage(developmentDirectory: root),
+      ),
+    );
+    final record = await service.create(
+      repository: repository.path,
+      rootPath: worktrees.path,
+      projectId: 'project-1',
+      baseRef: 'feature',
+    );
+
+    expect(record.baseRef, 'feature');
+    final head = await Process.run('git', [
+      'rev-parse',
+      'HEAD',
+    ], workingDirectory: record.worktreePath);
+    final feature = await Process.run('git', [
+      'rev-parse',
+      'feature',
+    ], workingDirectory: repository.path);
+    expect(head.stdout.toString().trim(), feature.stdout.toString().trim());
+    final branch = await Process.run('git', [
+      'branch',
+      '--show-current',
+    ], workingDirectory: record.worktreePath);
+    expect(branch.stdout.toString().trim(), isEmpty);
+  });
 }

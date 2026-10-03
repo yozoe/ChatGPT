@@ -124,6 +124,7 @@
 - 外观设置新增高对比度主题开关：偏好会持久化，并实际增强全局文字、边框和控件状态的对比度；其他尚未接入的外观选项继续保持禁用。
 - 补充全局无障碍语义回归：侧栏设置/帮助入口、设置返回与分类导航、高对比度开关和右侧工作区 Tab 在宽窄窗口下均提供可读名称与选中状态；测试同时拒绝缺少标签和 tooltip 的可点击节点。
 - 本地 Worktree 首版进入可用流程：Composer 可在新任务中选择托管工作树，首次发送时创建项目外 detached Git worktree，绑定线程的真实执行目录，并携带已跟踪本地改动、`.worktreeinclude` 和 `AGENTS.override.md`；任务完成后按保留策略清理。起始分支、Handoff、永久工作树和完整外部所有权校验仍在开发中。
+- Worktree Composer 入口新增起始基准选择：可回到本地、从当前分支创建，或打开分支选择对话框从其他引用创建 detached 工作树；记录保留基准引用，跨提交创建时不会误带入源 checkout 的未提交补丁。
 - 内置浏览器智能体调用闭环扩展到 App Server `item/tool/call` 动态工具：仅识别受限的 `browser` / `browser.open` / `browser.navigate` 等工具名或 `namespace: browser` + `tool: open|navigate` 形状，并从 `arguments`（包括 JSON 字符串）提取 HTTP/HTTPS 地址，沿用权限卡片、会话授权和导航安全；动态工具会收到结构化成功/拒绝响应，`computer-use` 活动和无 ID 通知仍不会自动导航。
 - 动态浏览器工具名兼容点号、斜杠、下划线、连字符和冒号分隔形式；allowlist 仍保持严格，未识别工具不会获得网页导航权限。
 - 内置浏览器补充网页内容、下载状态和取消操作的辅助技术语义；`⌘R` 的 Flutter 快捷键现已通过平台 controller contract 测试覆盖，原生 WebKit 也覆盖实际刷新和不可达页面错误回传。

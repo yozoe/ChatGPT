@@ -1540,6 +1540,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       imagePaths: imagePaths,
       useManagedWorktree: submission.useManagedWorktree,
       managedWorktreeId: submission.managedWorktreeId,
+      managedWorktreeBaseRef: submission.managedWorktreeBaseRef,
     );
     if (sent) _composer.clear();
     return sent;

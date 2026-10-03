@@ -9,6 +9,7 @@ class LocalWorktreeRecord {
     required this.baseCommit,
     required this.state,
     required this.createdAt,
+    this.baseRef,
     this.threadId,
     this.branch,
     this.lastUsedAt,
@@ -20,6 +21,7 @@ class LocalWorktreeRecord {
   final String sourceRepository;
   final String worktreePath;
   final String baseCommit;
+  final String? baseRef;
   final String? branch;
   final LocalWorktreeState state;
   final DateTime createdAt;
@@ -33,6 +35,7 @@ class LocalWorktreeRecord {
         sourceRepository: json['sourceRepository'].toString(),
         worktreePath: json['worktreePath'].toString(),
         baseCommit: json['baseCommit'].toString(),
+        baseRef: json['baseRef']?.toString(),
         branch: json['branch']?.toString(),
         state: LocalWorktreeState.values.firstWhere(
           (value) => value.name == json['state'],
@@ -51,6 +54,7 @@ class LocalWorktreeRecord {
     'sourceRepository': sourceRepository,
     'worktreePath': worktreePath,
     'baseCommit': baseCommit,
+    if (baseRef != null) 'baseRef': baseRef,
     if (branch != null) 'branch': branch,
     'state': state.name,
     'createdAt': createdAt.toIso8601String(),
@@ -68,6 +72,7 @@ class LocalWorktreeRecord {
     sourceRepository: sourceRepository,
     worktreePath: worktreePath,
     baseCommit: baseCommit,
+    baseRef: baseRef,
     branch: branch,
     state: state ?? this.state,
     createdAt: createdAt,

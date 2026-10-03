@@ -38,6 +38,7 @@ class LocalWorktreeService {
     required String rootPath,
     required String projectId,
     String? worktreeId,
+    String? baseRef,
     bool fetchBeforeCreate = false,
   }) async {
     if (!Directory(rootPath).isAbsolute) {
@@ -62,8 +63,13 @@ class LocalWorktreeService {
         final fetch = await _run(repository, const ['fetch', '--prune']);
         if (fetch.exitCode != 0) throw StateError('获取远端更新失败，请检查网络后重试。');
       }
-      final head = await _run(repository, const ['rev-parse', 'HEAD']);
+      final selectedRef = baseRef?.trim().isNotEmpty == true
+          ? baseRef!.trim()
+          : 'HEAD';
+      final head = await _run(repository, ['rev-parse', selectedRef]);
       if (head.exitCode != 0) throw StateError('无法确定仓库当前提交。');
+      final currentHead = await _run(repository, const ['rev-parse', 'HEAD']);
+      if (currentHead.exitCode != 0) throw StateError('无法确定仓库当前提交。');
       final add = await _run(repository, [
         'worktree',
         'add',
@@ -73,7 +79,9 @@ class LocalWorktreeService {
       ]);
       if (add.exitCode != 0) throw StateError('创建工作树失败，请检查 Git 仓库状态后重试。');
       try {
-        await _carryTrackedChanges(source: canonicalSource, target: target);
+        if (head.stdout.trim() == currentHead.stdout.trim()) {
+          await _carryTrackedChanges(source: canonicalSource, target: target);
+        }
         await _copyWorktreeIncludes(source: canonicalSource, target: target);
       } catch (error) {
         await _run(canonicalSource.path, [
@@ -90,6 +98,7 @@ class LocalWorktreeService {
         sourceRepository: canonicalSource.path,
         worktreePath: target.path,
         baseCommit: head.stdout.trim(),
+        baseRef: selectedRef == 'HEAD' ? null : selectedRef,
         state: LocalWorktreeState.ready,
         createdAt: DateTime.now(),
       );

@@ -46,6 +46,7 @@ class ComposerPanelState extends State<ComposerPanel> {
   bool _includeWorkspace = false;
   bool _useManagedWorktree = false;
   String? _managedWorktreeId;
+  String? _managedWorktreeBaseRef;
   List<LocalWorktreeRecord> _managedWorktrees = const [];
   bool _includeIdeContext = false;
   String? _ideContextWorkspacePath;
@@ -153,7 +154,67 @@ class ComposerPanelState extends State<ComposerPanel> {
       sourceRepository: controller.workspacePath,
     );
     if (!mounted || controller.workspacePath != workspaceKey) return;
-    setState(() => _managedWorktrees = records);
+    setState(() {
+      _managedWorktrees = records;
+      _managedWorktreeBaseRef ??= controller.gitProjectStatus?.branch;
+    });
+  }
+
+  Future<void> _selectWorktreeMenuValue(String value) async {
+    if (value == 'local') {
+      setState(() {
+        _useManagedWorktree = false;
+        _managedWorktreeId = null;
+        _managedWorktreeBaseRef = null;
+      });
+      return;
+    }
+    if (value == 'choose-base') {
+      await _chooseManagedWorktreeBaseBranch();
+      return;
+    }
+    setState(() {
+      if (value.startsWith('new:')) {
+        _managedWorktreeId = null;
+        _managedWorktreeBaseRef = value.substring(4);
+      } else {
+        _managedWorktreeId = value;
+        _managedWorktreeBaseRef = null;
+      }
+      _useManagedWorktree = true;
+    });
+  }
+
+  Future<void> _chooseManagedWorktreeBaseBranch() async {
+    try {
+      final workspaceKey = controller.workspacePath;
+      final branches = await controller.listGitReviewBaseBranches();
+      if (!mounted || controller.workspacePath != workspaceKey) return;
+      final branch = await showDialog<String>(
+        context: context,
+        builder: (context) => SimpleDialog(
+          title: const Text('选择起始分支'),
+          children: [
+            for (final branch in branches)
+              SimpleDialogOption(
+                onPressed: () => Navigator.of(context).pop(branch),
+                child: Text(branch),
+              ),
+          ],
+        ),
+      );
+      if (!mounted || branch == null) return;
+      setState(() {
+        _useManagedWorktree = true;
+        _managedWorktreeId = null;
+        _managedWorktreeBaseRef = branch;
+      });
+    } on Object catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('无法读取起始分支：$error')));
+    }
   }
 
   @override
@@ -1412,6 +1473,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       skills: _selectedSkills,
       useManagedWorktree: _useManagedWorktree,
       managedWorktreeId: _managedWorktreeId,
+      managedWorktreeBaseRef: _managedWorktreeBaseRef,
     );
     final submitted = controller.canSteer
         ? await widget.onQueueSteer(submission)
@@ -1429,6 +1491,7 @@ class ComposerPanelState extends State<ComposerPanel> {
       _includeWorkspace = false;
       _useManagedWorktree = false;
       _managedWorktreeId = null;
+      _managedWorktreeBaseRef = null;
       _includeIdeContext = false;
       _ideContextWorkspacePath = null;
       // A goal is persisted on the thread by the successful submission.  It
@@ -2494,16 +2557,25 @@ class ComposerPanelState extends State<ComposerPanel> {
                                       key: const Key(
                                         'composer-worktree-toggle',
                                       ),
-                                      onSelected: (value) => setState(() {
-                                        _managedWorktreeId = value.isEmpty
-                                            ? null
-                                            : value;
-                                        _useManagedWorktree = true;
-                                      }),
+                                      onSelected: (value) => unawaited(
+                                        _selectWorktreeMenuValue(value),
+                                      ),
                                       itemBuilder: (context) => [
+                                        CheckedPopupMenuItem<String>(
+                                          value: 'local',
+                                          checked: !_useManagedWorktree,
+                                          child: const Text('本地'),
+                                        ),
+                                        PopupMenuItem<String>(
+                                          value:
+                                              'new:${controller.gitProjectStatus?.branch ?? 'HEAD'}',
+                                          child: Text(
+                                            '新建工作树 · ${controller.gitProjectStatus?.branch ?? '当前提交'}',
+                                          ),
+                                        ),
                                         const PopupMenuItem<String>(
-                                          value: '',
-                                          child: Text('新建工作树'),
+                                          value: 'choose-base',
+                                          child: Text('从其他分支新建…'),
                                         ),
                                         ..._managedWorktrees.map(
                                           (record) => PopupMenuItem<String>(

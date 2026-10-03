@@ -3589,6 +3589,7 @@ class CodexController extends ChangeNotifier {
     bool rollbackUserEntryOnFailure = false,
     bool useManagedWorktree = false,
     String? managedWorktreeId,
+    String? managedWorktreeBaseRef,
   }) async {
     final requestRevision = _conversationViewRevision;
     if (!_sendPromptInFlightRevisions.add(requestRevision)) return false;
@@ -3603,6 +3604,7 @@ class CodexController extends ChangeNotifier {
         rollbackUserEntryOnFailure: rollbackUserEntryOnFailure,
         useManagedWorktree: useManagedWorktree,
         managedWorktreeId: managedWorktreeId,
+        managedWorktreeBaseRef: managedWorktreeBaseRef,
       );
     } finally {
       _sendPromptInFlightRevisions.remove(requestRevision);
@@ -3621,6 +3623,7 @@ class CodexController extends ChangeNotifier {
     bool rollbackUserEntryOnFailure = false,
     bool useManagedWorktree = false,
     String? managedWorktreeId,
+    String? managedWorktreeBaseRef,
   }) async {
     final text = prompt.trim();
     final requestWorkspace = workspacePath;
@@ -3700,6 +3703,7 @@ class CodexController extends ChangeNotifier {
               repository: requestWorkspace,
               rootPath: settings.rootPath,
               projectId: projectId,
+              baseRef: managedWorktreeBaseRef,
               fetchBeforeCreate: settings.fetchBeforeCreate,
             );
         final canonicalRequestWorkspace = await Directory(
