@@ -90,22 +90,26 @@ class WorkspaceDetailsCard extends StatelessWidget {
                 label: _compactPath(path),
               ),
             Divider(height: 1, color: palette.border),
-            InkWell(
-              onTap: () => onEditProject(workspace.primaryPath),
-              child: const Padding(
-                padding: EdgeInsets.fromLTRB(16, 12, 16, 12),
-                child: Row(
-                  children: [
-                    Icon(Icons.settings_outlined, size: 17),
-                    SizedBox(width: 11),
-                    Text(
-                      '编辑项目',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
+            Semantics(
+              button: true,
+              label: '编辑项目',
+              child: InkWell(
+                onTap: () => onEditProject(workspace.primaryPath),
+                child: const Padding(
+                  padding: EdgeInsets.fromLTRB(16, 12, 16, 12),
+                  child: Row(
+                    children: [
+                      Icon(Icons.settings_outlined, size: 17),
+                      SizedBox(width: 11),
+                      Text(
+                        '编辑项目',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),

@@ -58,31 +58,36 @@ class WorkspaceSourcesCard extends StatelessWidget {
               ),
             Container(
               decoration: BoxDecoration(border: Border(top: rowBorder)),
-              child: InkWell(
-                key: const Key('add-workspace-directory-button'),
-                onTap: onAdd == null ? null : () => onAdd!(),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 26,
-                    vertical: 18,
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.create_new_folder_outlined,
-                        size: 18,
-                        color: palette.muted,
-                      ),
-                      const SizedBox(width: 17),
-                      Text(
-                        '添加文件夹',
-                        style: TextStyle(
-                          color: palette.trace,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
+              child: Semantics(
+                button: true,
+                enabled: onAdd != null,
+                label: '添加文件夹',
+                child: InkWell(
+                  key: const Key('add-workspace-directory-button'),
+                  onTap: onAdd == null ? null : () => onAdd!(),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 26,
+                      vertical: 18,
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.create_new_folder_outlined,
+                          size: 18,
+                          color: palette.muted,
                         ),
-                      ),
-                    ],
+                        const SizedBox(width: 17),
+                        Text(
+                          '添加文件夹',
+                          style: TextStyle(
+                            color: palette.trace,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),

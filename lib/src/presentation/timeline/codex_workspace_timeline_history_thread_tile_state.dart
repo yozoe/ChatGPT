@@ -91,122 +91,128 @@ class HistoryThreadTileState extends State<HistoryThreadTile> {
         onExit: (_) => setState(() => _hovering = false),
         child: GestureDetector(
           onSecondaryTapUp: _showContextMenu,
-          child: InkWell(
-            onTap: widget.enabled ? widget.onTap : null,
-            borderRadius: BorderRadius.circular(12),
-            child: Padding(
-              // The left inset preserves the project-tree hierarchy; the compact
-              // vertical inset keeps a selected task from reading as a large card.
-              padding: const EdgeInsets.fromLTRB(30, 4, 8, 4),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(minHeight: 24),
-                child: Row(
-                  children: [
-                    if (widget.selectionMode)
-                      Checkbox(
-                        value: widget.batchSelected,
-                        onChanged: widget.enabled
-                            ? (_) => widget.onTap()
-                            : null,
-                      ),
-                    Expanded(
-                      child: Column(
-                        // Keep the fade aligned with the task bubble's trailing
-                        // edge instead of the rendered title's intrinsic width.
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        // The row reserves a 24px content box while the title's
-                        // line box is shorter. Center it within that box so the
-                        // task label is vertically aligned with the trailing
-                        // status mark and hover actions.
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          ShaderMask(
-                            key: ValueKey(
-                              'sidebar-thread-title-fade-${widget.thread.id}',
-                            ),
-                            blendMode: BlendMode.dstIn,
-                            shaderCallback: (bounds) => const LinearGradient(
-                              begin: Alignment.centerLeft,
-                              end: Alignment.centerRight,
-                              colors: [
-                                Colors.white,
-                                Colors.white,
-                                Colors.transparent,
-                              ],
-                              stops: [0, 0.78, 1],
-                            ).createShader(bounds),
-                            child: Text(
-                              widget.thread.title,
-                              maxLines: 1,
-                              softWrap: false,
-                              overflow: TextOverflow.clip,
-                              style: TextStyle(
-                                color: widget.selected
-                                    ? palette.trace
-                                    : palette.muted,
-                                fontSize: 13,
-                                fontWeight: widget.selected
-                                    ? FontWeight.w600
-                                    : FontWeight.w400,
+          child: Semantics(
+            button: true,
+            enabled: widget.enabled,
+            selected: widget.selected,
+            label: widget.thread.title,
+            child: InkWell(
+              onTap: widget.enabled ? widget.onTap : null,
+              borderRadius: BorderRadius.circular(12),
+              child: Padding(
+                // The left inset preserves the project-tree hierarchy; the compact
+                // vertical inset keeps a selected task from reading as a large card.
+                padding: const EdgeInsets.fromLTRB(30, 4, 8, 4),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(minHeight: 24),
+                  child: Row(
+                    children: [
+                      if (widget.selectionMode)
+                        Checkbox(
+                          value: widget.batchSelected,
+                          onChanged: widget.enabled
+                              ? (_) => widget.onTap()
+                              : null,
+                        ),
+                      Expanded(
+                        child: Column(
+                          // Keep the fade aligned with the task bubble's trailing
+                          // edge instead of the rendered title's intrinsic width.
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          // The row reserves a 24px content box while the title's
+                          // line box is shorter. Center it within that box so the
+                          // task label is vertically aligned with the trailing
+                          // status mark and hover actions.
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            ShaderMask(
+                              key: ValueKey(
+                                'sidebar-thread-title-fade-${widget.thread.id}',
+                              ),
+                              blendMode: BlendMode.dstIn,
+                              shaderCallback: (bounds) => const LinearGradient(
+                                begin: Alignment.centerLeft,
+                                end: Alignment.centerRight,
+                                colors: [
+                                  Colors.white,
+                                  Colors.white,
+                                  Colors.transparent,
+                                ],
+                                stops: [0, 0.78, 1],
+                              ).createShader(bounds),
+                              child: Text(
+                                widget.thread.title,
+                                maxLines: 1,
+                                softWrap: false,
+                                overflow: TextOverflow.clip,
+                                style: TextStyle(
+                                  color: widget.selected
+                                      ? palette.trace
+                                      : palette.muted,
+                                  fontSize: 13,
+                                  fontWeight: widget.selected
+                                      ? FontWeight.w600
+                                      : FontWeight.w400,
+                                ),
                               ),
                             ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    if (widget.processing)
-                      Tooltip(
-                        message: '任务处理中',
-                        child: SizedBox(
-                          key: const Key('sidebar-updating-task-indicator'),
-                          width: 10,
-                          height: 10,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 1.25,
-                            color: palette.active,
-                          ),
-                        ),
-                      )
-                    else if (widget.running)
-                      Tooltip(
-                        message: '任务进行中；停止后才能归档',
-                        child: SizedBox(
-                          key: const Key('sidebar-running-task-indicator'),
-                          width: 10,
-                          height: 10,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 1.25,
-                            color: palette.active,
-                          ),
-                        ),
-                      )
-                    else
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (widget.statusIndicator case final indicator?)
-                            if (!(_hovering &&
-                                indicator == ThreadStatusIndicator.completed))
-                              ThreadStatusMark(indicator: indicator),
-                          if (showHoverActions) ...[
-                            _buildHoverAction(
-                              keySuffix: 'pin',
-                              tooltip: widget.pinned ? '取消置顶任务' : '置顶任务',
-                              icon: widget.pinned
-                                  ? Icons.push_pin
-                                  : Icons.push_pin_outlined,
-                              onPressed: widget.onTogglePin,
-                            ),
-                            _buildHoverAction(
-                              keySuffix: 'archive',
-                              tooltip: '归档任务',
-                              icon: Icons.archive_outlined,
-                              onPressed: widget.onArchive,
-                            ),
                           ],
-                        ],
+                        ),
                       ),
-                  ],
+                      if (widget.processing)
+                        Tooltip(
+                          message: '任务处理中',
+                          child: SizedBox(
+                            key: const Key('sidebar-updating-task-indicator'),
+                            width: 10,
+                            height: 10,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 1.25,
+                              color: palette.active,
+                            ),
+                          ),
+                        )
+                      else if (widget.running)
+                        Tooltip(
+                          message: '任务进行中；停止后才能归档',
+                          child: SizedBox(
+                            key: const Key('sidebar-running-task-indicator'),
+                            width: 10,
+                            height: 10,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 1.25,
+                              color: palette.active,
+                            ),
+                          ),
+                        )
+                      else
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (widget.statusIndicator case final indicator?)
+                              if (!(_hovering &&
+                                  indicator == ThreadStatusIndicator.completed))
+                                ThreadStatusMark(indicator: indicator),
+                            if (showHoverActions) ...[
+                              _buildHoverAction(
+                                keySuffix: 'pin',
+                                tooltip: widget.pinned ? '取消置顶任务' : '置顶任务',
+                                icon: widget.pinned
+                                    ? Icons.push_pin
+                                    : Icons.push_pin_outlined,
+                                onPressed: widget.onTogglePin,
+                              ),
+                              _buildHoverAction(
+                                keySuffix: 'archive',
+                                tooltip: '归档任务',
+                                icon: Icons.archive_outlined,
+                                onPressed: widget.onArchive,
+                              ),
+                            ],
+                          ],
+                        ),
+                    ],
+                  ),
                 ),
               ),
             ),

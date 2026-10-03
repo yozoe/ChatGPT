@@ -68,40 +68,44 @@ class InspectorSubagentsSummary extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 10),
-        InkWell(
-          key: const Key('inspector-subagents-open-all'),
-          onTap: onShowAll,
-          borderRadius: BorderRadius.circular(8),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: Row(
-              children: [
-                for (final agent in agents.take(3)) ...[
-                  SubagentAvatar(agentId: agent.threadId, size: 16),
-                  const SizedBox(width: 3),
-                ],
-                if (agents.isEmpty)
-                  Text(
-                    '暂无子智能体',
-                    style: TextStyle(color: palette.muted, fontSize: 12),
-                  )
-                else ...[
-                  const SizedBox(width: 5),
-                  Expanded(
-                    child: Text(
-                      working.isEmpty ? '全部已结束' : '${working.length} 个运行中',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+        Semantics(
+          button: true,
+          label: agents.isEmpty ? '暂无子智能体' : '查看全部子智能体',
+          child: InkWell(
+            key: const Key('inspector-subagents-open-all'),
+            onTap: onShowAll,
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                children: [
+                  for (final agent in agents.take(3)) ...[
+                    SubagentAvatar(agentId: agent.threadId, size: 16),
+                    const SizedBox(width: 3),
+                  ],
+                  if (agents.isEmpty)
+                    Text(
+                      '暂无子智能体',
+                      style: TextStyle(color: palette.muted, fontSize: 12),
+                    )
+                  else ...[
+                    const SizedBox(width: 5),
+                    Expanded(
+                      child: Text(
+                        working.isEmpty ? '全部已结束' : '${working.length} 个运行中',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: palette.muted, fontSize: 12),
+                      ),
+                    ),
+                    Text(
+                      '查看全部',
                       style: TextStyle(color: palette.muted, fontSize: 12),
                     ),
-                  ),
-                  Text(
-                    '查看全部',
-                    style: TextStyle(color: palette.muted, fontSize: 12),
-                  ),
-                  Icon(Icons.chevron_right, size: 16, color: palette.muted),
+                    Icon(Icons.chevron_right, size: 16, color: palette.muted),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
         ),
