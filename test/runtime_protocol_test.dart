@@ -7,6 +7,7 @@ import 'package:chatgpt/src/domain/local_worktree_record.dart';
 import 'package:chatgpt/src/domain/thread_environment_binding.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/services/codex_keychain_storage.dart';
+import 'package:chatgpt/src/services/codex_clock.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -195,6 +196,59 @@ void main() {
     expect(controller.gitOperationError, contains('运行期间'));
     controller.dispose();
   });
+
+  test(
+    'rejects scheduled prompts while a thread uses a managed worktree',
+    () async {
+      final root = await Directory.systemTemp.createTemp('worktree-schedule-');
+      addTearDown(() => root.delete(recursive: true));
+      final source = await Directory('${root.path}/source').create();
+      final worktree = await Directory('${root.path}/worktree').create();
+      final store = RuntimeConfigurationStore(
+        storage: CodexKeychainStorage(developmentDirectory: root),
+      );
+      await store.saveWorktreeRecords([
+        LocalWorktreeRecord(
+          worktreeId: 'wt-1',
+          projectId: 'project-1',
+          sourceRepository: source.path,
+          worktreePath: worktree.path,
+          baseCommit: 'abc123',
+          state: LocalWorktreeState.ready,
+          createdAt: DateTime.now(),
+          threadId: 'thread-1',
+        ),
+      ]);
+      await store.saveThreadEnvironmentBindings([
+        ThreadEnvironmentBinding(
+          threadId: 'thread-1',
+          kind: ThreadEnvironmentKind.managedWorktree,
+          workingDirectory: worktree.path,
+          worktreeId: 'wt-1',
+        ),
+      ]);
+      final now = DateTime(2030, 1, 2, 9);
+      final controller =
+          CodexController(
+              server: FakeCodexAppServer(),
+              runtimeConfigurationStore: store,
+              clock: CodexClock(now: () => now),
+            )
+            ..workspacePath = source.path
+            ..status = RuntimeStatus.ready;
+      await controller.resumeThread(protocolThread(id: 'thread-1'));
+
+      expect(
+        await controller.schedulePrompt(
+          prompt: '不应绑定到聊天工作树',
+          runAt: now.add(const Duration(hours: 1)),
+        ),
+        isFalse,
+      );
+      expect(controller.scheduledTasks, isEmpty);
+      controller.dispose();
+    },
+  );
 
   test('keeps authoritative context usage scoped to its thread and turn', () {
     final controller = CodexController(server: FakeCodexAppServer())
