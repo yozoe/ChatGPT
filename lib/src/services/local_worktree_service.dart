@@ -72,6 +72,18 @@ class LocalWorktreeService {
         head.stdout.trim(),
       ]);
       if (add.exitCode != 0) throw StateError('创建工作树失败，请检查 Git 仓库状态后重试。');
+      try {
+        await _carryTrackedChanges(source: canonicalSource, target: target);
+        await _copyWorktreeIncludes(source: canonicalSource, target: target);
+      } catch (error) {
+        await _run(canonicalSource.path, [
+          'worktree',
+          'remove',
+          '--force',
+          target.path,
+        ]);
+        throw StateError('无法把当前本地改动带入工作树：$error');
+      }
       final record = LocalWorktreeRecord(
         worktreeId: id,
         projectId: projectId,
@@ -235,4 +247,98 @@ class LocalWorktreeService {
 
   Future<ProcessResult> _run(String cwd, List<String> args) =>
       Process.run('git', args, workingDirectory: cwd);
+
+  Future<void> _carryTrackedChanges({
+    required Directory source,
+    required Directory target,
+  }) async {
+    final diff = await _run(source.path, const ['diff', '--binary', 'HEAD']);
+    if (diff.exitCode != 0) throw StateError('无法读取源仓库的本地改动。');
+    final patch = diff.stdout.toString();
+    if (patch.trim().isEmpty) return;
+    final patchFile = File(
+      '${target.parent.path}${Platform.pathSeparator}.codex-desk-${DateTime.now().microsecondsSinceEpoch}.patch',
+    );
+    try {
+      await patchFile.writeAsString(patch, flush: true);
+      final applied = await _run(target.path, [
+        'apply',
+        '--binary',
+        patchFile.path,
+      ]);
+      if (applied.exitCode != 0) {
+        throw StateError('源仓库的已跟踪改动无法应用到工作树。');
+      }
+    } finally {
+      if (await patchFile.exists()) await patchFile.delete();
+    }
+  }
+
+  Future<void> _copyWorktreeIncludes({
+    required Directory source,
+    required Directory target,
+  }) async {
+    final paths = <String>{};
+    final includeFile = File(
+      '${source.path}${Platform.pathSeparator}.worktreeinclude',
+    );
+    if (await includeFile.exists()) {
+      for (final line in await includeFile.readAsLines()) {
+        final value = line.trim();
+        if (value.isEmpty || value.startsWith('#') || value.startsWith('/')) {
+          continue;
+        }
+        paths.add(value.replaceAll('\\', '/'));
+      }
+    }
+    final override = File(
+      '${source.path}${Platform.pathSeparator}AGENTS.override.md',
+    );
+    if (await override.exists()) paths.add('AGENTS.override.md');
+    for (final relative in paths) {
+      final sourceEntity = _safeChild(source, relative);
+      final targetEntity = _safeChild(target, relative);
+      if (sourceEntity == null || targetEntity == null) {
+        throw StateError('工作树包含越界的忽略文件路径：$relative');
+      }
+      final type = await FileSystemEntity.type(sourceEntity.path);
+      if (type == FileSystemEntityType.notFound) continue;
+      if (type == FileSystemEntityType.file) {
+        await File(targetEntity.path).parent.create(recursive: true);
+        await File(sourceEntity.path).copy(targetEntity.path);
+      } else if (type == FileSystemEntityType.directory) {
+        await _copyDirectory(
+          Directory(sourceEntity.path),
+          Directory(targetEntity.path),
+        );
+      }
+    }
+  }
+
+  FileSystemEntity? _safeChild(Directory root, String relative) {
+    final candidate = File('${root.path}${Platform.pathSeparator}$relative');
+    final normalizedRoot = root.absolute.path.endsWith(Platform.pathSeparator)
+        ? root.absolute.path
+        : '${root.absolute.path}${Platform.pathSeparator}';
+    final normalizedCandidate = candidate.absolute.path;
+    if (normalizedCandidate == root.absolute.path ||
+        !normalizedCandidate.startsWith(normalizedRoot) ||
+        relative.split('/').contains('..')) {
+      return null;
+    }
+    return candidate;
+  }
+
+  Future<void> _copyDirectory(Directory source, Directory target) async {
+    await target.create(recursive: true);
+    await for (final entity in source.list(followLinks: false)) {
+      final name = entity.uri.pathSegments.last;
+      final destination = '${target.path}${Platform.pathSeparator}$name';
+      if (entity is File) {
+        await entity.copy(destination);
+      } else if (entity is Directory) {
+        await _copyDirectory(entity, Directory(destination));
+      }
+    }
+  }
 }

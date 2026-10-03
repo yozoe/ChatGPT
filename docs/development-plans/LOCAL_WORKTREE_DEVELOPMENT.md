@@ -1,6 +1,6 @@
 # Codex 风格本地工作树开发文档
 
-> 状态：待开发。本文档是本地工作树的开发规格，当前能力尚未实现。
+> 状态：进行中。首版本地工作树已接入：新任务可在 Composer 选择托管工作树，首次发送时创建 detached Git worktree，绑定真实执行目录，并在创建时携带已跟踪本地改动、`.worktreeinclude` 与 `AGENTS.override.md`；安全快照、Handoff、永久工作树和完整外部所有权证明仍未交付。
 > 适用范围：Codex Desk macOS Flutter 工作台
 > 官方行为基线：[OpenAI Worktrees](https://learn.chatgpt.com/docs/environments/git-worktrees)
 
@@ -76,11 +76,11 @@ $CODEX_HOME/worktrees/codex-desk/<worktree-id>/
 
 ### 4.1 首版交付
 
-- 新任务选择“本地”或“新建本地工作树”；
-- 选择起始分支并创建 detached HEAD 托管工作树；
+- 新任务选择“本地”或“新建本地工作树”；（已接入）
+- 创建 detached HEAD 托管工作树；当前首版以项目当前 `HEAD` 为基准，分支选择仍待补齐；
 - 将任务永久绑定到真实执行目录；
-- 从所选分支携带当前未提交改动；
-- 支持 `.worktreeinclude` 和 `AGENTS.override.md`；
+- 从当前 `HEAD` 携带已跟踪的未提交改动；
+- 支持 `.worktreeinclude` 和 `AGENTS.override.md` 的受控复制；
 - 工作树状态、基准分支和路径可见；
 - 在工作树中创建分支；
 - 工作树继续支持现有审查、暂存、提交、推送和 PR；
@@ -88,6 +88,8 @@ $CODEX_HOME/worktrees/codex-desk/<worktree-id>/
 - 工作树丢失时恢复快照；
 - 默认最多保留最近 15 个托管工作树；
 - 多附加目录项目明确显示隔离边界。
+
+当前首版已覆盖 Composer 选择、首次发送时惰性创建、执行目录绑定、完成后保留/自动清理、工作树设置持久化和恢复入口；仍需补齐起始分支选择、外部权威所有权/HMAC、快照恢复和 Handoff 后才能将整项任务标记为已完成。
 
 ### 4.2 第二阶段
 

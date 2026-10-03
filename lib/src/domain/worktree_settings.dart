@@ -12,8 +12,8 @@ class WorktreeSettings {
     final home = Platform.environment['HOME']?.trim();
     return WorktreeSettings(
       rootPath: home == null || home.isEmpty
-          ? '.codex/worktrees'
-          : '$home/.codex/worktrees',
+          ? '.codex/worktrees/codex-desk'
+          : '$home/.codex/worktrees/codex-desk',
     );
   }
 

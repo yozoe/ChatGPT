@@ -1,0 +1,67 @@
+import 'dart:io';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:chatgpt/src/services/local_worktree_service.dart';
+import 'package:chatgpt/src/services/runtime_configuration_store.dart';
+import 'package:chatgpt/src/services/codex_keychain_storage.dart';
+import 'package:chatgpt/src/domain/local_worktree_record.dart';
+
+Future<void> runGit(Directory directory, List<String> args) async {
+  final result = await Process.run(
+    'git',
+    args,
+    workingDirectory: directory.path,
+  );
+  if (result.exitCode != 0) {
+    throw StateError('git ${args.join(' ')} failed: ${result.stderr}');
+  }
+}
+
+void main() {
+  test(
+    'creates a detached worktree and carries tracked and included files',
+    () async {
+      final root = await Directory.systemTemp.createTemp('codex-worktree-');
+      addTearDown(() => root.delete(recursive: true));
+      final repository = await Directory('${root.path}/repo').create();
+      final worktrees = await Directory('${root.path}/worktrees').create();
+      await runGit(repository, ['init', '-q']);
+      await runGit(repository, ['config', 'user.email', 'test@example.com']);
+      await runGit(repository, ['config', 'user.name', 'Codex Test']);
+      await File('${repository.path}/tracked.txt').writeAsString('before\n');
+      await runGit(repository, ['add', '.']);
+      await runGit(repository, ['commit', '-qm', 'initial']);
+      await File('${repository.path}/tracked.txt').writeAsString('after\n');
+      await File('${repository.path}/ignored.secret').writeAsString('secret');
+      await File(
+        '${repository.path}/.worktreeinclude',
+      ).writeAsString('ignored.secret\n');
+
+      final service = LocalWorktreeService(
+        store: RuntimeConfigurationStore(
+          storage: CodexKeychainStorage(developmentDirectory: root),
+        ),
+      );
+      final record = await service.create(
+        repository: repository.path,
+        rootPath: worktrees.path,
+        projectId: 'project-1',
+      );
+
+      expect(record.state, LocalWorktreeState.ready);
+      expect(
+        await File('${record.worktreePath}/tracked.txt').readAsString(),
+        'after\n',
+      );
+      expect(
+        await File('${record.worktreePath}/ignored.secret').readAsString(),
+        'secret',
+      );
+      final porcelain = await service.list(repository.path);
+      expect(
+        porcelain.any((entry) => entry['path'] == record.worktreePath),
+        isTrue,
+      );
+    },
+  );
+}

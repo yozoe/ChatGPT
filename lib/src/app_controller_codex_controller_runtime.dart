@@ -125,16 +125,16 @@ class CodexController extends ChangeNotifier {
       isCurrentProject: (request, workspace) =>
           !_disposed &&
           request == _gitProjectRefreshRequest &&
-          workspacePath == workspace,
+          _activeExecutionWorkspace == workspace,
       isCurrentDiff: (request, workspace, change) =>
           !_disposed &&
           request == _gitDiffRefreshRequest &&
-          workspacePath == workspace &&
+          _activeExecutionWorkspace == workspace &&
           gitDiffChange == change,
       isCurrentReview: (request, workspace) =>
           !_disposed &&
           request == _gitReviewRefreshRequest &&
-          workspacePath == workspace,
+          _activeExecutionWorkspace == workspace,
       setProjectLoading: (value) => gitProjectLoading = value,
       setProjectStatus: (value) => gitProjectStatus = value,
       setProjectError: (value) => gitProjectError = value,
@@ -1278,6 +1278,18 @@ class CodexController extends ChangeNotifier {
     ?workspacePath,
     ..._additionalWorkspacePaths,
   ];
+
+  String get _activeExecutionWorkspace =>
+      _threadWorkspaceById[activeThreadId] ?? workspacePath ?? '';
+
+  List<String>? _runtimeWorkspaceRootsFor(String executionWorkspace) {
+    final roots = workspaceRoots;
+    if (roots.isEmpty) return null;
+    if (executionWorkspace == workspacePath) {
+      return roots.length > 1 ? roots : null;
+    }
+    return <String>[executionWorkspace, ...roots.skip(1)];
+  }
 
   /// Searches the current ordered workspace roots through App Server and
   /// rejects stale, missing, or out-of-root paths before they reach Composer.
@@ -3297,9 +3309,7 @@ class CodexController extends ChangeNotifier {
     try {
       threadId ??= await _server.startThread(
         workingDirectory: workspace,
-        runtimeWorkspaceRoots: workspaceRoots.length > 1
-            ? workspaceRoots
-            : null,
+        runtimeWorkspaceRoots: _runtimeWorkspaceRootsFor(workspace),
         modelProvider: null,
         model: _modelOverrideForNewThread,
         config: _newThreadConfig(),
@@ -3691,9 +3701,7 @@ class CodexController extends ChangeNotifier {
     try {
       requestedThreadId ??= await _server.startThread(
         workingDirectory: workspace,
-        runtimeWorkspaceRoots: workspaceRoots.length > 1
-            ? workspaceRoots
-            : null,
+        runtimeWorkspaceRoots: _runtimeWorkspaceRootsFor(workspace),
         modelProvider: null,
         model: _modelOverrideForNewThread,
         config: _newThreadConfig(),

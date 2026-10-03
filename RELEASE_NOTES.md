@@ -120,6 +120,7 @@
 
 - 新增智能体触发内置浏览器：设置中的“允许智能体调用内置浏览器”可持久化控制能力；新线程通过 App Server `thread/start.dynamicTools` 注册客户端 `browser` namespace（`open`、`navigate`），收到可回复的浏览器请求时显示权限卡片，用户允许后切换到浏览器工作区并加载 HTTP/HTTPS 地址，关闭后拒绝请求。无 ID 的活动或通知不会绕过确认自行导航。
 - 配置页新增智能体默认设置的只读配置发现：从当前工作区 `config/read` 读取批准策略、沙盒、网页搜索、输出详细程度和推理摘要的非敏感值，并显示字段来源；明确区分字段缺失、继承默认值和具体配置，尚未取得稳定写入协议证据的字段不会显示为可编辑。
+- 本地 Worktree 首版进入可用流程：Composer 可在新任务中选择托管工作树，首次发送时创建项目外 detached Git worktree，绑定线程的真实执行目录，并携带已跟踪本地改动、`.worktreeinclude` 和 `AGENTS.override.md`；任务完成后按保留策略清理。起始分支、Handoff、永久工作树和完整外部所有权校验仍在开发中。
 - 内置浏览器智能体调用闭环扩展到 App Server `item/tool/call` 动态工具：仅识别受限的 `browser` / `browser.open` / `browser.navigate` 等工具名或 `namespace: browser` + `tool: open|navigate` 形状，并从 `arguments`（包括 JSON 字符串）提取 HTTP/HTTPS 地址，沿用权限卡片、会话授权和导航安全；动态工具会收到结构化成功/拒绝响应，`computer-use` 活动和无 ID 通知仍不会自动导航。
 - 动态浏览器工具名兼容点号、斜杠、下划线、连字符和冒号分隔形式；allowlist 仍保持严格，未识别工具不会获得网页导航权限。
 - 内置浏览器补充网页内容、下载状态和取消操作的辅助技术语义；`⌘R` 的 Flutter 快捷键现已通过平台 controller contract 测试覆盖，原生 WebKit 也覆盖实际刷新和不可达页面错误回传。
