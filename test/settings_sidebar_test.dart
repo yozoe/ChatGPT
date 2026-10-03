@@ -29,6 +29,8 @@ void main() {
     expect(find.text('语音（待开发）'), findsOneWidget);
     expect(find.text('个性化（待开发）'), findsOneWidget);
     expect(find.text('宠物（待开发）'), findsOneWidget);
+    final pendingNavigation = find.byKey(const Key('settings-nav-导入（待开发）'));
+    expect(tester.widget<InkWell>(pendingNavigation).onTap, isNull);
     expect(find.byKey(const Key('sidebar-pane')), findsNothing);
     expect(
       tester.getSize(find.byKey(const Key('settings-navigation-pane'))).width,
@@ -190,6 +192,10 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('查看模型与 Provider 状态'), findsOneWidget);
+    expect(
+      find.byKey(const Key('settings-configuration-effective-approval-policy')),
+      findsOneWidget,
+    );
 
     await tester.tap(
       find.byKey(const Key('settings-configuration-approval-mode')),

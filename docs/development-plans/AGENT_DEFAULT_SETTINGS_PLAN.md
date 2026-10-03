@@ -1,6 +1,6 @@
 # 智能体默认设置开发计划
 
-> 状态：进行中。配置发现、非变更写入能力探测、四类官方默认设置写入、user layer `expectedVersion` 乐观并发保护与失败回滚基础已接入；profile、完整 schema 能力协商、热加载边界和批准策略官方映射仍待补齐。
+> 状态：已完成（协议边界）。配置发现、非变更写入能力探测、四类官方默认设置写入、user layer `expectedVersion` 乐观并发保护、失败回滚、Profile 来源展示和批准策略安全边界均已接入；未经稳定协议证据支持的 Profile 切换、granular 策略编辑和运行时热加载继续保持只读或按后续任务生效。
 
 ## 目标
 
@@ -21,31 +21,31 @@
 
 | 能力 | 当前实现 | 计划差距 |
 | --- | --- | --- |
-| 批准策略 | `ApprovalMode` 支持“请求批准 / 帮我批准”，并保存到本地 | 官方 Schema 已提供 `untrusted`、`on-request`、`never` 及 granular 形式；需要建立映射，不能把“帮我批准”直接等同于 `never` |
-| 沙盒 | 设置页显示“由配置管理” | 官方 Schema 已提供 `read-only`、`workspace-write`、`danger-full-access`；尚未读取或编辑最终生效值 |
-| 网页搜索 | 时间线可显示网页搜索活动；浏览器有独立启用开关 | 官方 Schema 已提供 `disabled`、`cached`、`indexed`、`live`；尚未作为默认设置暴露，不能与内置浏览器混用 |
-| 输出详细程度 | 设置页显示“模型默认” | 官方 Schema 已提供 `low`、`medium`、`high`；尚未读取或发送 verbosity 配置 |
-| 推理摘要 | 已接收并渲染运行时摘要 | 官方 Schema 已提供 `auto`、`concise`、`detailed`、`none`；尚未实现偏好控制 |
-| 用户配置 | 已通过 App Server `config/read` 读取模型、Provider、当前 profile 和来源；设置页可查看状态，并可用系统默认应用打开用户 `config.toml` | profile 语义、切换器和官方桌面端打开动作仍待实测 |
+| 批准策略 | Codex 实际策略按 `config/read` 显示；granular/object 保持只读；本应用“请求批准 / 帮我批准”仍是独立的本地后续任务偏好 | 未取得稳定证据的策略映射和 granular 编辑不伪造 |
+| 沙盒 | 读取最终有效值和来源；运行时确认 `config/batchWrite` 且字段暴露时提供官方枚举写入 | 运行时不支持时保持只读 |
+| 网页搜索 | 读取并区分 `disabled`、`cached`、`indexed`、`live`，与内置浏览器开关分开 | 运行时不支持时保持只读 |
+| 输出详细程度 | 读取并写入 `low`、`medium`、`high` | 运行时不支持时显示模型默认/配置管理 |
+| 推理摘要 | 读取并写入 `auto`、`concise`、`detailed`、`none` | 运行时不支持时保持只读 |
+| 用户配置 | 通过 App Server `config/read` 读取当前 Profile 和来源；设置页显示 Profile、配置文件路径并支持系统默认应用打开 `config.toml` | Profile 切换继续交给 Codex 配置文件，避免猜测未确认的桌面切换协议 |
 
 当前项目已经具备配置读取基础：`CodexAppServer.readConfig()` 调用 `config/read`（`includeLayers: false`），控制器从返回的 `config` 和 `origins` 提取模型、Provider 及来源。官方 0.154.0-alpha Schema 还明确提供 `config/value/write`、`config/batchWrite` 和上述设置字段；后续应在这个边界上增量扩展。由于项目当前基线仍是 0.153.4，必须先验证旧运行时对字段和写入方法的兼容性；若响应未提供某字段，必须保留只读降级，不从本地活动或提示词推断。
 
 官方 App Server 在隔离空配置中会返回这些字段但值为 `null`；这表示“继承运行时/模型默认值”，不能被解析为“不支持”。因此配置快照模型必须区分“字段缺失”“字段存在且为 null”和“字段存在且有值”三种状态。
 
-现有配置回归测试只覆盖模型、Provider、来源和项目切换清理；尚未覆盖上述智能体默认设置字段，因此阶段一必须先补充协议响应 fixture 与字段缺失/类型错误测试。
+配置回归测试已覆盖模型、Provider、来源、项目切换、字段缺失/三态值、类型边界、能力探测、写入失败和 user layer 版本保护；后续只需在新 App Server 协议版本出现时扩展兼容 fixture。
 
 ### 协议兼容矩阵
 
 | 字段/动作 | 官方 0.154.0-alpha Schema | 项目当前 0.153.4 基线 | 实施要求 |
 | --- | --- | --- | --- |
 | `config/read` 的 `config` / `origins` | 已确认 | 已接入模型、Provider 和来源；优先请求 `layers`，旧运行时自动回退 | 扩展字段解析，并对缺失字段只读降级 |
-| `config/value/write` | 已确认 | 尚未接入 | 先探测方法和响应，失败时不改变 UI 值 |
-| `config/batchWrite` | 已确认 | 已接入受控探测、单字段原子写入和 user layer `expectedVersion` | 多字段事务和运行时版本矩阵仍待补齐 |
-| `reloadUserConfig` | 已确认 | 尚未确认 | 仅在运行时接受时使用；不能假设模型/推理强度等 session-static 值会热加载 |
-| `approval_policy` | 已确认 | 尚未确认字段兼容性 | 映射前先验证字符串和 granular 对象两种编码 |
-| `sandbox_mode` / `web_search` / `model_verbosity` / `model_reasoning_summary` | 已确认 | 尚未确认字段兼容性 | 运行时不支持时保持“由配置管理”，不得发送未知字段 |
+| `config/value/write` | 已确认 | 统一通过受控 `config/batchWrite` 写入 | 批量写入提供原子边界并兼容当前基线 |
+| `config/batchWrite` | 已确认 | 已接入受控探测、单字段原子写入和 user layer `expectedVersion` | 多字段调用沿用 App Server 的原子编辑数组 |
+| `reloadUserConfig` | 已确认 | 写入使用默认热加载请求，session-static 字段仍以重新读取和后续任务为准 | 不假设模型/推理强度等 session-static 值会热加载 |
+| `approval_policy` | 已确认 | 已支持标量读取和 granular/object 只读展示 | 不把本地“帮我批准”映射成 `never` |
+| `sandbox_mode` / `web_search` / `model_verbosity` / `model_reasoning_summary` | 已确认 | 已按字段暴露和写入探测结果安全读写 | 运行时不支持时保持“由配置管理”，不得发送未知字段 |
 
-目标运行时升级到包含上述 Schema 的版本后，才可将对应行从“只读/待补证”切换为可编辑；版本探测本身也必须进入运行时诊断，便于解释降级原因。
+不同运行时版本仍通过字段暴露和非变更写入探测完成降级；不满足证据条件的字段保持只读，不从版本号推断能力。
 
 ### 设置作用域
 
@@ -73,7 +73,7 @@
 
 当前实现还会发送不带 edits 的非变更 `config/batchWrite` 探测；只有探测成功且字段存在时才开放官方枚举写入。若 `config/read` 返回明确的 `user` layer 整数 `version`，写入用户 `config.toml` 时会携带该版本进行乐观并发校验；没有可靠版本时省略该参数，不猜测其他 layer 的版本。写入失败不会替换当前快照，成功后通过 `config/read` 重新确认最终值。
 
-### 阶段二：安全设置
+### 阶段二：安全设置（已完成协议边界）
 
 1. 保留现有批准策略持久化，同时补充官方策略选项和说明。
 2. 明确自动批准对命令、文件变更、浏览器和权限请求的影响。
@@ -82,7 +82,7 @@
 5. 配置写入或重连失败时恢复旧值，且较早的异步写入不得覆盖较新的选择。
 6. 对设置变更增加协议、持久化、项目切换、失败回滚和权限回归测试。
 
-### 阶段三：网页搜索与回复行为
+### 阶段三：网页搜索与回复行为（已完成协议边界）
 
 1. 将网页搜索与内置浏览器拆成两个独立设置和权限边界。
 2. 先记录官方选项的独立语义：已禁用、已缓存、已索引、实时；只有协议或官方证据证明等价时才允许合并展示。
@@ -92,7 +92,7 @@
 
 官方 Schema 已确认字段并不等于当前稳定运行时已支持。只有 0.153.4 或升级后的目标运行时通过兼容性测试后，才可在设置页开放对应写入控件。
 
-### 阶段四：官方体验验收
+### 阶段四：官方体验验收（已完成仓库内可验证范围）
 
 1. 记录官方客户端的选项顺序、文案、默认值和菜单禁用条件。
 2. 对齐深色/浅色主题、卡片布局、行高、下拉菜单和勾选状态。

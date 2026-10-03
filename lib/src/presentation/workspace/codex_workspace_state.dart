@@ -2612,7 +2612,10 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
               }
             },
           },
-          child: child,
+          child: FocusTraversalGroup(
+            policy: ReadingOrderTraversalPolicy(),
+            child: child,
+          ),
         ),
       ),
     );
