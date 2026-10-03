@@ -9,6 +9,7 @@ import 'package:chatgpt/src/domain/browser_link_open_mode.dart';
 import 'package:chatgpt/src/domain/codex_thread_goal.dart';
 import 'package:chatgpt/src/domain/codex_thread_token_usage.dart';
 import 'package:chatgpt/src/domain/codex_plugin.dart';
+import 'package:chatgpt/src/domain/agent_default_settings_snapshot.dart';
 import 'package:chatgpt/src/domain/codex_skill.dart';
 import 'package:chatgpt/src/domain/codex_marketplace.dart';
 import 'package:chatgpt/src/domain/codex_mcp_server.dart';
@@ -1085,6 +1086,8 @@ class CodexController extends ChangeNotifier {
   bool codexConfigurationLoading = false;
   bool codexConfigurationRead = false;
   String? codexConfigurationError;
+  AgentDefaultSettingsSnapshot agentDefaultSettings =
+      AgentDefaultSettingsSnapshot.empty;
   List<CodexThread> threads = const [];
   // Keeps the most recent local turn outcome when the server list only reports
   // the thread lifecycle state (for example, `idle` after a failed turn).
@@ -2270,6 +2273,10 @@ class CodexController extends ChangeNotifier {
       }
       final config = JsonMap.from(result['config'] as Map);
       final origins = result['origins'];
+      agentDefaultSettings = AgentDefaultSettingsSnapshot.fromConfig(
+        config,
+        origins,
+      );
       _configuredModelId = _nonEmptyConfigString(
         config['model'] ?? config['modelId'],
       );
@@ -2317,6 +2324,7 @@ class CodexController extends ChangeNotifier {
     codexConfigurationLoading = false;
     codexConfigurationRead = false;
     codexConfigurationError = null;
+    agentDefaultSettings = AgentDefaultSettingsSnapshot.empty;
     _reasoningEffortsByModel = const {};
     _catalogDefaultModelId = null;
     _planCollaborationModePreset = null;

@@ -262,4 +262,49 @@ void main() {
       controller.dispose();
     },
   );
+
+  test(
+    'reads agent default settings with their availability and source',
+    () async {
+      final server = FakeCodexAppServer()
+        ..configReadResponse = {
+          'config': {
+            'approval_policy': null,
+            'sandbox_mode': 'workspace-write',
+            'web_search': 'cached',
+          },
+          'origins': {
+            'sandbox_mode': {
+              'name': {'type': 'project'},
+            },
+          },
+        };
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      );
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+
+      await controller.refreshCodexConfiguration();
+
+      expect(
+        controller.agentDefaultSettings.approvalPolicy.availability.name,
+        'inherited',
+      );
+      expect(
+        controller.agentDefaultSettings.sandboxMode.value,
+        'workspace-write',
+      );
+      expect(controller.agentDefaultSettings.sandboxMode.source, '项目配置');
+      expect(controller.agentDefaultSettings.webSearch.value, 'cached');
+      expect(
+        controller.agentDefaultSettings.modelVerbosity.availability.name,
+        'missing',
+      );
+      controller.dispose();
+    },
+  );
 }

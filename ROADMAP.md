@@ -189,7 +189,7 @@
 
 ### P1：核心体验
 
-- `待办` 按 [AGENT_DEFAULT_SETTINGS_PLAN.md](docs/development-plans/AGENT_DEFAULT_SETTINGS_PLAN.md) 对齐官方“智能体默认设置”：先读取最终生效配置及来源，再补齐批准策略、沙盒、网页搜索、输出详细程度和推理摘要；未获 App Server 协议支持的字段保持只读，不以提示词模拟设置行为。
+- `进行中` 按 [AGENT_DEFAULT_SETTINGS_PLAN.md](docs/development-plans/AGENT_DEFAULT_SETTINGS_PLAN.md) 对齐官方“智能体默认设置”：已接入 `config/read` 的非敏感字段发现与来源展示，并区分字段缺失、显式 `null`（继承默认）和明确值；批准策略仍使用现有本地后续任务偏好，沙盒、网页搜索、输出详细程度和推理摘要在没有稳定写入协议证据前保持只读。下一步是补齐协议版本探测、写入兼容矩阵和失败回滚，再仅对确有证据的字段开放控件。
 - `已完成` 按 [IN_APP_BROWSER_DEVELOPMENT.md](docs/development-plans/IN_APP_BROWSER_DEVELOPMENT.md) 完成 macOS `WKWebView` 阶段 0 技术验证，并保留会话右侧的浏览器工作区 Tab 承载层；设置入口只展示智能体调用能力边界，不手动创建 WebView。
 - `已完成` 完成内置浏览器基础工作区：浏览器作为会话右侧工作区的平级 Tab 打开，不替换会话页。右上角菜单可直接创建并打开浏览器，已交付紧凑标签栏、地址搜索、多标签、网页新窗口转标签、页面标题、导航/刷新/停止/外部打开、错误反馈、空状态、Chrome 数据隔离说明和 macOS 常用快捷键。收起右栏、切换工作区 Tab 或进入其他一级页时保留 WebView 和页内标签，隐藏时退出焦点链且不拦截快捷键；展开/收起动画的中间宽度不布局完整浏览器 chrome。每次主框架跳转与重定向都会执行 URL 和 DNS 私网检查；最终重定向 URL 会结束加载状态，同标签用户与智能体导航共享请求版本，迟到回调不会覆盖较新导航。页内标签默认仅在当前应用生命周期内保活，用户可显式开启只恢复地址与标题的跨重启恢复。与官方客户端的完整协议和视觉行为仍以 [IN_APP_BROWSER_DEVELOPMENT.md](docs/development-plans/IN_APP_BROWSER_DEVELOPMENT.md) 后续验收为准。
 - `已完成` 修复网页 `target="_blank"` / `window.open()` 新窗口竞态：新标签直接绑定 WebView 插件从 WebKit 回调传入的 `windowId`，不再于原生 WebView 尚未就绪时提前加载而显示空页；被安全策略拒绝的弹窗会被消费并释放，不会改导原页，`window.close()` 会关闭对应标签，关闭标签同步释放窗口绑定。智能体导航以标签和 revision 隔离迟到检查，每个标签仅允许与当前获准 URL 匹配的主框架完成或错误回调更新导航状态。

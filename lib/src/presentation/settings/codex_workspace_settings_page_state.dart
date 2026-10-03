@@ -4,6 +4,7 @@ import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_e
 import 'package:chatgpt/src/services/dock_icon_service.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:chatgpt/src/domain/worktree_settings.dart';
+import 'package:chatgpt/src/domain/agent_setting_field.dart';
 import 'package:chatgpt/src/domain/local_worktree_record.dart';
 import 'package:chatgpt/src/services/local_worktree_service.dart';
 
@@ -959,6 +960,13 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
 
   Widget _configurationContent() {
     final palette = YeknomPalette.of(context);
+    final defaults = widget.controller.agentDefaultSettings;
+    String settingDescription(String description, AgentSettingField field) {
+      final source = field.source;
+      if (source == null || source.isEmpty) return description;
+      return '$description\n来源：$source';
+    }
+
     return LayoutBuilder(
       builder: (context, constraints) {
         final compact = constraints.maxWidth < 620;
@@ -1045,37 +1053,54 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                         Divider(height: 1, color: palette.border),
                         _settingRow(
                           title: '沙盒设置',
-                          description:
-                              '文件与命令的实际访问范围由 Codex App Server 和项目权限决定。',
+                          description: settingDescription(
+                            '文件与命令的实际访问范围由 Codex App Server 和项目权限决定。',
+                            defaults.sandboxMode,
+                          ),
                           trailing: Text(
-                            '由配置管理',
+                            defaults.displayValue(defaults.sandboxMode),
                             style: TextStyle(color: palette.muted),
                           ),
                         ),
                         Divider(height: 1, color: palette.border),
                         _settingRow(
                           title: '网页搜索',
-                          description: '网络访问能力由当前 Codex 运行时及其配置决定。',
+                          description: settingDescription(
+                            '网络访问能力由当前 Codex 运行时及其配置决定。',
+                            defaults.webSearch,
+                          ),
                           trailing: Text(
-                            '由配置管理',
+                            defaults.displayValue(defaults.webSearch),
                             style: TextStyle(color: palette.muted),
                           ),
                         ),
                         Divider(height: 1, color: palette.border),
                         _settingRow(
                           title: '输出详细程度',
-                          description: '回复风格由所选模型和 Codex 配置决定；本应用不会覆盖它。',
+                          description: settingDescription(
+                            '回复风格由所选模型和 Codex 配置决定；本应用不会覆盖它。',
+                            defaults.modelVerbosity,
+                          ),
                           trailing: Text(
-                            '模型默认',
+                            defaults.displayValue(
+                              defaults.modelVerbosity,
+                              inherited: '模型默认',
+                            ),
                             style: TextStyle(color: palette.muted),
                           ),
                         ),
                         Divider(height: 1, color: palette.border),
                         _settingRow(
                           title: '推理摘要',
-                          description: '是否提供摘要由模型和运行时能力协商，本应用会原样显示可用结果。',
+                          description: settingDescription(
+                            '是否提供摘要由模型和运行时能力协商，本应用会原样显示可用结果。',
+                            defaults.reasoningSummary,
+                          ),
                           trailing: Text(
-                            '自动',
+                            defaults.displayValue(
+                              defaults.reasoningSummary,
+                              inherited: '自动',
+                            ),
                             style: TextStyle(color: palette.muted),
                           ),
                         ),
