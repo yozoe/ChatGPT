@@ -4,13 +4,19 @@ import 'dart:io';
 import 'dart:math';
 import 'package:cryptography/cryptography.dart' show Hmac, SecretKey;
 import 'package:chatgpt/src/domain/local_worktree_record.dart';
+import 'package:chatgpt/src/domain/worktree_snapshot.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
+import 'package:chatgpt/src/services/worktree_snapshot_store.dart';
 
 class LocalWorktreeService {
-  LocalWorktreeService({RuntimeConfigurationStore? store})
-    : _store = store ?? RuntimeConfigurationStore();
+  LocalWorktreeService({
+    RuntimeConfigurationStore? store,
+    WorktreeSnapshotStore? snapshotStore,
+  }) : _store = store ?? RuntimeConfigurationStore(),
+       _snapshotStore = snapshotStore ?? WorktreeSnapshotStore(store: store);
 
   final RuntimeConfigurationStore _store;
+  final WorktreeSnapshotStore _snapshotStore;
   final Map<String, Future<void>> _locks = {};
   static Future<void> _ownershipKeyLock = Future<void>.value();
 
@@ -159,18 +165,36 @@ class LocalWorktreeService {
         throw StateError('工作树包含未提交改动，请先处理改动后再删除。');
       }
     }
+    final snapshot = await _snapshotStore.capture(record: record);
+    final snapshotReference = await _snapshotStore.save(
+      rootPath: root.path,
+      snapshot: snapshot,
+    );
+    final snapshotRecord = record.copyWith(
+      snapshotId: snapshotReference.snapshotId,
+      snapshotDigest: snapshotReference.digest,
+    );
+    final signedSnapshotRecord = snapshotRecord.copyWith(
+      ownershipMac: await _ownershipMac(snapshotRecord),
+    );
     final result = await _run(record.sourceRepository, [
       'worktree',
       'remove',
       if (force) '--force',
       worktree.path,
     ]);
-    if (result.exitCode != 0) throw StateError('无法删除工作树，请确认其中没有需要保留的改动。');
+    if (result.exitCode != 0) {
+      await _snapshotStore.delete(
+        rootPath: root.path,
+        snapshotId: snapshotReference.snapshotId,
+      );
+      throw StateError('无法删除工作树，请确认其中没有需要保留的改动。');
+    }
     final records = await _store.readWorktreeRecords();
     await _store.saveWorktreeRecords(
       records.map(
         (item) => item.worktreeId == record.worktreeId
-            ? item.copyWith(state: LocalWorktreeState.removed)
+            ? signedSnapshotRecord.copyWith(state: LocalWorktreeState.removed)
             : item,
       ),
     );
@@ -332,14 +356,6 @@ class LocalWorktreeService {
         // A dirty, running, missing, or externally changed worktree is kept.
       }
     }
-    if (removed.isNotEmpty) {
-      final updated = records.map(
-        (record) => removed.contains(record.worktreeId)
-            ? record.copyWith(state: LocalWorktreeState.removed)
-            : record,
-      );
-      await _store.saveWorktreeRecords(updated);
-    }
     return removed;
   }
 
@@ -350,6 +366,15 @@ class LocalWorktreeService {
     if (record.state != LocalWorktreeState.removed) {
       throw StateError('只有已清理的工作树可以恢复。');
     }
+    final snapshotId = record.snapshotId;
+    final snapshotDigest = record.snapshotDigest;
+    final snapshot = snapshotId != null && snapshotDigest != null
+        ? await _snapshotStore.read(
+            rootPath: rootPath,
+            snapshotId: snapshotId,
+            digest: snapshotDigest,
+          )
+        : null;
     final restored = await create(
       repository: record.sourceRepository,
       rootPath: rootPath,
@@ -359,6 +384,15 @@ class LocalWorktreeService {
       baseCommitOverride: record.baseCommit,
       carryTrackedChanges: false,
     );
+    if (snapshot != null && snapshotId != null) {
+      try {
+        await _applySnapshot(restored, snapshot);
+      } catch (_) {
+        await remove(record: restored, rootPath: rootPath, force: true);
+        rethrow;
+      }
+      await _snapshotStore.delete(rootPath: rootPath, snapshotId: snapshotId);
+    }
     final records = await _store.readWorktreeRecords();
     await _store.saveWorktreeRecords(
       records.where((item) => item.worktreeId != record.worktreeId).followedBy([
@@ -366,6 +400,42 @@ class LocalWorktreeService {
       ]),
     );
     return restored;
+  }
+
+  Future<void> _applySnapshot(
+    LocalWorktreeRecord record,
+    WorktreeSnapshot snapshot,
+  ) async {
+    if (snapshot.trackedPatch.trim().isNotEmpty) {
+      final patchFile = File(
+        '${Directory(record.worktreePath).parent.path}${Platform.pathSeparator}.codex-desk-restore-${DateTime.now().microsecondsSinceEpoch}.patch',
+      );
+      try {
+        await patchFile.writeAsString(snapshot.trackedPatch, flush: true);
+        final applied = await _run(record.worktreePath, [
+          'apply',
+          '--binary',
+          patchFile.path,
+        ]);
+        if (applied.exitCode != 0) {
+          throw StateError('工作树保护快照的 tracked 改动无法恢复。');
+        }
+      } finally {
+        if (await patchFile.exists()) await patchFile.delete();
+      }
+    }
+    final root = Directory(record.worktreePath);
+    for (final entry in snapshot.files.entries) {
+      final entity = _safeChild(root, entry.key);
+      if (entity == null) throw StateError('快照包含越界路径：${entry.key}');
+      final type = await FileSystemEntity.type(entity.path, followLinks: false);
+      if (type == FileSystemEntityType.link) {
+        throw StateError('恢复目标包含符号链接：${entry.key}');
+      }
+      final file = File(entity.path);
+      await file.parent.create(recursive: true);
+      await file.writeAsBytes(base64Decode(entry.value), flush: true);
+    }
   }
 
   Future<T> _withRepositoryLock<T>(
@@ -425,9 +495,14 @@ class LocalWorktreeService {
 
   Future<String> _ownershipMac(LocalWorktreeRecord record) async {
     final key = await _readOrCreateOwnershipKey();
+    final snapshotPart =
+        record.snapshotId == null && record.snapshotDigest == null
+        ? ''
+        : '|${record.snapshotId}|${record.snapshotDigest}';
     final payload = utf8.encode(
       'v1|${record.worktreeId}|${record.projectId}|${record.sourceRepository}|'
-      '${record.worktreePath}|${record.gitCommonDirectory}|${record.ownershipNonce}',
+      '${record.worktreePath}|${record.gitCommonDirectory}|${record.ownershipNonce}'
+      '$snapshotPart',
     );
     final mac = await Hmac.sha256().calculateMac(
       payload,

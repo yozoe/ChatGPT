@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -269,6 +270,76 @@ void main() {
         'base\n',
       );
       expect(restored.baseCommit, record.baseCommit);
+    },
+  );
+
+  test(
+    'captures an encrypted snapshot before forced removal and restores it',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-worktree-snapshot-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final repository = await Directory('${root.path}/repo').create();
+      final worktrees = await Directory('${root.path}/worktrees').create();
+      await runGit(repository, ['init', '-q']);
+      await runGit(repository, ['config', 'user.email', 'test@example.com']);
+      await runGit(repository, ['config', 'user.name', 'Codex Test']);
+      await File('${repository.path}/tracked.txt').writeAsString('base\n');
+      await runGit(repository, ['add', '.']);
+      await runGit(repository, ['commit', '-qm', 'base']);
+      final store = RuntimeConfigurationStore(
+        storage: CodexKeychainStorage(developmentDirectory: root),
+      );
+      final service = LocalWorktreeService(store: store);
+      final record = await service.create(
+        repository: repository.path,
+        rootPath: worktrees.path,
+        projectId: 'project-1',
+      );
+      await File(
+        '${record.worktreePath}/tracked.txt',
+      ).writeAsString('changed\n');
+      await File(
+        '${record.worktreePath}/untracked.bin',
+      ).writeAsBytes([1, 2, 3]);
+
+      await service.remove(
+        record: record,
+        rootPath: worktrees.path,
+        force: true,
+      );
+      final removed = (await store.readWorktreeRecords()).single;
+      expect(removed.state, LocalWorktreeState.removed);
+      expect(removed.snapshotId, isNotNull);
+      expect(removed.snapshotDigest, isNotNull);
+      final snapshotFile = File(
+        '${worktrees.path}/.codex-snapshots/${removed.snapshotId}.json',
+      );
+      final encryptedSnapshot = await snapshotFile.readAsBytes();
+      expect(utf8.decode(encryptedSnapshot), isNot(contains('changed')));
+      await snapshotFile.writeAsBytes([...encryptedSnapshot, 0]);
+      await expectLater(
+        service.restore(record: removed, rootPath: worktrees.path),
+        throwsStateError,
+      );
+      expect(Directory(removed.worktreePath).existsSync(), isFalse);
+      await snapshotFile.writeAsBytes(encryptedSnapshot);
+
+      final restored = await service.restore(
+        record: removed,
+        rootPath: worktrees.path,
+      );
+
+      expect(
+        await File('${restored.worktreePath}/tracked.txt').readAsString(),
+        'changed\n',
+      );
+      expect(
+        await File('${restored.worktreePath}/untracked.bin').readAsBytes(),
+        [1, 2, 3],
+      );
+      expect(await snapshotFile.exists(), isFalse);
     },
   );
 }

@@ -1,6 +1,6 @@
 # Codex 风格本地工作树开发文档
 
-> 状态：进行中。首版本地工作树已接入：新任务可在 Composer 选择托管工作树，首次发送时创建 detached Git worktree，绑定真实执行目录，并在创建时携带已跟踪本地改动、`.worktreeinclude` 与 `AGENTS.override.md`；创建阶段会先保存 `creating` provisional 记录，完成初始化后才进入 `ready`，记录已增加 nonce 与 HMAC-SHA256 完整性校验；恢复已按记录的精确 `baseCommit` 重建，不再错误地从当前 `HEAD` 复用基准，但这仍不是内容快照恢复。密钥和记录仍在应用专用本地存储中，安全快照、Handoff、永久工作树和应用外权威所有权证明仍未交付。
+> 状态：进行中。首版本地工作树已接入：新任务可在 Composer 选择托管工作树，首次发送时创建 detached Git worktree，绑定真实执行目录，并在创建时携带已跟踪本地改动、`.worktreeinclude` 与 `AGENTS.override.md`；创建阶段会先保存 `creating` provisional 记录，完成初始化后才进入 `ready`，记录已增加 nonce 与 HMAC-SHA256 完整性校验；恢复已按记录的精确 `baseCommit` 重建，并在删除前为 tracked patch、受控 untracked/忽略文件创建 AES-GCM 加密快照，恢复成功后删除快照文件。快照密钥和记录仍在应用专用本地存储中，尚未达到应用外权威所有权或 macOS Keychain 隔离；Handoff、永久工作树和已安排任务隔离仍未交付。
 > 适用范围：Codex Desk macOS Flutter 工作台
 > 官方行为基线：[OpenAI Worktrees](https://learn.chatgpt.com/docs/environments/git-worktrees)
 

@@ -22,6 +22,8 @@ class LocalWorktreeRecord {
     this.gitCommonDirectory,
     this.ownershipNonce,
     this.ownershipMac,
+    this.snapshotId,
+    this.snapshotDigest,
     this.threadId,
     this.branch,
     this.lastUsedAt,
@@ -37,6 +39,8 @@ class LocalWorktreeRecord {
   final String? gitCommonDirectory;
   final String? ownershipNonce;
   final String? ownershipMac;
+  final String? snapshotId;
+  final String? snapshotDigest;
   final String? branch;
   final LocalWorktreeState state;
   final DateTime createdAt;
@@ -54,6 +58,8 @@ class LocalWorktreeRecord {
         gitCommonDirectory: json['gitCommonDirectory']?.toString(),
         ownershipNonce: json['ownershipNonce']?.toString(),
         ownershipMac: json['ownershipMac']?.toString(),
+        snapshotId: json['snapshotId']?.toString(),
+        snapshotDigest: json['snapshotDigest']?.toString(),
         branch: json['branch']?.toString(),
         state: LocalWorktreeState.values.firstWhere(
           (value) => value.name == json['state'],
@@ -76,6 +82,8 @@ class LocalWorktreeRecord {
     if (gitCommonDirectory != null) 'gitCommonDirectory': gitCommonDirectory,
     if (ownershipNonce != null) 'ownershipNonce': ownershipNonce,
     if (ownershipMac != null) 'ownershipMac': ownershipMac,
+    if (snapshotId != null) 'snapshotId': snapshotId,
+    if (snapshotDigest != null) 'snapshotDigest': snapshotDigest,
     if (branch != null) 'branch': branch,
     'state': state.name,
     'createdAt': createdAt.toIso8601String(),
@@ -89,6 +97,8 @@ class LocalWorktreeRecord {
     String? ownershipNonce,
     String? ownershipMac,
     String? gitCommonDirectory,
+    String? snapshotId,
+    String? snapshotDigest,
   }) => LocalWorktreeRecord(
     worktreeId: worktreeId,
     projectId: projectId,
@@ -100,9 +110,28 @@ class LocalWorktreeRecord {
     gitCommonDirectory: gitCommonDirectory ?? this.gitCommonDirectory,
     ownershipNonce: ownershipNonce ?? this.ownershipNonce,
     ownershipMac: ownershipMac ?? this.ownershipMac,
+    snapshotId: snapshotId ?? this.snapshotId,
+    snapshotDigest: snapshotDigest ?? this.snapshotDigest,
     branch: branch,
     state: state ?? this.state,
     createdAt: createdAt,
     lastUsedAt: lastUsedAt ?? this.lastUsedAt,
+  );
+
+  LocalWorktreeRecord clearSnapshot() => LocalWorktreeRecord(
+    worktreeId: worktreeId,
+    projectId: projectId,
+    threadId: threadId,
+    sourceRepository: sourceRepository,
+    worktreePath: worktreePath,
+    baseCommit: baseCommit,
+    baseRef: baseRef,
+    gitCommonDirectory: gitCommonDirectory,
+    ownershipNonce: ownershipNonce,
+    ownershipMac: ownershipMac,
+    branch: branch,
+    state: state,
+    createdAt: createdAt,
+    lastUsedAt: lastUsedAt,
   );
 }
