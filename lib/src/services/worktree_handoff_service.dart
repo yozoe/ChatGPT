@@ -118,11 +118,17 @@ class WorktreeHandoffService {
   ) async {
     final root = Directory(targetPath);
     for (final relative in changed) {
+      if (!_safeRelativePath(relative)) {
+        throw StateError('Handoff 快照包含越界路径：$relative');
+      }
       final target = File('${root.path}${Platform.pathSeparator}$relative');
       final encoded = source[relative];
       if (encoded == null) {
         if (await target.exists()) await target.delete();
         continue;
+      }
+      if (await Link(target.path).exists()) {
+        throw StateError('Handoff 目标包含符号链接，拒绝覆盖：$relative');
       }
       final separator = encoded.lastIndexOf(':');
       if (separator <= 0) throw StateError('Handoff 快照损坏：$relative');
@@ -157,4 +163,12 @@ class WorktreeHandoffService {
       path == '.git' ||
       path.startsWith('.git${Platform.pathSeparator}') ||
       path.startsWith('.codex-worktree-metadata${Platform.pathSeparator}');
+
+  bool _safeRelativePath(String path) {
+    if (path.isEmpty || path.startsWith('/') || path.startsWith('\\')) {
+      return false;
+    }
+    final segments = path.split(Platform.pathSeparator);
+    return !segments.contains('..');
+  }
 }
