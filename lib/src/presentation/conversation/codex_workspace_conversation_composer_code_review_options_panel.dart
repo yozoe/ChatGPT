@@ -43,35 +43,43 @@ class ComposerCodeReviewOptionsPanel extends StatelessWidget {
           height: listHeight,
           child: ListView(
             children: [
-              InkWell(
-                key: const Key('composer-code-review-uncommitted'),
-                borderRadius: BorderRadius.circular(10),
-                onTap: reviewSubmissionPending ? null : onReviewUncommitted,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 9,
-                  ),
-                  decoration: BoxDecoration(
-                    color: palette.raised,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        '审查未提交的更改',
-                        style: TextStyle(color: palette.trace, fontSize: 13),
-                      ),
-                      if (reviewSubmissionPending) ...[
-                        const SizedBox(height: 3),
+              Semantics(
+                button: true,
+                enabled: !reviewSubmissionPending,
+                label: '审查未提交的更改',
+                child: InkWell(
+                  key: const Key('composer-code-review-uncommitted'),
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: reviewSubmissionPending ? null : onReviewUncommitted,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 9,
+                    ),
+                    decoration: BoxDecoration(
+                      color: palette.raised,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
                         Text(
-                          '等待当前任务接收审查…',
-                          style: TextStyle(color: palette.muted, fontSize: 12),
+                          '审查未提交的更改',
+                          style: TextStyle(color: palette.trace, fontSize: 13),
                         ),
+                        if (reviewSubmissionPending) ...[
+                          const SizedBox(height: 3),
+                          Text(
+                            '等待当前任务接收审查…',
+                            style: TextStyle(
+                              color: palette.muted,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
                 ),
               ),
@@ -109,20 +117,24 @@ class ComposerCodeReviewOptionsPanel extends StatelessWidget {
                 )
               else
                 for (final branch in baseBranches)
-                  InkWell(
-                    key: ValueKey('composer-code-review-base-$branch'),
-                    borderRadius: BorderRadius.circular(8),
-                    onTap: () => onReviewBranch(branch),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 8,
-                      ),
-                      child: Text(
-                        branch,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: palette.trace, fontSize: 13),
+                  Semantics(
+                    button: true,
+                    label: '对照基础分支审查 $branch',
+                    child: InkWell(
+                      key: ValueKey('composer-code-review-base-$branch'),
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () => onReviewBranch(branch),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 8,
+                        ),
+                        child: Text(
+                          branch,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: palette.trace, fontSize: 13),
+                        ),
                       ),
                     ),
                   ),

@@ -181,71 +181,78 @@ Future<void> showInspectorBranchMenu(
                                   itemBuilder: (context, index) {
                                     final branch = filteredBranches[index];
                                     final selected = branch == currentBranch;
-                                    return InkWell(
-                                      key: ValueKey(
-                                        'inspector-branch-option-$branch',
-                                      ),
-                                      borderRadius: BorderRadius.circular(7),
-                                      onTap: () => Navigator.of(
-                                        dialogContext,
-                                      ).pop((branch: branch, create: false)),
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 8,
-                                          vertical: 7,
+                                    return Semantics(
+                                      button: true,
+                                      selected: selected,
+                                      label: selected
+                                          ? '当前分支 $branch'
+                                          : '检出分支 $branch',
+                                      child: InkWell(
+                                        key: ValueKey(
+                                          'inspector-branch-option-$branch',
                                         ),
-                                        decoration: BoxDecoration(
-                                          color: selected
-                                              ? palette.raised
-                                              : Colors.transparent,
-                                          borderRadius: BorderRadius.circular(
-                                            7,
+                                        borderRadius: BorderRadius.circular(7),
+                                        onTap: () => Navigator.of(
+                                          dialogContext,
+                                        ).pop((branch: branch, create: false)),
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 8,
+                                            vertical: 7,
                                           ),
-                                        ),
-                                        child: Row(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Icon(
-                                              Icons.account_tree_outlined,
-                                              size: 15,
-                                              color: palette.muted,
+                                          decoration: BoxDecoration(
+                                            color: selected
+                                                ? palette.raised
+                                                : Colors.transparent,
+                                            borderRadius: BorderRadius.circular(
+                                              7,
                                             ),
-                                            const SizedBox(width: 8),
-                                            Expanded(
-                                              child: Column(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.start,
-                                                children: [
-                                                  Text(
-                                                    branch,
-                                                    maxLines: 1,
-                                                    overflow:
-                                                        TextOverflow.ellipsis,
-                                                    style: TextStyle(
-                                                      color: palette.trace,
-                                                      fontSize: 13,
-                                                    ),
-                                                  ),
-                                                  if (selected &&
-                                                      changedFiles > 0)
+                                          ),
+                                          child: Row(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Icon(
+                                                Icons.account_tree_outlined,
+                                                size: 15,
+                                                color: palette.muted,
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.start,
+                                                  children: [
                                                     Text(
-                                                      '未提交：$changedFiles 个文件',
+                                                      branch,
+                                                      maxLines: 1,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
                                                       style: TextStyle(
-                                                        color: palette.muted,
-                                                        fontSize: 12,
+                                                        color: palette.trace,
+                                                        fontSize: 13,
                                                       ),
                                                     ),
-                                                ],
+                                                    if (selected &&
+                                                        changedFiles > 0)
+                                                      Text(
+                                                        '未提交：$changedFiles 个文件',
+                                                        style: TextStyle(
+                                                          color: palette.muted,
+                                                          fontSize: 12,
+                                                        ),
+                                                      ),
+                                                  ],
+                                                ),
                                               ),
-                                            ),
-                                            if (selected)
-                                              Icon(
-                                                Icons.check,
-                                                size: 15,
-                                                color: palette.trace,
-                                              ),
-                                          ],
+                                              if (selected)
+                                                Icon(
+                                                  Icons.check,
+                                                  size: 15,
+                                                  color: palette.trace,
+                                                ),
+                                            ],
+                                          ),
                                         ),
                                       ),
                                     );
@@ -253,29 +260,37 @@ Future<void> showInspectorBranchMenu(
                                 ),
                         ),
                         Divider(height: 1, color: palette.controlBorder),
-                        InkWell(
-                          key: const Key('inspector-create-branch'),
-                          borderRadius: BorderRadius.circular(7),
-                          onTap: () => Navigator.of(
-                            dialogContext,
-                          ).pop((branch: null, create: true)),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 9,
-                            ),
-                            child: Row(
-                              children: [
-                                Icon(Icons.add, size: 16, color: palette.trace),
-                                const SizedBox(width: 7),
-                                Text(
-                                  '创建并检出新分支...',
-                                  style: TextStyle(
+                        Semantics(
+                          button: true,
+                          label: '创建并检出新分支',
+                          child: InkWell(
+                            key: const Key('inspector-create-branch'),
+                            borderRadius: BorderRadius.circular(7),
+                            onTap: () => Navigator.of(
+                              dialogContext,
+                            ).pop((branch: null, create: true)),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 9,
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.add,
+                                    size: 16,
                                     color: palette.trace,
-                                    fontSize: 13,
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(width: 7),
+                                  Text(
+                                    '创建并检出新分支...',
+                                    style: TextStyle(
+                                      color: palette.trace,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),

@@ -935,46 +935,51 @@ class CodeReviewPanelState extends State<CodeReviewPanel> {
                       final collapsed = _collapsedDirectories.contains(
                         directory.fullPath,
                       );
-                      return InkWell(
-                        onTap: () => setState(() {
-                          if (!collapsed) {
-                            _collapsedDirectories.add(directory.fullPath);
-                          } else {
-                            _collapsedDirectories.remove(directory.fullPath);
-                          }
-                        }),
-                        child: SizedBox(
-                          height: _navigationRowExtent,
-                          child: Padding(
-                            padding: EdgeInsets.only(
-                              left: 8 + row.depth * 14,
-                              right: 8,
-                            ),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  collapsed
-                                      ? Icons.chevron_right
-                                      : Icons.expand_more,
-                                  size: 15,
-                                  color: palette.muted,
-                                ),
-                                const SizedBox(width: 3),
-                                Icon(
-                                  Icons.folder_outlined,
-                                  size: 15,
-                                  color: palette.muted,
-                                ),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                  child: Text(
-                                    directory.name,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontSize: 12),
+                      return Semantics(
+                        button: true,
+                        label:
+                            '${collapsed ? '展开' : '收起'}文件夹 ${directory.fullPath}',
+                        child: InkWell(
+                          onTap: () => setState(() {
+                            if (!collapsed) {
+                              _collapsedDirectories.add(directory.fullPath);
+                            } else {
+                              _collapsedDirectories.remove(directory.fullPath);
+                            }
+                          }),
+                          child: SizedBox(
+                            height: _navigationRowExtent,
+                            child: Padding(
+                              padding: EdgeInsets.only(
+                                left: 8 + row.depth * 14,
+                                right: 8,
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    collapsed
+                                        ? Icons.chevron_right
+                                        : Icons.expand_more,
+                                    size: 15,
+                                    color: palette.muted,
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(width: 3),
+                                  Icon(
+                                    Icons.folder_outlined,
+                                    size: 15,
+                                    color: palette.muted,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                    child: Text(
+                                      directory.name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(fontSize: 12),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),

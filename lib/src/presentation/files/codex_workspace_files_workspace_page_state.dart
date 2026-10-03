@@ -205,55 +205,65 @@ class FilesWorkspacePageState extends State<FilesWorkspacePage> {
               color: _selectedPath == entry.path
                   ? palette.selected
                   : Colors.transparent,
-              child: InkWell(
-                key: ValueKey('files-entry-${entry.path}'),
-                onTap: entry.isDirectory
-                    ? () => _toggleDirectory(entry)
-                    : () => unawaited(_selectFile(entry)),
-                child: Padding(
-                  padding: EdgeInsets.only(
-                    left: 10 + depth * 14,
-                    right: 8,
-                    top: 5,
-                    bottom: 5,
-                  ),
-                  child: Row(
-                    children: [
-                      SizedBox(
-                        width: 18,
-                        child: entry.isDirectory
-                            ? Icon(
-                                _expanded.contains(entry.path)
-                                    ? Icons.keyboard_arrow_down
-                                    : Icons.keyboard_arrow_right,
-                                size: 16,
-                                color: palette.muted,
-                              )
-                            : Icon(
-                                Icons.insert_drive_file_outlined,
-                                size: 15,
-                                color: palette.muted,
-                              ),
-                      ),
-                      Icon(
-                        entry.isDirectory
-                            ? Icons.folder_outlined
-                            : Icons.description_outlined,
-                        size: 15,
-                        color: entry.isDirectory
-                            ? palette.signal
-                            : palette.muted,
-                      ),
-                      const SizedBox(width: 7),
-                      Expanded(
-                        child: Text(
-                          entry.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 12, color: palette.trace),
+              child: Semantics(
+                button: true,
+                selected: !entry.isDirectory && _selectedPath == entry.path,
+                label: entry.isDirectory
+                    ? '${_expanded.contains(entry.path) ? '收起' : '展开'}文件夹 ${entry.name}'
+                    : '打开文件 ${entry.name}',
+                child: InkWell(
+                  key: ValueKey('files-entry-${entry.path}'),
+                  onTap: entry.isDirectory
+                      ? () => _toggleDirectory(entry)
+                      : () => unawaited(_selectFile(entry)),
+                  child: Padding(
+                    padding: EdgeInsets.only(
+                      left: 10 + depth * 14,
+                      right: 8,
+                      top: 5,
+                      bottom: 5,
+                    ),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: 18,
+                          child: entry.isDirectory
+                              ? Icon(
+                                  _expanded.contains(entry.path)
+                                      ? Icons.keyboard_arrow_down
+                                      : Icons.keyboard_arrow_right,
+                                  size: 16,
+                                  color: palette.muted,
+                                )
+                              : Icon(
+                                  Icons.insert_drive_file_outlined,
+                                  size: 15,
+                                  color: palette.muted,
+                                ),
                         ),
-                      ),
-                    ],
+                        Icon(
+                          entry.isDirectory
+                              ? Icons.folder_outlined
+                              : Icons.description_outlined,
+                          size: 15,
+                          color: entry.isDirectory
+                              ? palette.signal
+                              : palette.muted,
+                        ),
+                        const SizedBox(width: 7),
+                        Expanded(
+                          child: Text(
+                            entry.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: palette.trace,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
