@@ -11,4 +11,8 @@ class AgentSettingField {
   final AgentSettingAvailability availability;
   final String? value;
   final String? source;
+
+  /// A field is writable only when the runtime exposed it in config/read.
+  /// Missing fields remain read-only until a later runtime advertises them.
+  bool get isRuntimeExposed => availability != AgentSettingAvailability.missing;
 }

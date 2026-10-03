@@ -33,6 +33,9 @@ class FakeCodexAppServer extends CodexAppServer {
     'config': <String, Object?>{},
     'origins': <String, Object?>{},
   };
+  bool configBatchWriteSupported = false;
+  Object? configBatchWriteError;
+  final List<JsonMap> configBatchWriteCalls = [];
   String? configReadDirectory;
   bool queueListRequests = false;
   Object? resumeError;
@@ -203,6 +206,39 @@ class FakeCodexAppServer extends CodexAppServer {
   Future<JsonMap> readConfig({String? workingDirectory}) async {
     configReadDirectory = workingDirectory;
     return configReadResponse;
+  }
+
+  @override
+  Future<bool> supportsConfigBatchWrite() async => configBatchWriteSupported;
+
+  @override
+  Future<JsonMap> writeConfigValue({
+    required String keyPath,
+    required Object? value,
+    bool reloadUserConfig = true,
+    int? expectedVersion,
+  }) async {
+    final error = configBatchWriteError;
+    if (error != null) throw error;
+    if (!configBatchWriteSupported) {
+      throw StateError('config/batchWrite unsupported');
+    }
+    configBatchWriteCalls.add({
+      'keyPath': keyPath,
+      'value': value,
+      'reloadUserConfig': reloadUserConfig,
+      'expectedVersion': expectedVersion,
+    });
+    final config = Map<String, Object?>.from(
+      (configReadResponse['config'] as Map?)?.cast<String, Object?>() ?? {},
+    );
+    if (value == null) {
+      config.remove(keyPath);
+    } else {
+      config[keyPath] = value;
+    }
+    configReadResponse = {...configReadResponse, 'config': config};
+    return const {};
   }
 
   /// 记录恢复参数，并返回预设结果或抛出预设异常。

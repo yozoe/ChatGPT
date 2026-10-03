@@ -319,6 +319,61 @@ class CodexAppServer {
     return JsonMap.from(result);
   }
 
+  /// Probes whether the connected App Server accepts the configuration writer.
+  /// The empty edit list is intentionally non-mutating; older runtimes may
+  /// reject the method, in which case callers must keep settings read-only.
+  Future<bool> supportsConfigBatchWrite() async {
+    try {
+      final response = await request('config/batchWrite', {
+        'edits': const <JsonMap>[],
+        'reloadUserConfig': false,
+      });
+      _throwIfError(response);
+      return true;
+    } on Object {
+      return false;
+    }
+  }
+
+  /// Writes one or more non-sensitive config.toml values atomically.
+  /// The App Server owns TOML encoding, file boundaries and rollback.
+  Future<JsonMap> writeConfigBatch({
+    required List<JsonMap> edits,
+    bool reloadUserConfig = true,
+    int? expectedVersion,
+  }) async {
+    if (edits.isEmpty) {
+      throw ArgumentError.value(edits, 'edits', 'must not be empty');
+    }
+    final response = await request('config/batchWrite', {
+      'edits': edits,
+      'reloadUserConfig': reloadUserConfig,
+      'expectedVersion': ?expectedVersion,
+    });
+    _throwIfError(response);
+    final result = response['result'];
+    return result is Map ? JsonMap.from(result) : const {};
+  }
+
+  /// Writes or removes one configuration key using the official writer.
+  Future<JsonMap> writeConfigValue({
+    required String keyPath,
+    required Object? value,
+    bool reloadUserConfig = true,
+    int? expectedVersion,
+  }) => writeConfigBatch(
+    edits: [
+      {
+        'op': value == null ? 'remove' : 'set',
+        'keyPath': keyPath,
+        'value': ?value,
+        'mergeStrategy': 'replace',
+      },
+    ],
+    reloadUserConfig: reloadUserConfig,
+    expectedVersion: expectedVersion,
+  );
+
   /// Lists the hooks resolved by Codex across all supported configuration layers.
   Future<List<CodexHook>> listHooks({String? workingDirectory}) async {
     final response = await request('hooks/list', {'cwd': ?workingDirectory});

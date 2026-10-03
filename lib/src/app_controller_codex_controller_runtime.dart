@@ -361,6 +361,8 @@ class CodexController extends ChangeNotifier {
   int _gitDiffRefreshRequest = 0;
   int _gitReviewRefreshRequest = 0;
   int _codexConfigurationRefreshRequest = 0;
+  int _configWriterProbeEpoch = -1;
+  int _agentDefaultSettingsWriteGeneration = 0;
   int _modelCatalogRefreshRequest = 0;
   int _collaborationModesRefreshRequest = 0;
   final Set<String> _unarchivingThreadIds = {};
@@ -378,6 +380,7 @@ class CodexController extends ChangeNotifier {
   Future<void> _reasoningEffortSave = Future.value();
   Future<void> _modelSelectionSave = Future.value();
   Future<void> _approvalModeSave = Future.value();
+  Future<void> _agentDefaultSettingsWrite = Future.value();
   Map<String, Set<ReasoningEffort>> _reasoningEffortsByModel = const {};
   String? _catalogDefaultModelId;
   JsonMap? _planCollaborationModePreset;
@@ -1086,6 +1089,8 @@ class CodexController extends ChangeNotifier {
   bool codexConfigurationLoading = false;
   bool codexConfigurationRead = false;
   String? codexConfigurationError;
+  bool agentDefaultSettingsWriteSupported = false;
+  String? agentDefaultSettingsWriteError;
   AgentDefaultSettingsSnapshot agentDefaultSettings =
       AgentDefaultSettingsSnapshot.empty;
   List<CodexThread> threads = const [];
@@ -2289,6 +2294,7 @@ class CodexController extends ChangeNotifier {
         config,
         origins,
       );
+      await _probeAgentDefaultSettingsWriter(runtimeEpoch);
       _configuredModelId = _nonEmptyConfigString(
         config['model'] ?? config['modelId'],
       );
@@ -2337,6 +2343,9 @@ class CodexController extends ChangeNotifier {
     codexConfigurationRead = false;
     codexConfigurationError = null;
     agentDefaultSettings = AgentDefaultSettingsSnapshot.empty;
+    agentDefaultSettingsWriteSupported = false;
+    agentDefaultSettingsWriteError = null;
+    _configWriterProbeEpoch = -1;
     _reasoningEffortsByModel = const {};
     _catalogDefaultModelId = null;
     _planCollaborationModePreset = null;
@@ -2347,6 +2356,59 @@ class CodexController extends ChangeNotifier {
       ReasoningEffort.defaultValue,
       if (reasoningEffort != ReasoningEffort.defaultValue) reasoningEffort,
     ];
+  }
+
+  Future<void> _probeAgentDefaultSettingsWriter(int runtimeEpoch) async {
+    if (_configWriterProbeEpoch == runtimeEpoch) return;
+    _configWriterProbeEpoch = runtimeEpoch;
+    try {
+      agentDefaultSettingsWriteSupported = await _server
+          .supportsConfigBatchWrite();
+      agentDefaultSettingsWriteError = null;
+    } on Object catch (error) {
+      agentDefaultSettingsWriteSupported = false;
+      agentDefaultSettingsWriteError = _messageOf(error);
+    }
+  }
+
+  /// Writes a runtime-exposed agent default and refreshes the effective value.
+  /// Writes are serialized and stale queued generations are discarded before
+  /// dispatching, so a rapid sequence cannot let an older selection win.
+  Future<void> writeAgentDefaultSetting({
+    required String keyPath,
+    required Object? value,
+  }) {
+    final generation = ++_agentDefaultSettingsWriteGeneration;
+    final previous = _agentDefaultSettingsWrite;
+    final next = () async {
+      try {
+        await previous;
+      } catch (_) {
+        // A failed older write must not block the newest selection.
+      }
+      if (_disposed || generation != _agentDefaultSettingsWriteGeneration) {
+        return;
+      }
+      if (!_server.isRunning || !agentDefaultSettingsWriteSupported) {
+        throw StateError('当前 Codex 运行时不支持写入智能体默认设置。');
+      }
+      agentDefaultSettingsWriteError = null;
+      try {
+        await _server.writeConfigValue(keyPath: keyPath, value: value);
+        if (_disposed || generation != _agentDefaultSettingsWriteGeneration) {
+          return;
+        }
+        await refreshCodexConfiguration();
+      } catch (error) {
+        if (generation == _agentDefaultSettingsWriteGeneration) {
+          agentDefaultSettingsWriteError = _messageOf(error);
+          if (!_disposed) notifyListeners();
+        }
+        rethrow;
+      }
+    }();
+    _agentDefaultSettingsWrite = next;
+    return next;
   }
 
   /// 指示运行时路径是否可以在不影响会话的情况下配置。

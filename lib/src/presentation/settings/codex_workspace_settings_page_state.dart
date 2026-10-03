@@ -5,6 +5,7 @@ import 'package:chatgpt/src/services/dock_icon_service.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:chatgpt/src/domain/worktree_settings.dart';
 import 'package:chatgpt/src/domain/agent_setting_field.dart';
+import 'package:chatgpt/src/domain/agent_setting_availability.dart';
 import 'package:chatgpt/src/domain/local_worktree_record.dart';
 import 'package:chatgpt/src/services/local_worktree_service.dart';
 
@@ -976,6 +977,61 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
     ),
   );
 
+  static const _inheritAgentDefaultValue = '__codex_desk_inherit__';
+
+  Future<void> _writeAgentDefaultSetting(String keyPath, String? value) async {
+    try {
+      await widget.controller.writeAgentDefaultSetting(
+        keyPath: keyPath,
+        value: value,
+      );
+    } catch (_) {
+      // The controller retains the error and the previous effective snapshot.
+    }
+    if (mounted) setState(() {});
+  }
+
+  Widget _agentDefaultValueControl({
+    required String keyPath,
+    required AgentSettingField field,
+    required Map<String, String> options,
+    required String inheritedLabel,
+  }) {
+    final palette = YeknomPalette.of(context);
+    final display = field.availability == AgentSettingAvailability.missing
+        ? '由配置管理'
+        : field.value == null
+        ? inheritedLabel
+        : options[field.value] ?? field.value!;
+    final editable =
+        widget.controller.agentDefaultSettingsWriteSupported &&
+        field.isRuntimeExposed;
+    if (!editable) {
+      return Text(display, style: TextStyle(color: palette.muted));
+    }
+    return PopupMenuButton<String>(
+      key: ValueKey('settings-configuration-$keyPath'),
+      initialValue: field.value ?? _inheritAgentDefaultValue,
+      onSelected: (value) => unawaited(
+        _writeAgentDefaultSetting(
+          keyPath,
+          value == _inheritAgentDefaultValue ? null : value,
+        ),
+      ),
+      itemBuilder: (context) => [
+        PopupMenuItem<String>(
+          value: _inheritAgentDefaultValue,
+          child: Text(inheritedLabel),
+        ),
+        ...options.entries.map(
+          (entry) =>
+              PopupMenuItem<String>(value: entry.key, child: Text(entry.value)),
+        ),
+      ],
+      child: Chip(label: Text(display)),
+    );
+  }
+
   Widget _configurationContent() {
     final palette = YeknomPalette.of(context);
     final defaults = widget.controller.agentDefaultSettings;
@@ -1075,9 +1131,15 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                             '文件与命令的实际访问范围由 Codex App Server 和项目权限决定。',
                             defaults.sandboxMode,
                           ),
-                          trailing: Text(
-                            defaults.displayValue(defaults.sandboxMode),
-                            style: TextStyle(color: palette.muted),
+                          trailing: _agentDefaultValueControl(
+                            keyPath: 'sandbox_mode',
+                            field: defaults.sandboxMode,
+                            inheritedLabel: '继承默认值',
+                            options: const {
+                              'read-only': '只读',
+                              'workspace-write': '工作区可写',
+                              'danger-full-access': '完全访问',
+                            },
                           ),
                         ),
                         Divider(height: 1, color: palette.border),
@@ -1087,9 +1149,16 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                             '网络访问能力由当前 Codex 运行时及其配置决定。',
                             defaults.webSearch,
                           ),
-                          trailing: Text(
-                            defaults.displayValue(defaults.webSearch),
-                            style: TextStyle(color: palette.muted),
+                          trailing: _agentDefaultValueControl(
+                            keyPath: 'web_search',
+                            field: defaults.webSearch,
+                            inheritedLabel: '继承默认值',
+                            options: const {
+                              'disabled': '关闭',
+                              'cached': '缓存',
+                              'indexed': '索引',
+                              'live': '实时',
+                            },
                           ),
                         ),
                         Divider(height: 1, color: palette.border),
@@ -1099,12 +1168,15 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                             '回复风格由所选模型和 Codex 配置决定；本应用不会覆盖它。',
                             defaults.modelVerbosity,
                           ),
-                          trailing: Text(
-                            defaults.displayValue(
-                              defaults.modelVerbosity,
-                              inherited: '模型默认',
-                            ),
-                            style: TextStyle(color: palette.muted),
+                          trailing: _agentDefaultValueControl(
+                            keyPath: 'model_verbosity',
+                            field: defaults.modelVerbosity,
+                            inheritedLabel: '模型默认',
+                            options: const {
+                              'low': '低',
+                              'medium': '中',
+                              'high': '高',
+                            },
                           ),
                         ),
                         Divider(height: 1, color: palette.border),
@@ -1114,17 +1186,29 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                             '是否提供摘要由模型和运行时能力协商，本应用会原样显示可用结果。',
                             defaults.reasoningSummary,
                           ),
-                          trailing: Text(
-                            defaults.displayValue(
-                              defaults.reasoningSummary,
-                              inherited: '自动',
-                            ),
-                            style: TextStyle(color: palette.muted),
+                          trailing: _agentDefaultValueControl(
+                            keyPath: 'model_reasoning_summary',
+                            field: defaults.reasoningSummary,
+                            inheritedLabel: '自动',
+                            options: const {
+                              'auto': '自动',
+                              'concise': '简洁',
+                              'detailed': '详细',
+                              'none': '不显示',
+                            },
                           ),
                         ),
                       ],
                     ),
                   ),
+                  if (widget.controller.agentDefaultSettingsWriteError !=
+                      null) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      '写入失败：${widget.controller.agentDefaultSettingsWriteError}',
+                      style: TextStyle(color: palette.fault),
+                    ),
+                  ],
                   const SizedBox(height: 44),
                   Text(
                     '模型功能',

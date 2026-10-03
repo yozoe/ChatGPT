@@ -307,4 +307,70 @@ void main() {
       controller.dispose();
     },
   );
+
+  test(
+    'writes exposed agent defaults and refreshes the effective config',
+    () async {
+      final server = FakeCodexAppServer()
+        ..configBatchWriteSupported = true
+        ..configReadResponse = {
+          'config': {'sandbox_mode': null, 'web_search': 'cached'},
+          'origins': const {},
+        };
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      );
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await controller.refreshCodexConfiguration();
+
+      expect(controller.agentDefaultSettingsWriteSupported, isTrue);
+      expect(
+        controller.agentDefaultSettings.sandboxMode.isRuntimeExposed,
+        isTrue,
+      );
+      await controller.writeAgentDefaultSetting(
+        keyPath: 'sandbox_mode',
+        value: 'workspace-write',
+      );
+
+      expect(server.configBatchWriteCalls.single['keyPath'], 'sandbox_mode');
+      expect(
+        controller.agentDefaultSettings.sandboxMode.value,
+        'workspace-write',
+      );
+      controller.dispose();
+    },
+  );
+
+  test('keeps defaults read-only when the writer is not advertised', () async {
+    final server = FakeCodexAppServer()
+      ..configReadResponse = {
+        'config': {'sandbox_mode': null},
+        'origins': const {},
+      };
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await controller.refreshCodexConfiguration();
+
+    expect(controller.agentDefaultSettingsWriteSupported, isFalse);
+    await expectLater(
+      controller.writeAgentDefaultSetting(
+        keyPath: 'sandbox_mode',
+        value: 'workspace-write',
+      ),
+      throwsStateError,
+    );
+    expect(server.configBatchWriteCalls, isEmpty);
+    controller.dispose();
+  });
 }
