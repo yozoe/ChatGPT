@@ -230,6 +230,7 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
             ),
             IconButton(
               key: const Key('worktrees-refresh'),
+              tooltip: '刷新工作树',
               onPressed: _loadWorktrees,
               icon: const Icon(Icons.refresh_outlined),
             ),
@@ -312,16 +313,29 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
             Card(
               child: Column(
                 children: [
-                  SwitchListTile(
-                    key: const Key('settings-browser-enabled'),
-                    secondary: const Icon(Icons.auto_awesome_outlined),
-                    title: const Text('允许智能体调用内置浏览器'),
-                    subtitle: const Text(
-                      '任务中收到受支持的 browser 请求时，会先请求批准；批准后打开浏览器工作区。computer-use 活动仅展示状态，不会自动导航。',
+                  Semantics(
+                    container: true,
+                    label: '允许智能体调用内置浏览器',
+                    toggled: widget.controller.browserEnabled,
+                    onTap: () => unawaited(
+                      widget.controller.setBrowserEnabled(
+                        !widget.controller.browserEnabled,
+                      ),
                     ),
-                    value: widget.controller.browserEnabled,
-                    onChanged: (enabled) =>
-                        unawaited(widget.controller.setBrowserEnabled(enabled)),
+                    child: ExcludeSemantics(
+                      child: SwitchListTile(
+                        key: const Key('settings-browser-enabled'),
+                        secondary: const Icon(Icons.auto_awesome_outlined),
+                        title: const Text('允许智能体调用内置浏览器'),
+                        subtitle: const Text(
+                          '任务中收到受支持的 browser 请求时，会先请求批准；批准后打开浏览器工作区。computer-use 活动仅展示状态，不会自动导航。',
+                        ),
+                        value: widget.controller.browserEnabled,
+                        onChanged: (enabled) => unawaited(
+                          widget.controller.setBrowserEnabled(enabled),
+                        ),
+                      ),
+                    ),
                   ),
                   const Divider(height: 1),
                   ListTile(
@@ -354,18 +368,30 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                       ),
                     ),
                   ),
-                  SwitchListTile(
-                    key: const Key('settings-browser-ask-before-download'),
-                    secondary: const Icon(Icons.download_outlined),
-                    title: const Text('每次下载前询问保存位置'),
-                    subtitle: Text(
-                      widget.controller.browserDownloadDirectory == null
-                          ? '未设置默认目录；关闭后需要先选择下载目录。'
-                          : '关闭后自动保存到：${widget.controller.browserDownloadDirectory}',
+                  Semantics(
+                    container: true,
+                    label: '每次下载前询问保存位置',
+                    toggled: widget.controller.browserAskBeforeDownload,
+                    onTap: () => unawaited(
+                      widget.controller.setBrowserAskBeforeDownload(
+                        !widget.controller.browserAskBeforeDownload,
+                      ),
                     ),
-                    value: widget.controller.browserAskBeforeDownload,
-                    onChanged: (ask) => unawaited(
-                      widget.controller.setBrowserAskBeforeDownload(ask),
+                    child: ExcludeSemantics(
+                      child: SwitchListTile(
+                        key: const Key('settings-browser-ask-before-download'),
+                        secondary: const Icon(Icons.download_outlined),
+                        title: const Text('每次下载前询问保存位置'),
+                        subtitle: Text(
+                          widget.controller.browserDownloadDirectory == null
+                              ? '未设置默认目录；关闭后需要先选择下载目录。'
+                              : '关闭后自动保存到：${widget.controller.browserDownloadDirectory}',
+                        ),
+                        value: widget.controller.browserAskBeforeDownload,
+                        onChanged: (ask) => unawaited(
+                          widget.controller.setBrowserAskBeforeDownload(ask),
+                        ),
+                      ),
                     ),
                   ),
                   ListTile(
@@ -396,16 +422,28 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                     ),
                   ),
                   const Divider(height: 1),
-                  SwitchListTile(
-                    key: const Key('settings-browser-restore-tabs'),
-                    secondary: const Icon(Icons.restore_page_outlined),
-                    title: const Text('启动时恢复浏览器标签'),
-                    subtitle: const Text(
-                      '恢复保存的网页地址和标签标题，不恢复 Cookie、网站存储或登录状态。默认关闭。',
+                  Semantics(
+                    container: true,
+                    label: '启动时恢复浏览器标签',
+                    toggled: widget.controller.browserRestoreTabs,
+                    onTap: () => unawaited(
+                      widget.controller.setBrowserRestoreTabs(
+                        !widget.controller.browserRestoreTabs,
+                      ),
                     ),
-                    value: widget.controller.browserRestoreTabs,
-                    onChanged: (restore) => unawaited(
-                      widget.controller.setBrowserRestoreTabs(restore),
+                    child: ExcludeSemantics(
+                      child: SwitchListTile(
+                        key: const Key('settings-browser-restore-tabs'),
+                        secondary: const Icon(Icons.restore_page_outlined),
+                        title: const Text('启动时恢复浏览器标签'),
+                        subtitle: const Text(
+                          '恢复保存的网页地址和标签标题，不恢复 Cookie、网站存储或登录状态。默认关闭。',
+                        ),
+                        value: widget.controller.browserRestoreTabs,
+                        onChanged: (restore) => unawaited(
+                          widget.controller.setBrowserRestoreTabs(restore),
+                        ),
+                      ),
                     ),
                   ),
                 ],
@@ -1366,6 +1404,7 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                         message: '刷新钩子列表',
                         child: IconButton(
                           key: const Key('settings-hooks-refresh'),
+                          tooltip: '刷新钩子列表',
                           onPressed: _refreshHooks,
                           icon: const Icon(Icons.refresh_outlined),
                         ),

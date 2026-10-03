@@ -9,8 +9,10 @@ import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_s
 import 'package:chatgpt/src/presentation/sidebar/codex_workspace_sidebar_task_search_action_tile.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'widget_fakes/memory_codex_plugin_store.dart';
 
 void main() {
   testWidgets('main shell exposes labels for interactive controls', (
@@ -80,6 +82,54 @@ void main() {
       semantics.dispose();
     },
   );
+
+  testWidgets('settings sections have no unlabeled tap targets', (
+    tester,
+  ) async {
+    final controller =
+        CodexController(
+            server: CodexAppServer(),
+            pluginStore: MemoryCodexPluginStore(),
+          )
+          ..workspacePath = '/workspace'
+          ..status = RuntimeStatus.ready;
+    final semantics = tester.ensureSemantics();
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(home: CodexWorkspace(controller: controller)),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('sidebar-settings-button')));
+    await tester.pump();
+
+    for (final section in [
+      '常规',
+      '外观',
+      '配置',
+      '插件',
+      '浏览器',
+      'Worktrees',
+      '钩子',
+      '已归档的聊天',
+    ]) {
+      final navigationItem = find.byKey(Key('settings-nav-$section'));
+      await tester.ensureVisible(navigationItem);
+      await tester.tap(navigationItem);
+      await tester.pump();
+      final unlabeledTapNodes = _collectSemantics(tester)
+          .where(
+            (data) =>
+                data.hasAction(SemanticsAction.tap) &&
+                data.label.trim().isEmpty &&
+                data.tooltip.trim().isEmpty,
+          )
+          .toList();
+      expect(unlabeledTapNodes, isEmpty, reason: section);
+    }
+    semantics.dispose();
+  });
 
   testWidgets('workbench tabs expose selected and actionable semantics', (
     tester,
