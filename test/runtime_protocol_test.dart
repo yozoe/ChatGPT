@@ -100,9 +100,21 @@ void main() {
       final root = await Directory.systemTemp.createTemp('worktree-resume-');
       addTearDown(() => root.delete(recursive: true));
       final worktree = '${root.path}/task-1';
+      await Directory(worktree).create(recursive: true);
       final store = RuntimeConfigurationStore(
         storage: CodexKeychainStorage(developmentDirectory: root),
       );
+      await store.saveWorktreeRecords([
+        LocalWorktreeRecord(
+          worktreeId: 'task-1',
+          projectId: 'project-1',
+          sourceRepository: '${root.path}/source',
+          worktreePath: worktree,
+          baseCommit: 'abc123',
+          state: LocalWorktreeState.ready,
+          createdAt: DateTime.now(),
+        ),
+      ]);
       await store.saveThreadEnvironmentBindings([
         ThreadEnvironmentBinding(
           threadId: 'thread-1',
@@ -122,7 +134,45 @@ void main() {
 
       await controller.resumeThread(protocolThread(id: 'thread-1'));
 
-      expect(controller.activeExecutionWorkspace, worktree);
+      expect(
+        controller.activeExecutionWorkspace,
+        await Directory(worktree).resolveSymbolicLinks(),
+      );
+      controller.dispose();
+    },
+  );
+
+  test(
+    'falls back to the source workspace when a bound worktree is missing',
+    () async {
+      final root = await Directory.systemTemp.createTemp('worktree-missing-');
+      addTearDown(() => root.delete(recursive: true));
+      final store = RuntimeConfigurationStore(
+        storage: CodexKeychainStorage(developmentDirectory: root),
+      );
+      await store.saveThreadEnvironmentBindings([
+        ThreadEnvironmentBinding(
+          threadId: 'thread-1',
+          kind: ThreadEnvironmentKind.managedWorktree,
+          workingDirectory: '${root.path}/missing',
+          worktreeId: 'missing',
+        ),
+      ]);
+      final controller =
+          CodexController(
+              server: FakeCodexAppServer(),
+              runtimeConfigurationStore: store,
+            )
+            ..workspacePath = '${root.path}/source'
+            ..status = RuntimeStatus.ready;
+
+      await controller.resumeThread(protocolThread(id: 'thread-1'));
+
+      expect(controller.activeExecutionWorkspace, '${root.path}/source');
+      expect(
+        controller.entries.any((entry) => entry.title == '工作树不可用'),
+        isTrue,
+      );
       controller.dispose();
     },
   );

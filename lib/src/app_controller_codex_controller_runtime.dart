@@ -5645,15 +5645,9 @@ class CodexController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    String? unavailableWorktree;
     try {
-      final bindings = await _runtimeConfigurationStore
-          .readThreadEnvironmentBindings();
-      final binding = bindings
-          .where((candidate) => candidate.threadId == thread.id)
-          .firstOrNull;
-      if (binding != null && binding.workingDirectory.trim().isNotEmpty) {
-        _threadWorkspaceById[thread.id] = binding.workingDirectory;
-      }
+      unavailableWorktree = await _restoreThreadEnvironmentBinding(thread.id);
     } on Object {
       // A missing local binding must not prevent a normal App Server resume;
       // the source project remains the safe fallback execution directory.
@@ -5810,6 +5804,13 @@ class CodexController extends ChangeNotifier {
       if (cachedView == null) {
         await refreshThreads();
       }
+      if (unavailableWorktree != null) {
+        _add(
+          TimelineKind.error,
+          '工作树不可用',
+          '无法恢复任务绑定的工作树：$unavailableWorktree。请在设置中恢复后重试。',
+        );
+      }
       _appendPendingNetworkRetryEntries(thread.id);
       if (viewLoaded) _cacheActiveThreadView();
     } catch (error) {
@@ -5860,6 +5861,62 @@ class CodexController extends ChangeNotifier {
       _scheduleGoalContinuation(thread.id, workspacePath);
     }
     notifyListeners();
+  }
+
+  /// Restores a persisted execution directory only when its local ownership
+  /// record and directory still agree. A stale or missing managed worktree is
+  /// left for the settings recovery flow instead of being used as a cwd.
+  Future<String?> _restoreThreadEnvironmentBinding(String threadId) async {
+    final bindings = await _runtimeConfigurationStore
+        .readThreadEnvironmentBindings();
+    final binding = bindings
+        .where((candidate) => candidate.threadId == threadId)
+        .firstOrNull;
+    if (binding == null || binding.workingDirectory.trim().isEmpty) return null;
+    final directory = Directory(binding.workingDirectory);
+    if (binding.kind == ThreadEnvironmentKind.local) {
+      if (await directory.exists()) {
+        _threadWorkspaceById[threadId] = binding.workingDirectory;
+      }
+      return null;
+    }
+    final worktreeId = binding.worktreeId;
+    if (worktreeId == null || worktreeId.trim().isEmpty) {
+      return _reportUnavailableThreadWorktree(
+        threadId,
+        binding.workingDirectory,
+      );
+    }
+    final records = await _runtimeConfigurationStore.readWorktreeRecords();
+    final record = records
+        .where((item) => item.worktreeId == worktreeId)
+        .firstOrNull;
+    final validState =
+        record != null &&
+        (record.state == LocalWorktreeState.ready ||
+            record.state == LocalWorktreeState.running ||
+            record.state == LocalWorktreeState.completed);
+    final canonicalBinding = await _resolveExistingPath(directory.path);
+    final canonicalRecord = record == null
+        ? null
+        : await _resolveExistingPath(record.worktreePath);
+    if (!validState ||
+        record == null ||
+        canonicalBinding == null ||
+        canonicalRecord == null ||
+        canonicalBinding != canonicalRecord) {
+      return _reportUnavailableThreadWorktree(
+        threadId,
+        binding.workingDirectory,
+      );
+    }
+    _threadWorkspaceById[threadId] = canonicalRecord;
+    return null;
+  }
+
+  String _reportUnavailableThreadWorktree(String threadId, String path) {
+    _threadWorkspaceById.remove(threadId);
+    return path;
   }
 
   /// Switches the visible cached task while the automatic runtime connection
