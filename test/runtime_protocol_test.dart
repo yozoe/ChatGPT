@@ -127,6 +127,25 @@ void main() {
     },
   );
 
+  test('rejects worktree branch changes while any task is running', () async {
+    final git = FakeGitProjectService();
+    final controller =
+        CodexController(server: FakeCodexAppServer(), gitProjectService: git)
+          ..workspacePath = '/worktree'
+          ..status = RuntimeStatus.running;
+
+    expect(
+      await controller.createAndCheckoutGitBranch(
+        'feature/blocked',
+        workspace: '/worktree',
+      ),
+      isFalse,
+    );
+    expect(git.createdBranch, isNull);
+    expect(controller.gitOperationError, contains('运行期间'));
+    controller.dispose();
+  });
+
   test('keeps authoritative context usage scoped to its thread and turn', () {
     final controller = CodexController(server: FakeCodexAppServer())
       ..activeThreadId = 'thread-a'
