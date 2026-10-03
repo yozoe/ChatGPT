@@ -14,12 +14,14 @@ class AgentDefaultSettingsSnapshot {
     required this.modelVerbosity,
     required this.reasoningSummary,
     required this.sources,
+    required this.userConfigVersion,
   });
 
   factory AgentDefaultSettingsSnapshot.fromConfig(
     Map<String, Object?> config,
-    Object? origins,
-  ) {
+    Object? origins, [
+    Object? layers,
+  ]) {
     String? read(List<String> keys) {
       for (final key in keys) {
         if (config.containsKey(key)) return config[key]?.toString();
@@ -72,6 +74,23 @@ class AgentDefaultSettingsSnapshot {
       return null;
     }
 
+    int? userVersion() {
+      if (layers is! Iterable) return null;
+      for (final rawLayer in layers) {
+        if (rawLayer is! Map) continue;
+        final rawName = rawLayer['name'];
+        final type = rawName is Map
+            ? rawName['type']?.toString()
+            : rawName?.toString();
+        if (type != 'user') continue;
+        final rawVersion = rawLayer['version'];
+        if (rawVersion is int) return rawVersion;
+        final parsed = int.tryParse(rawVersion?.toString() ?? '');
+        if (parsed != null) return parsed;
+      }
+      return null;
+    }
+
     const approvalKeys = ['approval_policy', 'approvalPolicy'];
     const sandboxKeys = ['sandbox_mode', 'sandboxMode'];
     const webSearchKeys = ['web_search', 'webSearch'];
@@ -110,6 +129,7 @@ class AgentDefaultSettingsSnapshot {
         'model_verbosity': source(verbosityKeys),
         'model_reasoning_summary': source(summaryKeys),
       },
+      userConfigVersion: userVersion(),
     );
   }
 
@@ -140,6 +160,7 @@ class AgentDefaultSettingsSnapshot {
       source: null,
     ),
     sources: {},
+    userConfigVersion: null,
   );
 
   final AgentSettingField approvalPolicy;
@@ -148,6 +169,7 @@ class AgentDefaultSettingsSnapshot {
   final AgentSettingField modelVerbosity;
   final AgentSettingField reasoningSummary;
   final Map<String, String?> sources;
+  final int? userConfigVersion;
 
   String displayValue(AgentSettingField field, {String inherited = '继承默认值'}) {
     return switch (field.availability) {

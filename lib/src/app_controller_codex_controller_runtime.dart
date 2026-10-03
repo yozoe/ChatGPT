@@ -2301,6 +2301,7 @@ class CodexController extends ChangeNotifier {
       agentDefaultSettings = AgentDefaultSettingsSnapshot.fromConfig(
         config,
         origins,
+        result['layers'],
       );
       await _probeAgentDefaultSettingsWriter(runtimeEpoch);
       _configuredModelId = _nonEmptyConfigString(
@@ -2402,7 +2403,11 @@ class CodexController extends ChangeNotifier {
       }
       agentDefaultSettingsWriteError = null;
       try {
-        await _server.writeConfigValue(keyPath: keyPath, value: value);
+        await _server.writeConfigValue(
+          keyPath: keyPath,
+          value: value,
+          expectedVersion: agentDefaultSettings.userConfigVersion,
+        );
         if (_disposed || generation != _agentDefaultSettingsWriteGeneration) {
           return;
         }

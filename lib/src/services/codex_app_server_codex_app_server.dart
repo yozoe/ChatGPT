@@ -304,19 +304,49 @@ class CodexAppServer {
 
   /// 读取指定项目最终生效的 Codex 配置；返回值由 App Server 按官方配置层级合并。
   /// Reads the effective Codex configuration for a workspace after App Server applies the official layer precedence.
+  ///
+  /// Newer runtimes can include layer versions, which are needed for an
+  /// optimistic user-config write. Older runtimes may reject `includeLayers`,
+  /// so a layer request falls back to the stable effective-config response.
   Future<JsonMap> readConfig({String? workingDirectory}) async {
-    final response = await request('config/read', {
-      'cwd': ?workingDirectory,
-      'includeLayers': false,
-    });
-    _throwIfError(response);
-    final result = response['result'];
-    if (result is! Map || result['config'] is! Map) {
-      throw const FormatException(
-        'App Server did not return the effective Codex configuration.',
-      );
+    JsonMap? layeredResult;
+    Object? firstError;
+    try {
+      final response = await request('config/read', {
+        'cwd': ?workingDirectory,
+        'includeLayers': true,
+      });
+      _throwIfError(response);
+      final result = response['result'];
+      if (result is Map && result['config'] is Map) {
+        layeredResult = JsonMap.from(result);
+      } else {
+        firstError = const FormatException(
+          'App Server did not return the effective Codex configuration.',
+        );
+      }
+    } on Object catch (error) {
+      firstError = error;
     }
-    return JsonMap.from(result);
+    if (layeredResult != null) return layeredResult;
+
+    try {
+      final response = await request('config/read', {
+        'cwd': ?workingDirectory,
+        'includeLayers': false,
+      });
+      _throwIfError(response);
+      final result = response['result'];
+      if (result is! Map || result['config'] is! Map) {
+        throw const FormatException(
+          'App Server did not return the effective Codex configuration.',
+        );
+      }
+      return JsonMap.from(result);
+    } on Object {
+      if (firstError != null) throw firstError;
+      rethrow;
+    }
   }
 
   /// Probes whether the connected App Server accepts the configuration writer.

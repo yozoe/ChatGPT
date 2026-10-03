@@ -37,4 +37,23 @@ void main() {
     expect(snapshot.reasoningSummary.value, 'concise');
     expect(snapshot.sources, containsPair('model_verbosity', isNull));
   });
+
+  test('keeps the user layer version for optimistic config writes', () {
+    final snapshot = AgentDefaultSettingsSnapshot.fromConfig(
+      {'sandbox_mode': 'read-only'},
+      const {},
+      [
+        {
+          'name': {'type': 'system'},
+          'version': 2,
+        },
+        {
+          'name': {'type': 'user'},
+          'version': 7,
+        },
+      ],
+    );
+
+    expect(snapshot.userConfigVersion, 7);
+  });
 }

@@ -64,4 +64,47 @@ void main() {
       await server.dispose();
     },
   );
+
+  test('falls back when config/read does not support layer metadata', () async {
+    late CodexAppServer server;
+    final messages = <JsonMap>[];
+    server = CodexAppServer(
+      messageSink: (message) {
+        messages.add(message);
+        final id = message['id'];
+        if (id == null || message['method'] != 'config/read') return;
+        final includeLayers =
+            (message['params'] as Map?)?['includeLayers'] == true;
+        scheduleMicrotask(
+          () => server.handleStdoutLineForTesting(
+            jsonEncode(
+              includeLayers
+                  ? {
+                      'id': id,
+                      'error': {
+                        'code': -32602,
+                        'message': 'includeLayers is unsupported',
+                      },
+                    }
+                  : {
+                      'id': id,
+                      'result': {
+                        'config': {'sandbox_mode': null},
+                        'origins': const {},
+                      },
+                    },
+            ),
+          ),
+        );
+      },
+    );
+
+    final result = await server.readConfig(workingDirectory: '/workspace');
+
+    expect(result['config'], {'sandbox_mode': null});
+    expect(messages, hasLength(2));
+    expect((messages.first['params'] as Map)['includeLayers'], isTrue);
+    expect((messages.last['params'] as Map)['includeLayers'], isFalse);
+    await server.dispose();
+  });
 }

@@ -1,6 +1,6 @@
 # 智能体默认设置开发计划
 
-> 状态：进行中。配置发现、非变更写入能力探测、四类官方默认设置写入与失败回滚基础已接入；profile、完整 schema 能力协商、热加载边界和批准策略官方映射仍待补齐。
+> 状态：进行中。配置发现、非变更写入能力探测、四类官方默认设置写入、user layer `expectedVersion` 乐观并发保护与失败回滚基础已接入；profile、完整 schema 能力协商、热加载边界和批准策略官方映射仍待补齐。
 
 ## 目标
 
@@ -38,9 +38,9 @@
 
 | 字段/动作 | 官方 0.154.0-alpha Schema | 项目当前 0.153.4 基线 | 实施要求 |
 | --- | --- | --- | --- |
-| `config/read` 的 `config` / `origins` | 已确认 | 已接入模型、Provider 和来源 | 扩展字段解析，并对缺失字段只读降级 |
+| `config/read` 的 `config` / `origins` | 已确认 | 已接入模型、Provider 和来源；优先请求 `layers`，旧运行时自动回退 | 扩展字段解析，并对缺失字段只读降级 |
 | `config/value/write` | 已确认 | 尚未接入 | 先探测方法和响应，失败时不改变 UI 值 |
-| `config/batchWrite` | 已确认 | 已接入受控探测与单字段原子写入 | 后续补充 `expectedVersion`、多字段事务和运行时版本矩阵 |
+| `config/batchWrite` | 已确认 | 已接入受控探测、单字段原子写入和 user layer `expectedVersion` | 多字段事务和运行时版本矩阵仍待补齐 |
 | `reloadUserConfig` | 已确认 | 尚未确认 | 仅在运行时接受时使用；不能假设模型/推理强度等 session-static 值会热加载 |
 | `approval_policy` | 已确认 | 尚未确认字段兼容性 | 映射前先验证字符串和 granular 对象两种编码 |
 | `sandbox_mode` / `web_search` / `model_verbosity` / `model_reasoning_summary` | 已确认 | 尚未确认字段兼容性 | 运行时不支持时保持“由配置管理”，不得发送未知字段 |
@@ -71,7 +71,7 @@
 4. 扩展配置值模型，避免把密钥、Base URL 等敏感值写入 UI 或历史。
 5. 在设置页展示“当前值 + 来源 + 是否可编辑”；未取得协议证据的字段保持只读，不用提示词模拟行为。
 
-当前实现还会发送不带 edits 的非变更 `config/batchWrite` 探测；只有探测成功且字段存在时才开放官方枚举写入。写入失败不会替换当前快照，成功后通过 `config/read` 重新确认最终值。
+当前实现还会发送不带 edits 的非变更 `config/batchWrite` 探测；只有探测成功且字段存在时才开放官方枚举写入。若 `config/read` 返回明确的 `user` layer 整数 `version`，写入用户 `config.toml` 时会携带该版本进行乐观并发校验；没有可靠版本时省略该参数，不猜测其他 layer 的版本。写入失败不会替换当前快照，成功后通过 `config/read` 重新确认最终值。
 
 ### 阶段二：安全设置
 

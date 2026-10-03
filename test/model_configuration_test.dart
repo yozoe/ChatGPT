@@ -316,6 +316,12 @@ void main() {
         ..configReadResponse = {
           'config': {'sandbox_mode': null, 'web_search': 'cached'},
           'origins': const {},
+          'layers': [
+            {
+              'name': {'type': 'user'},
+              'version': 12,
+            },
+          ],
         };
       final controller = CodexController(
         server: server,
@@ -338,6 +344,7 @@ void main() {
       );
 
       expect(server.configBatchWriteCalls.single['keyPath'], 'sandbox_mode');
+      expect(server.configBatchWriteCalls.single['expectedVersion'], 12);
       expect(
         controller.agentDefaultSettings.sandboxMode.value,
         'workspace-write',
