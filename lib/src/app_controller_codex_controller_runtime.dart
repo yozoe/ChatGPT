@@ -5596,6 +5596,19 @@ class CodexController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    try {
+      final bindings = await _runtimeConfigurationStore
+          .readThreadEnvironmentBindings();
+      final binding = bindings
+          .where((candidate) => candidate.threadId == thread.id)
+          .firstOrNull;
+      if (binding != null && binding.workingDirectory.trim().isNotEmpty) {
+        _threadWorkspaceById[thread.id] = binding.workingDirectory;
+      }
+    } on Object {
+      // A missing local binding must not prevent a normal App Server resume;
+      // the source project remains the safe fallback execution directory.
+    }
     _clearThreadWriterConflict();
     _clearArchivedThreadRestore();
     // A thread that is already executing belongs to the App Server writer

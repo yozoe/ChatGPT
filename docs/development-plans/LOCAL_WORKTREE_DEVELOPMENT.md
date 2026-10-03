@@ -208,6 +208,7 @@ missing ─恢复快照─► restoring ─成功─► ready
 - 只有目录、Git common directory、外部权威记录、有效 HMAC 和 Git worktree 列表全部一致时才视为可用；
 - 目录存在但清单不匹配时进入 `foreign`，仅允许“在 Finder 中显示”，不允许删除；
 - App Server 启动或任务恢复时，执行目录必须与任务绑定一致，否则拒绝发送并提供恢复入口。
+- 恢复已有任务时先读取持久化 `ThreadEnvironmentBinding`，将其实际执行目录重新绑定到线程；缺失绑定才回退到当前源项目目录。
 
 ## 7. 数据模型
 

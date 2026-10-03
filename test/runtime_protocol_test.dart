@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:chatgpt/src/app_controller.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
 import 'package:chatgpt/src/domain/local_worktree_record.dart';
+import 'package:chatgpt/src/domain/thread_environment_binding.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:chatgpt/src/services/codex_keychain_storage.dart';
 import 'package:chatgpt/src/services/runtime_configuration_store.dart';
@@ -89,6 +90,39 @@ void main() {
         (await store.readWorktreeRecords()).single.branch,
         'feature/worktree',
       );
+      controller.dispose();
+    },
+  );
+
+  test(
+    'restores a managed worktree execution directory when resuming a thread',
+    () async {
+      final root = await Directory.systemTemp.createTemp('worktree-resume-');
+      addTearDown(() => root.delete(recursive: true));
+      final worktree = '${root.path}/task-1';
+      final store = RuntimeConfigurationStore(
+        storage: CodexKeychainStorage(developmentDirectory: root),
+      );
+      await store.saveThreadEnvironmentBindings([
+        ThreadEnvironmentBinding(
+          threadId: 'thread-1',
+          kind: ThreadEnvironmentKind.managedWorktree,
+          workingDirectory: worktree,
+          worktreeId: 'task-1',
+        ),
+      ]);
+      final controller = CodexController(
+        server: FakeCodexAppServer(),
+        runtimeConfigurationStore: store,
+      );
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = '${root.path}/source'
+        ..status = RuntimeStatus.ready;
+
+      await controller.resumeThread(protocolThread(id: 'thread-1'));
+
+      expect(controller.activeExecutionWorkspace, worktree);
       controller.dispose();
     },
   );
