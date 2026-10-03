@@ -89,7 +89,7 @@ $CODEX_HOME/worktrees/codex-desk/<worktree-id>/
 - 默认最多保留最近 15 个托管工作树；
 - 多附加目录项目明确显示隔离边界。
 
-当前首版已覆盖 Composer 选择、首次发送时惰性创建、`creating` provisional 记录与中断后保守对账、执行目录绑定、当前/其他引用的起始基准选择、完成后保留/自动清理、Git common directory/canonical 路径对账、工作树记录的 HMAC 篡改检测、工作树设置持久化和恢复入口；仍需补齐应用外权威所有权、快照恢复和 Handoff 后才能将整项任务标记为已完成。
+当前首版已覆盖 Composer 选择、首次发送时惰性创建、`creating` provisional 记录与中断后保守对账、执行目录绑定、当前/其他引用的起始基准选择、完成后保留/自动清理、删除前 AES-GCM 内容快照、Git common directory/canonical 路径对账、工作树记录的 HMAC 篡改检测、工作树设置持久化和恢复入口；仍需补齐应用外权威所有权、完整 Handoff、永久工作树和已安排任务隔离后才能将整项任务标记为已完成。
 
 ### 4.2 第二阶段
 
@@ -787,7 +787,7 @@ lib/src/presentation/worktree/worktree_settings.dart
 发布采用功能开关：
 
 1. 内部开发版仅开放 WT-1 至 WT-4，不启用自动清理和 Handoff；
-2. 真实仓库回归稳定后开放快照恢复和手动清理；
+2. 真实仓库回归稳定后扩展快照恢复的冲突处理和手动清理；
 3. 验证跨重启、冲突和异常终止后开放自动清理；
 4. Handoff 独立灰度，不与基础工作树创建同时首次发布；
 5. 永久工作树和已安排任务最后开放。
