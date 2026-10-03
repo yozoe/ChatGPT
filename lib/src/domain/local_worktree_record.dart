@@ -1,4 +1,13 @@
-enum LocalWorktreeState { creating, ready, running, completed, failed, removed }
+enum LocalWorktreeState {
+  creating,
+  ready,
+  running,
+  completed,
+  failed,
+  missing,
+  foreign,
+  removed,
+}
 
 class LocalWorktreeRecord {
   const LocalWorktreeRecord({
@@ -10,6 +19,7 @@ class LocalWorktreeRecord {
     required this.state,
     required this.createdAt,
     this.baseRef,
+    this.gitCommonDirectory,
     this.threadId,
     this.branch,
     this.lastUsedAt,
@@ -22,6 +32,7 @@ class LocalWorktreeRecord {
   final String worktreePath;
   final String baseCommit;
   final String? baseRef;
+  final String? gitCommonDirectory;
   final String? branch;
   final LocalWorktreeState state;
   final DateTime createdAt;
@@ -36,6 +47,7 @@ class LocalWorktreeRecord {
         worktreePath: json['worktreePath'].toString(),
         baseCommit: json['baseCommit'].toString(),
         baseRef: json['baseRef']?.toString(),
+        gitCommonDirectory: json['gitCommonDirectory']?.toString(),
         branch: json['branch']?.toString(),
         state: LocalWorktreeState.values.firstWhere(
           (value) => value.name == json['state'],
@@ -55,6 +67,7 @@ class LocalWorktreeRecord {
     'worktreePath': worktreePath,
     'baseCommit': baseCommit,
     if (baseRef != null) 'baseRef': baseRef,
+    if (gitCommonDirectory != null) 'gitCommonDirectory': gitCommonDirectory,
     if (branch != null) 'branch': branch,
     'state': state.name,
     'createdAt': createdAt.toIso8601String(),
@@ -73,6 +86,7 @@ class LocalWorktreeRecord {
     worktreePath: worktreePath,
     baseCommit: baseCommit,
     baseRef: baseRef,
+    gitCommonDirectory: gitCommonDirectory,
     branch: branch,
     state: state ?? this.state,
     createdAt: createdAt,

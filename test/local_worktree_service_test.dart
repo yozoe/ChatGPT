@@ -106,4 +106,52 @@ void main() {
     ], workingDirectory: record.worktreePath);
     expect(branch.stdout.toString().trim(), isEmpty);
   });
+
+  test(
+    'marks a record foreign when its Git common directory changes',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'codex-worktree-audit-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final repository = await Directory('${root.path}/repo').create();
+      final worktrees = await Directory('${root.path}/worktrees').create();
+      await runGit(repository, ['init', '-q']);
+      await runGit(repository, ['config', 'user.email', 'test@example.com']);
+      await runGit(repository, ['config', 'user.name', 'Codex Test']);
+      await File('${repository.path}/tracked.txt').writeAsString('ok\n');
+      await runGit(repository, ['add', '.']);
+      await runGit(repository, ['commit', '-qm', 'initial']);
+      final service = LocalWorktreeService(
+        store: RuntimeConfigurationStore(
+          storage: CodexKeychainStorage(developmentDirectory: root),
+        ),
+      );
+      final record = await service.create(
+        repository: repository.path,
+        rootPath: worktrees.path,
+        projectId: 'project-1',
+      );
+      final foreign = LocalWorktreeRecord(
+        worktreeId: record.worktreeId,
+        projectId: record.projectId,
+        sourceRepository: record.sourceRepository,
+        worktreePath: record.worktreePath,
+        baseCommit: record.baseCommit,
+        baseRef: record.baseRef,
+        gitCommonDirectory: '/different/.git',
+        state: record.state,
+        createdAt: record.createdAt,
+      );
+      expect(
+        await service.reconcile(record: foreign, rootPath: worktrees.path),
+        LocalWorktreeState.foreign,
+      );
+      await expectLater(
+        service.remove(record: foreign, rootPath: worktrees.path),
+        throwsStateError,
+      );
+      expect(Directory(record.worktreePath).existsSync(), isTrue);
+    },
+  );
 }

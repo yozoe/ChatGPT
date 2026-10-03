@@ -76,6 +76,7 @@
 - “配置 > 智能体默认设置”现在会读取当前工作区 `config/read` 返回的非敏感批准策略、沙盒、网页搜索、输出详细程度和推理摘要字段，并按 `origins` 展示来源；字段缺失、显式 `null`（继承默认）和具体值分别显示，不把缺少稳定写入协议的字段伪装成可编辑控件。当前批准策略仍是本地后续任务偏好，其他字段在协议兼容性完成前保持只读。
 - 当连接的 App Server 接受非变更的 `config/batchWrite` 探测时，且对应字段确实由 `config/read` 暴露，沙盒、网页搜索、输出详细程度和推理摘要会显示官方枚举菜单；选择会以批量配置写入并重新读取生效值，快速连续选择按代次串行化，失败会保留旧值并显示错误。未通过探测或字段缺失时继续只读，审批策略仍不映射为未经证实的官方值。
 - “外观”页新增可持久化的“高对比度主题”开关；开启后提高全局文字、边框和控件状态对比度，同时保留当前明暗模式与配色预设。减少动态效果、字号、差异标记和字体平滑仍明确标为待开发。
+- Worktree 选择器提供“本地”、当前分支新建工作树、从其他分支选择基准新建工作树和已有工作树复用；选择其他基准时不会把当前分支的未提交补丁错误应用到不同提交，仍以 detached HEAD 启动并记录基准引用。删除或自动清理前会用 canonical 路径、Git common directory 和 `git worktree list --porcelain` 对账，目录缺失标为 missing，登记不一致标为 foreign 并拒绝删除。
 - 全局壳层无障碍回归覆盖侧栏设置/帮助入口、设置返回与分类导航、高对比度开关以及右侧工作区 Tab；窄窗口下这些控件仍保留可读名称和选中状态，交互节点不得同时缺少标签与 tooltip。完整键盘焦点顺序和剩余页面审计仍在进行。
 - 浏览器闭环补充验证：真实 macOS WebKit attachment 事件已覆盖插件到 Dart 的成功、取消和 HTTP 失败传输路径；原生 WebKit 已增加 accessibility tree contract smoke，并通过 `AXUIElement` 验证窗口层级、角色集合和窗口 AX children。外部 AX 审计宿主在真实 Flutter/WebKit 页面上递归观察到 `AXWebArea`、`AXGroup`、`AXStaticText` 和 `AXLink` 后代，完整 WebKit 子树验收已完成。
 - 新增 `tool/macos_browser_ax_audit.swift` 外部系统 AX 审计工具及 `integration_test/browser_ax_host_test.dart` 保活宿主：在辅助功能权限已授予的宿主中递归读取目标应用的 `AXChildren`、`AXContents` 和可见子树，输出真实网页后代角色和子节点数量。

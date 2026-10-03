@@ -50,6 +50,7 @@ class LocalWorktreeService {
     return _withRepositoryLock(repository, () async {
       final canonicalRoot = await _canonicalDirectory(root);
       final canonicalSource = await _canonicalDirectory(Directory(repository));
+      final commonDirectory = await _gitCommonDirectory(canonicalSource.path);
       if (_isWithin(canonicalSource, canonicalRoot)) {
         throw StateError('工作树根目录不能位于源仓库内。');
       }
@@ -99,6 +100,7 @@ class LocalWorktreeService {
         worktreePath: target.path,
         baseCommit: head.stdout.trim(),
         baseRef: selectedRef == 'HEAD' ? null : selectedRef,
+        gitCommonDirectory: commonDirectory,
         state: LocalWorktreeState.ready,
         createdAt: DateTime.now(),
       );
@@ -128,10 +130,10 @@ class LocalWorktreeService {
     if (!_isWithin(root, worktree)) {
       throw StateError('工作树路径不在受管理的根目录内。');
     }
-    final entries = await list(record.sourceRepository);
-    final registered = entries.any((entry) => entry['path'] == worktree.path);
-    if (!registered) {
-      throw StateError('Git 未登记该工作树，请刷新工作树列表后重试。');
+    final reconciliation = await reconcile(record: record, rootPath: rootPath);
+    if (reconciliation != LocalWorktreeState.ready &&
+        reconciliation != LocalWorktreeState.completed) {
+      throw StateError('工作树所有权或 Git 登记不一致，已标记为 foreign，拒绝删除。');
     }
     if (!force) {
       final status = await _run(worktree.path, const [
@@ -156,6 +158,59 @@ class LocalWorktreeService {
       records.map(
         (item) => item.worktreeId == record.worktreeId
             ? item.copyWith(state: LocalWorktreeState.removed)
+            : item,
+      ),
+    );
+  }
+
+  /// Reconciles a persisted record with canonical paths and Git's authoritative
+  /// worktree list. A mismatch is foreign; a missing directory is missing.
+  Future<LocalWorktreeState> reconcile({
+    required LocalWorktreeRecord record,
+    required String rootPath,
+  }) async {
+    Directory worktree;
+    Directory source;
+    Directory root;
+    try {
+      root = await _canonicalDirectory(Directory(rootPath));
+      source = await _canonicalDirectory(Directory(record.sourceRepository));
+      if (!await Directory(record.worktreePath).exists()) {
+        await _saveState(record, LocalWorktreeState.missing);
+        return LocalWorktreeState.missing;
+      }
+      worktree = await _canonicalDirectory(Directory(record.worktreePath));
+    } on FileSystemException {
+      await _saveState(record, LocalWorktreeState.missing);
+      return LocalWorktreeState.missing;
+    }
+    if (!_isWithin(root, worktree) || worktree.path == source.path) {
+      await _saveState(record, LocalWorktreeState.foreign);
+      return LocalWorktreeState.foreign;
+    }
+    final common = await _gitCommonDirectory(source.path);
+    if (record.gitCommonDirectory != null &&
+        record.gitCommonDirectory != common) {
+      await _saveState(record, LocalWorktreeState.foreign);
+      return LocalWorktreeState.foreign;
+    }
+    final entries = await list(source.path);
+    final registered = entries.any((entry) => entry['path'] == worktree.path);
+    if (registered) return record.state;
+    await _saveState(record, LocalWorktreeState.foreign);
+    return LocalWorktreeState.foreign;
+  }
+
+  Future<void> _saveState(
+    LocalWorktreeRecord record,
+    LocalWorktreeState state,
+  ) async {
+    if (record.state == state) return;
+    final records = await _store.readWorktreeRecords();
+    await _store.saveWorktreeRecords(
+      records.map(
+        (item) => item.worktreeId == record.worktreeId
+            ? item.copyWith(state: state)
             : item,
       ),
     );
@@ -256,6 +311,23 @@ class LocalWorktreeService {
 
   Future<ProcessResult> _run(String cwd, List<String> args) =>
       Process.run('git', args, workingDirectory: cwd);
+
+  Future<String> _gitCommonDirectory(String repository) async {
+    final result = await _run(repository, const [
+      'rev-parse',
+      '--git-common-dir',
+    ]);
+    if (result.exitCode != 0) {
+      throw StateError('无法确定 Git common directory。');
+    }
+    final value = result.stdout.toString().trim();
+    final directory = Directory(
+      value.startsWith('/')
+          ? value
+          : '${Directory(repository).path}${Platform.pathSeparator}$value',
+    );
+    return (await _canonicalDirectory(directory)).path;
+  }
 
   Future<void> _carryTrackedChanges({
     required Directory source,
