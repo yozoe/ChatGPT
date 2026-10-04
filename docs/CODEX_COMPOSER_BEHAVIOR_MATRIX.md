@@ -28,7 +28,7 @@ loopback discovery 文件，并打开本仓库 `README.md`。独立 transport ru
 | 审批 | App Server 定义 `item/permissions/requestApproval` 和 MCP elicitation 请求/响应 | 命令、文件变更、额外权限、MCP 表单和后台线程归属已覆盖；见 `test/approval_controller_test.dart`、`test/mcp_elicitation_controller_test.dart` | 未取得官方浮层高度、按钮顺序、自动批准视觉和焦点证据 | 协议和项目行为已验证，视觉待验收 | 对照手动、自动、拒绝、后台任务四组状态 |
 | 快捷键 | App Server 不定义桌面快捷键 | `⌘L`、`⌘T`、`⌘W`、`⌘R`、`Shift+Tab`、`Esc`、`⌘N`、`⌘K` 等有项目测试 | 未取得官方快捷键作用域、输入法组合态和焦点转移证据 | 项目行为已验证，官方语义待验收 | 固定窗口和输入法状态逐项记录 |
 | 智能体默认设置 | `config/read`、`config/value/write`、`config/batchWrite` 及配置来源/版本有官方协议证据 | 三态值、来源、能力探测、`expectedVersion`、连续写入和失败回滚已覆盖；见 `test/model_configuration_test.dart`、`test/codex_app_server_config_write_test.dart` | 未取得用户配置选择器、覆盖提示、保存位置和重启后的官方界面证据 | 协议和项目行为已验证，桌面边界待验收 | 在运行中、切换项目、重连、重启下实测 |
-| IDE 上下文 | App Server 可接收 `additionalContext`，但不定义宿主插件 IPC | 通用 `codex_desk/ide_context` bridge 与首个独立 VS Code 宿主已交付；loopback discovery/token、编辑器事件、选区、可见 Tab、停用断连和重连已覆盖，见 `test/codex_ide_context_bridge_test.dart`、`integrations/vscode-codex-context/extension.test.js`、`tool/verify_ide_context_host_transport.dart` | 无官方桌面插件证据 | VS Code 宿主项目行为已验证，官方桌面插件语义仍未证明 | 在真实 VS Code 安装扩展并记录工作区切换、发现文件更新和真实 Codex Desk 生命周期 |
+| IDE 上下文 | App Server 可接收 `additionalContext`，但不定义宿主插件 IPC | 通用 `codex_desk/ide_context` bridge 与首个独立 VS Code 宿主已交付；loopback discovery/token、编辑器事件、选区、可见 Tab、停用断连和重连已覆盖，见 `test/codex_ide_context_bridge_test.dart`、`integrations/vscode-codex-context/extension.test.js`、`tool/verify_ide_context_host_transport.dart`；VS Code 1.135.0 扩展开发目录 smoke check 已实际发送快照 | 无官方桌面插件证据 | VS Code 宿主项目行为已验证，官方桌面插件语义仍未证明 | 再验证打包安装流程、工作区切换和真实 Codex Desk 生命周期 |
 
 ## 统一验收状态
 
