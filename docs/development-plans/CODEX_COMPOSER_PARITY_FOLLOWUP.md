@@ -52,10 +52,11 @@
 仓库现已提供首个独立 VS Code 宿主源码，见
 [`integrations/vscode-codex-context`](../../integrations/vscode-codex-context)
 和 [IDE_CONTEXT_HOST_PROTOCOL.md](../IDE_CONTEXT_HOST_PROTOCOL.md)。本地 Node
-测试与纯 Dart transport 验证已覆盖编辑器事件、选区、可见 Tab、停用断连、
-发现文件重连和请求边界；扩展不会随桌面应用自动安装，也不会向远程主机发送
-编辑器内容。后续仍需在真实 VS Code 与 Codex Desk 进程中验证工作区切换、
-发现文件更新和版本化安装流程，完成前不得宣称官方桌面插件语义已对齐。
+测试与纯 Dart transport 验证已覆盖编辑器事件、选区、可见 Tab、停用断连、发现文件
+删除/恢复重连、工作区切换和请求边界；VS Code `1.135.0` 的隔离 VSIX 打包安装也已
+完成。扩展不会随桌面应用自动安装，也不会向远程主机发送编辑器内容。后续仍需在
+真实 VS Code 与 Codex Desk 进程中验证 discovery 更新/删除、重连和工作区切换的
+端到端生命周期，完成前不得宣称官方桌面插件语义已对齐。
 
 ## 交付门槛
 

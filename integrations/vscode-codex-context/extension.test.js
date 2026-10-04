@@ -168,6 +168,86 @@ test('sends editor changes and an empty snapshot on deactivation', async () => {
   }
 });
 
+test('retries after discovery disappears and follows workspace changes', async () => {
+  const temporaryDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'codex-vscode-context-lifecycle-'),
+  );
+  const discoveryFile = path.join(temporaryDirectory, 'discovery.json');
+  const snapshots = [];
+  const server = http.createServer((request, response) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => (body += chunk));
+    request.on('end', () => {
+      snapshots.push(JSON.parse(body));
+      response.statusCode = 200;
+      response.end();
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const writeDiscovery = () =>
+    fs.writeFileSync(
+      discoveryFile,
+      JSON.stringify({
+        version: 1,
+        host: '127.0.0.1',
+        port: address.port,
+        path: '/updateContext',
+        token: 'test-token-01234567890123456789',
+      }),
+    );
+  writeDiscovery();
+
+  const state = {
+    discoveryFile,
+    editor: {
+      document: {
+        isUntitled: false,
+        uri: { fsPath: '/workspace/first/main.dart' },
+        getText: () => '',
+      },
+      selection: {
+        start: { line: 0, character: 0 },
+        end: { line: 0, character: 0 },
+      },
+    },
+    tabGroups: [],
+  };
+  const events = {};
+  const vscode = createVscodeMock(state, events);
+  const originalLoad = Module._load;
+  Module._load = function (request, parent, isMain) {
+    if (request === 'vscode') return vscode;
+    return originalLoad.call(this, request, parent, isMain);
+  };
+  delete require.cache[require.resolve('./extension.js')];
+  const extension = require('./extension.js');
+  try {
+    extension.activate({ subscriptions: [] });
+    await waitFor(() => snapshots.length === 1);
+
+    fs.unlinkSync(discoveryFile);
+    state.editor.document.uri.fsPath = '/workspace/second/main.dart';
+    events.workspaceFolders();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(snapshots.length, 1);
+
+    writeDiscovery();
+    events.workspaceFolders();
+    await waitFor(() => snapshots.length === 2);
+    assert.equal(snapshots[1].activeFile.fsPath, '/workspace/second/main.dart');
+
+    await extension.deactivate();
+    await waitFor(() => snapshots.length === 3);
+    assert.deepEqual(snapshots[2], {});
+  } finally {
+    Module._load = originalLoad;
+    server.close();
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 async function waitFor(predicate) {
   const deadline = Date.now() + 2000;
   while (!predicate()) {
