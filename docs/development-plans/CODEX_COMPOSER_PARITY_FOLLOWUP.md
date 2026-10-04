@@ -4,6 +4,8 @@
 
 本文档承接 [CODEX_COMPOSER_PARITY_PLAN.md](CODEX_COMPOSER_PARITY_PLAN.md) 中不纳入当前开发目标的工作。当前仓库已实现并测试的 Composer、App Server 协议、任务文件持久化和 IDE 宿主边界不需要在本清单中重复开发。
 
+当前验收矩阵已登记在 [CODEX_COMPOSER_BEHAVIOR_MATRIX.md](../CODEX_COMPOSER_BEHAVIOR_MATRIX.md)。矩阵严格区分协议证据、项目测试证据和官方桌面证据；在官方 Codex 桌面窗口可被自动化选择前，不把项目测试或 App Server 文档升级为桌面一致性结论。
+
 ## 官方客户端实测
 
 以固定版本的 Codex 桌面客户端建立可复现的行为矩阵，记录版本、系统、运行时和能力开关：
