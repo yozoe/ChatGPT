@@ -53,10 +53,11 @@
 [`integrations/vscode-codex-context`](../../integrations/vscode-codex-context)
 和 [IDE_CONTEXT_HOST_PROTOCOL.md](../IDE_CONTEXT_HOST_PROTOCOL.md)。本地 Node
 测试与纯 Dart transport 验证已覆盖编辑器事件、选区、可见 Tab、停用断连、发现文件
-删除/恢复重连、工作区切换和请求边界；VS Code `1.135.0` 的隔离 VSIX 打包安装也已
-完成。扩展不会随桌面应用自动安装，也不会向远程主机发送编辑器内容。后续仍需在
-真实 VS Code 与 Codex Desk 进程中验证 discovery 更新/删除、重连和工作区切换的
-端到端生命周期，完成前不得宣称官方桌面插件语义已对齐。
+删除/恢复重连、工作区切换和请求边界；扩展声明支持未信任工作区，VS Code `1.135.0`
+的隔离 VSIX 在未信任临时工作区中已实际激活，并通过 loopback 代理把快照转发到真实
+Debug Codex Desk，确认 `/IDE 上下文` 从未连接变为可用。扩展不会随桌面应用自动安装，
+也不会向远程主机发送编辑器内容。官方 Codex 客户端菜单、视觉和生命周期语义仍需
+单独验收，不能由本地 Debug 客户端证据替代。
 
 ## 交付门槛
 

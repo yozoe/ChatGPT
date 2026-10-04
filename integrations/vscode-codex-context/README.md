@@ -19,6 +19,8 @@ Codex Desk Composer only sends the snapshot after the user selects its IDE
 context action.
 
 The extension retries discovery on editor events and every two seconds, so it
-can connect after Codex Desk starts without requiring a VS Code reload. Run
-`npm test` in this directory to exercise active-editor, selection, and
-deactivation behavior against a local loopback server.
+can connect after Codex Desk starts without requiring a VS Code reload. The host
+declares support for untrusted workspaces so its local discovery polling is not
+silently disabled when a project has not been trusted yet. Run `npm test` in
+this directory to exercise active-editor, selection, and deactivation behavior
+against a local loopback server.

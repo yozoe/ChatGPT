@@ -18,8 +18,10 @@ loopback discovery 文件，并打开本仓库 `README.md`。独立 transport ru
 
 同日还用 VS Code `1.135.0` 的隔离 `user-data-dir` 和 `extensions-dir` 完成了
 本地 VSIX 安装 smoke check；安装成功后已删除临时 profile、扩展目录和 VSIX，
-没有修改用户现有 VS Code 配置。Node 生命周期测试另外覆盖 discovery 文件删除后
-不发送陈旧快照、文件恢复后自动重连，以及工作区切换后发送新的当前文件。
+没有修改用户现有 VS Code 配置。真实 VSIX 首次验证发现未信任工作区不会激活宿主，
+随后加入 `capabilities.untrustedWorkspaces.supported` 并在全新隔离 profile 中确认
+`onStartupFinished` 实际激活、持续发送快照；Node 生命周期测试另外覆盖 discovery
+文件删除后不发送陈旧快照、文件恢复后自动重连，以及工作区切换后发送新的当前文件。
 
 ## 总矩阵
 
@@ -33,7 +35,7 @@ loopback discovery 文件，并打开本仓库 `README.md`。独立 transport ru
 | 审批 | App Server 定义 `item/permissions/requestApproval` 和 MCP elicitation 请求/响应 | 命令、文件变更、额外权限、MCP 表单和后台线程归属已覆盖；见 `test/approval_controller_test.dart`、`test/mcp_elicitation_controller_test.dart` | 未取得官方浮层高度、按钮顺序、自动批准视觉和焦点证据 | 协议和项目行为已验证，视觉待验收 | 对照手动、自动、拒绝、后台任务四组状态 |
 | 快捷键 | App Server 不定义桌面快捷键 | `⌘L`、`⌘T`、`⌘W`、`⌘R`、`Shift+Tab`、`Esc`、`⌘N`、`⌘K` 等有项目测试 | 未取得官方快捷键作用域、输入法组合态和焦点转移证据 | 项目行为已验证，官方语义待验收 | 固定窗口和输入法状态逐项记录 |
 | 智能体默认设置 | `config/read`、`config/value/write`、`config/batchWrite` 及配置来源/版本有官方协议证据 | 三态值、来源、能力探测、`expectedVersion`、连续写入和失败回滚已覆盖；见 `test/model_configuration_test.dart`、`test/codex_app_server_config_write_test.dart` | 未取得用户配置选择器、覆盖提示、保存位置和重启后的官方界面证据 | 协议和项目行为已验证，桌面边界待验收 | 在运行中、切换项目、重连、重启下实测 |
-| IDE 上下文 | App Server 可接收 `additionalContext`，但不定义宿主插件 IPC | 通用 `codex_desk/ide_context` bridge 与首个独立 VS Code 宿主已交付；loopback discovery/token、编辑器事件、选区、可见 Tab、停用断连、发现文件删除/恢复重连和工作区切换已覆盖，见 `test/codex_ide_context_bridge_test.dart`、`integrations/vscode-codex-context/extension.test.js`、`tool/verify_ide_context_host_transport.dart`；VS Code 1.135.0 扩展开发目录 smoke check 与隔离 VSIX 安装均已实际完成 | 无官方桌面插件证据；真实 Codex Desk 进程生命周期仍未完成 | VS Code 宿主项目行为和打包安装已验证，官方桌面插件语义仍未证明 | 在真实 Codex Desk 进程中复核 discovery 更新/删除、重连和工作区切换 |
+| IDE 上下文 | App Server 可接收 `additionalContext`，但不定义宿主插件 IPC | 通用 `codex_desk/ide_context` bridge 与首个独立 VS Code 宿主已交付；loopback discovery/token、编辑器事件、选区、可见 Tab、停用断连、发现文件删除/恢复重连和工作区切换已覆盖，见 `test/codex_ide_context_bridge_test.dart`、`integrations/vscode-codex-context/extension.test.js`、`tool/verify_ide_context_host_transport.dart`；VS Code 1.135.0 隔离 VSIX 安装在未信任工作区中已实际激活并把快照转发到真实 Debug Codex Desk，桌面 `/IDE 上下文` 从“未连接”变为可用 | 无官方桌面插件证据；真实 Codex Desk 的重启、旧 token 失效和新 discovery 接收已验证，但官方客户端语义仍未证明 | VS Code 宿主与真实 Debug Codex Desk 端到端链路已验证 | 继续官方 Codex 客户端矩阵与视觉/任务文件验收 |
 
 ## 统一验收状态
 
