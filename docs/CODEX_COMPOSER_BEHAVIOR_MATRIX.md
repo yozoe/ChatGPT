@@ -16,6 +16,10 @@ loopback discovery 文件，并打开本仓库 `README.md`。独立 transport ru
 这证明了“VS Code 扩展 → discovery → loopback transport”的真实宿主链路，但不
 证明官方 Codex 桌面窗口的视觉、菜单或 IDE 生命周期语义。
 
+同日还用 VS Code `1.135.0` 的隔离 `user-data-dir` 和 `extensions-dir` 完成了
+本地 VSIX 安装 smoke check；安装成功后已删除临时 profile、扩展目录和 VSIX，
+没有修改用户现有 VS Code 配置。
+
 ## 总矩阵
 
 | 范围 | 官方协议/文档证据 | 项目实现与测试证据 | 官方桌面证据 | 当前结论 | 下一步 |
