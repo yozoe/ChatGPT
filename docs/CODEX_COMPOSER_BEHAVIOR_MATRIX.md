@@ -6,6 +6,16 @@
 
 官方协议主证据：[Codex App Server](https://learn.chatgpt.com/docs/app-server)。官方桌面行为需要在固定版本的 Codex 客户端中重新操作并截屏；当前环境无法选择官方 Codex 桌面窗口，因此所有“桌面待验收”状态必须保留。
 
+## VS Code 真实宿主 smoke check
+
+2026-10-04 在本机 VS Code `1.135.0` 中以扩展开发目录加载
+`integrations/vscode-codex-context`，通过 `codexDesk.discoveryFile` 指向临时
+loopback discovery 文件，并打开本仓库 `README.md`。独立 transport runner 实际
+收到过无文件快照、`openTabs` 更新以及包含 `activeFile`、空选区范围和绝对路径的
+快照；Node 测试另外覆盖了真实 HTTP server 下的选区变化和扩展停用 `{}` 断连。
+这证明了“VS Code 扩展 → discovery → loopback transport”的真实宿主链路，但不
+证明官方 Codex 桌面窗口的视觉、菜单或 IDE 生命周期语义。
+
 ## 总矩阵
 
 | 范围 | 官方协议/文档证据 | 项目实现与测试证据 | 官方桌面证据 | 当前结论 | 下一步 |
