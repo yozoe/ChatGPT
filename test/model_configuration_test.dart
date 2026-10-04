@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:chatgpt/src/app_controller.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
+import 'package:chatgpt/src/services/codex_app_server.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'widget_test_fakes.dart';
@@ -355,6 +357,85 @@ void main() {
         controller.agentDefaultSettings.sandboxMode.value,
         'workspace-write',
       );
+      controller.dispose();
+    },
+  );
+
+  test(
+    'does not apply a configuration result after switching projects',
+    () async {
+      final firstWorkspace = await Directory.systemTemp.createTemp(
+        'codex-config-stale-first-',
+      );
+      final secondWorkspace = await Directory.systemTemp.createTemp(
+        'codex-config-stale-second-',
+      );
+      addTearDown(() => firstWorkspace.delete(recursive: true));
+      addTearDown(() => secondWorkspace.delete(recursive: true));
+      final configRead = Completer<JsonMap>();
+      final server = FakeCodexAppServer()..configReadCompleter = configRead;
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      );
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = firstWorkspace.path
+        ..status = RuntimeStatus.stopped;
+
+      final refresh = controller.refreshCodexConfiguration();
+      await Future<void>.delayed(Duration.zero);
+      await controller.selectWorkspace(secondWorkspace.path);
+      configRead.complete({
+        'config': {'sandbox_mode': 'workspace-write'},
+        'origins': const {},
+      });
+      await refresh;
+
+      expect(controller.codexConfigurationRead, isFalse);
+      expect(controller.agentDefaultSettings.sandboxMode.value, isNull);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'surfaces an external config version conflict without stale success',
+    () async {
+      final server = FakeCodexAppServer()
+        ..configBatchWriteSupported = true
+        ..configBatchWriteError = StateError('configuration version conflict')
+        ..configReadResponse = {
+          'config': {'sandbox_mode': null},
+          'origins': const {},
+          'layers': [
+            {
+              'name': {'type': 'user'},
+              'version': 18,
+            },
+          ],
+        };
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      );
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await controller.refreshCodexConfiguration();
+
+      await expectLater(
+        controller.writeAgentDefaultSetting(
+          keyPath: 'sandbox_mode',
+          value: 'workspace-write',
+        ),
+        throwsA(isA<StateError>()),
+      );
+      expect(
+        controller.agentDefaultSettingsWriteError,
+        contains('configuration version conflict'),
+      );
+      expect(controller.agentDefaultSettings.sandboxMode.value, isNull);
       controller.dispose();
     },
   );

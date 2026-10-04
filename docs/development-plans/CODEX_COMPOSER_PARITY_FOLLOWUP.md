@@ -49,7 +49,13 @@
 
 ## 具体 IDE 插件
 
-当前仓库只提供 `codex_desk/ide_context` 通用宿主协议，见 [IDE_CONTEXT_HOST_PROTOCOL.md](../IDE_CONTEXT_HOST_PROTOCOL.md)。后续工作需要为目标 IDE 提供实际宿主端，并用真实插件验证连接、项目切换、断连、选区和打开标签更新；完成前不得宣称内置 VS Code、Xcode 或其他 IDE 集成。
+仓库现已提供首个独立 VS Code 宿主源码，见
+[`integrations/vscode-codex-context`](../../integrations/vscode-codex-context)
+和 [IDE_CONTEXT_HOST_PROTOCOL.md](../IDE_CONTEXT_HOST_PROTOCOL.md)。本地 Node
+测试与纯 Dart transport 验证已覆盖编辑器事件、选区、可见 Tab、停用断连、
+发现文件重连和请求边界；扩展不会随桌面应用自动安装，也不会向远程主机发送
+编辑器内容。后续仍需在真实 VS Code 与 Codex Desk 进程中验证工作区切换、
+发现文件更新和版本化安装流程，完成前不得宣称官方桌面插件语义已对齐。
 
 ## 交付门槛
 
