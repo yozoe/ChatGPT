@@ -440,6 +440,64 @@ void main() {
     },
   );
 
+  test(
+    'keeps the newest configuration refresh after an older response arrives',
+    () async {
+      final oldRead = Completer<JsonMap>();
+      final newRead = Completer<JsonMap>();
+      final server = FakeCodexAppServer()
+        ..configReadCompleters.addAll([oldRead, newRead]);
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      );
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+
+      final firstRefresh = controller.refreshCodexConfiguration();
+      await Future<void>.delayed(Duration.zero);
+      final secondRefresh = controller.refreshCodexConfiguration();
+      await Future<void>.delayed(Duration.zero);
+      newRead.complete({
+        'config': {'sandbox_mode': 'read-only'},
+        'origins': {
+          'sandbox_mode': {
+            'name': {'type': 'user', 'file': '/new.toml'},
+          },
+        },
+        'layers': [
+          {
+            'name': {'type': 'user'},
+            'version': 9,
+          },
+        ],
+      });
+      await secondRefresh;
+      oldRead.complete({
+        'config': {'sandbox_mode': 'workspace-write'},
+        'origins': {
+          'sandbox_mode': {
+            'name': {'type': 'user', 'file': '/old.toml'},
+          },
+        },
+        'layers': [
+          {
+            'name': {'type': 'user'},
+            'version': 8,
+          },
+        ],
+      });
+      await firstRefresh;
+
+      expect(controller.agentDefaultSettings.sandboxMode.value, 'read-only');
+      expect(controller.agentDefaultSettings.sandboxMode.source, '/new.toml');
+      expect(controller.agentDefaultSettings.userConfigVersion, 9);
+      controller.dispose();
+    },
+  );
+
   test('keeps defaults read-only when the writer is not advertised', () async {
     final server = FakeCodexAppServer()
       ..configReadResponse = {

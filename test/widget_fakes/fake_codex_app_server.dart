@@ -34,6 +34,7 @@ class FakeCodexAppServer extends CodexAppServer {
     'origins': <String, Object?>{},
   };
   Completer<JsonMap>? configReadCompleter;
+  final List<Completer<JsonMap>> configReadCompleters = [];
   bool configBatchWriteSupported = false;
   Object? configBatchWriteError;
   final List<JsonMap> configBatchWriteCalls = [];
@@ -207,6 +208,9 @@ class FakeCodexAppServer extends CodexAppServer {
   @override
   Future<JsonMap> readConfig({String? workingDirectory}) async {
     configReadDirectory = workingDirectory;
+    if (configReadCompleters.isNotEmpty) {
+      return configReadCompleters.removeAt(0).future;
+    }
     final completer = configReadCompleter;
     if (completer != null) return completer.future;
     return configReadResponse;
