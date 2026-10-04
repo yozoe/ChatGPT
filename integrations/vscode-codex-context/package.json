@@ -1,0 +1,38 @@
+{
+  "name": "codex-desk-context",
+  "displayName": "Codex Desk Context",
+  "description": "Sends the active VS Code editor context to Codex Desk.",
+  "version": "0.1.0",
+  "scripts": {
+    "test": "node --test extension.test.js"
+  },
+  "publisher": "codex-desk",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:codexDesk.refreshContext"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codexDesk.refreshContext",
+        "title": "Codex Desk: Refresh IDE Context"
+      }
+    ],
+    "configuration": {
+      "title": "Codex Desk Context",
+      "properties": {
+        "codexDesk.discoveryFile": {
+          "type": "string",
+          "default": "",
+          "description": "Optional absolute path to the Codex Desk IDE discovery file."
+        }
+      }
+    }
+  }
+}

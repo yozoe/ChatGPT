@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:chatgpt/src/app_controller.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -170,6 +171,35 @@ void main() {
     });
 
     expect(bridge.isConnected, isFalse);
+  });
+
+  test('accepts authenticated updates from an external IDE host', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'codex-ide-context-host-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final bridge = CodexIdeContextBridge(discoveryDirectory: directory);
+    await bridge.startExternalHostTransport();
+    addTearDown(bridge.stopExternalHostTransport);
+
+    final discovery =
+        jsonDecode(
+              await File(
+                '${directory.path}/ide-context-host.json',
+              ).readAsString(),
+            )
+            as Map;
+    expect(discovery['host'], '127.0.0.1');
+    expect(discovery['port'], isA<int>());
+    expect(discovery['path'], '/updateContext');
+    expect(discovery['token'], isA<String>());
+    expect((discovery['token'] as String).length, greaterThan(20));
+    await bridge.stopExternalHostTransport();
+    expect(
+      await File('${directory.path}/ide-context-host.json').exists(),
+      isFalse,
+    );
+    bridge.dispose();
   });
 }
 

@@ -1,8 +1,26 @@
 # IDE context host protocol
 
-`CodexIdeContextBridge` listens on the Flutter `MethodChannel`
-`codex_desk/ide_context`. This is a host contract; the desktop application does
-not claim that a VS Code, Xcode, or other IDE plugin is bundled.
+`CodexIdeContextBridge` accepts snapshots through the Flutter `MethodChannel`
+`codex_desk/ide_context` and through its local IDE host transport. The first
+concrete host is the VS Code extension in
+[`integrations/vscode-codex-context`](../integrations/vscode-codex-context).
+The extension is intentionally separate from the desktop bundle and only
+connects to a Codex Desk process on the same machine.
+
+## VS Code transport
+
+Codex Desk publishes a discovery record at:
+
+- `~/Library/Application Support/Codex Desk/ide-context-host.json` in release;
+- `~/Library/Application Support/Codex Desk Development/ide-context-host.json`
+  in debug/profile builds.
+
+The record is atomically replaced and contains a loopback host, an ephemeral
+port, `/updateContext`, the current process ID, and a per-process bearer token.
+The VS Code extension sends `POST` JSON requests only to `127.0.0.1` and treats
+missing, stale, or invalid records as a disconnected host. Requests without
+the exact bearer token, malformed JSON, or bodies over 512 KiB are rejected.
+The record and endpoint are removed when Codex Desk stops the bridge.
 
 ## Host to Composer
 
@@ -51,4 +69,7 @@ sending secrets or full files unnecessarily, and send `{}` when its editor
 window closes. The host is responsible for obtaining user consent according to
 its IDE's privacy model. The App Server source key and value serialization are
 opaque protocol details; plugins must not depend on a private Codex extension
-IPC format.
+IPC format. The VS Code extension sends `{}` when it is deactivated; while
+Codex Desk is not running it waits silently and retries discovery on editor
+events and a short polling interval. The extension truncates selected text to
+64,000 characters and visible file tabs to 64 entries before sending.

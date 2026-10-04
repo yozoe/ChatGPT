@@ -286,6 +286,14 @@ class CodexController extends ChangeNotifier {
   bool get hasIdeContext => _ideContextBridge.isConnected;
   Map<String, dynamic>? get ideAdditionalContext =>
       _ideContextBridge.additionalContext;
+
+  /// Starts the localhost discovery bridge used by an external IDE host.
+  Future<void> startIdeContextHostTransport() =>
+      _ideContextBridge.startExternalHostTransport();
+
+  /// Stops the localhost discovery bridge used by an external IDE host.
+  Future<void> stopIdeContextHostTransport() =>
+      _ideContextBridge.stopExternalHostTransport();
   final Map<String, int> _composerTemporaryAttachmentRetains = {};
   final Map<String, CodexFileChange> _fileChangesByPath = {};
   final Map<String, CodexFileChange> _turnFileChangesByPath = {};

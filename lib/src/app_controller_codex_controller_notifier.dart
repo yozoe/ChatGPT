@@ -1,5 +1,6 @@
 // Extracted class from app_controller.dart.
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -14,6 +15,9 @@ class CodexControllerNotifier extends Notifier<CodexController> {
   CodexController build() {
     _controller = CodexController();
     _controller.addListener(_publishControllerChange);
+    if (Platform.environment['FLUTTER_TEST'] != 'true') {
+      unawaited(_controller.startIdeContextHostTransport());
+    }
     unawaited(_controller.connectRestoredWorkspace());
     ref.onDispose(() {
       _controller.removeListener(_publishControllerChange);
