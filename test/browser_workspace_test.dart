@@ -1,5 +1,7 @@
 import 'package:chatgpt/src/app_controller.dart';
 import 'package:chatgpt/src/domain/codex_thread.dart';
+import 'package:chatgpt/src/domain/browser_tab_snapshot.dart';
+import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_workspace_page.dart';
 import 'package:chatgpt/src/presentation/conversation/codex_workspace_conversation_conversation_pane.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
@@ -11,6 +13,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'widget_fakes/fake_runtime_configuration_store.dart';
 import 'widget_fakes/memory_codex_plugin_store.dart';
 import 'widget_fakes/memory_conversation_history_store.dart';
+import 'widget_fakes/fake_browser_session_store.dart';
 
 /// Creates a browser-workspace test thread with predictable fields.
 CodexThread createBrowserWorkspaceTestThread({required String id}) =>
@@ -33,6 +36,50 @@ void main() {
   tearDown(() {
     CodexController.testingConversationHistoryStore = null;
     CodexController.testingRuntimeConfigurationStore = null;
+  });
+
+  testWidgets('keeps the active restored tab after filtering unsafe tabs', (
+    tester,
+  ) async {
+    final sessionStore = FakeBrowserSessionStore(
+      snapshot: (
+        tabs: [
+          const BrowserTabSnapshot(
+            url: 'https://user:secret@example.com/invalid',
+            title: 'Filtered',
+          ),
+          const BrowserTabSnapshot(
+            url: 'https://example.com/active',
+            title: 'Active',
+          ),
+          const BrowserTabSnapshot(
+            url: 'https://example.com/other',
+            title: 'Other',
+          ),
+        ],
+        activeIndex: 1,
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BrowserWorkspacePage(
+          onOpenConversation: () {},
+          restoreTabs: true,
+          sessionStore: sessionStore,
+          urlSafetyChecker: (_) async => true,
+          restoreTabNavigation: (tabId, uri) async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('browser-address')))
+          .controller
+          ?.text,
+      'https://example.com/active',
+    );
   });
 
   testWidgets('defers native browser creation until its workspace tab opens', (

@@ -39,6 +39,7 @@ class FakeCodexAppServer extends CodexAppServer {
   String? configReadDirectory;
   bool queueListRequests = false;
   Object? resumeError;
+  final Map<String, Completer<JsonMap>> resumeCompleters = {};
   Object? listThreadsError;
   JsonMap resumeResult = {
     'thread': {'turns': <JsonMap>[]},
@@ -257,6 +258,8 @@ class FakeCodexAppServer extends CodexAppServer {
     resumedConfig = config;
     final error = resumeError;
     if (error != null) throw error;
+    final completer = resumeCompleters[threadId];
+    if (completer != null) return completer.future;
     return resumeResult;
   }
 

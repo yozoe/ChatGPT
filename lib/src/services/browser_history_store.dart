@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -16,6 +17,7 @@ class BrowserHistoryStore {
   static const _maxEntries = 200;
 
   final CodexKeychainStorage _storage;
+  Future<void> _mutationQueue = Future<void>.value();
 
   Future<List<BrowserHistoryEntry>> read() async {
     final stored = await _storage.read(key: _key);
@@ -47,26 +49,42 @@ class BrowserHistoryStore {
   }) async {
     final canonical = _canonicalUri(uri);
     if (canonical == null) return;
-    final existing = await read();
-    final entries = <BrowserHistoryEntry>[
-      BrowserHistoryEntry(
-        url: canonical.toString(),
-        title: title?.trim().isNotEmpty == true
-            ? title!.trim()
-            : canonical.host,
-        visitedAt: (visitedAt ?? DateTime.now()).toUtc(),
-      ),
-      ...existing.where((entry) => entry.url != canonical.toString()),
-    ];
-    await _write(entries.take(_maxEntries));
+    await _enqueue(() async {
+      final existing = await read();
+      final entries = <BrowserHistoryEntry>[
+        BrowserHistoryEntry(
+          url: canonical.toString(),
+          title: title?.trim().isNotEmpty == true
+              ? title!.trim()
+              : canonical.host,
+          visitedAt: (visitedAt ?? DateTime.now()).toUtc(),
+        ),
+        ...existing.where((entry) => entry.url != canonical.toString()),
+      ];
+      await _write(entries.take(_maxEntries));
+    });
   }
 
   Future<void> remove(String url) async {
-    final entries = await read();
-    await _write(entries.where((entry) => entry.url != url));
+    await _enqueue(() async {
+      final entries = await read();
+      await _write(entries.where((entry) => entry.url != url));
+    });
   }
 
-  Future<void> clear() => _storage.delete(key: _key);
+  Future<void> clear() => _enqueue(() => _storage.delete(key: _key));
+
+  Future<void> _enqueue(Future<void> Function() action) async {
+    final previous = _mutationQueue;
+    final done = Completer<void>();
+    _mutationQueue = done.future;
+    await previous.catchError((_) {});
+    try {
+      await action();
+    } finally {
+      done.complete();
+    }
+  }
 
   Uri? _canonicalUri(Uri uri) {
     if ((uri.scheme != 'http' && uri.scheme != 'https') ||

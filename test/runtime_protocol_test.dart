@@ -178,6 +178,78 @@ void main() {
     },
   );
 
+  test('ignores a stale resume after quickly switching tasks', () async {
+    final server = FakeCodexAppServer();
+    final firstResume = Completer<JsonMap>();
+    server.resumeCompleters['thread-1'] = firstResume;
+    final controller = CodexController(server: server)
+      ..workspacePath = '/workspace'
+      ..status = RuntimeStatus.ready;
+    await controller.waitForInitialConfiguration();
+    controller.status = RuntimeStatus.ready;
+
+    final first = controller.resumeThread(protocolThread(id: 'thread-1'));
+    await Future<void>.delayed(Duration.zero);
+    // Model a second selection arriving while the first protocol call is
+    // still pending; the production sidebar may re-enable switching after a
+    // runtime status update before the original future settles.
+    controller.status = RuntimeStatus.ready;
+    await controller.resumeThread(protocolThread(id: 'thread-2'));
+
+    expect(controller.activeThreadId, 'thread-2');
+    expect(controller.isResumingThread, isFalse);
+    firstResume.complete(server.resumeResult);
+    await first;
+
+    expect(controller.activeThreadId, 'thread-2');
+    expect(controller.isResumingThread, isFalse);
+    controller.dispose();
+  });
+
+  test('sends resumed follow-up turns to the bound managed worktree', () async {
+    final root = await Directory.systemTemp.createTemp('worktree-follow-up-');
+    addTearDown(() => root.delete(recursive: true));
+    final source = await Directory('${root.path}/source').create();
+    final worktree = await Directory('${root.path}/worktree').create();
+    final store = RuntimeConfigurationStore(
+      storage: CodexKeychainStorage(developmentDirectory: root),
+    );
+    await store.saveWorktreeRecords([
+      LocalWorktreeRecord(
+        worktreeId: 'task-1',
+        projectId: 'project-1',
+        sourceRepository: source.path,
+        worktreePath: worktree.path,
+        baseCommit: 'abc123',
+        state: LocalWorktreeState.ready,
+        createdAt: DateTime.now(),
+      ),
+    ]);
+    await store.saveThreadEnvironmentBindings([
+      ThreadEnvironmentBinding(
+        threadId: 'thread-1',
+        kind: ThreadEnvironmentKind.managedWorktree,
+        workingDirectory: worktree.path,
+        worktreeId: 'task-1',
+      ),
+    ]);
+    final server = FakeCodexAppServer();
+    final controller = CodexController(
+      server: server,
+      runtimeConfigurationStore: store,
+    );
+    await controller.waitForInitialConfiguration();
+    controller
+      ..workspacePath = source.path
+      ..status = RuntimeStatus.ready;
+
+    await controller.resumeThread(protocolThread(id: 'thread-1'));
+
+    expect(await controller.sendPrompt('继续处理'), isTrue);
+    expect(server.startedTurnDirectory, await worktree.resolveSymbolicLinks());
+    controller.dispose();
+  });
+
   test('rejects worktree branch changes while any task is running', () async {
     final git = FakeGitProjectService();
     final controller =

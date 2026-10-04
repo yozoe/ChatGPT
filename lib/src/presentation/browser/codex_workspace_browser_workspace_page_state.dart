@@ -66,9 +66,14 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
     }
     if (saved != null) {
       final safeTabs = <BrowserTabSnapshot>[];
-      for (final tab in saved.tabs) {
+      var restoredActiveIndex = 0;
+      for (var index = 0; index < saved.tabs.length; index++) {
+        final tab = saved.tabs[index];
         final uri = normalizeBrowserUrl(tab.url);
         if (uri != null && await widget.urlSafetyChecker(uri)) {
+          if (index == saved.activeIndex) {
+            restoredActiveIndex = safeTabs.length;
+          }
           safeTabs.add(
             BrowserTabSnapshot(
               url: uri.replace(userInfo: '').toString(),
@@ -83,7 +88,7 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
             ..clear()
             ..addAll(List<int>.generate(safeTabs.length, (index) => index));
           _nextTab = safeTabs.length;
-          _activeTab = saved.activeIndex.clamp(0, safeTabs.length - 1);
+          _activeTab = restoredActiveIndex.clamp(0, safeTabs.length - 1);
           _urls
             ..clear()
             ..addEntries(
@@ -118,20 +123,20 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
 
   void _persistSession() {
     if (!widget.restoreTabs || !_sessionRestoreCompleted) return;
-    final tabs = _tabs
-        .map((tabId) {
-          final url = normalizeBrowserUrl(_urls[tabId] ?? '');
-          if (url == null) return null;
-          return BrowserTabSnapshot(
-            url: url.replace(userInfo: '').toString(),
-            title: _titles[tabId] ?? '新标签页',
-          );
-        })
-        .whereType<BrowserTabSnapshot>()
-        .toList(growable: false);
-    final activeIndex = tabs.isEmpty
-        ? 0
-        : _tabs.indexOf(_activeTab).clamp(0, tabs.length - 1);
+    final tabs = <BrowserTabSnapshot>[];
+    var activeIndex = 0;
+    for (final tabId in _tabs) {
+      final url = normalizeBrowserUrl(_urls[tabId] ?? '');
+      if (url == null) continue;
+      if (tabId == _activeTab) activeIndex = tabs.length;
+      tabs.add(
+        BrowserTabSnapshot(
+          url: url.replace(userInfo: '').toString(),
+          title: _titles[tabId] ?? '新标签页',
+        ),
+      );
+    }
+    if (tabs.isEmpty) activeIndex = 0;
     _sessionSaveQueue = _sessionSaveQueue
         .catchError((_) {})
         .then((_) => _sessionStore.save(tabs: tabs, activeIndex: activeIndex));

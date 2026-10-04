@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -15,6 +16,7 @@ class BrowserSessionStore {
   static const _encryptionKey = 'codex_desk.history.encryption_key.v1';
 
   final CodexKeychainStorage _storage;
+  Future<void> _mutationQueue = Future<void>.value();
 
   Future<({List<BrowserTabSnapshot> tabs, int activeIndex})?> read() async {
     final stored = await _storage.read(key: _key);
@@ -61,19 +63,33 @@ class BrowserSessionStore {
         .where((tab) => tab.url.isNotEmpty)
         .take(20)
         .toList(growable: false);
-    if (valid.isEmpty) {
-      await clear();
-      return;
-    }
-    final value = jsonEncode({
-      'version': 1,
-      'tabs': valid.map((tab) => tab.toJson()).toList(growable: false),
-      'activeIndex': activeIndex.clamp(0, valid.length - 1),
+    await _enqueue(() async {
+      if (valid.isEmpty) {
+        await _storage.delete(key: _key);
+        return;
+      }
+      final value = jsonEncode({
+        'version': 1,
+        'tabs': valid.map((tab) => tab.toJson()).toList(growable: false),
+        'activeIndex': activeIndex.clamp(0, valid.length - 1),
+      });
+      await _storage.write(key: _key, value: await _encrypt(value));
     });
-    await _storage.write(key: _key, value: await _encrypt(value));
   }
 
-  Future<void> clear() => _storage.delete(key: _key);
+  Future<void> clear() => _enqueue(() => _storage.delete(key: _key));
+
+  Future<void> _enqueue(Future<void> Function() action) async {
+    final previous = _mutationQueue;
+    final done = Completer<void>();
+    _mutationQueue = done.future;
+    await previous.catchError((_) {});
+    try {
+      await action();
+    } finally {
+      done.complete();
+    }
+  }
 
   Future<String> _encrypt(String value) async {
     final box = await AesGcm.with256bits().encrypt(

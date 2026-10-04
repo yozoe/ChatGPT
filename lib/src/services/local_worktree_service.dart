@@ -62,6 +62,9 @@ class LocalWorktreeService {
       throw StateError('工作树根目录必须是绝对路径。');
     }
     final id = worktreeId ?? 'wt-${DateTime.now().microsecondsSinceEpoch}';
+    if (!_isSafeWorktreeId(id)) {
+      throw StateError('工作树标识只能包含安全的单层目录名。');
+    }
     final root = Directory(rootPath);
     await root.create(recursive: true);
     return _withRepositoryLock(repository, () async {
@@ -173,6 +176,10 @@ class LocalWorktreeService {
         reconciliation != LocalWorktreeState.completed) {
       throw StateError('工作树所有权或 Git 登记不一致，已标记为 foreign，拒绝删除。');
     }
+    final persistedRecord = (await _store.readWorktreeRecords())
+        .where((item) => item.worktreeId == record.worktreeId)
+        .firstOrNull;
+    final currentRecord = persistedRecord ?? record;
     if (!force) {
       final status = await _run(worktree.path, const [
         'status',
@@ -184,19 +191,19 @@ class LocalWorktreeService {
         throw StateError('工作树包含未提交改动，请先处理改动后再删除。');
       }
     }
-    final snapshot = await _snapshotStore.capture(record: record);
+    final snapshot = await _snapshotStore.capture(record: currentRecord);
     final snapshotReference = await _snapshotStore.save(
       rootPath: root.path,
       snapshot: snapshot,
     );
-    final snapshotRecord = record.copyWith(
+    final snapshotRecord = currentRecord.copyWith(
       snapshotId: snapshotReference.snapshotId,
       snapshotDigest: snapshotReference.digest,
     );
     final signedSnapshotRecord = snapshotRecord.copyWith(
       ownershipMac: await _ownershipMac(snapshotRecord),
     );
-    final result = await _run(record.sourceRepository, [
+    final result = await _run(currentRecord.sourceRepository, [
       'worktree',
       'remove',
       if (force) '--force',
@@ -526,6 +533,11 @@ class LocalWorktreeService {
         candidate.absolute.path.startsWith(base);
   }
 
+  bool _isSafeWorktreeId(String value) =>
+      RegExp(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$').hasMatch(value) &&
+      value != '.' &&
+      value != '..';
+
   Future<ProcessResult> _run(String cwd, List<String> args) =>
       Process.run('git', args, workingDirectory: cwd);
 
@@ -559,7 +571,8 @@ class LocalWorktreeService {
         : '|${record.snapshotId}|${record.snapshotDigest}';
     final payload = utf8.encode(
       'v1|${record.worktreeId}|${record.projectId}|${record.sourceRepository}|'
-      '${record.worktreePath}|${record.gitCommonDirectory}|${record.ownershipNonce}'
+      '${record.worktreePath}|${record.baseCommit}|${record.baseRef}|'
+      '${record.gitCommonDirectory}|${record.ownershipNonce}'
       '|${record.isPermanent}$snapshotPart',
     );
     final mac = await Hmac.sha256().calculateMac(

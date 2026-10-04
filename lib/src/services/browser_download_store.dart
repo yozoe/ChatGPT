@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -16,6 +17,7 @@ class BrowserDownloadStore {
   static const _maxEntries = 200;
 
   final CodexKeychainStorage _storage;
+  Future<void> _mutationQueue = Future<void>.value();
 
   Future<List<BrowserDownloadRecord>> read() async {
     final stored = await _storage.read(key: _key);
@@ -50,31 +52,47 @@ class BrowserDownloadStore {
         filePath.trim().isEmpty) {
       return;
     }
-    final existing = await read();
-    final fileName = filePath.split(RegExp(r'[/\\]')).last;
-    final next = <BrowserDownloadRecord>[
-      BrowserDownloadRecord(
-        url: Uri(
-          scheme: url.scheme,
-          host: url.host,
-          port: url.hasPort ? url.port : null,
-          path: url.path,
-        ).toString(),
-        filePath: filePath,
-        fileName: fileName,
-        downloadedAt: (downloadedAt ?? DateTime.now()).toUtc(),
-      ),
-      ...existing.where((record) => record.filePath != filePath),
-    ];
-    await _write(next.take(_maxEntries));
+    await _enqueue(() async {
+      final existing = await read();
+      final fileName = filePath.split(RegExp(r'[/\\]')).last;
+      final next = <BrowserDownloadRecord>[
+        BrowserDownloadRecord(
+          url: Uri(
+            scheme: url.scheme,
+            host: url.host,
+            port: url.hasPort ? url.port : null,
+            path: url.path,
+          ).toString(),
+          filePath: filePath,
+          fileName: fileName,
+          downloadedAt: (downloadedAt ?? DateTime.now()).toUtc(),
+        ),
+        ...existing.where((record) => record.filePath != filePath),
+      ];
+      await _write(next.take(_maxEntries));
+    });
   }
 
   Future<void> remove(String filePath) async {
-    final entries = await read();
-    await _write(entries.where((record) => record.filePath != filePath));
+    await _enqueue(() async {
+      final entries = await read();
+      await _write(entries.where((record) => record.filePath != filePath));
+    });
   }
 
-  Future<void> clear() => _storage.delete(key: _key);
+  Future<void> clear() => _enqueue(() => _storage.delete(key: _key));
+
+  Future<void> _enqueue(Future<void> Function() action) async {
+    final previous = _mutationQueue;
+    final done = Completer<void>();
+    _mutationQueue = done.future;
+    await previous.catchError((_) {});
+    try {
+      await action();
+    } finally {
+      done.complete();
+    }
+  }
 
   Future<void> _write(Iterable<BrowserDownloadRecord> entries) async {
     final values = entries

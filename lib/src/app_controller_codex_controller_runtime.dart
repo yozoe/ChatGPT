@@ -379,6 +379,7 @@ class CodexController extends ChangeNotifier {
   int _codexConfigurationRefreshRequest = 0;
   int _configWriterProbeEpoch = -1;
   int _agentDefaultSettingsWriteGeneration = 0;
+  int _threadEnvironmentRestoreGeneration = 0;
   int _modelCatalogRefreshRequest = 0;
   int _collaborationModesRefreshRequest = 0;
   final Set<String> _unarchivingThreadIds = {};
@@ -2361,12 +2362,19 @@ class CodexController extends ChangeNotifier {
       }
       final config = JsonMap.from(result['config'] as Map);
       final origins = result['origins'];
-      agentDefaultSettings = AgentDefaultSettingsSnapshot.fromConfig(
+      final nextAgentDefaultSettings = AgentDefaultSettingsSnapshot.fromConfig(
         config,
         origins,
         result['layers'],
       );
       await _probeAgentDefaultSettingsWriter(runtimeEpoch);
+      if (_disposed ||
+          request != _codexConfigurationRefreshRequest ||
+          runtimeEpoch != _runtimeConnectionEpoch ||
+          workspacePath != workspace) {
+        return;
+      }
+      agentDefaultSettings = nextAgentDefaultSettings;
       _configuredModelId = _nonEmptyConfigString(
         config['model'] ?? config['modelId'],
       );
@@ -2434,10 +2442,12 @@ class CodexController extends ChangeNotifier {
     if (_configWriterProbeEpoch == runtimeEpoch) return;
     _configWriterProbeEpoch = runtimeEpoch;
     try {
-      agentDefaultSettingsWriteSupported = await _server
-          .supportsConfigBatchWrite();
+      final supported = await _server.supportsConfigBatchWrite();
+      if (_disposed || runtimeEpoch != _runtimeConnectionEpoch) return;
+      agentDefaultSettingsWriteSupported = supported;
       agentDefaultSettingsWriteError = null;
     } on Object catch (error) {
+      if (_disposed || runtimeEpoch != _runtimeConnectionEpoch) return;
       agentDefaultSettingsWriteSupported = false;
       agentDefaultSettingsWriteError = _messageOf(error);
     }
@@ -2464,6 +2474,15 @@ class CodexController extends ChangeNotifier {
       if (!_server.isRunning || !agentDefaultSettingsWriteSupported) {
         throw StateError('当前 Codex 运行时不支持写入智能体默认设置。');
       }
+      // Refresh immediately before every queued write so an earlier write or
+      // an external editor cannot leave expectedVersion stale.
+      await refreshCodexConfiguration(notify: false);
+      if (_disposed || generation != _agentDefaultSettingsWriteGeneration) {
+        return;
+      }
+      if (!codexConfigurationRead) {
+        throw StateError('无法读取当前 Codex 配置版本，已取消写入。');
+      }
       agentDefaultSettingsWriteError = null;
       try {
         await _server.writeConfigValue(
@@ -2471,10 +2490,11 @@ class CodexController extends ChangeNotifier {
           value: value,
           expectedVersion: agentDefaultSettings.userConfigVersion,
         );
-        if (_disposed || generation != _agentDefaultSettingsWriteGeneration) {
+        if (_disposed) {
           return;
         }
         await refreshCodexConfiguration();
+        if (generation != _agentDefaultSettingsWriteGeneration) return;
       } catch (error) {
         if (generation == _agentDefaultSettingsWriteGeneration) {
           agentDefaultSettingsWriteError = _messageOf(error);
@@ -3817,10 +3837,13 @@ class CodexController extends ChangeNotifier {
     String? managedWorktreeBaseRef,
   }) async {
     final text = prompt.trim();
-    final requestWorkspace = workspacePath;
+    final requestProjectWorkspace = workspacePath;
+    final requestWorkspace = _activeExecutionWorkspace;
     final requestThread = activeThreadId;
     final requestRevision = _conversationViewRevision;
-    if (text.isEmpty || !canSend || requestWorkspace == null) return false;
+    if (text.isEmpty || !canSend || requestProjectWorkspace == null) {
+      return false;
+    }
     if (planMode && _collaborationMode(planMode: true) == null) {
       lastError = '计划模式需要先从 Codex 运行时读取可用模型。';
       _add(TimelineKind.error, '无法启动计划模式', lastError!);
@@ -3862,7 +3885,7 @@ class CodexController extends ChangeNotifier {
     // it was running, discard the newly-created copies and leave the current
     // conversation untouched rather than sending to the wrong workspace.
     if (_disposed ||
-        workspacePath != requestWorkspace ||
+        workspacePath != requestProjectWorkspace ||
         activeThreadId != requestThread ||
         _conversationViewRevision != requestRevision ||
         !canSend) {
@@ -5742,21 +5765,14 @@ class CodexController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    final environmentRestoreGeneration = ++_threadEnvironmentRestoreGeneration;
     final bindingRestore = _restoreThreadEnvironmentBinding(
       thread.id,
+      generation: environmentRestoreGeneration,
     ).then((value) => value, onError: (_) => null);
-    unawaited(
-      bindingRestore.then((unavailableWorktree) {
-        if (_disposed || unavailableWorktree == null) return;
-        if (activeThreadId != thread.id) return;
-        _add(
-          TimelineKind.error,
-          '工作树不可用',
-          '无法恢复任务绑定的工作树：$unavailableWorktree。请在设置中恢复后重试。',
-        );
-        notifyListeners();
-      }),
-    );
+    bool isCurrentResume() =>
+        !_disposed &&
+        environmentRestoreGeneration == _threadEnvironmentRestoreGeneration;
     final needsThreadRefresh = _cachedThreadView(thread.id) == null;
     if (needsThreadRefresh) {
       threadsLoading = true;
@@ -5838,10 +5854,12 @@ class CodexController extends ChangeNotifier {
       _clearThreadTimelineForRestoration();
     }
     notifyListeners();
+    var resumeFailed = false;
     try {
       activeThreadId = thread.id;
       JsonMap? history;
       JsonMap? resumeResult;
+      String? unavailableWorktree;
       if (openingRunningThread) {
         // Do not take a second writer from a task left running in the
         // background. Reading persisted turns lets live notifications keep
@@ -5855,12 +5873,15 @@ class CodexController extends ChangeNotifier {
           model: thread.model,
           config: null,
         );
+        if (!isCurrentResume()) return;
         _updateThreadCollaborationMode(
           thread.id,
           resumeResult['collaborationMode'],
         );
-        _activeThreadAttached = true;
-        status = RuntimeStatus.ready;
+        // Keep the UI in the restoring state until the execution binding is
+        // checked, while allowing history hydration to proceed in parallel.
+        _activeThreadAttached = false;
+        status = RuntimeStatus.starting;
       }
       unawaited(refreshThreadGoal(thread.id));
       try {
@@ -5871,6 +5892,7 @@ class CodexController extends ChangeNotifier {
                   threadId: thread.id,
                   resumeResult: resumeResult!,
                 );
+          if (!isCurrentResume()) return;
           _resetConversationTimeline();
           _appendThreadHistory(history);
           // A restarted app restores the last task view from its local
@@ -5904,9 +5926,8 @@ class CodexController extends ChangeNotifier {
         // thread.
         _add(TimelineKind.error, '历史内容加载不完整', _messageOf(error));
       }
-      if (cachedView == null) {
-        _add(TimelineKind.system, '任务已恢复', '可以继续在此任务中追问。');
-      }
+      if (!isCurrentResume()) return;
+      if (viewLoaded && !_disposed) notifyListeners();
       if (viewLoaded) _cacheActiveThreadView();
       // Cached task views already contain the complete local timeline and the
       // task list is unchanged by selecting them. Avoid another full list
@@ -5915,9 +5936,37 @@ class CodexController extends ChangeNotifier {
       if (cachedView == null) {
         await refreshThreads();
       }
+      if (!isCurrentResume()) return;
+      // Binding validation runs in parallel with the remote history load so a
+      // slow local store does not hide the conversation. Only after it has
+      // settled may a resumed thread accept a new turn.
+      unavailableWorktree = await bindingRestore;
+      if (!isCurrentResume()) return;
+      if (environmentRestoreGeneration == _threadEnvironmentRestoreGeneration &&
+          !openingRunningThread) {
+        _activeThreadAttached = true;
+        status = RuntimeStatus.ready;
+      }
+      if (unavailableWorktree != null &&
+          activeThreadId == thread.id &&
+          environmentRestoreGeneration == _threadEnvironmentRestoreGeneration) {
+        _add(
+          TimelineKind.error,
+          '工作树不可用',
+          '无法恢复任务绑定的工作树：$unavailableWorktree。请在设置中恢复后重试。',
+        );
+      }
+      if (cachedView == null) {
+        _add(TimelineKind.system, '任务已恢复', '可以继续在此任务中追问。');
+      }
       _appendPendingNetworkRetryEntries(thread.id);
       if (viewLoaded) _cacheActiveThreadView();
     } catch (error) {
+      if (!isCurrentResume()) return;
+      if (environmentRestoreGeneration == _threadEnvironmentRestoreGeneration) {
+        _threadEnvironmentRestoreGeneration++;
+      }
+      resumeFailed = true;
       if (needsThreadRefresh) threadsLoading = false;
       activeThreadId = previousThreadId;
       _activeThreadAttached = previousThreadAttached;
@@ -5960,6 +6009,12 @@ class CodexController extends ChangeNotifier {
         _add(TimelineKind.error, '无法恢复任务', lastError!);
       }
     }
+    if (resumeFailed) {
+      _resumingThread = false;
+      notifyListeners();
+      return;
+    }
+    if (!isCurrentResume()) return;
     _resumingThread = false;
     if (activeThreadId == thread.id &&
         _threadGoalsById[thread.id]?.isActive == true) {
@@ -5971,16 +6026,33 @@ class CodexController extends ChangeNotifier {
   /// Restores a persisted execution directory only when its local ownership
   /// record and directory still agree. A stale or missing managed worktree is
   /// left for the settings recovery flow instead of being used as a cwd.
-  Future<String?> _restoreThreadEnvironmentBinding(String threadId) async {
+  Future<String?> _restoreThreadEnvironmentBinding(
+    String threadId, {
+    required int generation,
+  }) async {
+    if (_disposed || generation != _threadEnvironmentRestoreGeneration) {
+      return null;
+    }
+    // Do not retain an in-memory worktree from a previous binding when the
+    // persisted record was removed or became invalid.
+    _threadWorkspaceById.remove(threadId);
+    _managedWorktreeIdByThread.remove(threadId);
     final bindings = await _runtimeConfigurationStore
         .readThreadEnvironmentBindings();
+    if (_disposed || generation != _threadEnvironmentRestoreGeneration) {
+      return null;
+    }
     final binding = bindings
         .where((candidate) => candidate.threadId == threadId)
         .firstOrNull;
     if (binding == null || binding.workingDirectory.trim().isEmpty) return null;
     final directory = Directory(binding.workingDirectory);
     if (binding.kind == ThreadEnvironmentKind.local) {
-      if (await directory.exists()) {
+      final exists = await directory.exists();
+      if (_disposed || generation != _threadEnvironmentRestoreGeneration) {
+        return null;
+      }
+      if (exists) {
         _threadWorkspaceById[threadId] = binding.workingDirectory;
       }
       return null;
@@ -5993,6 +6065,9 @@ class CodexController extends ChangeNotifier {
       );
     }
     final records = await _runtimeConfigurationStore.readWorktreeRecords();
+    if (_disposed || generation != _threadEnvironmentRestoreGeneration) {
+      return null;
+    }
     LocalWorktreeRecord? record;
     for (final candidate in records) {
       if (candidate.worktreeId == worktreeId) {
@@ -6002,6 +6077,7 @@ class CodexController extends ChangeNotifier {
     }
     final validState =
         record != null &&
+        (record.threadId == null || record.threadId == threadId) &&
         (record.state == LocalWorktreeState.ready ||
             record.state == LocalWorktreeState.running ||
             record.state == LocalWorktreeState.completed);
@@ -6009,6 +6085,9 @@ class CodexController extends ChangeNotifier {
     final canonicalRecord = record == null
         ? null
         : await _resolveExistingPath(record.worktreePath);
+    if (_disposed || generation != _threadEnvironmentRestoreGeneration) {
+      return null;
+    }
     if (!validState ||
         canonicalBinding == null ||
         canonicalRecord == null ||

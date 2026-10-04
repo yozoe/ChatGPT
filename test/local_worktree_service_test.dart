@@ -19,6 +19,26 @@ Future<void> runGit(Directory directory, List<String> args) async {
 }
 
 void main() {
+  test('rejects worktree identifiers that escape the managed root', () async {
+    final root = await Directory.systemTemp.createTemp('codex-worktree-id-');
+    addTearDown(() => root.delete(recursive: true));
+    final service = LocalWorktreeService(
+      store: RuntimeConfigurationStore(
+        storage: CodexKeychainStorage(developmentDirectory: root),
+      ),
+    );
+
+    await expectLater(
+      service.create(
+        repository: '/not/a/repository',
+        rootPath: root.path,
+        projectId: 'project-1',
+        worktreeId: '../outside',
+      ),
+      throwsStateError,
+    );
+  });
+
   test(
     'persists permanent worktree identity and excludes it from cleanup',
     () async {
