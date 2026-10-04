@@ -97,3 +97,10 @@
 本周期首次检查仍返回 `CUA_REPL_ENABLED_SURFACES is required`，未获得官方桌面 surface。虽然临时 schema 校验产物仍可确认 `config/read`、`config/value/write`、`config/batchWrite`、`turn/settings/update` 及五个智能体默认设置字段存在，并再次核对 `sandbox_mode` 的 `read-only / workspace-write / danger-full-access`、`web_search` 的 `disabled / cached / indexed / live`、`model_verbosity` 的 `low / medium / high` 和 `model_reasoning_summary` 的 `auto / concise / detailed / none` 枚举，但这只补强协议字段证据，不改变上表任何“待补证”状态，也不把历史 Schema 升级为当前稳定运行时兼容性证据。
 
 本轮用脚本将上述四组枚举与临时 Schema 做自动比对，均通过；该检查只证明文档枚举没有超出已登记 Schema，不证明稳定运行时兼容或桌面 UI 映射。
+
+### 重新验收周期（2026-10-04）
+
+- 已读取当前官方 [Codex App Server 文档](https://learn.chatgpt.com/docs/app-server)，确认线程/回合生命周期、`turn/steer`、Goal、Plan、审批、文件系统、`config/read`、`config/value/write` 与 `config/batchWrite` 的公开协议说明；对应证据已拆入 [CODEX_COMPOSER_BEHAVIOR_MATRIX.md](../CODEX_COMPOSER_BEHAVIOR_MATRIX.md)。
+- 已检查本地 Debug 客户端窗口并取得当前深色工作台截图，作为项目侧视觉基线；这不是官方 Codex 客户端截图，不能用于宣称视觉一致。
+- CUA 当前仍无法选择官方 Codex 桌面客户端窗口，因此官方菜单顺序、焦点路径、默认文案、配置页行为和任务文件最终范围仍保持“待补证”。
+- 当前工作区已提交行为矩阵文档，未对未经官方桌面证据支持的 UI 结论降级为“已对齐”。
