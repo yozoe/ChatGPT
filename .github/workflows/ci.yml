@@ -43,7 +43,19 @@ jobs:
         run: flutter build macos --debug --config-only
 
       - name: Test macOS native layer
-        run: xcodebuild -workspace macos/Runner.xcworkspace -scheme Runner -configuration Debug -destination 'platform=macOS' test
+        shell: bash
+        run: |
+          set +e
+          xcodebuild -workspace macos/Runner.xcworkspace -scheme Runner -configuration Debug -destination 'platform=macOS' test 2>&1 | tee "$RUNNER_TEMP/native-test.log"
+          status=${PIPESTATUS[0]}
+          if [[ "$status" -ne 0 ]]; then
+            while IFS= read -r failure; do
+              echo "::error title=macOS native test::$failure"
+            done < <(
+              rg 'Test Case .* failed|error:|fatal error:' "$RUNNER_TEMP/native-test.log" | tail -20
+            )
+          fi
+          exit "$status"
 
   verify-performance:
     name: Verify macOS performance benchmark
