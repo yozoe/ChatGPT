@@ -102,6 +102,164 @@ void main() {
   });
 
   test(
+    'keeps a foreground completion routable during a background retry',
+    () async {
+      final server = FakeCodexAppServer()
+        ..startThreadResponseIds.addAll(['thread-a', 'thread-b']);
+      final controller = await readyRetryController(server);
+
+      expect(await controller.sendPrompt('任务 A'), isTrue);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/started',
+          params: {
+            'threadId': 'thread-a',
+            'turn': {'id': 'turn-a'},
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'thread-a',
+            'turn': {
+              'id': 'turn-a',
+              'status': 'failed',
+              'error': {'message': 'offline'},
+            },
+          },
+        ),
+      );
+
+      controller.createThread();
+      final retryAccepted = Completer<void>();
+      server.startTurnCompleter = retryAccepted;
+      final backgroundRetry = controller.retryFailedTurn(
+        threadIdOverride: 'thread-a',
+      );
+      for (
+        var index = 0;
+        index < 10 && !server.startedTurnThreadIds.contains('thread-a');
+        index++
+      ) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(server.startedTurnThreadIds, contains('thread-a'));
+
+      // Let the foreground task submit while the background retry is still
+      // waiting for App Server acceptance.
+      server.startTurnCompleter = null;
+      expect(await controller.sendPrompt('任务 B'), isTrue);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/started',
+          params: {
+            'threadId': 'thread-b',
+            'turn': {'id': 'turn-b'},
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'thread-b',
+            'turn': {'id': 'turn-b', 'status': 'completed'},
+          },
+        ),
+      );
+
+      expect(controller.status, RuntimeStatus.ready);
+      expect(controller.entries.any((entry) => entry.title == '任务完成'), isTrue);
+
+      retryAccepted.complete();
+      expect(await backgroundRetry, isTrue);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'does not retain foreground handshake markers after switching during goal retry',
+    () async {
+      final server = FakeCodexAppServer()
+        ..startThreadResponseIds.addAll(['thread-a', 'thread-b']);
+      final controller = await readyRetryController(server);
+
+      expect(await controller.sendPrompt('任务 A', goal: '目标 A'), isTrue);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'thread-a',
+            'turn': {
+              'status': 'failed',
+              'error': {'message': 'offline'},
+            },
+          },
+        ),
+      );
+
+      final goalWrite = Completer<JsonMap?>();
+      final retryAccepted = Completer<void>();
+      server
+        ..setThreadGoalCompleter = goalWrite
+        ..startTurnCompleter = retryAccepted;
+      final retry = controller.retryFailedTurn();
+      for (
+        var index = 0;
+        index < 10 && server.setThreadGoalCalls < 2;
+        index++
+      ) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(server.setThreadGoalCalls, 2);
+
+      // The retry started in the foreground, but Goal persistence yielded
+      // before the protocol request. Switching tasks must make it background.
+      controller.createThread();
+      goalWrite.complete(null);
+      for (
+        var index = 0;
+        index < 10 && !server.startedTurnThreadIds.contains('thread-a');
+        index++
+      ) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(server.startedTurnThreadIds, contains('thread-a'));
+
+      // Release only the new foreground request; the retry remains pending.
+      server.startTurnCompleter = null;
+      expect(await controller.sendPrompt('任务 B'), isTrue);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/started',
+          params: {
+            'threadId': 'thread-b',
+            'turn': {'id': 'turn-b'},
+          },
+        ),
+      );
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/completed',
+          params: {
+            'threadId': 'thread-b',
+            'turn': {'id': 'turn-b', 'status': 'completed'},
+          },
+        ),
+      );
+
+      expect(controller.status, RuntimeStatus.ready);
+      expect(controller.entries.any((entry) => entry.title == '任务完成'), isTrue);
+
+      retryAccepted.complete();
+      expect(await retry, isTrue);
+      controller.dispose();
+    },
+  );
+
+  test(
     'classifies structured turn-start errors without English text',
     () async {
       final server = FakeCodexAppServer()
