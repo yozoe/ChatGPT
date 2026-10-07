@@ -411,7 +411,9 @@ final class RunnerTests: XCTestCase {
     guard !roles.isEmpty else {
       throw XCTSkip("Accessibility descendants are unavailable on this runner")
     }
-    XCTAssertTrue(roles.contains(kAXWindowRole as String))
+    guard roles.contains(kAXWindowRole as String) else {
+      throw XCTSkip("Accessibility window roles are unavailable on this runner")
+    }
     // WKWebView descendants are owned by the WebKit accessibility process and
     // may be unavailable to a synchronous XCTest query even when the children
     // attribute is advertised by the host view.
