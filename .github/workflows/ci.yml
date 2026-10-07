@@ -49,10 +49,17 @@ jobs:
           xcodebuild -workspace macos/Runner.xcworkspace -scheme Runner -configuration Debug -destination 'platform=macOS' test 2>&1 | tee "$RUNNER_TEMP/native-test.log"
           status=${PIPESTATUS[0]}
           if [[ "$status" -ne 0 ]]; then
+            {
+              echo '### macOS native test failure summary'
+              echo
+              echo '```text'
+              rg 'Test Suite|Test Case|TEST FAILED|error:|fatal error:' "$RUNNER_TEMP/native-test.log" | tail -40 || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
             while IFS= read -r failure; do
               echo "::error title=macOS native test::$failure"
             done < <(
-              rg 'Test Case .* failed|error:|fatal error:' "$RUNNER_TEMP/native-test.log" | tail -20
+              rg 'Test Suite|Test Case|TEST FAILED|error:|fatal error:' "$RUNNER_TEMP/native-test.log" | tail -20 || true
             )
           fi
           exit "$status"
