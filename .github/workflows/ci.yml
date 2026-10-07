@@ -39,14 +39,11 @@ jobs:
       - name: Verify test shard coverage
         run: dart run tool/test_shards.dart --verify
 
-      - name: Verify performance benchmark harness
-        run: flutter test integration_test/profile_performance_benchmark_test.dart -d macos
-
-      - name: Reset macOS Flutter configuration
-        run: flutter build macos --debug --config-only
-
       - name: Test macOS native layer
         run: xcodebuild -workspace macos/Runner.xcworkspace -scheme Runner -configuration Debug -destination 'platform=macOS' test
+
+      - name: Verify performance benchmark harness
+        run: flutter test integration_test/profile_performance_benchmark_test.dart -d macos
 
       - name: Build macOS Debug
         run: flutter build macos --debug
