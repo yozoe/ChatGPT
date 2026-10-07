@@ -4,7 +4,7 @@
 
 ## 已完成基线
 
-- `已完成｜CI 维护` macOS CI 将性能基准集成测试放入独立作业；原生层作业先生成干净的 Flutter 配置再执行 Xcode 测试，避免临时 integration-test listener 路径或原生构建状态相互污染。
+- `已完成｜CI 维护` macOS CI 将性能基准集成测试和 Debug 构建分别放入独立作业；原生层作业先生成干净的 Flutter 配置再执行 Xcode 测试，避免临时 integration-test listener 路径或原生构建状态相互污染。
 - `已完成` 新增可接入 IDE 宿主的 `codex_desk/ide_context` 通道，并提供首个独立 VS Code 宿主扩展源码；接收当前文件、选区和打开标签，宿主提供有效快照后 `/IDE 上下文` 才启用，且只有用户明确选择的首轮任务或运行中方向调整才通过 App Server `additionalContext` 发送字符串化 JSON。断连和切换项目会清除选中状态，当前项目路径保持独立。
 - `已完成` 发布 [IDE_CONTEXT_HOST_PROTOCOL.md](docs/IDE_CONTEXT_HOST_PROTOCOL.md) 宿主契约，定义 `updateContext` JSON、字段别名、loopback discovery/token 传输、断连和项目边界，明确插件隐私责任与不依赖私有 IPC 的限制；VS Code 扩展声明支持未信任工作区，编辑器事件、停用断连、发现文件删除/恢复重连、工作区切换和请求边界已有本地 Node 测试与独立 transport 验证脚本覆盖，并在 VS Code 1.135.0 隔离 VSIX 中验证真实激活与真实 Debug Codex Desk discovery 端到端链路。
 - `已完成` 修复任务列表读取阻塞新回合的问题：列表刷新与 `turn/start` 并行，慢列表不会让 Composer 停止在发送前；服务端接受回合前仍拒绝迟到完成事件，接受后正常流式接收。工作区首次连接等待恢复收敛，显式任务不会与旧项目自动恢复重复 `thread/resume`。

@@ -45,9 +45,6 @@ jobs:
       - name: Test macOS native layer
         run: xcodebuild -workspace macos/Runner.xcworkspace -scheme Runner -configuration Debug -destination 'platform=macOS' test
 
-      - name: Build macOS Debug
-        run: flutter build macos --debug
-
   verify-performance:
     name: Verify macOS performance benchmark
     runs-on: macos-15
@@ -68,6 +65,27 @@ jobs:
 
       - name: Verify performance benchmark harness
         run: flutter test integration_test/profile_performance_benchmark_test.dart -d macos
+
+  verify-build:
+    name: Verify macOS debug build
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out Codex Desk
+        uses: actions/checkout@v4
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.1
+          cache: true
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Build macOS Debug
+        run: flutter build macos --debug
 
   test-shards:
     name: Test ${{ matrix.shard }}
