@@ -46,7 +46,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          xcodebuild -workspace macos/Runner.xcworkspace -scheme Runner -configuration Debug -destination 'platform=macOS' test 2>&1 | tee "$RUNNER_TEMP/native-test.log"
+          xcodebuild -workspace macos/Runner.xcworkspace -scheme Runner -configuration Debug -destination 'platform=macOS' test -quiet 2>&1 | tee "$RUNNER_TEMP/native-test.log"
           status=${PIPESTATUS[0]}
           if [[ "$status" -ne 0 ]]; then
             {
@@ -57,10 +57,11 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
             while IFS= read -r failure; do
+              failure=${failure//'%'/'%25'}
+              failure=${failure//$'\r'/'%0D'}
+              failure=${failure//$'\n'/'%0A'}
               echo "::error title=macOS native test::$failure"
-            done < <(
-              rg 'Test Suite|Test Case|TEST FAILED|error:|fatal error:' "$RUNNER_TEMP/native-test.log" | tail -20 || true
-            )
+            done < <(tail -30 "$RUNNER_TEMP/native-test.log")
           fi
           exit "$status"
 
