@@ -39,6 +39,9 @@ jobs:
       - name: Verify test shard coverage
         run: dart run tool/test_shards.dart --verify
 
+      - name: Prepare macOS Flutter configuration
+        run: flutter build macos --debug --config-only
+
       - name: Test macOS native layer
         run: xcodebuild -workspace macos/Runner.xcworkspace -scheme Runner -configuration Debug -destination 'platform=macOS' test
 
