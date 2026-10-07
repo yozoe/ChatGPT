@@ -68,6 +68,8 @@
 - `已完成` 设置导航中尚未实现的项目会显示“（待开发）”后缀，避免将占位入口误认为可用功能。
 - `已完成` 设置中的“插件”改为右侧设置工作区页面，直接管理已安装插件、MCP 服务器和可用技能；切换时刷新三类数据，不再以弹层覆盖设置。
 - `已完成` 审查工作区按展开/收起状态重新分配横向布局：展开时固定会话阅读宽度并排列 Inspector 与全高审查列，收起时审查列移除且 Inspector 悬浮回到最右侧；窄窗口保留覆盖式面板。
+- `已完成` 为性能基准补充 500 个 Git 工作区文件的真实 `CodeReviewPanel` 画布场景，覆盖 Diff 画布往返滚动、粘性文件标题、文件导航开合和组合帧采样；Profile driver 连接与 RSS 仍按宿主限制单独记录，未伪造性能结论。
+- `已完成` 为性能基准补充 loopback 固定 HTML 的真实 macOS WebKit 展开/返回场景，在窄/宽工作区间往返并采样重排链路；该夹具不把 driver 未连接时的构建或 RSS 峰值当作性能结论。
 - `已完成` 成功完成的任务会请求 macOS 本地通知，并在 Dock 显示红点；Dock Tile 会显式开启 AppKit 应用徽标显示，并在系统不绘制 `badgeLabel` 时叠加原生红点图层，确保首次徽标不会被 NSApplication 的默认设置隐藏。失败、停止和未知结束不会触发。时间线滚到末尾只确认应用内提醒；用户显式打开已完成任务，或从 Dock 切回且右侧仍显示该任务会话时，才清除对应 Dock 红点，设置、插件等其他工作区不会清除提醒，其他未查看任务仍保留计数；通知权限被拒绝不会影响任务流程。
 - `已完成` 文件变更摘要对 SVG 文件提供悬停图片预览，其他文件维持 Diff 预览行为。
 - `已完成` 修复应用重启后自动恢复任务及继续追问时文件变更数量被清空的问题：服务端未返回文件变更项时保留本地加密快照中的摘要与 Diff；同一 thread 开始新回合或完成无文件变更的追问时继续保留，切换任务和重启后仍可恢复。新聊天保持空摘要；累计文件集合超出最近 turn Diff 覆盖范围时安全撤销保持禁用。
@@ -140,9 +142,16 @@
 - `已完成` Codex 回复按 GitHub Flavored Markdown 渲染，支持正文选择复制及标题、列表、加粗、链接、引用、表格和代码块；HTTP、HTTPS 与邮件链接交由系统应用打开，当前项目内的文件行统一在会话右侧工作区打开可关闭的文件 Tab，同一路径复用已有 Tab 并重新读取磁盘内容，多文件状态保留，切换项目会清理旧项目文件并忽略迟到的旧项目打开结果。`.md` / `.markdown` Tab 支持格式化预览/源码切换、相对 Markdown 新建同级 Tab、本地图片、外部打开和源码定位 `文件:行号[:列号]`；其他 UTF-8 文本使用带行号、等宽字体、复制、横纵滚动与语法着色的只读源码视图，1 MB、二进制和编码限制会原位说明。所有本地路径在点击与读取时解析符号链接并限制在项目目录内，单份 Markdown 限制为 8 MB，源码模式对超过 4096 个字符的单行进行带长度提示的截断渲染，且不自动加载远程图片；用户输入、命令与系统记录维持纯文本，避免将日志内容误解析为 Markdown。
 - `已完成` 支持在运行中任务的 Composer 中连续暂存多条待发送方向：每次按 Enter 生成一条非持久化临时项，并按顺序堆叠在 Composer 顶部限高滚动栏，不会挤出输入框或提前写入对话记录。每条都可独立经 App Server `turn/steer` 发送或删除，方向发送严格串行；未手动发送时，任务每轮结束会按队列顺序自动发送下一条，自动续发失败会恢复队列并回滚乐观用户消息，手动发送恰逢任务结束且 steering 失败时也会安全转为下一轮。空 Composer 不会生成无意义的待发送项，切换任务后迟到的发送结果也不会污染新任务。运行中仍可附加文件、图片、文件夹、技能、目标和计划上下文，停止请求会携带当前 thread 与 turn ID，且仅在活动 turn 已知时开放。
 - `已完成` 接入 Riverpod 管理应用共享控制器的所有权与订阅；保留 `CodexController` 的 `ChangeNotifier` 桥接以兼容既有业务状态与测试注入。
+- `已完成` 将 Goal 生命周期、线程目标快照、续接/暂停状态以及 Plan 模式实现交接集合提取到独立的 `CodexGoalPlanState`；`CodexController` 保留原有公开 API、App Server 请求、目标时间线和跨线程异步语义，新增纯状态回归覆盖清理边界。
+- `已完成` 将工作区路径与配置、活动线程附着、线程所属项目、历史视图缓存、后台运行集合和托管工作树映射提取到独立的 `CodexWorkspaceThreadState`；`CodexController` 保留项目切换、历史恢复、完成事件路由和公开 API，新增状态清理回归并通过跨项目任务测试。
+- `已完成` 将回合发送握手、运行中回合 ID、失败重试、网络恢复计时器、线程协作模式和上下文用量提取到独立的 `CodexTurnExecutionState`；`CodexController` 保留 App Server 请求编排、时间线和公开重试 API，状态单测覆盖单项取消与全量清理。
+- `已完成` 将 Git 项目状态、文件 Diff、审查加载/错误、刷新代次和任务文件撤销状态提取到独立的 `CodexGitReviewState`；控制器与 `CodexGitOperations` 保留 Git 请求、路径安全和实际写入语义，新增状态清理回归。
+- `已完成` 将审批、MCP elicitation、用户输入请求、请求顺序、自动解决计时器和响应锁提取到独立的 `CodexPendingInteractionState`；控制器保留协议响应、线程优先级、取消和自动解决语义，新增计时器与请求队列状态回归。
+- `已完成` 将当前会话时间线、恢复代次、运行中回合标识和排队方向提取到独立的 `CodexConversationTimelineState`；控制器保留事件归属、历史读写、发送编排、流式回复和方向调整语义，新增时间线状态回归。
+- `已完成` 将任务完成确认、未查看提醒、Dock 徽标和完成事件去重提取到独立的 `CodexCompletionReminderState`；控制器保留历史持久化、系统通知、跨项目对账和提醒呈现语义，新增提醒清理回归。
 - `已完成` 将主题偏好纳入独立 Riverpod Provider，并统一工作区管理、账户、运行时、归档、文件审查、插件、marketplace 与 Git 弹窗的共享控制器订阅；测试和嵌入场景仍可显式注入控制器。
 - `已完成` 插件 marketplace 管理、启用/停用配置的原子写入，以及 Git 状态、Diff 和显式提交工作流视图；插件命令复用自动发现的 CLI 绝对路径，不受桌面应用 `PATH` 限制，路径解析和命令调用均有 20 秒超时保护。插件目录读取官方 manifest 的展示名、简介、分类和 PNG/JPEG/SVG logo，并按分类呈现；已安装插件只在“已安装”区域出现，不会重复出现在精选或分类目录中，Logo 路径限制在插件源目录内；缺少或无法读取 logo 时使用 Codex 风格旋涡标记，左侧“插件”入口也复用该标记。左侧菜单项固定 32px 高，图标与文字在行内垂直居中。
-- `已完成` 输入区“添加”菜单、桌面拖拽与剪贴板附件：支持文件/文件夹与项目上下文、线程目标、计划模式、技能录制和动态技能选择；文件可拖入，也可从 Finder 复制后在输入框粘贴，剪贴板屏幕截图会作为临时 PNG 图片附件发送。线程目标会随成功提交持久化到当前任务，并从 Composer 移除，避免成为后续消息的重复草稿标签。临时图片由会话控制器统一记录 Composer 保留计数及当前/缓存时间线、排队方向、运行中提交、失败重试引用；任务完成、切换功能页、Composer 重建或控制器切换均不会提前删除，最后引用消失时即使 Composer 未挂载也会主动清理，控制器销毁时兜底清理；图片附件支持缩略图和覆盖工作台的 Codex 风格沉浸式预览，提供按原始像素计算的真实比例、保留查看中心的手势/按钮/双击/键盘缩放、默认应用打开、另存副本与 `Esc` 关闭，附件自动去重，普通文本粘贴仍保持原有行为；并通过 `localImage`、`thread/goal/set`、`collaborationMode` 与结构化 `skill` 输入接入 App Server。
+- `已完成` 输入区“添加”菜单、桌面拖拽与剪贴板附件：支持文件/文件夹与项目上下文、线程目标、计划模式和动态技能选择；没有公开录制协议的“录制技能”入口明确禁用，不生成伪造的本地录制状态。文件可拖入，也可从 Finder 复制后在输入框粘贴，剪贴板屏幕截图会作为临时 PNG 图片附件发送。线程目标会随成功提交持久化到当前任务，并从 Composer 移除，避免成为后续消息的重复草稿标签。临时图片由会话控制器统一记录 Composer 保留计数及当前/缓存时间线、排队方向、运行中提交、失败重试引用；任务完成、切换功能页、Composer 重建或控制器切换均不会提前删除，最后引用消失时即使 Composer 未挂载也会主动清理，控制器销毁时兜底清理；图片附件支持缩略图和覆盖工作台的 Codex 风格沉浸式预览，提供按原始像素计算的真实比例、保留查看中心的手势/按钮/双击/键盘缩放、默认应用打开、另存副本与 `Esc` 关闭，附件自动去重，普通文本粘贴仍保持原有行为；并通过 `localImage`、`thread/goal/set`、`collaborationMode` 与结构化 `skill` 输入接入 App Server。
 - `已完成` 右侧检查器对齐 Codex 桌面端的环境信息卡：展示本地变更、分支、提交/推送、创建拉取请求和比较分支入口；标题、操作行、分组和文件行采用 18/14/14/13px 紧凑字号；Git 视图支持文件级暂存、确认后还原、显式提交/推送及通过本机 GitHub CLI 创建 PR。
 - `已完成` 左侧任务栏与右侧环境栏支持通过 Codex 风格的细分隔条拖拽调整宽度，并在窄窗口保留右侧自动收起行为。
 - `已完成` 左侧菜单采用独立的 Codex 深色背景表面；侧栏分隔条拖拽后的宽度会持久化到本地 UI 偏好，并在下次启动恢复。
@@ -167,13 +176,29 @@
 - `已完成` 建立未签名 Release 打包流程：`build_dmg.sh` 会按 `pubspec.yaml` 版本生成 DMG，发布说明见 `RELEASE_NOTES.md`；2026-08-21 已生成并通过 `hdiutil verify` 校验。
 - `已完成` 为安装脚本增加“仅构建、不安装”和“仅安装、不构建”参数；正常退出请求被取消时会对目标应用进程回退使用 `SIGTERM`，且仅在 `/Applications` 不可写时请求管理员权限。
 - `已完成` 增加 CLI 不可用的启动失败、可复制脱敏诊断和重试回归测试。
-- `已完成` 稳定回归测试基线：计划任务校验与排期弹层共用可注入时钟，过去时间测试不再依赖系统日期、时区或 12/24 小时制；取消竞态直接驱动待分发任务，Markdown 工作区预览按目标 Tab 和内容状态等待，方向调整附件竞态等待 Fake App Server 的明确调用信号。`flutter analyze`、默认并发完整 `flutter test`（当前拆分后 499 项）与单并发基线均通过。
+- `已完成` 稳定回归测试基线：计划任务校验与排期弹层共用可注入时钟，过去时间测试不再依赖系统日期、时区或 12/24 小时制；取消竞态直接驱动待分发任务，Markdown 工作区预览按目标 Tab 和内容状态等待，方向调整附件竞态等待 Fake App Server 的明确调用信号。`flutter analyze` 与单并发完整 `flutter test`（当前 850 项）均通过；默认并发仍需关注少数 Widget 时序波动。
+- `已完成｜内部重构` 将线程 writer 冲突、归档线程恢复提示、重试状态及异步恢复进度收敛到 `CodexThreadRecoveryState`；控制器继续拥有线程恢复请求、绑定校验、错误提示和通知副作用，保留跨项目切换清理、迟到结果隔离与公开 API 语义，并新增纯状态回归测试。
+- `已完成｜内部重构` 将运行时 CLI 路径切换的探测、持久化与失败回滚收敛到 `CodexRuntimeExecutableCoordinator`；控制器继续拥有停止/重启时机、loading/error 状态和公开配置 API，恢复自动发现时仍保持先清除持久化覆盖再探测的既有语义，并新增协作器回归测试。
+- `已完成｜内部重构` 将运行时停止与异常退出的后台线程归属、待处理协议请求清理分别收敛到 `CodexWorkspaceThreadState.clearRuntimeOwnership` 与 `CodexPendingInteractionState.clearForRuntimeDisconnect`；保留异常退出时失败回合恢复上下文、用户输入界面标记和控制器的时间线/重连副作用，并新增状态清理回归测试。
+- `进行中｜性能基准` 新增 [PROFILE_PERFORMANCE_BENCHMARK.md](docs/development-plans/PROFILE_PERFORMANCE_BENCHMARK.md) 与 macOS integration harness，覆盖 1,000 条侧栏任务、流式增量、后台完成通知、快速任务切换、unified Diff 解析、500 文件 Git 审查画布和真实 macOS WebView 展开/返回；Profile driver 连接、原生宿主联动和 RSS 仍按宿主限制记录，尚未伪造测量结果。
+- `已完成｜测试治理` 新增 `tool/test_shards.dart`，验证全部 134 个 `test/**/*_test.dart` 恰好归入 Composer、runtime、browser、Git、workspace、settings 或 misc 一个功能分片；GitHub Actions 使用七路矩阵并行执行，漏归类或重复归类会在门禁阶段失败。
+- `已完成｜内部重构` 将浏览器历史、清除浏览数据和下载记录对话框拆为独立公开 Widget；页面状态继续拥有导航与存储副作用，保留原有搜索、清理范围、删除、清空语义和测试 Key，并以浏览器分片回归验证。
+- `已完成｜内部重构` 将模型目录、运行时配置展示快照、协作模式预设及配置串行写入链收敛到 `CodexModelConfigurationState`；控制器继续拥有 App Server 读写、能力降级、配置持久化和通知副作用，保留模型选择、推理强度、Provider 来源与配置刷新语义，并新增状态回归测试。
+- `已完成｜内部重构` 将账户认证类型、账户展示信息、登录 URL、登录进行状态和 `requiresOpenaiAuth` 收敛到 `CodexSessionAccessState`；控制器继续拥有 App Server 登录请求、连接代次校验、错误提示和刷新通知，保留账户事件、API Key/ChatGPT 登录与发送门槛语义，并新增纯状态回归测试。
+- `已完成｜内部重构` 将活动/归档线程目录、加载与错误状态、本地线程终态映射收敛到 `CodexThreadCatalogState`；控制器继续拥有 App Server 刷新、排序合并、历史恢复和通知副作用，保留归档、删除、跨项目切换及迟到刷新隔离语义，并新增目录状态回归测试。
+- `已完成｜内部重构` 在 `CodexThreadCatalogState` 之上增加不可变 `CodexThreadCatalogSnapshot` Riverpod Provider；Sidebar 通过组件内 ProviderContainer 订阅快照，同时保留显式控制器测试注入和同步完成标记刷新，新增 provider 更新/不可变性回归，未改变 App Server、持久化格式或公开 Widget API。
+- `已完成｜内部重构` 将回合完成后的失败恢复状态转移收敛到 `CodexTurnExecutionState.recordTurnCompletion`；控制器继续保留网络活动归档、工作树完成、自动重试、时间线和通知副作用，原始提交、失败分类、旧重试清理和公开重试 API 行为保持不变，并新增状态回归覆盖。
+- `已完成｜内部重构` 将网络重试活动的回合匹配、等待态转历史态和后台待展示队列取出收敛到 `CodexTurnExecutionState`；控制器继续拥有历史保存与时间线副作用，迟到回合、跨线程归属和公开网络重试行为保持不变，并新增状态回归覆盖。
+- `已完成｜内部重构` 将浏览器启用、链接打开方式、下载目录/确认、标签恢复及初始加载竞态标记收敛到 `CodexBrowserPreferencesState`；控制器继续拥有偏好持久化、原生浏览器调用、动态工具权限和错误通知，保留浏览器安全边界与加载前用户修改优先级，并新增状态回归测试。
 - `已完成` 将浏览器与文件工作区回归从混合 Widget 测试中拆分为独立测试文件，继续覆盖审批后创建浏览器 Tab、宽窗口收起后的焦点释放、文件 Tab 保活以及切换计划任务、插件、智能体、拉取请求和设置页面后的浏览器状态保留。
 - `已完成` 将运行时诊断的凭据脱敏、有界日志、局部刷新通知、并发启动去重、CLI 缺失探测及失败后可恢复重试拆分到 `test/runtime_diagnostics_test.dart`；控制器测试显式等待初始配置，可不依赖完整工作区 Widget 套件单独执行。
+- `已完成` 将 CodexController 的 reasoning summary 分片累积提取到 `CodexReasoningSummaryState`，由 `CodexTurnActivityState` 组合；保留原有回合归属、摘要清洗、实时活动通知和公开 API，新增状态单测并通过完整回归。
+- `已完成` 将 CodexController 的当前回合文件变更、统一 Diff 派生路径和按线程历史文件快照提取到 `CodexFileChangeState`；保留 App Server 文件事件合并、撤销安全校验、历史恢复和公开文件摘要 API，新增状态单测并通过完整回归。
+- `已完成` 将插件、marketplace、MCP 配置边界、插件设置页面及失败/重连反馈迁移到 `test/plugin_mcp_management_test.dart`；34 项回归可独立执行，原 `widget_test.dart` 不再承担该职责域。
 - `已完成` 将 App Server 完成事件的纯控制器语义迁移到 `test/runtime_completion_test.dart`：独立覆盖完成事件去重、旧协议无回合 ID 前台完成、迟到重放隔离、失败后运行时复用、同一后台项目多完成事件串行保存、无 ID 后台跨项目对账、切换竞态，以及成功/取消前后台任务的提醒确认矩阵；涉及实际 Widget 与系统通知呈现的集成回归继续留在对应界面测试域。
 - `已完成` 将失败回合重试的纯控制器回归迁移到 `test/failed_turn_retry_test.dart`：独立覆盖自动网络等待耗尽、额度分类、结构化启动错误、原始输入保真、重复提交保护、切换任务竞态、再次失败保留重试及中断不提供重试；每个测试显式等待初始配置，界面提示仍留在 Widget 集成测试域。
 - `已完成` 将 App Server 请求编码与线程启动契约迁移到 `test/runtime_protocol_test.dart`：独立覆盖历史线程模型来源、新线程多工作区根、`thread/start`、`turn/start`、`turn/steer`、`turn/interrupt` 和实验能力初始化负载，并显式等待控制器初始配置。
-- `已完成` 将模型与推理强度配置回归迁移到 `test/model_configuration_test.dart`：独立覆盖新线程参数、模型切换后的能力过滤、默认模型能力范围、未来推理强度兼容、目录加载失败以及项目切换时清理运行时配置；原混合 Widget 文件不再重复运行这些控制器测试。
+- `已完成` 将模型与推理强度配置回归迁移到 `test/model_configuration_test.dart`：独立覆盖新线程参数、模型切换后的能力过滤、默认模型能力范围、未来推理强度兼容、目录加载失败、运行中 turn 保留原模型/推理强度、项目切换时清理运行时配置、controller 重建后的偏好恢复以及 runtime 重连后的 effective agent defaults 刷新；原混合 Widget 文件不再重复运行这些控制器测试。
 - `已完成` 将 Git 审查的纯状态与控制器回归迁移到 `test/git_review_controller_test.dart`：独立覆盖操作错误保留、状态/路径过滤、大型 Diff 截断、只读状态与选中 Diff、连续多文件审查及最多 6 路并发读取，并显式等待控制器初始配置。
 - `已完成` 将真实临时仓库的 Git 服务安全回归归入 `test/git_project_service_test.dart`：覆盖隐藏未跟踪文件的检查与删除、精确反向应用、冲突保留、路径白名单和暂存区保护；原混合 Widget 文件中的重复测试已删除。
 - `已完成` 将线程历史解析、最新回合文件快照、恢复状态、最近 8 个任务视图缓存、回合/项目分页、协作与上下文压缩记录、分页失败隔离及页数上限部分结果迁移到 `test/thread_history_test.dart`；控制器测试显式等待初始配置，原混合 Widget 文件中的重复测试已删除。
@@ -187,6 +212,31 @@
 - `已完成` 将 MCP elicitation 的结构化接受响应、自动批准模式下仍需人工确认和畸形 schema 安全拒绝迁移到 `test/mcp_elicitation_controller_test.dart`；协议安全边界与表单 Widget 布局现可分层验证。
 - `已完成` 将 MCP elicitation 的后台任务来源与提交、窄窗口大表单高度、提示到达顺序和当前任务优先级迁移到 `test/mcp_elicitation_widget_test.dart`；表单布局与交互层现可独立执行。
 - `已完成` 将 Agent 文本增量合并、reasoning summary 节流与活动覆盖、命令生命周期/耗时/迟到隔离、Web 搜索/MCP item、结构化文件读搜列改动作和动态技能读取状态迁移到 `test/runtime_streaming_test.dart`；流式与活动映射不再依赖巨型 Widget 测试文件。
+- `已完成` 将工作区壳层/项目栏/布局回归迁移到 `test/workspace_shell_layout_test.dart`，并将主题切换与偏好持久化迁移到 `test/settings_sidebar_test.dart`；原 `widget_test.dart` 不再重复承担这些职责，单并发完整测试基线保持 829 项通过。
+- `已完成` 将运行时连接代次、启动中标记和网络重试事件序号提取到 `CodexRuntimeConnectionState`，并为启动失效、显式停止、进程退出、重连与释放路径保留回归覆盖；控制器继续负责 App Server 生命周期、事件路由和公开 API，默认并发与单并发完整测试均通过。
+- `已完成` 将显式停止 runtime 时的回合提交、网络重试和失败回合清理收敛到 `CodexTurnExecutionState.clearForRuntimeStop()`；runtime 进程异常退出仍保留较窄的恢复路径，避免误删失败重试上下文。
+- `已完成` 将 `runtime/stderr`、`runtime/invalidMessage` 和 `runtime/exited` 从主 App Server 事件 switch 提取为早期诊断分支与 `_handleRuntimeExited` 生命周期处理；保持事件通知顺序、重连退避和异常退出恢复语义不变。
+- `已完成` 将浏览器权限、动态浏览器工具、普通审批、`requestUserInput` 和 MCP elicitation 的 App Server 请求路由提取到 `_handleServerRequestEvent`；保持响应编码、自动批准、请求队列、用户输入自动解决以及前台/后台提示时机不变，单并发完整测试保持 829 项通过。
+- `已完成` 将账户登录、线程归档/取消归档/重命名/删除、线程设置、`serverRequest/resolved` 和技能变更等非请求通知收敛到窄职责处理方法；保留刷新代次、缓存清理、异步刷新和响应锁语义，定向与单并发完整测试保持 829 项基线。
+- `已完成` 将 Goal/Plan 生命周期、线程 token usage、MCP 状态、item 开始/完成、reasoning summary、文件完成和 turn Diff 通知收敛到窄职责处理方法；保留活动回合归属、节流通知、文件快照和计划实现候选语义，定向与单并发完整测试保持 829 项基线。
+- `已完成` 将 `turn/started` 与 `turn/completed` 生命周期路由提取到独立处理方法；`turn/completed` 保留旧协议无回合 ID、前台/后台归属、迟到重放隔离、网络对账及全局通知时机，定向与单并发完整测试保持 829 项基线。
+- `已完成｜内部重构` 将嵌套 App Server 文本提取移入 `CodexNestedTextExtractor`，控制器继续保留流式时间线、失败回合和历史恢复的副作用语义。
+- `已完成｜内部重构` 将 App Server 事件 thread/turn 标识解析移入 `CodexRuntimeEventScope`，控制器继续保留事件归属、迟到隔离和生命周期副作用语义。
+- `已完成｜内部重构` 将浏览器动态工具的去重集合、待导航队列和运行时会话授权移入 `CodexBrowserInvocationState`；禁用、停止和异常退出仍按原有时机统一清理。
+- `已完成｜内部重构` 将活动线程与归档线程的刷新代次、请求标记及统一失效操作移入 `CodexThreadRefreshState`；控制器继续保留刷新触发、结果合并、迟到结果隔离和项目切换清理语义，活动与归档请求仍彼此独立。
+- `已完成｜内部重构` 将插件、marketplace、Skill、工作区 MCP 与线程 MCP 状态刷新的请求标记移入 `CodexPluginRefreshState`；插件操作和项目切换分别只使相关异步读取失效，控制器继续负责加载、错误、工作区/线程归属和数据合并。
+- `已完成｜内部重构` 将配置读取、模型能力目录和协作模式预设的刷新请求标记移入 `CodexConfigurationRefreshState`；运行时停止只使配置快照失效，模型能力过滤、Plan/default 回退和配置写入语义保持不变。
+- `已完成｜内部重构` 将 config/batchWrite 能力探测代次与智能体默认设置串行写入 generation 移入 `CodexConfigurationOperationState`，并将线程工作树恢复代次移入独立的 `CodexThreadEnvironmentRestoreState`；旧 generation 仍只负责丢弃迟到结果，配置探测、配置写入和线程环境恢复彼此独立，公开配置 API、工作树绑定和错误语义保持不变。
+- `已完成｜内部重构` 将插件、Skill、marketplace、MCP 目录快照及 loading/error/action 状态移入 `CodexPluginManagementState`；控制器继续负责 CLI/App Server 请求、刷新代次、配置写回、重连和通知，工作区切换只清理 MCP 状态，插件与 Skill 状态保持原有生命周期。
+- `已完成｜内部重构` 将线程归档、删除、取消归档和 fork 的重复操作门禁移入 `CodexThreadOperationState`；活动线程附着标记与 pinned thread 集合统一归入 `CodexWorkspaceThreadState`，避免形成双写状态，控制器继续负责请求与恢复副作用。
+- `已完成｜内部重构` 将历史保存计时器、当前保存链、按工作区保存链、附加目录保存链、后台完成队列和失败标记移入 `CodexHistoryPersistenceState`；控制器继续负责快照、持久化 I/O、失败提示和工作区切换语义。
+- `已完成` 将项目/历史侧栏的项目列表、创建项目、完成提醒迁移到 `test/sidebar_workspace_history_test.dart`，将任务搜索/行交互迁移到 `test/sidebar_task_interaction_test.dart`，将用户消息导航迁移到 `test/conversation_user_message_rail_test.dart`，将时间线滚动/历史恢复迁移到 `test/timeline_scrolling_history_test.dart`，并将配置页面回归迁移到 `test/configuration_widget_test.dart`；`test/widget_test.dart` 已控制在约 1,500 行以内。
+- `已完成` 将失败回合的额度提示、普通失败重试和容量自动重试迁移到 `test/failed_turn_retry_widget_test.dart`，将任务文件跨轮摘要、Diff 撤销边界、历史恢复和旧文件变更渲染迁移到 `test/task_file_timeline_test.dart`；主 `test/widget_test.dart` 进一步收敛到约 800 行，三个职责域可独立串行验证且保留原断言与生命周期语义。
+- `已完成` 将 Composer 草图、拖放文件、剪贴板文件/截图、临时图片持久化、长文本粘贴卡片和失败/排队生命周期迁移到 `test/composer_attachment_lifecycle_test.dart`；`test/composer_submission_attachment_test.dart` 保留命令、反馈、压缩、侧聊和布局交互，降至约 1,160 行，附件生命周期可独立验证。
+- `已完成` 将工作区自动连接、运行时重连、意外退出恢复和附加目录持久化迁移到 `test/workspace_runtime_connection_test.dart`；将归档/取消归档/永久删除与 writer 冲突历史迁移到 `test/sidebar_archive_history_test.dart`，将项目列表与拖放创建迁移到 `test/sidebar_project_creation_test.dart`；`test/sidebar_workspace_history_test.dart` 降至约 1,350 行，侧栏职责域均可独立运行。
+- `已完成` 将托管工作树、线程恢复与上下文协议迁移到 `test/runtime_worktree_protocol_test.dart`，将压缩、审查、反馈和初始化尾部协议迁移到 `test/runtime_auxiliary_protocol_test.dart`；`test/runtime_protocol_test.dart` 收敛到约 1,300 行，协议测试按职责独立验证。
+- `已完成` 将 Git 审查工作台的 Diff、Tab、窄窗口和操作布局回归迁移到 `test/git_review_layout_test.dart`；主 `test/git_review_workspace_test.dart` 保留任务变更、撤销、文件预览和分支工作流，降至约 1,145 行。
+- `已完成` 将浏览器 Tab、导航版本、弹窗、重定向、恢复和生命周期回归迁移到 `test/browser_tab_navigation_test.dart`；`test/browser_invocation_test.dart` 保留动态工具、审批、URL 安全、浏览器偏好与数据清理，两个文件均约 750 行。
 
 ### P1：核心体验
 
@@ -202,10 +252,18 @@
 - `已完成` “集成 > 浏览器”新增网页链接打开位置偏好，默认系统浏览器并可切换为内置浏览器；偏好写入独立运行时配置，智能体主动请求不受该用户链接偏好影响。
 - `已完成` 用户消息气泡保持右侧对齐，内部单行与换行文本维持自然左对齐；超过 16 行的长文本默认省略折叠，支持“显示更多 / 显示较少”原位切换；悬停时在时间旁提供复制和修改入口，修改会原位展开 Codex 风格内联编辑器，支持取消和发送，修订内容作为下一轮任务提交（运行中则排入调整方向），不修改既有会话审计记录。
 - `已完成` 收紧“已运行命令”等活动摘要与展开明细的上下间距，减少时间线活动清单的空白。
-- `已完成` 本次 [CODEX_COMPOSER_PARITY_PLAN.md](docs/development-plans/CODEX_COMPOSER_PARITY_PLAN.md) 范围内的 Composer 与任务文件开发：`@` / `/` 的真实动作、筛选、键盘、结构化输入、`fuzzyFileSearch`、Goal/Plan/Skill、代码审查、聊天分支、主动压缩、反馈、侧边聊天、上下文用量、IDE 宿主通道、任务文件跨轮持久化、撤销和重启恢复均已接入并通过本地测试。独立 VS Code 宿主源码和本地验证已交付；官方桌面菜单与视觉对照、任务文件最终范围及真实 VS Code 安装验收仍见 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](docs/development-plans/CODEX_COMPOSER_PARITY_FOLLOWUP.md)。
+- `已完成｜代码实现` 本次 [CODEX_COMPOSER_PARITY_PLAN.md](docs/development-plans/CODEX_COMPOSER_PARITY_PLAN.md) 范围内的 Composer 与任务文件能力已接入：`@` / `/` 的真实动作、筛选、键盘、结构化输入、`fuzzyFileSearch`、Goal/Plan/Skill、代码审查、聊天分支、主动压缩、反馈、侧边聊天、上下文用量、IDE 宿主通道、任务文件跨轮持久化、撤销和重启恢复。
+- `已完成｜项目侧验证` 独立 VS Code 宿主源码、本地 Node/transport 测试、VS Code 1.135.0 隔离 VSIX smoke 和真实 Debug Codex Desk discovery 链路均已验证；相关 Flutter 控制器、Widget、键盘、窗口边界、生命周期和协议回归也已通过。
+- `待补证｜官方桌面` 已取得官方桌面 `/` 菜单、“添加”菜单、文件夹附件流程、直接输入 `@` 后打开添加上下文菜单，以及 Goal 运行中和结束后 Composer 空闲状态的截图/操作记录；快捷键、独立 Goal 完成卡片、暂停/需要输入、Plan/审批、任务文件最终范围及官方 Codex 客户端 IDE 语义仍待固定版本官方窗口实测，详见 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](docs/development-plans/CODEX_COMPOSER_PARITY_FOLLOWUP.md)。
 - `已完成` 按 [LOCAL_WORKTREE_DEVELOPMENT.md](docs/development-plans/LOCAL_WORKTREE_DEVELOPMENT.md) 实现 Codex 风格本地工作树：Composer 已可选择本地或托管工作树，首次发送时创建项目外 detached worktree，线程、App Server cwd、审查和 Git 操作绑定真实执行目录，并携带已跟踪本地改动、`.worktreeinclude` 与 `AGENTS.override.md`；任务打开后的环境信息、后续 turn 和分支菜单使用线程实际执行目录，恢复线程时读取并完成持久化环境绑定校验，工作树内创建/切换分支会写回记录，运行中拒绝分支变更；工作树标识限制为安全单层目录名，完成后按保留策略清理，设置与恢复入口已接入。起始分支选择现已支持当前分支和分支选择对话框，记录保存 `baseRef`，跨提交创建不会误带源 checkout 改动；恢复已清理工作树时使用记录的精确 `baseCommit`，不再从当前 `HEAD` 重建；删除前会创建并校验 AES-GCM 加密的 tracked/untracked 内容快照，恢复成功后清理快照；创建事务会先持久化 `creating` 记录，枚举时不会把中断的半成品提升为 `ready`；删除前还会要求工作树根目录旁 `.codex-worktree-metadata/<worktree-id>.json`、应用记录、canonical 路径、Git common directory、HMAC 完整性和精确 worktree 登记一致，foreign/missing 不会自动清理。清单和密钥仍由应用维护，不能替代真正应用外权威所有权或 Keychain 隔离。
 - `已完成` 首次恢复任务时，历史时间线与持久化工作树绑定校验彼此隔离；绑定记录读取较慢或损坏时不会阻塞历史内容显示，失效绑定仍会在当前任务中提示并保留设置恢复入口。
 - `已完成` 对齐 Codex 的网络等待与失败轮次恢复：App Server 发出 `error(willRetry: true)` 时，在严格匹配 thread/turn 的对应时间线中逐次保留灰色 Wi-Fi 活动行 `Reconnecting... waiting for network`；当前任务直接显示，后台任务按 thread 暂存并在打开时恢复，不污染当前会话。任务保持运行并由服务端自动续接，出现后续进展或结束后等待记录转为非实时历史语义；迟到通知与 `willRetry: false` 被忽略。只有最终返回 `turn/completed(status: failed)` 后才在输入区上方显示行内错误和“重试”，并在同一线程原样重发文字、Skill/图片输入、目标、计划模式及模型设置；重试期间防止重复提交，再次失败后保留入口。停止/取消、缺少原始内存提交的历史失败和其他任务均不会显示或误用该操作，异步结果也不会污染切换后的任务。
+- `已完成｜内部重构` 将 `error(willRetry)` 的协议解析与 thread/turn 归属判定提取为独立的 `CodexNetworkRetryEvent` 值对象；控制器继续拥有时间线写入、后台暂存和通知副作用，严格保留迟到事件、错误重试和前后台任务隔离语义，并新增纯判定回归测试。
+- `已完成｜内部重构` 将失败回合的 usage limit、容量/速率限制和普通可重试错误分类提取为纯 `CodexFailedTurnKindClassifier`；保留 usage-limit 优先级、结构化 `CodexAppServerException` / 429 识别和安全兜底，控制器仍负责提示、自动重试和原始提交恢复。
+- `已完成｜内部重构` 将 `turn/completed` 的嵌套/信封状态读取及成功、停止、失败、未知状态归一化提取为 `CodexTurnCompletionParser`；控制器继续负责回合归属、去重、后台对账、提醒和重试副作用。
+- `已完成｜内部重构` 将 `runtime/exited` 的退出码读取与诊断文案提取为 `CodexRuntimeExitInfo`；控制器继续负责异常退出清理、连接代次失效、错误时间线和有限退避重连。
+- `已完成｜内部重构` 将 CLI 探测结果、探测中标记和探测错误收敛到 `CodexRuntimeProbeState`；控制器继续负责通知、配置保存、运行时连接和探测成功后的重连决策。
+- `已完成｜内部重构` 将启动、重连和替换连接的纯生命周期门槛集中到 `CodexRuntimeConnectionState`；控制器仍拥有工作区、任务和 App Server 副作用，未改变连接状态机。
 - `已完成` 永久工作树现在可从项目菜单创建并作为独立项目登记；自动清理跳过永久工作树，运行中的源项目拒绝创建。
 - `已完成` 恢复托管工作树线程时校验持久化 binding 与记录、canonical 路径和目录状态；绑定校验完成后才允许后续 turn 发送，失效绑定不会继续作为执行目录使用，并提示通过设置恢复。
 - `已完成` 接入基础 Local ↔ Worktree Handoff：建立 generation 0 双端快照，后续仅迁移基线后的文件增量，重叠修改在写入前拒绝并保留冲突路径；Inspector 提供停止任务后的移交入口，成功后更新 binding 和 generation。
@@ -251,6 +309,19 @@
 - `已完成` 将 Dock badge 的计数显示边界抽为可导入的原生纯逻辑；负数/零不显示、正常计数和 99 上限均由 RunnerTests 验证。
 - `已完成` 收紧 macOS Dock 徽标的 MethodChannel 参数边界：兼容旧版 `visible` 与整数 `count`，缺失字段或类型错误会返回明确原生错误而非静默清除徽标，并由 RunnerTests 覆盖。
 - `已完成` 建立 macOS GitHub Actions CI：格式检查、`flutter analyze`、`flutter test`、原生 `RunnerTests` 和 macOS Debug 构建；主题 Token 已迁入项目内维护，不再依赖仓库外本机路径或外部 UI Kit。
+- `已完成` 将 Dart 结构门禁接入 GitHub Actions：`tool/check_dart_structure.dart` 检查 `lib`、`test`、`integration_test` 与 `tool` 中的多类文件、私有类和 `part` / `part of`，并对超过 1,500 行的文件发出警告；当前结构扫描无违规，剩余大型生产文件继续按领域治理。
+- `已完成｜内部重构` 将设置页 Worktrees、归档聊天、浏览器、插件、外观和快捷键/关于视图拆到独立公开文件；`SettingsPageState` 保留导航、持久化、Riverpod hooks、控制器监听和异步副作用，设置交互与公开 `SettingsPage` 构造参数不变，并已通过设置分片和结构门禁。
+- `已完成｜内部重构` 将工作区 Codex 配置展示对话框拆为独立公开 Widget；保留配置刷新、ControllerBuilder 监听、原有语义 Key、打开 `config.toml` 和公开工作区 API。
+- `已完成｜内部重构` 将工作区账户/登录对话框及其输入控制器生命周期拆为独立公开 Widget/State 文件；保留 ChatGPT 登录、API Key 登录、错误反馈和公开工作区 API。
+- `已完成｜内部重构` 将工作区运行时诊断对话框拆为独立公开 Widget；保留日志监听、CLI 选择/恢复、复制/导出诊断和工作区公开 API。
+- `已完成｜内部重构` 将工作区目录切换与附加目录管理对话框拆为独立公开 Widget；保留项目创建、目录选择器、工作区切换/移除、实时控制器监听和公开工作区 API。
+- `已完成` 在不改变公开控制器 API、App Server 协议或连接失败恢复语义的前提下，将运行时进程的 probe、start、initialize、stop 调用收敛到 `CodexRuntimeConnection`；控制器继续拥有状态、重连退避与事件路由，适配边界由 `test/runtime_connection_adapter_test.dart` 独立覆盖。
+- `已完成` 将运行时失败后的有限退避计时器和尝试次数提取到 `CodexRuntimeReconnectCoordinator`；保留 1/2/5 秒序列、成功归零、停止/释放取消和过期回调保护，控制器仍拥有连接状态与实际重连执行。
+- `已完成` 将插件、marketplace、MCP 与 Skill 的目录读取集中到无状态 `CodexPluginCatalog`；不改变既有可空工作区参数、请求代次、加载错误语义或任何配置写入路径。
+- `已完成` 将运行时诊断日志的脱敏、有界保留和诊断专属通知收敛到 `CodexRuntimeDiagnostics`；保持 stderr/协议异常不重建工作区且不写入会话历史。
+- `已完成` 将工作区切换的串行化、最新请求优先和释放后的过期回调保护收敛到 `CodexWorkspaceOperationCoordinator`；控制器继续拥有路径校验、历史恢复、运行时连接和公开选择 API，后台任务归属与迟到结果隔离语义不变，并由 `test/workspace_operation_coordinator_test.dart` 独立覆盖。
+- `已完成` 将流式 Agent 消息的 item 索引、phase、完成去重和当前流式项收敛到 `CodexAgentMessageStreamState`；控制器仍拥有时间线条目、活动状态和通知调度，切换恢复、迟到增量与完成事件语义不变，并由 `test/agent_message_stream_state_test.dart` 与既有 streaming/timeline 回归共同覆盖。
+- `已完成` 将 App Server item 到 `LiveTurnActivity` 的纯协议映射收敛到 `CodexLiveTurnActivityMapper`；命令动作、网页搜索、技能读取、reasoning、协作任务和未知 item 的标签与安全降级保持不变，控制器继续拥有活动归属、生命周期和时间线写入，并由 `test/live_turn_activity_mapper_test.dart` 与 streaming/timeline/subagent 回归覆盖。
 - `已完成` 完善键盘导航、焦点顺序、语义标签和高对比度主题；浏览器工作区已完成 Flutter 语义树与 macOS AX 审计，全局高对比度主题开关已持久化并应用到文字、边框和控件状态；主壳层、设置导航/开关、右侧工作区 Tab、工作区启动器、插件/MCP 标签、已安排任务建议、任务搜索动作、搜索结果、环境信息操作行、Composer 附件预览/移除动作、项目源目录管理、任务历史行、空项目引导、代码审查文件导航行、文件树文件/文件夹、审查目录、分支选择器、创建分支入口、代码审查范围选项和窄窗口审查覆盖层均有语义回归与窄窗口覆盖。设置常规、外观、配置、插件、浏览器、Worktrees、钩子和归档页面完成可点击节点遍历；工作台与设置页使用阅读顺序焦点组，未开发入口不进入焦点链，并为浏览器开关、工作树刷新和钩子刷新补齐明确语义。
 - `已完成` 评估 Windows / Linux 平台支持；结论和启动前置条件见 [PLATFORM_SUPPORT.md](docs/PLATFORM_SUPPORT.md)，在 macOS 发布前不启动实现。
 

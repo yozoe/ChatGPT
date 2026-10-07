@@ -30,14 +30,45 @@ jobs:
       - name: Check formatting
         run: dart format --output=none --set-exit-if-changed lib test tool
 
+      - name: Check Dart structure
+        run: dart run tool/check_dart_structure.dart
+
       - name: Analyze
         run: flutter analyze
 
-      - name: Test
-        run: flutter test
+      - name: Verify test shard coverage
+        run: dart run tool/test_shards.dart --verify
+
+      - name: Verify performance benchmark harness
+        run: flutter test integration_test/profile_performance_benchmark_test.dart -d macos
 
       - name: Test macOS native layer
         run: xcodebuild -workspace macos/Runner.xcworkspace -scheme Runner -configuration Debug -destination 'platform=macOS' test
 
       - name: Build macOS Debug
         run: flutter build macos --debug
+
+  test-shards:
+    name: Test ${{ matrix.shard }}
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [composer, runtime, browser, git, workspace, settings, misc]
+    steps:
+      - name: Check out Codex Desk
+        uses: actions/checkout@v4
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.1
+          cache: true
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Run ${{ matrix.shard }} tests
+        run: dart run tool/test_shards.dart --shard "${{ matrix.shard }}"

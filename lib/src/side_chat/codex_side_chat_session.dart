@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:chatgpt/src/domain/timeline_entry.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
+import 'package:chatgpt/src/app_controller_agent_message_stream_state.dart';
 import 'package:flutter/foundation.dart';
 
 /// Owns one ephemeral App Server fork without replacing the main conversation.
@@ -20,7 +21,8 @@ class CodexSideChatSession extends ChangeNotifier {
   final String threadId;
   final String workingDirectory;
   final List<TimelineEntry> _entries = [];
-  final Map<String, int> _agentEntryIndexByItem = {};
+  final CodexAgentMessageStreamState _agentMessageStreamState =
+      CodexAgentMessageStreamState();
   late final StreamSubscription<ServerEvent> _eventSubscription;
 
   bool _disposed = false;
@@ -155,9 +157,9 @@ class CodexSideChatSession extends ChangeNotifier {
     final delta = params['delta']?.toString() ?? '';
     if (delta.isEmpty) return;
     final itemId = params['itemId']?.toString() ?? 'side-agent-message';
-    final index = _agentEntryIndexByItem[itemId];
+    final index = _agentMessageStreamState.entryIndexByItem[itemId];
     if (index == null) {
-      _agentEntryIndexByItem[itemId] = _entries.length;
+      _agentMessageStreamState.entryIndexByItem[itemId] = _entries.length;
       _entries.add(
         TimelineEntry(
           kind: TimelineKind.agent,
@@ -178,9 +180,11 @@ class CodexSideChatSession extends ChangeNotifier {
     final itemId = rawItem['id']?.toString() ?? '';
     final text = rawItem['text']?.toString() ?? '';
     if (text.isEmpty) return;
-    final index = _agentEntryIndexByItem[itemId];
+    final index = _agentMessageStreamState.entryIndexByItem[itemId];
     if (index == null) {
-      if (itemId.isNotEmpty) _agentEntryIndexByItem[itemId] = _entries.length;
+      if (itemId.isNotEmpty) {
+        _agentMessageStreamState.entryIndexByItem[itemId] = _entries.length;
+      }
       _entries.add(
         TimelineEntry(
           kind: TimelineKind.agent,
@@ -199,6 +203,7 @@ class CodexSideChatSession extends ChangeNotifier {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    _agentMessageStreamState.clear();
     unawaited(_eventSubscription.cancel());
     super.dispose();
   }

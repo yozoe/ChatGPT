@@ -73,8 +73,19 @@ void main() {
     expect(diagnosticsNotifications, 1);
     expect(controllerNotifications, 0);
 
-    controller.clearRuntimeLogs();
+    controller.runtimeDiagnostics.clearSilently();
+    expect(controller.runtimeLogs, isEmpty);
+    expect(diagnosticsNotifications, 1);
+
+    controller.handleServerEventForTesting(
+      const ServerEvent(
+        method: 'runtime/stderr',
+        params: {'message': 'diagnostic event after silent clear'},
+      ),
+    );
     expect(diagnosticsNotifications, 2);
+    controller.clearRuntimeLogs();
+    expect(diagnosticsNotifications, 3);
     expect(controllerNotifications, 0);
     controller.dispose();
   });

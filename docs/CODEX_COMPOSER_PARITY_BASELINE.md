@@ -18,6 +18,25 @@
 
 两个版本不能混为同一基线：项目当前实现和测试仍以 0.153.4 为主，官网设置字段的最新协议证据来自 0.154.0-alpha；升级或兼容性验证完成前，项目不得默认使用 alpha 字段。
 
+### 当前验收环境探测（2026-10-05）
+
+- 官方客户端安装资源：Bundle ID `com.openai.codex`，`CFBundleShortVersionString` 为 `26.930.31730`，build `12947`。
+- macOS：`26.5.2`，build `25F84`，时区 `Asia/Shanghai`。
+- 内置 Codex CLI：`codex-cli 0.160.0`；同一 CLI 的 App Server 进程当前以 `codex app-server --listen stdio://` 运行。
+- 当前项目路径：`/Users/dong/Code/ChatGPT`。
+- 本地 Codex 配置默认值：`model_provider = "custom"`、`model = "gpt-5.6-sol"`；官方客户端当前选中模型、账号能力和组织策略尚未从官方窗口验证。
+- 系统外观为深色；官方客户端是否覆盖该主题、窗口尺寸和布局断点尚未验证。
+- CUA 应用清单可以看到官方客户端正在运行；但 `cua.getApp("ChatGPT")` 会解析到本项目的 `chatgpt`（`com.yozoe.chatgpt`），按官方安装路径 `/Applications/ChatGPT.app` 绑定则被当前安全策略拒绝。因此本记录只固定安装和运行时事实，不把本地 Debug 客户端当作官方桌面行为证据。
+- 官方 [Computer Use 文档](https://learn.chatgpt.com/docs/computer-use.md) 明确说明 Computer Use 不能自动化 ChatGPT 本身；因此 Screen Recording、Accessibility 和 Always allow 只适用于允许的目标应用，不能作为官方 Codex 客户端验收的解锁方式。
+
+### 当前 CLI Schema smoke（2026-10-05）
+
+在隔离临时 `CODEX_HOME` 和临时输出目录中，使用内置 `codex-cli 0.160.0` 成功执行
+`codex app-server generate-json-schema --out <dir> --experimental`。输出同时包含
+App Server v1/v2 Schema，并可见当前 Goal、Plan、`turn/settings/update`、配置读写、
+任务文件 Diff、审批和线程生命周期相关类型。该结果确认 0.160.0 的协议资源可生成，
+但不替代官方桌面菜单、焦点、视觉或任务文件展示范围验收。
+
 ## 证据等级
 
 - `已确认（文档）`：OpenAI 官方文档明确描述。
@@ -110,7 +129,7 @@ CODEX_HOME="$(mktemp -d)" \
 
 | 能力 | 官方证据 | App Server 协议 | 当前实现状态 |
 | --- | --- | --- | --- |
-| IDE 上下文 | 已确认（文档）：`/ide-context` 切换自动 IDE 上下文；CLI `/ide` 包含打开文件和当前选区 | App Server 0.153.4 的 `turn/start.additionalContext` 与 `turn/steer.additionalContext` 可携带按不透明来源键组织的 `{kind: untrusted/application, value: string}` 文本片段；官方文档仍未给出 IDE 宿主连接、来源键和序列化格式 | 已提供 `codex_desk/ide_context` 通用宿主通道并接入当前文件、选区、打开标签；有效快照到达后入口启用，显式选择后以 JSON 字符串发送，断连/切换项目清除选择。仓库没有具体 IDE 插件端，独立运行时仍禁用；当前项目路径从 `@`/添加菜单单独提供 |
+| IDE 上下文 | 已确认（文档）：`/ide-context` 切换自动 IDE 上下文；CLI `/ide` 包含打开文件和当前选区 | App Server 0.153.4 的 `turn/start.additionalContext` 与 `turn/steer.additionalContext` 可携带按不透明来源键组织的 `{kind: untrusted/application, value: string}` 文本片段；官方文档仍未给出 IDE 宿主连接、来源键和序列化格式 | 已提供 `codex_desk/ide_context` 通用宿主通道和独立 VS Code 宿主；有效快照到达后入口启用，显式选择后以 JSON 字符串发送，断连/切换项目清除选择。VS Code 1.135.0 隔离 VSIX smoke、Node 生命周期测试和真实 Debug Codex Desk discovery 已验证；官方 Codex 客户端 IDE 语义仍待实测，当前项目路径从 `@`/添加菜单单独提供 |
 | MCP | 已确认（文档） | `mcpServerStatus/list`、`mcpServerStatus/updated` | 已接入当前线程实时连接、认证与工具状态；待桌面实测 |
 | 代码审查 | 已确认（文档）：未提交改动或相对基础分支 | `review/start`，目标支持 `uncommittedChanges`、`baseBranch`、`commit`、`custom` | 已改用结构化 `review/start` |
 | 侧边聊天 | 已确认（文档）：临时聊天，不中断主聊天；审查模式和嵌套侧边聊天中不可用 | `thread/fork` + `ephemeral: true`；分页线程使用 `excludeTurns: true` | 已接入独立侧栏 UI，审查/嵌套/重复创建均禁用，迟到结果按任务丢弃；精确布局仍待桌面实测 |

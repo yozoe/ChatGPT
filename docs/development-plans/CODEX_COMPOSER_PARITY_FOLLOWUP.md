@@ -1,6 +1,8 @@
 # Codex Composer 一致性后续验收清单
 
-> 状态：待开发 / 待验收。本文档中的官方客户端实测、视觉对照、任务文件范围确认和具体 IDE 插件尚未完成。
+> 状态：部分完成 / 待验收。VS Code 宿主源码、本地 Node/transport 测试及 VS Code 1.135.0 隔离 VSIX smoke 已完成；官方客户端实测、视觉对照、任务文件范围确认和官方客户端 IDE 语义尚未完成。
+
+> 本轮范围：按用户要求暂缓所有必须依赖官方截图或官方窗口操作的验收；以下“待补证”项目仍不视为已对齐。
 
 本文档承接 [CODEX_COMPOSER_PARITY_PLAN.md](CODEX_COMPOSER_PARITY_PLAN.md) 中不纳入当前开发目标的工作。当前仓库已实现并测试的 Composer、App Server 协议、任务文件持久化和 IDE 宿主边界不需要在本清单中重复开发。
 
@@ -47,7 +49,10 @@
 
 根据证据确定右侧任务文件使用最新 turn、整个 thread、Git 工作树，或其他组合语义，再回到实现和测试中更新对应行为。
 
-## 具体 IDE 插件
+## IDE 宿主与官方客户端语义
+
+代码实现和项目侧宿主验收已完成；本节剩余内容仅指官方 Codex 客户端中的 IDE
+菜单、生命周期和视觉语义，不把本地 Debug 客户端证据升级为官方一致性结论。
 
 仓库现已提供首个独立 VS Code 宿主源码，见
 [`integrations/vscode-codex-context`](../../integrations/vscode-codex-context)
@@ -61,7 +66,8 @@ Debug Codex Desk，确认 `/IDE 上下文` 从未连接变为可用。扩展不�
 
 ## 交付门槛
 
-完成本清单后，补充官方行为矩阵、视觉证据、任务文件范围结论和插件验证记录，再决定是否重新扩大主计划的完成定义。
+完成本清单后，补充官方行为矩阵、视觉证据、任务文件范围结论和官方客户端
+IDE 语义记录，再决定是否重新扩大主计划的完成定义。
 
 ## 证据登记表
 
@@ -112,3 +118,15 @@ Debug Codex Desk，确认 `/IDE 上下文` 从未连接变为可用。扩展不�
 - 已检查本地 Debug 客户端窗口并取得当前深色工作台截图，作为项目侧视觉基线；这不是官方 Codex 客户端截图，不能用于宣称视觉一致。
 - CUA 当前仍无法选择官方 Codex 桌面客户端窗口，因此官方菜单顺序、焦点路径、默认文案、配置页行为和任务文件最终范围仍保持“待补证”。
 - 当前工作区已提交行为矩阵文档，未对未经官方桌面证据支持的 UI 结论降级为“已对齐”。
+- VS Code 1.135.0 隔离 VSIX smoke、本地 Node/transport 测试和真实 Debug Codex Desk discovery 链路已完成；剩余 IDE 项仅为官方 Codex 客户端语义验收。
+
+### 重新验收周期（2026-10-05）
+
+- CUA 应用清单可以看到正在运行的官方 `ChatGPT`（`com.openai.codex`）；不过 `cua.getApp("ChatGPT")` 会解析到本项目的 `chatgpt`（`com.yozoe.chatgpt`，AX 标题为“Codex Desk”），按官方安装路径 `/Applications/ChatGPT.app` 绑定则被当前 Computer Use 安全策略拒绝。因此没有获得官方窗口状态。
+- 因此本周期没有取得官方窗口状态、客户端版本、窗口尺寸、主题或截图，不能推进官方行为矩阵、视觉并排或任务文件范围结论。
+- 项目侧 VS Code 宿主、隔离 VSIX smoke 和真实 Debug Codex Desk discovery 证据不受影响，仍保持“已完成”；官方 Codex 客户端 IDE 语义继续保持“待补证”。
+- 本周期重跑项目侧验证：`integrations/vscode-codex-context` 的 Node 测试 2/2 通过，`dart run tool/verify_ide_context_host_transport.dart` 通过；这些结果只证明项目侧宿主链路，不替代官方客户端证据。
+- 官方 [Computer Use 文档](https://learn.chatgpt.com/docs/computer-use.md) 明确说明该功能不能自动化 ChatGPT 本身；因此为 `com.openai.codex` 开启 Screen Recording、Accessibility 或 Always allow 也不能解除当前官方客户端限制。后续只能由用户提供官方截图/操作记录，或在允许的独立目标应用中完成验证。
+- 跳过截图依赖后，本周期完成代码侧闭环：`flutter analyze` 无问题，`dart format --set-exit-if-changed lib test` 报告 500 个文件、0 个改动，完整 `flutter test` 749/749 通过；截图依赖的官方交互、视觉和任务文件最终范围仍不改变状态。
+- 清理主计划中残留的合并冲突标记，并统一后续验收文档链接到当前英文文件名；这只修正文档一致性，不改变任何官方验收状态。
+- 复核主计划后，已将 VS Code 宿主的真实连接证据从“待完成集成”改写为“项目侧已完成、官方客户端来源格式待补证”，并把代码审查、侧边聊天和聊天分支的项目侧协议/测试结果与官方桌面语义分开记录。

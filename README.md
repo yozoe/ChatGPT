@@ -2,7 +2,7 @@
 
 一个以 Flutter 构建的本地优先 Codex 桌面客户端。首个目标平台是 macOS。
 
-后续开发任务、优先级与发布前置条件见 [ROADMAP.md](ROADMAP.md)；每项工作完成后会同步更新该清单和本文档。Composer 当前开发目标见 [CODEX_COMPOSER_PARITY_PLAN.md](docs/development-plans/CODEX_COMPOSER_PARITY_PLAN.md)，官方客户端实测、视觉并排、任务文件最终范围和具体 IDE 插件等后续验收见 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](docs/development-plans/CODEX_COMPOSER_PARITY_FOLLOWUP.md)。本地工作树的产品边界、任务执行目录、Git 生命周期、增量 Handoff、历史恢复、事务回滚、安全清理和测试方案见 [LOCAL_WORKTREE_DEVELOPMENT.md](docs/development-plans/LOCAL_WORKTREE_DEVELOPMENT.md)。
+后续开发任务、优先级与发布前置条件见 [ROADMAP.md](ROADMAP.md)；每项工作完成后会同步更新该清单和本文档。Composer 当前开发目标见 [CODEX_COMPOSER_PARITY_PLAN.md](docs/development-plans/CODEX_COMPOSER_PARITY_PLAN.md)，官方客户端实测、视觉并排、任务文件最终范围和官方客户端 IDE 语义等后续验收见 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](docs/development-plans/CODEX_COMPOSER_PARITY_FOLLOWUP.md)。本地工作树的产品边界、任务执行目录、Git 生命周期、增量 Handoff、历史恢复、事务回滚、安全清理和测试方案见 [LOCAL_WORKTREE_DEVELOPMENT.md](docs/development-plans/LOCAL_WORKTREE_DEVELOPMENT.md)。
 
 项目文档按用途和交付状态整理在 [docs/README.md](docs/README.md)；所有开发计划集中在 [docs/development-plans/](docs/development-plans/)，其中“待开发与进行中文档”集中列出尚未完全交付的方案、后续验收和建议，避免把设计文档误读为已实现能力。
 
@@ -64,7 +64,7 @@
 - 桌面会话内容列采用固定的 Codex 风格最大宽度 790px，并在可用空间中居中显示；多出的宽度交给环境信息与审查/子智能体栏，窗口缩窄时内容列才按空间收缩，不改变输入框和时间线状态。
 - 会话左侧的用户消息导航短横线固定锚定在会话窗口最左侧，不随居中的内容列或窗口宽度变化而横向漂移；导航浮层与限宽内容列分离，宽窗口下也不会被内容列边界裁掉。悬停横线会即时展开相邻标记，并立即在右侧显示对应用户消息的 Codex 风格紧凑预览；单段长消息最多展示四行，预览限制在窗口边界内并跟随导航布局变化重新对齐。快速切换会更新内容，时间线流式刷新期间保持稳定，移出消息横线（包括进入导航栏空白区域）或切换会话后关闭，点击仍定位到原消息。
 - 发送前会校验剪贴板临时图片仍然存在；若系统已清理临时文件，会自动移除失效附件并提示重新粘贴，不再提交无效路径。
-- 外层协作运行时可在工作区 `.codex/codex-desk-collaboration.json` 写入真实子智能体活动清单；每项必须包含与当前会话精确相等的 `parentThreadId`（或兼容别名），否则客户端会忽略该项。客户端会持久化这项归属并在恢复时清除无法证明归属的旧桥接记录，避免不同会话互相显示。该本地运行时文件被 Git 忽略，外层宿主负责状态更新，桥接项不提供 App Server 子线程详情。
+- 外层协作运行时可在工作区 `.codex/codex-desk-collaboration.json` 写入真实子智能体活动清单；每项必须包含与当前会话精确相等的 `parentThreadId`（或兼容别名），否则客户端会忽略该项。客户端会持久化这项归属并在恢复时清除无法证明归属的旧桥接记录，避免不同会话互相显示。该本地运行时文件被 Git 忽略，外层宿主负责状态更新，桥接项不提供 App Server 子线程详情。桥接轮询、工作区归属、请求代次和活动快照由独立的 `CodexCollaborationBridgeState` 管理，连接代次、启动标记和网络重试序号由 `CodexRuntimeConnectionState` 管理；控制器继续保留兼容 API 与事件路由。
 - 从剪贴板发送的截图会在任务或方向真正发出前复制到应用专用的持久图片目录；复制期间由控制器持有临时文件，即使 Composer 因页面切换、布局变化或销毁而释放附件，也不会在转存完成前删除源图片。时间线、运行时输入和加密历史共同引用持久副本，因此 Hot Restart、应用重启和恢复本地历史后仍可预览，包括未处于前台的任务；恢复后的线程仍可继续追加消息。多图转存采用全有或全无语义，方向被拒绝时会删除新副本，失败任务的重试复用同一副本。检测到已失效的旧 `CodexDeskClipboard/clipboard-image-*` 路径时，会在请求 App Server 前提示重新粘贴，避免产生“无法读取本地图片”的运行时错误。未发送的草稿截图仍作为临时文件，在移除附件或关闭输入组件后清理。历史快照本身采用 AES-GCM；为让 Flutter 直接用本地路径预览，图片字节目前保存在应用专用目录而未逐文件加密，因此不应把该目录作为跨用户保密存储。
 - 恢复会话历史时，Codex 加载遮罩仅覆盖当前会话窗口；侧栏、会话顶部栏和右侧检查器在加载期间仍保持可用。
 - 工作区展开/收起按钮固定在整个窗口右上角，不随中间会话列或右侧检查器宽度变化。
@@ -93,6 +93,8 @@
 - 审查工作区展开时采用 Codex 风格三列布局：会话保持固定阅读宽度，Inspector 位于中间，审查面板占据最右侧剩余空间；收起后审查列完全移除，Inspector 回到最右侧悬浮列，会话恢复居中阅读。窄窗口继续使用覆盖式审查面板和标签切换。
 - 审查面板展开/收起动画经过极窄宽度时，标题栏会逐级隐藏文字和图标，工具栏会自动切换为可横向滚动的紧凑布局，避免中间帧出现内容溢出。
 - 审查面板动画短暂压缩 Diff 画布时，旧/新行号栏与粘性文件标题的图标、统计会随可用宽度逐级隐藏，恢复宽度后自动返回；Git 提交与 PR 输入弹窗在关闭动画期间也会保持稳定。
+- 性能基准已加入 500 个 Git 工作区文件的真实 `CodeReviewPanel` 画布场景：会往返滚动 Diff、开合文件导航并记录组合帧时间；当前仍不把 Flutter driver 连接失败或 RSS 峰值缺少宿主夹具的情况当作性能结论。
+- 同一基准还使用 loopback 固定 HTML 挂载真实 macOS WebKit，在窄/宽工作区之间往返展开和收回，验证 WebView 重排链路；该场景证明宿主夹具可执行，不等同于已有 Profile 帧或内存优化结论。
 - 从拉取请求、已安排或插件工作区点击左侧任务时，会立即返回对应会话页面并恢复该任务；任务搜索结果也遵循相同导航语义。
 - 设置页的“编码 > 钩子”通过 Codex App Server 异步列出项目、用户配置和已启用插件发现的全部钩子，并明确显示加载、空列表和读取错误；运行时未启动时不会伪装成空列表。信任状态直接采用运行时针对当前定义哈希给出的结果；修改定义后会重新显示待审核。启用、停用、信任和撤销信任均请求 Codex 的持久化配置接口，刷新后显示其实际结果，应用不会自行编辑或猜测 `config.toml`。仓库同时提供 `.codex/hooks.json` 的 `UserPromptSubmit` 测试钩子：审核并信任后，每次提交提示会在 `.codex/hooks/test-user-prompt-hook.log` 记录 UTC 时间和事件名，不保存提示正文。
 - 设置页“已归档的聊天”现已接入 Codex App Server 的归档线程列表：进入页面会刷新当前项目数据，支持按标题/预览搜索、当前项目筛选、按项目分组展示、取消归档和永久删除；单条删除及“全部删除”均需二次确认，加载、空列表和错误状态会明确呈现。归档列表沿用 App Server 的真实线程状态，运行时未就绪或存在运行中任务时删除操作会禁用。
@@ -287,9 +289,48 @@ Git 状态与 Diff 读取始终禁用 Shell。暂存、提交、推送和 PR 创
 
 GitHub Actions 会在 macOS 上使用 Flutter 3.47.1 执行格式检查、`flutter analyze`、`flutter test`、原生 `RunnerTests` 和 macOS Debug 构建。UI Kit 由 `pubspec.lock` 固定 Git 提交，不需要 CI 访问开发机目录。
 
-高耦合的 Widget 回归正按产品能力拆分为独立测试文件；计划任务、Markdown/源码预览、浏览器/文件工作区和运行时诊断已经可通过对应测试文件单独执行，完整套件仍是合并前的发布门槛。
+CI 还会运行 `tool/check_dart_structure.dart`：`lib`、`test`、`integration_test` 与 `tool` 中每个 Dart 文件最多定义一个类，禁止私有类和 `part` / `part of` 隐藏实现；超过 1,500 行的文件只产生可见警告，不会阻断构建。当前门禁已确认无结构违规；设置页的 Worktrees、归档聊天、浏览器、插件、外观和帮助展示已拆为独立文件，剩余大型生产文件继续按领域治理。
+
+运行时连接的进程探测、启动、初始化和停止已通过 `CodexRuntimeConnection` 适配边界集中调用；`CodexController` 仍保留状态、重连退避和事件路由职责，公开 API、App Server 协议和失败恢复行为不变。适配边界由 `test/runtime_connection_adapter_test.dart` 独立验证。
+
+运行时失败后的 1/2/5 秒有限退避、成功后重置、停止或释放时取消，以及重连回调的生命周期保护由 `CodexRuntimeReconnectCoordinator` 管理；控制器只决定当前状态是否允许重连并执行实际连接。
+
+插件、marketplace、MCP 和 Skill 的目录读取通过无状态 `CodexPluginCatalog` 集中适配；请求代次、loading/error 状态和所有写入操作仍由控制器与既有 `CodexPluginStore` / App Server 负责。
+
+运行时诊断日志的脱敏、有界保留和诊断专属通知由 `CodexRuntimeDiagnostics` 负责；stderr 或协议异常不会触发整个工作区重建，也不会写入会话历史。
+
+工作区切换的串行化、最新请求优先和释放后的过期回调保护由 `CodexWorkspaceOperationCoordinator` 负责；`CodexController` 仍保留路径校验、历史恢复、运行时连接和公开选择 API。旧工作区的后台任务继续接收完成事件，迟到的历史恢复不会覆盖更新的选择。
+
+主会话和侧边聊天的流式 Agent 消息 item 索引、phase、完成去重和当前流式项由 `CodexAgentMessageStreamState` 集中维护；各自仍拥有时间线条目、活动状态和通知调度，切换恢复、迟到增量与完成事件语义保持不变。
+
+App Server item 到实时活动标签的纯映射由 `CodexLiveTurnActivityMapper` 负责，覆盖命令动作、网页搜索、技能读取、reasoning、协作任务和未知 item 的安全降级；控制器仍负责活动归属、生命周期和时间线写入。
+
+流式 reasoning summary 的分片累积由 `CodexReasoningSummaryState` 独立维护，并由 `CodexTurnActivityState` 组合；回合归属、清理时机、摘要清洗和实时活动通知仍由控制器负责，现有 App Server 事件与公开控制器 API 保持不变。
+
+任务文件与统一 Diff 的当前回合集合、派生路径集合以及按线程缓存的历史快照由 `CodexFileChangeState` 集中维护；控制器仍负责 App Server Diff 合并、撤销安全校验、回合切换和持久化时机，文件摘要与审查行为保持不变。
+
+Goal 生命周期、线程目标快照、续接/暂停状态以及 Plan 模式的实现交接集合由 `CodexGoalPlanState` 集中维护；控制器仍负责 App Server 请求、目标时间线记录、回合续接和公开控制器 API，目标、计划和跨线程异步行为保持不变。
+
+工作区路径与配置、活动线程附着、线程所属项目、历史视图缓存、后台运行集合和托管工作树映射由 `CodexWorkspaceThreadState` 集中维护；控制器仍负责项目切换、历史读写、运行时恢复和完成事件路由，跨项目后台任务与历史恢复行为保持不变。
+
+回合发送握手、运行中回合 ID、失败重试、网络恢复计时器、线程协作模式和上下文用量由 `CodexTurnExecutionState` 集中维护；控制器仍负责编排 App Server 请求、时间线和重试触发，发送、方向调整、取消与自动重试行为保持不变。
+
+Git 项目状态、文件 Diff、审查加载/错误、刷新代次和任务文件撤销状态由 `CodexGitReviewState` 集中维护；控制器与 `CodexGitOperations` 仍负责 Git 请求、路径安全和实际写入，审查及撤销行为保持不变。
+
+审批、MCP elicitation、用户输入请求、请求顺序、自动解决计时器和响应锁由 `CodexPendingInteractionState` 集中维护；控制器仍负责协议响应、线程优先级和界面呈现，后台请求归属、取消和自动解决语义保持不变。
+
+当前会话时间线、恢复代次、运行中回合标识和排队方向由 `CodexConversationTimelineState` 集中维护；控制器仍负责事件归属、历史读写、发送编排和通知，流式回复、方向调整和历史切换行为保持不变。
+
+子智能体只读检查器的最近 8 项 LRU、读取请求代次、运行时切换失效和延迟刷新定时器由 `CodexSubagentThreadState` 集中维护；控制器仍负责 App Server 分页读取、历史转换、错误展示和公开检查器 API，子线程缓存淘汰、嵌套检查器、工作区隔离与旧连接结果拒绝行为保持不变。
+
+任务完成确认、未查看提醒、Dock 徽标和完成事件去重由 `CodexCompletionReminderState` 集中维护；控制器仍负责历史持久化、系统通知、跨项目对账和提醒呈现，前台/后台完成行为保持不变。
+
+高耦合的 Widget 回归已按产品能力拆分为独立测试文件；计划任务、Markdown/源码预览、浏览器/文件工作区、运行时诊断、插件/MCP 管理、工作区壳层、设置/主题、项目/历史侧栏、任务行交互、用户消息导航、时间线滚动/历史、配置页面、失败回合重试、任务文件/Diff、Composer 附件生命周期、工作区运行时连接、App Server 协议、Git 审查布局和浏览器 Tab/导航回归可以通过对应测试文件单独执行。`test/widget_test.dart` 当前约 800 行，其余主要职责测试文件均低于约 1,500 行；`tool/test_shards.dart` 会验证全部 134 个测试文件恰好归入 Composer、runtime、browser、Git、workspace、settings 或 misc 一个分片，GitHub Actions 通过矩阵并行运行七个分片。
+浏览器历史、清除浏览数据和下载记录对话框已从浏览器状态类提取为独立公开 Widget；页面状态仍拥有导航、存储副作用和错误反馈，原有搜索、清理范围、删除和清空行为及测试 Key 保持不变。
 
 所有 `lib` 代码均由静态检查直接约束；项目不再通过整文件忽略 `unused_import`、`unnecessary_import`、`duplicate_import` 或 `use_key_in_widget_constructors` 来掩盖代码质量问题。
+
+性能回归可使用 [PROFILE_PERFORMANCE_BENCHMARK.md](docs/development-plans/PROFILE_PERFORMANCE_BENCHMARK.md) 的 macOS integration harness，当前覆盖 1,000 条侧栏任务、流式增量、后台完成通知、快速任务切换、unified Diff 解析、500 文件 Git 审查画布和真实 macOS WebView 展开/返回；Profile driver 的连接限制、原生宿主联动和 RSS 采样边界均有明确记录。
 
 ## 参考
 

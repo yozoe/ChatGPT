@@ -5,6 +5,9 @@ import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_error_p
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_download.dart';
 import 'package:chatgpt/src/presentation/browser/browser_download_cancellation.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_url_normalizer.dart';
+import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_history_dialog.dart';
+import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_clear_data_dialog.dart';
+import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_download_records_dialog.dart';
 import 'package:chatgpt/src/presentation/browser/codex_workspace_browser_workspace_page.dart';
 import 'package:chatgpt/src/services/browser_history_store.dart';
 import 'package:chatgpt/src/domain/browser_tab_snapshot.dart';
@@ -761,114 +764,11 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) {
-        var query = '';
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            final filtered = entries
-                .where((entry) {
-                  final haystack = '${entry.title}\n${entry.url}'.toLowerCase();
-                  return haystack.contains(query.trim().toLowerCase());
-                })
-                .toList(growable: false);
-            return AlertDialog(
-              title: const Text('浏览历史'),
-              content: SizedBox(
-                width: 520,
-                height: 420,
-                child: Column(
-                  children: [
-                    TextField(
-                      key: const Key('browser-history-search'),
-                      autofocus: true,
-                      decoration: const InputDecoration(
-                        prefixIcon: Icon(Icons.search),
-                        hintText: '搜索标题或网址',
-                      ),
-                      onChanged: (value) => setDialogState(() => query = value),
-                    ),
-                    const SizedBox(height: 8),
-                    Expanded(
-                      child: filtered.isEmpty
-                          ? Center(
-                              child: Text(
-                                entries.isEmpty ? '暂无浏览历史' : '没有匹配的历史记录',
-                              ),
-                            )
-                          : ListView.builder(
-                              itemCount: filtered.length,
-                              itemBuilder: (context, index) {
-                                final entry = filtered[index];
-                                return ListTile(
-                                  title: Text(entry.title),
-                                  subtitle: Text(entry.url),
-                                  trailing: IconButton(
-                                    tooltip: '删除此记录',
-                                    icon: const Icon(Icons.delete_outline),
-                                    onPressed: () async {
-                                      await _historyStore.remove(entry.url);
-                                      if (dialogContext.mounted) {
-                                        Navigator.of(dialogContext).pop();
-                                      }
-                                    },
-                                  ),
-                                  onTap: () {
-                                    Navigator.of(dialogContext).pop();
-                                    final uri = Uri.tryParse(entry.url);
-                                    if (uri != null) {
-                                      unawaited(_navigateTab(_activeTab, uri));
-                                    }
-                                  },
-                                );
-                              },
-                            ),
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                if (entries.isNotEmpty)
-                  TextButton(
-                    key: const Key('browser-clear-history'),
-                    onPressed: () async {
-                      final confirmed = await showDialog<bool>(
-                        context: dialogContext,
-                        builder: (confirmContext) => AlertDialog(
-                          title: const Text('清空浏览历史？'),
-                          content: const Text('这只会删除应用内的历史记录，不会删除下载文件。'),
-                          actions: [
-                            TextButton(
-                              onPressed: () =>
-                                  Navigator.of(confirmContext).pop(false),
-                              child: const Text('取消'),
-                            ),
-                            FilledButton(
-                              onPressed: () =>
-                                  Navigator.of(confirmContext).pop(true),
-                              child: const Text('清空'),
-                            ),
-                          ],
-                        ),
-                      );
-                      if (confirmed == true) {
-                        await _historyStore.clear();
-                        if (dialogContext.mounted) {
-                          Navigator.of(dialogContext).pop();
-                        }
-                      }
-                    },
-                    child: const Text('清空历史'),
-                  ),
-                TextButton(
-                  key: const Key('browser-close-history-dialog'),
-                  onPressed: () => Navigator.of(dialogContext).pop(),
-                  child: const Text('关闭'),
-                ),
-              ],
-            );
-          },
-        );
-      },
+      builder: (context) => BrowserHistoryDialog(
+        entries: entries,
+        store: _historyStore,
+        onOpen: (uri) => unawaited(_navigateTab(_activeTab, uri)),
+      ),
     );
   }
 
@@ -876,90 +776,7 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
     if (!mounted) return;
     final selection = await showDialog<Set<String>>(
       context: context,
-      builder: (dialogContext) {
-        final selected = <String>{'website', 'cache', 'history', 'downloads'};
-        return StatefulBuilder(
-          builder: (context, setDialogState) => AlertDialog(
-            title: const Text('清除浏览数据？'),
-            content: SizedBox(
-              width: 460,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text('选择要清除的范围。已保存的下载文件不会被删除。'),
-                  ),
-                  CheckboxListTile(
-                    key: const Key('browser-clear-website-data'),
-                    dense: true,
-                    title: const Text('Cookie 和网站存储'),
-                    value: selected.contains('website'),
-                    onChanged: (value) => setDialogState(() {
-                      if (value == true) {
-                        selected.add('website');
-                      } else {
-                        selected.remove('website');
-                      }
-                    }),
-                  ),
-                  CheckboxListTile(
-                    key: const Key('browser-clear-cache'),
-                    dense: true,
-                    title: const Text('缓存'),
-                    value: selected.contains('cache'),
-                    onChanged: (value) => setDialogState(() {
-                      if (value == true) {
-                        selected.add('cache');
-                      } else {
-                        selected.remove('cache');
-                      }
-                    }),
-                  ),
-                  CheckboxListTile(
-                    key: const Key('browser-clear-history-data'),
-                    dense: true,
-                    title: const Text('浏览历史和导航历史'),
-                    value: selected.contains('history'),
-                    onChanged: (value) => setDialogState(() {
-                      if (value == true) {
-                        selected.add('history');
-                      } else {
-                        selected.remove('history');
-                      }
-                    }),
-                  ),
-                  CheckboxListTile(
-                    key: const Key('browser-clear-download-data'),
-                    dense: true,
-                    title: const Text('下载记录'),
-                    value: selected.contains('downloads'),
-                    onChanged: (value) => setDialogState(() {
-                      if (value == true) {
-                        selected.add('downloads');
-                      } else {
-                        selected.remove('downloads');
-                      }
-                    }),
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(dialogContext).pop(),
-                child: const Text('取消'),
-              ),
-              FilledButton(
-                onPressed: selected.isEmpty
-                    ? null
-                    : () => Navigator.of(dialogContext).pop(selected),
-                child: const Text('清除'),
-              ),
-            ],
-          ),
-        );
-      },
+      builder: (context) => const BrowserClearDataDialog(),
     );
     if (selection == null || selection.isEmpty || !mounted) return;
     final failures = <String>[];
@@ -1022,71 +839,8 @@ class BrowserWorkspacePageState extends State<BrowserWorkspacePage> {
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('下载记录'),
-        content: SizedBox(
-          width: 560,
-          height: 360,
-          child: records.isEmpty
-              ? const Center(child: Text('暂无下载记录'))
-              : ListView.builder(
-                  itemCount: records.length,
-                  itemBuilder: (context, index) {
-                    final record = records[index];
-                    return ListTile(
-                      title: Text(record.fileName),
-                      subtitle: Text('${record.filePath}\n${record.url}'),
-                      isThreeLine: true,
-                      trailing: IconButton(
-                        tooltip: '删除记录（不删除文件）',
-                        icon: const Icon(Icons.delete_outline),
-                        onPressed: () async {
-                          await _downloadStore.remove(record.filePath);
-                          if (dialogContext.mounted) {
-                            Navigator.of(dialogContext).pop();
-                          }
-                        },
-                      ),
-                    );
-                  },
-                ),
-        ),
-        actions: [
-          if (records.isNotEmpty)
-            TextButton(
-              key: const Key('browser-clear-download-records'),
-              onPressed: () async {
-                final confirmed = await showDialog<bool>(
-                  context: dialogContext,
-                  builder: (confirmContext) => AlertDialog(
-                    title: const Text('清空下载记录？'),
-                    content: const Text('只清除记录，不删除已保存的文件。'),
-                    actions: [
-                      TextButton(
-                        onPressed: () =>
-                            Navigator.of(confirmContext).pop(false),
-                        child: const Text('取消'),
-                      ),
-                      FilledButton(
-                        onPressed: () => Navigator.of(confirmContext).pop(true),
-                        child: const Text('清空'),
-                      ),
-                    ],
-                  ),
-                );
-                if (confirmed == true) {
-                  await _downloadStore.clear();
-                  if (dialogContext.mounted) Navigator.of(dialogContext).pop();
-                }
-              },
-              child: const Text('清空记录'),
-            ),
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('关闭'),
-          ),
-        ],
-      ),
+      builder: (context) =>
+          BrowserDownloadRecordsDialog(records: records, store: _downloadStore),
     );
   }
 

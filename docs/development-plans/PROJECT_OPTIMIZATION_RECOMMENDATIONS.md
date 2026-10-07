@@ -59,10 +59,35 @@ Codex Desk 已经具备较高的功能完成度，覆盖 Codex App Server 连接
 
 ### P1：拆分核心状态并缩小重建范围
 
-#### 当前进度（2026-09-07）
+#### 当前进度（2026-10-06）
 
 - 运行时诊断日志已从全局控制器刷新路径中切出独立监听边界：`CodexRuntimeDiagnostics` 直接通知诊断区域，设置弹窗的日志子树不再等待整个工作区重建；诊断报告、复制、导出与清除 API 保持不变。
+- 运行时 CLI 路径切换的探测、持久化与失败回滚已收敛到 `CodexRuntimeExecutableCoordinator`；控制器继续负责停止/重启时机、loading/error 状态和公开配置 API，恢复自动发现时仍保持先清除持久化覆盖再探测的既有语义。
+- 运行时停止与异常退出的后台线程归属、待处理协议请求清理已分别收敛到 `CodexWorkspaceThreadState.clearRuntimeOwnership` 与 `CodexPendingInteractionState.clearForRuntimeDisconnect`；保留异常退出时失败回合恢复上下文、用户输入界面标记和控制器的时间线/重连副作用。
 - 计划任务的排期、持久化、计时器、重试、跨项目切换和取消竞态已提取至 `ScheduledTaskCoordinator`；`CodexController` 保持既有公开 API 与时间线/运行时回调，计划任务的持久化和切换中取消回归可独立验证。
+- 运行时连接、运行时生命周期代次、插件目录、工作区切换、Agent 流式索引、实时活动映射、reasoning summary 分片、文件/Diff 容器、Goal/Plan、workspace/thread、turn execution、Git review、pending interaction、conversation timeline、completion reminder、协作桥接、子智能体检查器、线程列表刷新、线程操作门禁、线程恢复、线程目录、浏览器偏好、历史持久化、插件/Skill/MCP 刷新、配置/模型能力和账户认证状态已按职责提取为独立边界；控制器继续作为兼容桥接层，App Server 协议、公开 API、历史格式和用户可见行为保持不变。新状态容器分别由聚焦单测覆盖清理、计时器取消、显式停止清理、连接代次失效、Git 刷新、请求队列、时间线代次、提醒去重、桥接快照去重、子线程缓存淘汰、线程活动/归档刷新请求隔离、线程操作去重、线程恢复结果隔离、线程目录清理、浏览器偏好默认值与加载竞态、pinned thread 清理、历史保存计时器/队列清理、插件目录失效、项目 MCP 失效、配置失效、运行时失效和认证解析边界。当前单并发完整 `flutter test` 为 852 项通过，默认并发仍需关注少数 Widget 时序波动。
+- App Server 请求路由已从主通知分支提取到 `_handleServerRequestEvent`，集中处理浏览器权限、动态浏览器工具、普通审批、`requestUserInput` 与 MCP elicitation；响应编码、自动批准、请求队列、用户输入自动解决和前台/后台提示时机保持不变。`--concurrency=1` 完整套件为 843 项通过。
+- 账户登录、线程归档/取消归档/重命名/删除、线程设置、`serverRequest/resolved` 和技能变更等非请求通知已收敛到窄职责处理方法；保留原有刷新代次、缓存清理、异步刷新和响应锁语义，定向与单并发完整测试保持 839 项基线。
+- Goal/Plan 生命周期、线程 token usage、MCP 状态、item 开始/完成、reasoning summary、文件完成和 turn Diff 通知已收敛到窄职责处理方法；保留活动回合归属、节流通知、文件快照和计划实现候选语义，定向与单并发完整测试保持 839 项基线。
+- `turn/started` 与 `turn/completed` 的生命周期路由已提取；`turn/completed` 继续保留旧协议无回合 ID、前台/后台归属、迟到重放隔离、网络对账和“是否触发全局通知”的原语义，定向与单并发完整测试保持 839 项基线。
+- 回合完成后的失败恢复状态转移已收敛到 `CodexTurnExecutionState.recordTurnCompletion`：运行中回合标识和原始提交输入的清理、失败重试快照保存及过期重试移除由状态容器负责；控制器继续负责网络活动归档、托管工作树完成、自动重试计时器、时间线和通知副作用，新增状态回归覆盖失败输入保真与成功后的旧重试清理。
+- 网络重试活动的回合匹配、等待态转历史态和后台待展示队列取出已收敛到 `CodexTurnExecutionState`；控制器继续负责历史保存和当前/后台时间线写入，迟到回合与不同线程仍按原有标识门禁隔离。
+- 嵌套 App Server 文本提取已收敛到 `CodexNestedTextExtractor`，保留优先读取 `delta`/`text`/`message`、递归 Map/Iterable 和空值兜底语义；控制器继续负责流式时间线和错误副作用。
+- App Server 事件的 thread/turn 标识读取已收敛到 `CodexRuntimeEventScope`，保留信封字段优先、嵌套 `turn` 回退和空白值归一化；控制器继续负责活动回合/线程归属判断及迟到事件隔离。
+- 浏览器动态工具调用的已处理 ID、等待工作区挂载的 URL 队列和“允许所有网站”会话授权已收敛到 `CodexBrowserInvocationState`；禁用浏览器、显式停止和运行时异常退出继续使用原有清理时机，URL 安全检查、审批与导航副作用保持在控制器中。
+- 活动线程与归档线程的刷新代次、请求标记及统一失效操作已收敛到 `CodexThreadRefreshState`；控制器继续决定何时刷新、如何合并结果和如何通知界面，保留活动/归档请求独立、迟到结果隔离及项目切换清理语义。
+- 插件、marketplace、Skill、工作区 MCP 与线程 MCP 状态刷新的请求标记已收敛到 `CodexPluginRefreshState`；插件操作和项目切换分别只使相关异步读取失效，控制器继续负责加载、错误、工作区/线程归属和数据合并。
+- 配置读取、模型能力目录和协作模式预设的刷新请求标记已收敛到 `CodexConfigurationRefreshState`；运行时停止只使配置快照失效，模型能力过滤、Plan/default 回退和配置写入语义保持在控制器中。
+- config/batchWrite 能力探测代次与智能体默认设置串行写入 generation 已进一步收敛到 `CodexConfigurationOperationState`；线程工作树恢复的异步 generation 独立收敛到 `CodexThreadEnvironmentRestoreState`。控制器继续拥有配置读写、错误/通知副作用和工作树绑定校验，旧 generation 只用于拒绝迟到结果，公开 API、协议和持久化格式不变；新增状态单测覆盖探测失效、写入单调递增和线程恢复代次隔离。
+- 插件、Skill、marketplace、MCP 目录快照以及插件操作反馈已收敛到 `CodexPluginManagementState`；控制器继续负责 CLI/App Server 请求、刷新代次、配置写回、重连和通知，工作区切换只清理 MCP 状态，新增状态单测覆盖目录状态独立性与 MCP 清理边界。
+- 线程 writer 冲突、归档线程恢复请求、重试提示与恢复进度已收敛到 `CodexThreadRecoveryState`；控制器继续负责恢复请求、工作树绑定校验、错误/通知副作用和跨项目清理，新增状态单测覆盖恢复状态清理与独立进度。
+- 模型目录、运行时配置展示快照、协作模式预设及配置串行写入链已收敛到 `CodexModelConfigurationState`；控制器继续负责 App Server 配置读写、能力降级、持久化和通知，新增状态单测覆盖运行时清理不影响用户选择与写入链初始化。
+- 账户认证类型、账户展示信息、登录 URL、登录进行状态和 `requiresOpenaiAuth` 已收敛到 `CodexSessionAccessState`；控制器继续负责 App Server 登录请求、连接代次校验、错误提示和刷新通知，新增状态单测覆盖账户解析与认证要求保持。
+- 活动/归档线程目录、加载与错误状态、本地线程终态映射已收敛到 `CodexThreadCatalogState`；控制器继续负责 App Server 刷新、排序合并、历史恢复和通知副作用，新增状态单测覆盖目录清理与活动/归档独立性。
+- 在上述目录状态之上新增 `CodexThreadCatalogSnapshot` 与 `codexThreadCatalogSnapshotProvider`：Provider 只发布活动/归档线程、加载/错误状态和本地终态映射的不可变副本；Sidebar 通过自身 `ProviderContainer` 订阅该快照，保留无外层 `ProviderScope` 的显式控制器测试装配，并在控制器通知边界同步刷新以保持完成标记等同帧行为。新增 provider 单测覆盖不可变复制、通知后的新快照与旧快照隔离；控制器仍保留兼容桥接，未改变 App Server、持久化或公开 Widget API。
+- 浏览器启用、链接打开方式、下载目录/确认、标签恢复及初始加载竞态标记已收敛到 `CodexBrowserPreferencesState`；控制器继续负责偏好持久化、原生浏览器调用、动态工具权限和错误通知，新增状态单测覆盖默认值与加载前修改标记独立性。
+- 线程归档、删除、取消归档和 fork 的重复操作门禁已收敛到 `CodexThreadOperationState`；活动线程附着标记与 pinned thread 集合统一归入 `CodexWorkspaceThreadState`，避免形成双写状态，控制器继续负责请求与恢复副作用。
+- 历史保存计时器、当前保存链、按工作区保存链、附加目录保存链、后台完成队列和失败标记已收敛到 `CodexHistoryPersistenceState`；控制器继续负责快照、持久化 I/O、失败提示和工作区切换语义。
 
 #### 现状
 
@@ -138,6 +163,12 @@ Codex Desk 已经具备较高的功能完成度，覆盖 Codex App Server 连接
 - 已将 Agent 文本增量合并、reasoning summary 通知节流与活动覆盖、命令生命周期/耗时/迟到隔离、Web 搜索/MCP item、文件读搜列改动作，以及动态技能读取状态迁移到 `test/runtime_streaming_test.dart`，流式与 live activity 状态更新可独立验证。
 - 已完成运行时完成事件纯控制器测试域拆分：`test/runtime_completion_test.dart` 可独立验证同一回合完成事件去重、旧协议无回合 ID 的前台完成、迟到重放隔离、任务失败后继续复用已连接运行时、同一后台项目的多个完成事件串行保存、无 ID 后台完成的跨项目对账、切换竞态，以及成功/取消前后台任务的提醒确认矩阵。实际 Widget 与系统通知呈现继续由对应界面集成测试覆盖。
 - 已将失败回合重试的 8 个纯控制器回归迁移到 `test/failed_turn_retry_test.dart`，独立覆盖自动网络等待耗尽、额度分类、结构化启动错误、原始输入保真、重复提交保护、切换任务竞态、再次失败保留重试及中断不提供重试；统一显式等待初始配置，移除对巨型 Widget 文件全局初始化顺序的依赖。
+- 已将 `error(willRetry)` 的协议解析与 thread/turn 归属判定提取到 `CodexNetworkRetryEvent`，控制器仍负责活动行写入、后台暂存和通知副作用；新增纯判定测试覆盖 `willRetry: false`、缺少标识、迟到回合和前后台归属，未改变网络等待或失败回合状态机。
+- 已将失败回合的 usage limit、容量/速率限制和普通可重试错误分类提取到 `CodexFailedTurnKindClassifier`，保留结构化 App Server 异常、429、usage-limit 优先级与安全兜底；控制器仍负责重试调度、错误提示和原始输入恢复，分类逻辑由纯单测独立覆盖。
+- 已将 `turn/completed` 的嵌套/信封状态读取及成功、停止、失败、未知状态归一化提取到 `CodexTurnCompletionParser`；完成事件的归属、去重、后台对账、提醒与重试仍由控制器负责，纯解析矩阵可独立验证。
+- 已将 `runtime/exited` 的退出码读取与诊断文案提取到 `CodexRuntimeExitInfo`；异常退出清理、连接代次失效、错误时间线和有限退避重连仍由控制器负责，避免改变生命周期状态机。
+- 已将 CLI 探测结果、探测中标记和探测错误收敛到 `CodexRuntimeProbeState`；控制器继续负责通知、配置保存、运行时连接和探测成功后的重连决策，探测状态清理与成功/失败边界由纯状态单测覆盖。
+- 已将启动、重连和替换连接的纯生命周期门槛集中到 `CodexRuntimeConnectionState`，并由状态单测覆盖；控制器仍拥有工作区、任务和 App Server 副作用，连接状态机与公开 API 保持不变。
 - 已将 App Server 请求编码和线程启动契约迁移到 `test/runtime_protocol_test.dart`，独立覆盖历史线程模型来源、新线程多工作区根、开始线程/回合、运行中调整、停止回合和实验能力初始化负载；协议测试不再与 Git、历史和界面回归共享同一测试文件。
 - 已将模型与推理强度配置回归迁移到 `test/model_configuration_test.dart`，独立覆盖新线程参数、模型切换后的能力过滤、默认模型能力范围、服务端新增推理强度兼容、目录加载失败以及项目切换时清理运行时配置；测试显式等待初始配置，原混合 Widget 文件中的重复块已删除。
 - 已将 Git 审查的 6 个纯状态与控制器回归迁移到 `test/git_review_controller_test.dart`，独立覆盖操作错误、过滤、大型 Diff 截断、选中 Diff、连续多文件审查和最多 6 路并发读取；界面弹窗测试继续留在 Widget 域，控制器测试显式等待初始配置。
@@ -146,6 +177,14 @@ Codex Desk 已经具备较高的功能完成度，覆盖 Codex App Server 连接
 - 已将线程列表刷新代次、稳定排序、取消归档恢复以及归档/删除通知同步刷新的 5 个控制器回归迁移到 `test/thread_list_refresh_test.dart`；独立验证活动与归档列表的一致性，测试显式等待初始配置，原混合 Widget 文件中的重复块已删除。
 - 已将连续命令/搜索活动分组、自动批准命令合并、同时间戳活动隔离及展开动画回归迁移到 `test/timeline_activity_list_test.dart`，时间线活动清单现在可以脱离巨型 Widget 套件独立验证。
 - 已将本地会话列表缓存、历史写入串行化、缓存容错、活动元数据往返、旧时间线稳定 ID 和导入格式版本边界迁移到 `test/conversation_history_serialization_test.dart`，并保留 `test/conversation_history_store_test.dart` 的加密磁盘持久化覆盖；两层基础契约均可独立执行。
+- 已将插件 marketplace、MCP 来源/配置写回、技能配置、插件重连与设置页面失败反馈迁移到 `test/plugin_mcp_management_test.dart`；34 项回归可独立执行，`widget_test.dart` 的产品能力边界进一步收窄。
+- 已新增 `tool/test_shards.dart`，把全部 134 个测试文件唯一归入 Composer、runtime、browser、Git、workspace、settings 或 misc；自校验会拒绝漏归类和重复归类，GitHub Actions 以七路 matrix 并行执行。`test/widget_test.dart` 已降至约 800 行，主要测试文件均低于约 1,500 行。
+- 已将浏览器历史、清除浏览数据和下载记录对话框从 `BrowserWorkspacePageState` 提取到独立公开 Widget；页面状态仍拥有导航、存储副作用和错误反馈，浏览器分片保留原有交互 Key 与生命周期回归。
+- 已将设置页的 Worktrees、归档聊天、浏览器、插件、外观和快捷键/关于展示职责提取到独立公开 Widget/动作类；`SettingsPageState` 仍拥有导航、控制器监听、持久化与异步副作用，设置页行为和公开入口保持不变。设置状态文件已降至 1,500 行以内。
+- 已将工作区的 Codex 配置展示对话框提取为独立公开 Widget；工作区状态仍负责刷新前置、生命周期和嵌入式控制器选择，对话框继续使用 `ControllerBuilder` 监听运行时配置并保留打开 `config.toml` 的行为。
+- 已将工作区账户/登录对话框及其 `TextEditingController` 生命周期提取为独立公开 Widget/State 文件；工作区仍负责打开对话框和选择嵌入式控制器，ChatGPT 登录、API Key 提交与外部登录页行为保持不变。
+- 已将工作区运行时诊断对话框提取为独立公开 Widget；对话框继续监听运行时诊断日志、支持选择/恢复 CLI、复制和导出诊断，工作区状态保留 probe 前置和报告文件副作用。
+- 已将工作区目录切换/附加目录管理对话框提取为独立公开 Widget；工作区状态继续拥有目录选择器、项目创建和控制器副作用，保留工作区切换、移除、Key 和实时控制器监听行为。
 
 #### 现状
 
@@ -157,7 +196,7 @@ Codex Desk 已经具备较高的功能完成度，覆盖 Codex App Server 连接
 - `lib/src/presentation/conversation/codex_workspace_conversation_composer_panel_state.dart`
 - `test/widget_test.dart`
 
-特别是 `test/widget_test.dart` 同时包含侧栏、Composer、运行时、历史、Markdown、Git、插件、审批和后台任务测试，不利于定位失败、并行执行和多人修改。
+`test/widget_test.dart` 已不再承担上述主要能力域，剩余约 800 行兼容和聚合回归；七个功能分片提供独立执行入口。后续大型文件治理重点转向生产状态与 Widget 实现。
 
 #### 建议
 
@@ -233,6 +272,8 @@ test/
 - 静态检查仍保持零错误、零警告。
 
 ### P1：建立性能基准
+
+当前可执行入口见 [PROFILE_PERFORMANCE_BENCHMARK.md](PROFILE_PERFORMANCE_BENCHMARK.md)，先以 macOS Profile integration harness 固定四个可重复场景；大型 Diff 与真实 WebView 仍等待原生宿主夹具，不把模拟数据当作基线。
 
 #### 建议场景
 
@@ -336,7 +377,7 @@ test/
 
 - 已完成修复原有失败测试、注入 `CodexClock`、移除本轮涉及的真实延时，并建立连续测试稳定性验收；计划任务仍使用 Dart `Timer`，尚未引入独立调度器抽象。
 - 已完成计划任务与 Markdown 工作区预览测试的首批拆分；后续在 P1 中继续清理其余真实延时和跨测试全局状态。
-- 继续拆分 `widget_test.dart`，让其余关键能力可独立执行与分片。
+- 已完成 `widget_test.dart` 主能力拆分和七个功能测试分片；后续只在发现新的混合职责时继续迁移，不再以机械移动为目标。
 
 ### 第二阶段：架构与性能
 
@@ -363,8 +404,8 @@ test/
 
 ## 7. 建议的下一个实施任务
 
-计划任务、Markdown/源码预览、浏览器/文件工作区、运行时诊断和子智能体测试完成首批拆分后，下一个实施任务建议定义为：
+计划任务、Markdown/源码预览、浏览器/文件工作区、运行时诊断、子智能体和插件/MCP 测试完成首批拆分后，下一个实施任务建议定义为：
 
-> 将 `test/widget_test.dart` 中 App Server 完成事件、后台任务和通知提醒回归迁移到职责明确的 runtime 测试文件；保留有 ID、无 ID、前台、后台、迟到重放和跨项目对账的完整矩阵，并保持默认并发与单并发完整套件通过。
+> 继续收敛运行时通知边界：评估 `error` 网络重试、失败回合恢复和剩余的运行时诊断/连接交互中仍与控制器状态强耦合的分支，优先提取可独立验证的生命周期协作器；保留迟到事件隔离、旧协议无回合 ID 兼容、工作区切换、停止/重连和公开控制器 API，并保持默认并发与单并发完整套件通过。
 
-这一组测试共享同一状态机边界，独立后可显著缩短完成事件兼容性回归的定位时间，也为后续提取 Conversation/Runtime Riverpod 状态建立安全网。
+该边界共享异步请求和生命周期代次，独立后可缩小迟到回调、工作区切换和重连竞态的影响范围，也为后续提取 runtime/协作 Riverpod 状态建立安全网。

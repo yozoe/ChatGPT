@@ -201,6 +201,63 @@ void main() {
   );
 
   test(
+    'restores cumulative and latest-turn file scopes after a no-change follow-up',
+    () async {
+      final workspaceDirectory = await Directory.systemTemp.createTemp(
+        'codex-task-file-restart-',
+      );
+      addTearDown(() => workspaceDirectory.delete(recursive: true));
+      final workspace = await workspaceDirectory.resolveSymbolicLinks();
+      final history = MemoryConversationHistoryStore();
+      final runtimeStore = FakeRuntimeConfigurationStore();
+      final firstController = CodexController(
+        server: FakeCodexAppServer(),
+        runtimeConfigurationStore: runtimeStore,
+        conversationHistoryStore: history,
+      );
+      addTearDown(firstController.dispose);
+      await firstController.selectWorkspace(workspace);
+      firstController.status = RuntimeStatus.ready;
+
+      const diff =
+          'diff --git a/lib/main.dart b/lib/main.dart\n'
+          '--- a/lib/main.dart\n'
+          '+++ b/lib/main.dart\n'
+          '@@ -1 +1 @@\n'
+          '-old\n'
+          '+new';
+      await _completeFileTurn(
+        firstController,
+        'change one file',
+        changes: [
+          {'path': 'lib/main.dart', 'kind': 'modified', 'diff': diff},
+        ],
+        diff: diff,
+      );
+      await _completeFileTurn(
+        firstController,
+        'explain without changing files',
+        changes: const [],
+      );
+      await firstController.saveConversationHistoryForTesting();
+
+      final restoredController = CodexController(
+        server: FakeCodexAppServer(),
+        runtimeConfigurationStore: runtimeStore,
+        conversationHistoryStore: history,
+      );
+      addTearDown(restoredController.dispose);
+      await restoredController.waitForInitialConfiguration();
+
+      expect(restoredController.activeThreadId, 'new-thread');
+      expect(restoredController.fileChanges.single.path, 'lib/main.dart');
+      expect(restoredController.turnFileChanges, isEmpty);
+      expect(restoredController.turnDiff, isNull);
+      expect(restoredController.fileChanges.single.diff, diff);
+    },
+  );
+
+  test(
     'isolates task files when switching projects and restores the original project',
     () async {
       final root = await Directory.systemTemp.createTemp(

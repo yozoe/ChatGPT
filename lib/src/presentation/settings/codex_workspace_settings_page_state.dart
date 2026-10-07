@@ -1,13 +1,17 @@
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_dependencies.dart';
 import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_page.dart';
-import 'package:chatgpt/src/presentation/extensions/codex_workspace_extensions_extension_settings_dialog.dart';
 import 'package:chatgpt/src/services/dock_icon_service.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 import 'package:chatgpt/src/domain/worktree_settings.dart';
 import 'package:chatgpt/src/domain/agent_setting_field.dart';
 import 'package:chatgpt/src/domain/agent_setting_availability.dart';
 import 'package:chatgpt/src/domain/local_worktree_record.dart';
 import 'package:chatgpt/src/services/local_worktree_service.dart';
+import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_worktrees_section.dart';
+import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_archived_chats_section.dart';
+import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_browser_section.dart';
+import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_plugins_section.dart';
+import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_appearance_section.dart';
+import 'package:chatgpt/src/presentation/settings/codex_workspace_settings_help_actions.dart';
 
 /// 管理设置页面的局部导航和临时显示偏好。
 /// Owns settings-page local navigation and transient display preferences.
@@ -116,129 +120,17 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
   }
 
   Widget _worktreesContent() {
-    final heading = Theme.of(context).textTheme.headlineMedium?.copyWith(
-      fontSize: 38,
-      fontWeight: FontWeight.w500,
-    );
-    final body = <Widget>[];
-    if (_worktreesLoading) {
-      body.add(const Center(child: CircularProgressIndicator()));
-    } else if (_worktreesError != null) {
-      body.add(
-        Text(
-          '无法读取工作树：$_worktreesError',
-          key: const Key('worktrees-error-state'),
-        ),
-      );
-    } else if (_worktrees.isEmpty) {
-      body.add(const Center(child: Text('ChatGPT 创建的工作树将显示在此处')));
-    } else {
-      body.addAll(
-        _worktrees.map(
-          (item) => ListTile(
-            title: Text(item.worktreeId),
-            subtitle: Text(item.worktreePath),
-            trailing: item.state == LocalWorktreeState.removed
-                ? TextButton(
-                    key: Key('worktree-restore-${item.worktreeId}'),
-                    onPressed: () => _restoreWorktree(item),
-                    child: const Text('恢复'),
-                  )
-                : Text(item.state.name),
-          ),
-        ),
-      );
-    }
-    return ListView(
-      key: const Key('settings-worktrees-page'),
-      padding: const EdgeInsets.fromLTRB(72, 36, 72, 72),
-      children: <Widget>[
-        Text('Worktrees', style: heading),
-        const SizedBox(height: 28),
-        Card(
-          child: Column(
-            children: <Widget>[
-              _settingRow(
-                title: '工作树根目录',
-                description: 'ChatGPT 创建托管工作树的目录。此目录使用默认位置。',
-                trailing: SizedBox(
-                  width: 260,
-                  child: TextField(
-                    key: const Key('worktree-root-field'),
-                    controller: _worktreeRoot,
-                    onSubmitted: (value) => _saveWorktreeSettings(
-                      _worktreeSettings.copyWith(rootPath: value.trim()),
-                    ),
-                  ),
-                ),
-              ),
-              const Divider(height: 1),
-              _settingRow(
-                title: '创建工作树时获取更新',
-                description: '创建每个新工作树时获取 Git 远端更新。',
-                trailing: Switch(
-                  key: const Key('worktree-fetch-toggle'),
-                  value: _worktreeSettings.fetchBeforeCreate,
-                  onChanged: (value) => _saveWorktreeSettings(
-                    _worktreeSettings.copyWith(fetchBeforeCreate: value),
-                  ),
-                ),
-              ),
-              const Divider(height: 1),
-              _settingRow(
-                title: '自动删除工作树',
-                description: '超出保留数量后自动清理已完成的托管工作树。',
-                trailing: Switch(
-                  key: const Key('worktree-cleanup-toggle'),
-                  value: _worktreeSettings.autoCleanup,
-                  onChanged: (value) => _saveWorktreeSettings(
-                    _worktreeSettings.copyWith(autoCleanup: value),
-                  ),
-                ),
-              ),
-              const Divider(height: 1),
-              _settingRow(
-                title: '自动删除限制',
-                description: '要保留的托管工作树数量。',
-                trailing: SizedBox(
-                  width: 72,
-                  child: TextField(
-                    key: const Key('worktree-retention-field'),
-                    controller: _worktreeRetention,
-                    keyboardType: TextInputType.number,
-                    onSubmitted: (value) {
-                      final limit = int.tryParse(value);
-                      if (limit == null || limit < 1) return;
-                      _saveWorktreeSettings(
-                        _worktreeSettings.copyWith(retentionLimit: limit),
-                      );
-                    },
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 34),
-        Row(
-          children: <Widget>[
-            Expanded(
-              child: Text(
-                '尚无工作树',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-            ),
-            IconButton(
-              key: const Key('worktrees-refresh'),
-              tooltip: '刷新工作树',
-              onPressed: _loadWorktrees,
-              icon: const Icon(Icons.refresh_outlined),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        ...body,
-      ],
+    return SettingsWorktreesSection(
+      rootController: _worktreeRoot,
+      retentionController: _worktreeRetention,
+      settings: _worktreeSettings,
+      worktrees: _worktrees,
+      loading: _worktreesLoading,
+      error: _worktreesError,
+      buildSettingRow: _settingRow,
+      onSaveSettings: _saveWorktreeSettings,
+      onRestoreWorktree: _restoreWorktree,
+      onRefresh: _loadWorktrees,
     );
   }
 
@@ -290,173 +182,9 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
   /// 构建只管理策略、不手动创建 WebView 的浏览器设置内容。
   /// Builds browser settings that manage policy without manually creating a WebView.
   Widget _browserContent() {
-    final palette = YeknomPalette.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(72, 46, 72, 0),
-      child: SingleChildScrollView(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '浏览器',
-              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                fontSize: 38,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              '浏览器由智能体在任务执行中按需调用。此页面仅用于配置能力与权限。',
-              style: TextStyle(color: palette.muted),
-            ),
-            const SizedBox(height: 24),
-            Card(
-              child: Column(
-                children: [
-                  Semantics(
-                    container: true,
-                    label: '允许智能体调用内置浏览器',
-                    toggled: widget.controller.browserEnabled,
-                    onTap: () => unawaited(
-                      widget.controller.setBrowserEnabled(
-                        !widget.controller.browserEnabled,
-                      ),
-                    ),
-                    child: ExcludeSemantics(
-                      child: SwitchListTile(
-                        key: const Key('settings-browser-enabled'),
-                        secondary: const Icon(Icons.auto_awesome_outlined),
-                        title: const Text('允许智能体调用内置浏览器'),
-                        subtitle: const Text(
-                          '任务中收到受支持的 browser 请求时，会先请求批准；批准后打开浏览器工作区。computer-use 活动仅展示状态，不会自动导航。',
-                        ),
-                        value: widget.controller.browserEnabled,
-                        onChanged: (enabled) => unawaited(
-                          widget.controller.setBrowserEnabled(enabled),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const Divider(height: 1),
-                  ListTile(
-                    key: const Key('settings-browser-link-open-mode'),
-                    leading: const Icon(Icons.open_in_browser_outlined),
-                    title: const Text('网页链接打开位置'),
-                    subtitle: const Text(
-                      '用户点击回复中的 HTTP/HTTPS 链接时使用的浏览器。智能体请求始终单独请求批准。',
-                    ),
-                    trailing: DropdownButtonHideUnderline(
-                      child: DropdownButton<BrowserLinkOpenMode>(
-                        value: widget.controller.browserLinkOpenMode,
-                        onChanged: (mode) {
-                          if (mode != null) {
-                            unawaited(
-                              widget.controller.setBrowserLinkOpenMode(mode),
-                            );
-                          }
-                        },
-                        items: const [
-                          DropdownMenuItem(
-                            value: BrowserLinkOpenMode.system,
-                            child: Text('系统浏览器'),
-                          ),
-                          DropdownMenuItem(
-                            value: BrowserLinkOpenMode.inApp,
-                            child: Text('内置浏览器'),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  Semantics(
-                    container: true,
-                    label: '每次下载前询问保存位置',
-                    toggled: widget.controller.browserAskBeforeDownload,
-                    onTap: () => unawaited(
-                      widget.controller.setBrowserAskBeforeDownload(
-                        !widget.controller.browserAskBeforeDownload,
-                      ),
-                    ),
-                    child: ExcludeSemantics(
-                      child: SwitchListTile(
-                        key: const Key('settings-browser-ask-before-download'),
-                        secondary: const Icon(Icons.download_outlined),
-                        title: const Text('每次下载前询问保存位置'),
-                        subtitle: Text(
-                          widget.controller.browserDownloadDirectory == null
-                              ? '未设置默认目录；关闭后需要先选择下载目录。'
-                              : '关闭后自动保存到：${widget.controller.browserDownloadDirectory}',
-                        ),
-                        value: widget.controller.browserAskBeforeDownload,
-                        onChanged: (ask) => unawaited(
-                          widget.controller.setBrowserAskBeforeDownload(ask),
-                        ),
-                      ),
-                    ),
-                  ),
-                  ListTile(
-                    key: const Key('settings-browser-download-directory'),
-                    leading: const Icon(Icons.folder_outlined),
-                    title: const Text('默认下载目录'),
-                    subtitle: Text(
-                      widget.controller.browserDownloadDirectory ?? '每次下载时选择',
-                    ),
-                    trailing: Wrap(
-                      spacing: 4,
-                      children: [
-                        TextButton(
-                          onPressed: _chooseBrowserDownloadDirectory,
-                          child: const Text('选择'),
-                        ),
-                        if (widget.controller.browserDownloadDirectory != null)
-                          IconButton(
-                            tooltip: '清除默认下载目录',
-                            onPressed: () => unawaited(
-                              widget.controller.setBrowserDownloadDirectory(
-                                null,
-                              ),
-                            ),
-                            icon: const Icon(Icons.close, size: 18),
-                          ),
-                      ],
-                    ),
-                  ),
-                  const Divider(height: 1),
-                  Semantics(
-                    container: true,
-                    label: '启动时恢复浏览器标签',
-                    toggled: widget.controller.browserRestoreTabs,
-                    onTap: () => unawaited(
-                      widget.controller.setBrowserRestoreTabs(
-                        !widget.controller.browserRestoreTabs,
-                      ),
-                    ),
-                    child: ExcludeSemantics(
-                      child: SwitchListTile(
-                        key: const Key('settings-browser-restore-tabs'),
-                        secondary: const Icon(Icons.restore_page_outlined),
-                        title: const Text('启动时恢复浏览器标签'),
-                        subtitle: const Text(
-                          '恢复保存的网页地址和标签标题，不恢复 Cookie、网站存储或登录状态。默认关闭。',
-                        ),
-                        value: widget.controller.browserRestoreTabs,
-                        onChanged: (restore) => unawaited(
-                          widget.controller.setBrowserRestoreTabs(restore),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              '当前只接收 App Server 明确声明的 HTTP/HTTPS 导航请求；不会读取或复用 Chrome、Safari 的登录状态。',
-              style: TextStyle(color: palette.muted),
-            ),
-          ],
-        ),
-      ),
+    return SettingsBrowserSection(
+      controller: widget.controller,
+      onChooseDownloadDirectory: _chooseBrowserDownloadDirectory,
     );
   }
 
@@ -475,45 +203,13 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
 
   /// 将原插件对话框嵌入设置内容区，保持两种入口共享同一管理界面。
   /// Embeds the existing extension dialog in settings so both entry points share one UI.
-  Widget _pluginsContent() => LayoutBuilder(
-    builder: (context, constraints) {
-      final horizontalPadding = constraints.maxWidth < 620 ? 24.0 : 72.0;
-      return Padding(
-        padding: EdgeInsets.fromLTRB(
-          horizontalPadding,
-          46,
-          horizontalPadding,
-          0,
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '插件',
-              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                fontSize: 38,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              '管理已安装插件、MCP 服务器和可用技能。',
-              style: TextStyle(color: YeknomPalette.of(context).muted),
-            ),
-            const SizedBox(height: 24),
-            Expanded(
-              child: ExtensionSettingsDialog(
-                embedded: true,
-                controller: widget.controller,
-                onAddMarketplace: widget.onAddMarketplace,
-                onManageMarketplaces: widget.onManageMarketplaces,
-              ),
-            ),
-          ],
-        ),
-      );
-    },
-  );
+  Widget _pluginsContent() {
+    return SettingsPluginsSection(
+      controller: widget.controller,
+      onAddMarketplace: widget.onAddMarketplace,
+      onManageMarketplaces: widget.onManageMarketplaces,
+    );
+  }
 
   void _refreshHooks() => ref.invalidate(codexHooksProvider(widget.controller));
 
@@ -529,54 +225,6 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
     final icon = await _dockIconService.selected();
     if (!mounted || icon == null) return;
     setState(() => _dockIcon = icon == 'commandCloud' ? 1 : 0);
-  }
-
-  Future<void> _showShortcuts() async {
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        key: const Key('settings-shortcuts-dialog'),
-        title: const Text('键盘快捷键'),
-        content: const SizedBox(
-          width: 380,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: Icon(Icons.add_comment_outlined),
-                title: Text('新对话'),
-                trailing: Text('⌘ N'),
-              ),
-              ListTile(
-                leading: Icon(Icons.search_outlined),
-                title: Text('搜索聊天'),
-                trailing: Text('⌘ K'),
-              ),
-              ListTile(
-                leading: Icon(Icons.stop_circle_outlined),
-                title: Text('停止当前任务'),
-                trailing: Text('Esc'),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('完成'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showAbout() {
-    showAboutDialog(
-      context: context,
-      applicationName: 'Codex Desk',
-      applicationVersion: '1.0.0',
-      applicationLegalese: '本地优先 · stdio JSON-RPC',
-    );
   }
 
   Widget _navItem({
@@ -864,167 +512,21 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
     );
   }
 
-  Widget _dockIconTile({required int index, required String label}) {
-    final palette = YeknomPalette.of(context);
-    final selected = _dockIcon == index;
-    return Semantics(
-      label: 'Dock 图标：$label',
-      selected: selected,
-      button: true,
-      child: InkWell(
-        key: Key('settings-dock-icon-$index'),
-        borderRadius: BorderRadius.circular(16),
-        onTap: () => _selectDockIcon(index),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 160),
-          width: 96,
-          height: 96,
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: selected ? palette.selected : Colors.transparent,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: selected ? palette.trace : palette.border,
-              width: selected ? 2 : 1,
-            ),
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(11),
-            child: index == 0
-                ? Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: SvgPicture.asset(
-                      'assets/branding/codex-desk-icon-traced-light.svg',
-                      fit: BoxFit.contain,
-                    ),
-                  )
-                : Image.asset('icon.png', fit: BoxFit.cover),
-          ),
-        ),
-      ),
-    );
-  }
-
   Widget _appearanceContent() {
-    final palette = YeknomPalette.of(context);
-    final heading = Theme.of(context).textTheme.headlineMedium?.copyWith(
-      fontSize: 38,
-      fontWeight: FontWeight.w500,
-    );
-    return ListView(
-      key: const Key('settings-appearance-page'),
-      padding: const EdgeInsets.fromLTRB(58, 26, 58, 58),
-      children: [
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 1500),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('偏好设置', style: heading),
-              const SizedBox(height: 32),
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  color: palette.raised,
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: palette.border),
-                ),
-                child: Column(
-                  children: [
-                    _settingRow(
-                      title: '使用指针光标（待开发）',
-                      description: '悬停交互元素时切换为指针光标',
-                      trailing: Switch(
-                        value: _usePointerCursor,
-                        onChanged: null,
-                      ),
-                    ),
-                    Divider(height: 1, color: palette.border),
-                    _settingRow(
-                      title: '高对比度主题',
-                      description: '提高文字、边框和控件状态的对比度，保持当前明暗模式与配色。',
-                      trailing: Switch(
-                        key: const Key('settings-high-contrast'),
-                        value: widget.highContrast,
-                        onChanged: widget.onHighContrastChanged,
-                      ),
-                    ),
-                    Divider(height: 1, color: palette.border),
-                    _settingRow(
-                      title: 'Dock 图标',
-                      description: '选择应用在 Dock 中使用的图标',
-                      trailing: Wrap(
-                        spacing: 12,
-                        children: [
-                          _dockIconTile(index: 0, label: '结绳'),
-                          _dockIconTile(index: 1, label: '命令云'),
-                        ],
-                      ),
-                    ),
-                    Divider(height: 1, color: palette.border),
-                    _settingRow(
-                      title: '减少动态效果（待开发）',
-                      description: '减少动画效果或匹配系统设置',
-                      trailing: SegmentedButton<String>(
-                        segments: const [
-                          ButtonSegment(value: '系统', label: Text('系统')),
-                          ButtonSegment(value: '开启', label: Text('开启')),
-                          ButtonSegment(value: '关闭', label: Text('关闭')),
-                        ],
-                        selected: {_reduceMotion},
-                        onSelectionChanged: null,
-                      ),
-                    ),
-                    Divider(height: 1, color: palette.border),
-                    _settingRow(
-                      title: 'UI 字号（待开发）',
-                      description: '调整 ChatGPT 界面使用的基准字号',
-                      trailing: _fontField(_uiFontSize),
-                    ),
-                    Divider(height: 1, color: palette.border),
-                    _settingRow(
-                      title: '代码字体大小（待开发）',
-                      description: '调整聊天和差异视图中代码使用的基础字号',
-                      trailing: _fontField(_codeFontSize),
-                    ),
-                    Divider(height: 1, color: palette.border),
-                    _settingRow(
-                      title: '差异标记（待开发）',
-                      description: '使用颜色或 +/- 标记显示更改',
-                      trailing: SegmentedButton<String>(
-                        segments: const [
-                          ButtonSegment(value: '颜色', label: Text('颜色')),
-                          ButtonSegment(value: '+/-', label: Text('+/-')),
-                        ],
-                        selected: {_diffMarkers},
-                        onSelectionChanged: null,
-                      ),
-                    ),
-                    Divider(height: 1, color: palette.border),
-                    _settingRow(
-                      title: '字体平滑（待开发）',
-                      description: '使用 macOS 原生字体抗锯齿',
-                      trailing: Switch(value: _fontSmoothing, onChanged: null),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
+    return SettingsAppearanceSection(
+      uiFontSize: _uiFontSize,
+      codeFontSize: _codeFontSize,
+      dockIcon: _dockIcon,
+      highContrast: widget.highContrast,
+      onHighContrastChanged: widget.onHighContrastChanged,
+      onSelectDockIcon: _selectDockIcon,
+      buildSettingRow: _settingRow,
+      usePointerCursor: _usePointerCursor,
+      reduceMotion: _reduceMotion,
+      diffMarkers: _diffMarkers,
+      fontSmoothing: _fontSmoothing,
     );
   }
-
-  Widget _fontField(TextEditingController controller) => SizedBox(
-    width: 128,
-    child: TextField(
-      controller: controller,
-      enabled: false,
-      keyboardType: TextInputType.number,
-      textAlign: TextAlign.center,
-      decoration: const InputDecoration(suffixText: 'px'),
-    ),
-  );
 
   static const _inheritAgentDefaultValue = '__codex_desk_inherit__';
 
@@ -1781,276 +1283,22 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
     }
   }
 
-  Widget _archivedThreadRow(CodexThread thread, CodexController controller) {
-    final palette = YeknomPalette.of(context);
-    final updating = controller.isUpdatingThread(thread.id);
-    final restoring = controller.isUnarchivingThread(thread.id);
-    final enabled = controller.status == RuntimeStatus.ready && !updating;
-    final canDelete = enabled && !controller.hasRunningTasks;
-    return Container(
-      key: Key('settings-archived-thread-${thread.id}'),
-      padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
-      decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: palette.border)),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  thread.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  _archiveDate(thread),
-                  style: TextStyle(color: palette.muted, fontSize: 12),
-                ),
-              ],
-            ),
-          ),
-          if (updating || restoring)
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 12),
-              child: SizedBox.square(
-                dimension: 14,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            )
-          else ...[
-            IconButton(
-              key: Key('settings-archived-delete-${thread.id}'),
-              tooltip: '永久删除',
-              onPressed: canDelete ? () => _deleteArchivedThread(thread) : null,
-              icon: const Icon(Icons.delete_outline, size: 17),
-            ),
-            TextButton(
-              key: Key('settings-archived-unarchive-${thread.id}'),
-              onPressed: enabled
-                  ? () => controller.unarchiveThread(thread)
-                  : null,
-              child: const Text('取消归档'),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
   Widget _archivedContent() {
-    final palette = YeknomPalette.of(context);
-    return AnimatedBuilder(
-      animation: widget.controller,
-      builder: (context, _) {
-        final controller = widget.controller;
-        final query = _archiveSearch.text.trim().toLowerCase();
-        final projectName = _archiveProjectName();
-        final threads = controller.archivedThreads
-            .where((thread) {
-              final matchesQuery =
-                  query.isEmpty ||
-                  '${thread.title} ${thread.preview}'.toLowerCase().contains(
-                    query,
-                  );
-              final matchesProject = _archiveProjectFilter == '当前项目';
-              return matchesQuery && matchesProject;
-            })
-            .toList(growable: false);
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            final compact = constraints.maxWidth < 720;
-            return ListView(
-              key: const Key('settings-archived-chats-page'),
-              padding: EdgeInsets.fromLTRB(
-                compact ? 24 : 72,
-                46,
-                compact ? 24 : 72,
-                72,
-              ),
-              children: [
-                Align(
-                  alignment: Alignment.topCenter,
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 700),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
-                            Expanded(
-                              child: Text(
-                                '已归档的聊天',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .headlineMedium
-                                    ?.copyWith(
-                                      fontSize: 28,
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                              ),
-                            ),
-                            TextButton.icon(
-                              key: const Key('settings-archived-delete-all'),
-                              onPressed:
-                                  controller.archivedThreads.isEmpty ||
-                                      controller.status !=
-                                          RuntimeStatus.ready ||
-                                      controller.hasRunningTasks
-                                  ? null
-                                  : _deleteAllArchivedThreads,
-                              icon: const Icon(Icons.delete_outline, size: 15),
-                              label: const Text('全部删除'),
-                              style: TextButton.styleFrom(
-                                foregroundColor: Theme.of(
-                                  context,
-                                ).colorScheme.error,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 34),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            SizedBox(
-                              width: compact ? constraints.maxWidth : 330,
-                              height: 40,
-                              child: TextField(
-                                key: const Key('settings-archived-search'),
-                                controller: _archiveSearch,
-                                onChanged: (_) => setState(() {}),
-                                decoration: const InputDecoration(
-                                  hintText: '搜索已归档聊天',
-                                  prefixIcon: Icon(Icons.search, size: 17),
-                                  prefixIconConstraints: BoxConstraints(
-                                    minWidth: 38,
-                                    maxWidth: 38,
-                                    minHeight: 40,
-                                    maxHeight: 40,
-                                  ),
-                                  contentPadding: EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                  ),
-                                  isDense: true,
-                                ),
-                              ),
-                            ),
-                            PopupMenuButton<String>(
-                              key: const Key('settings-archived-type-filter'),
-                              initialValue: _archiveTypeFilter,
-                              onSelected: (value) =>
-                                  setState(() => _archiveTypeFilter = value),
-                              itemBuilder: (context) => const [
-                                PopupMenuItem(
-                                  value: '全部聊天',
-                                  child: Text('全部聊天'),
-                                ),
-                              ],
-                              child: Chip(
-                                avatar: const Icon(Icons.tune, size: 15),
-                                label: Text(_archiveTypeFilter),
-                              ),
-                            ),
-                            PopupMenuButton<String>(
-                              key: const Key(
-                                'settings-archived-project-filter',
-                              ),
-                              initialValue: _archiveProjectFilter,
-                              onSelected: (value) =>
-                                  setState(() => _archiveProjectFilter = value),
-                              itemBuilder: (context) => [
-                                const PopupMenuItem(
-                                  value: '当前项目',
-                                  child: Text('当前项目'),
-                                ),
-                              ],
-                              child: Chip(
-                                avatar: const Icon(
-                                  Icons.folder_outlined,
-                                  size: 15,
-                                ),
-                                label: Text(_archiveProjectFilter),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 26),
-                        if (controller.archivedThreadsLoading)
-                          const Center(child: CircularProgressIndicator())
-                        else if (controller.archivedThreadsError
-                            case final error?)
-                          _hooksMessage(
-                            key: const Key('settings-archived-error-state'),
-                            title: '无法读取已归档聊天',
-                            detail: error,
-                          )
-                        else if (threads.isEmpty)
-                          _hooksMessage(
-                            key: const Key('settings-archived-empty-state'),
-                            title: query.isEmpty ? '暂无已归档聊天' : '未找到匹配的聊天',
-                            detail: query.isEmpty
-                                ? '归档的聊天会显示在这里。'
-                                : '请尝试其他搜索词。',
-                          )
-                        else
-                          DecoratedBox(
-                            key: const Key('settings-archived-list'),
-                            decoration: BoxDecoration(
-                              color: palette.raised,
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: palette.border),
-                            ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Padding(
-                                  padding: const EdgeInsets.fromLTRB(
-                                    14,
-                                    12,
-                                    14,
-                                    8,
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      const Icon(
-                                        Icons.folder_outlined,
-                                        size: 17,
-                                      ),
-                                      const SizedBox(width: 8),
-                                      Expanded(child: Text(projectName)),
-                                      Text(
-                                        '${threads.length} 个聊天',
-                                        style: TextStyle(
-                                          color: palette.muted,
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      const Icon(Icons.more_horiz, size: 17),
-                                    ],
-                                  ),
-                                ),
-                                for (final thread in threads)
-                                  _archivedThreadRow(thread, controller),
-                              ],
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            );
-          },
-        );
-      },
+    return SettingsArchivedChatsSection(
+      controller: widget.controller,
+      archiveSearch: _archiveSearch,
+      archiveTypeFilter: _archiveTypeFilter,
+      archiveProjectFilter: _archiveProjectFilter,
+      projectName: _archiveProjectName(),
+      buildMessage: _hooksMessage,
+      archiveDate: _archiveDate,
+      onSearchChanged: () => setState(() {}),
+      onTypeFilterChanged: (value) =>
+          setState(() => _archiveTypeFilter = value),
+      onProjectFilterChanged: (value) =>
+          setState(() => _archiveProjectFilter = value),
+      onDeleteThread: _deleteArchivedThread,
+      onDeleteAllThreads: _deleteAllArchivedThreads,
     );
   }
 
@@ -2141,7 +1389,8 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                           _navItem(
                             label: '键盘快捷键',
                             icon: Icons.keyboard_alt_outlined,
-                            onTap: _showShortcuts,
+                            onTap: () =>
+                                SettingsHelpActions.showShortcuts(context),
                           ),
                           _navItem(
                             label: '账户',
@@ -2152,7 +1401,7 @@ class SettingsPageState extends ConsumerState<SettingsPage> {
                           _navItem(
                             label: '关于',
                             icon: Icons.info_outline,
-                            onTap: _showAbout,
+                            onTap: () => SettingsHelpActions.showAbout(context),
                           ),
                           _sectionLabel('集成'),
                           _navItem(

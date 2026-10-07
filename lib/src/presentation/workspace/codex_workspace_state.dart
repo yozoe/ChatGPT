@@ -10,6 +10,15 @@ import 'package:chatgpt/src/presentation/files/codex_workspace_files_workspace_p
 import 'package:chatgpt/src/presentation/files/workspace_source_file_preview.dart';
 import 'package:chatgpt/src/presentation/agents/codex_workspace_agents_page.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace_desktop_side_panel.dart';
+import 'package:chatgpt/src/presentation/workspace/codex_workspace_codex_configuration_dialog.dart';
+import 'package:chatgpt/src/presentation/workspace/codex_workspace_account_dialog.dart';
+import 'package:chatgpt/src/presentation/workspace/codex_workspace_runtime_dialog.dart';
+import 'package:chatgpt/src/presentation/workspace/codex_workspace_directories_dialog.dart';
+import 'package:chatgpt/src/presentation/workspace/codex_workspace_edit_dialog.dart';
+import 'package:chatgpt/src/presentation/workspace/codex_workspace_archived_threads_dialog.dart';
+import 'package:chatgpt/src/presentation/workspace/codex_workspace_marketplaces_dialog.dart';
+import 'package:chatgpt/src/presentation/workspace/codex_workspace_rename_thread_dialog.dart';
+import 'package:chatgpt/src/presentation/workspace/codex_workspace_delete_thread_dialog.dart';
 import 'package:chatgpt/src/presentation/workspace/browser_link_open_scope.dart';
 import 'package:chatgpt/src/presentation/workspace/workspace_file_open_scope.dart';
 import 'package:chatgpt/src/presentation/workspace/workspace_file_tabs_notifier.dart';
@@ -1074,195 +1083,10 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   Future<void> _showWorkspaceDirectories() async {
     await showDialog<void>(
       context: context,
-      // 运行时切换与目录保存都可能在弹窗打开期间完成，按钮状态必须随控制器实时更新。
-      // Runtime transitions and directory saves may finish while open, so actions must rebuild live.
-      builder: (dialogContext) => ControllerBuilder(
+      builder: (dialogContext) => CodexWorkspaceDirectoriesDialog(
         overrideController: widget.controller,
-        builder: (context, controller) {
-          final primary = controller.workspacePath;
-          final additional = controller.additionalWorkspacePaths;
-          final workspaces = controller.workspaceConfigurations;
-          return AlertDialog(
-            key: const Key('workspace-directories-dialog'),
-            title: const Text('工作区'),
-            content: SizedBox(
-              width: 680,
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('每个工作区会独立保存主目录、附加目录和本地历史。新建项目只加入列表，切换后才会连接运行时。'),
-                    if (!controller.canChangePrimaryWorkspace) ...[
-                      const SizedBox(height: 8),
-                      MutedText(
-                        '${controller.changePrimaryWorkspaceDisabledReason ?? '当前暂时不能切换工作区。'}仍可新建项目或调整附加目录。',
-                      ),
-                    ],
-                    const SizedBox(height: 20),
-                    Row(
-                      children: [
-                        Text(
-                          '已保存工作区',
-                          style: Theme.of(context).textTheme.labelLarge,
-                        ),
-                        const SizedBox(width: 8),
-                        Text('${workspaces.length}'),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    if (workspaces.isEmpty)
-                      const WorkspaceDirectoryTile(
-                        key: Key('saved-workspaces-empty'),
-                        path: null,
-                        label: '暂无工作区',
-                        description: '点击“新建工作区”选择主目录',
-                        primary: true,
-                      )
-                    else
-                      ...workspaces.map((workspace) {
-                        final active = workspace.primaryPath == primary;
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: WorkspaceDirectoryTile(
-                            key: ValueKey(
-                              'workspace-profile-${workspace.primaryPath}',
-                            ),
-                            path: workspace.isUnrooted
-                                ? null
-                                : workspace.primaryPath,
-                            label: active ? '当前工作区' : '工作区',
-                            description: workspace.isUnrooted
-                                ? '未添加源文件夹'
-                                : workspace.additionalPaths.isEmpty
-                                ? '仅主目录'
-                                : '${workspace.additionalPaths.length} 个附加目录',
-                            primary: active,
-                            trailing: active
-                                ? const Chip(
-                                    visualDensity: VisualDensity.compact,
-                                    label: Text('当前'),
-                                  )
-                                : Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      TextButton(
-                                        key: ValueKey(
-                                          'switch-workspace-${workspace.primaryPath}',
-                                        ),
-                                        onPressed:
-                                            !workspace.isUnrooted &&
-                                                controller
-                                                    .canChangePrimaryWorkspace
-                                            ? () => controller
-                                                  .selectWorkspaceAndReconnect(
-                                                    workspace.primaryPath,
-                                                  )
-                                            : null,
-                                        child: const Text('切换'),
-                                      ),
-                                      IconButton(
-                                        key: ValueKey(
-                                          'forget-workspace-${workspace.primaryPath}',
-                                        ),
-                                        tooltip: '从列表移除（不会删除目录或历史）',
-                                        onPressed: () =>
-                                            controller.forgetWorkspace(
-                                              workspace.primaryPath,
-                                            ),
-                                        icon: const Icon(Icons.close),
-                                      ),
-                                    ],
-                                  ),
-                          ),
-                        );
-                      }),
-                    const SizedBox(height: 20),
-                    Text(
-                      '当前工作区目录',
-                      style: Theme.of(context).textTheme.labelLarge,
-                    ),
-                    const SizedBox(height: 8),
-                    WorkspaceDirectoryTile(
-                      key: const Key('primary-workspace-directory'),
-                      path: primary,
-                      label: '主目录',
-                      description: '配置、历史、Git 和默认工作位置',
-                      primary: true,
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Text(
-                          '附加目录',
-                          style: Theme.of(context).textTheme.labelLarge,
-                        ),
-                        const SizedBox(width: 8),
-                        Text('${additional.length}'),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    if (additional.isEmpty)
-                      const WorkspaceDirectoryTile(
-                        key: Key('additional-workspaces-empty'),
-                        path: null,
-                        label: '暂无附加目录',
-                        description: '添加后，新任务可以同时访问这些目录',
-                      )
-                    else
-                      ...additional.map(
-                        (path) => Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: WorkspaceDirectoryTile(
-                            key: ValueKey('additional-workspace-$path'),
-                            path: path,
-                            label: '附加目录',
-                            description: '供后续新任务访问',
-                            trailing: IconButton(
-                              tooltip: '移除附加目录',
-                              onPressed: () async {
-                                await controller.removeWorkspaceRoot(path);
-                              },
-                              icon: const Icon(Icons.close),
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(dialogContext).pop(),
-                child: const Text('关闭'),
-              ),
-              OutlinedButton.icon(
-                key: const Key('add-workspace-directory-button'),
-                onPressed: primary != null
-                    ? () async {
-                        await _addWorkspaceDirectory();
-                      }
-                    : null,
-                icon: const Icon(Icons.create_new_folder_outlined),
-                label: const Text('添加目录'),
-              ),
-              Tooltip(
-                message: controller.canCreateWorkspace
-                    ? '新建工作区'
-                    : '正在保存项目，请稍候。',
-                child: FilledButton.icon(
-                  key: const Key('create-workspace-button'),
-                  onPressed: controller.canCreateWorkspace
-                      ? _createWorkspace
-                      : null,
-                  icon: const Icon(Icons.add),
-                  label: const Text('新建工作区'),
-                ),
-              ),
-            ],
-          );
-        },
+        onAddDirectory: _addWorkspaceDirectory,
+        onCreateWorkspace: _createWorkspace,
       ),
     );
   }
@@ -1285,222 +1109,20 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
       context: context,
       themes: themes,
       barrierColor: Colors.black.withValues(alpha: 0.62),
-      builder: (dialogContext) => ControllerBuilder(
+      builder: (dialogContext) => CodexWorkspaceEditDialog(
+        primary: primary,
+        nameController: nameController,
         overrideController: widget.controller,
-        builder: (context, controller) {
-          final currentPrimary = primary;
-          final currentConfiguration = controller.workspaceConfigurations
-              .firstWhere(
-                (candidate) => candidate.primaryPath == currentPrimary,
-                orElse: () =>
-                    WorkspaceConfiguration(primaryPath: currentPrimary),
-              );
-          final additional = currentConfiguration.additionalPaths;
-          final palette = YeknomPalette.of(context);
-          return KeyedSubtree(
-            // 保留旧的管理入口 key，便于嵌入方平滑迁移到新的编辑器。
-            key: const Key('workspace-directories-dialog'),
-            child: Dialog(
-              key: const Key('workspace-edit-dialog'),
-              insetPadding: const EdgeInsets.symmetric(
-                horizontal: 24,
-                vertical: 24,
-              ),
-              backgroundColor: palette.module,
-              surfaceTintColor: Colors.transparent,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(30),
-              ),
-              clipBehavior: Clip.antiAlias,
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(
-                  maxWidth: 960,
-                  maxHeight: 680,
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(40, 34, 40, 30),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              '编辑项目',
-                              style: Theme.of(context).textTheme.headlineSmall
-                                  ?.copyWith(
-                                    fontWeight: FontWeight.w700,
-                                    letterSpacing: -0.5,
-                                  ),
-                            ),
-                          ),
-                          IconButton(
-                            key: const Key('close-workspace-edit-dialog'),
-                            tooltip: '关闭',
-                            onPressed: () => Navigator.of(dialogContext).pop(),
-                            icon: const Icon(Icons.close, size: 25),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 26),
-                      WorkspaceNameField(controller: nameController),
-                      const SizedBox(height: 28),
-                      Text(
-                        '源文件夹',
-                        style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w700),
-                      ),
-                      const SizedBox(height: 16),
-                      Expanded(
-                        child: WorkspaceSourcesCard(
-                          primary: currentConfiguration.isUnrooted
-                              ? null
-                              : currentPrimary,
-                          additional: additional,
-                          onRemovePrimary: controller.canChangePrimaryWorkspace
-                              ? () async {
-                                  final removed =
-                                      currentPrimary == controller.workspacePath
-                                      ? await controller
-                                            .removeCurrentWorkspace()
-                                      : await _forgetInactiveWorkspace(
-                                          currentPrimary,
-                                        );
-                                  if (removed && dialogContext.mounted) {
-                                    Navigator.of(dialogContext).pop();
-                                  }
-                                }
-                              : null,
-                          onRemoveAdditional: (path) =>
-                              controller.removeWorkspaceRootFromWorkspace(
-                                currentPrimary,
-                                path,
-                              ),
-                          onAdd: () =>
-                              _addWorkspaceDirectoryFor(currentPrimary),
-                        ),
-                      ),
-                      const SizedBox(height: 24),
-                      Row(
-                        children: [
-                          TextButton(
-                            key: const Key('remove-local-workspace-button'),
-                            onPressed: controller.canChangePrimaryWorkspace
-                                ? () async {
-                                    final removed =
-                                        currentPrimary ==
-                                            controller.workspacePath
-                                        ? await controller
-                                              .removeCurrentWorkspace()
-                                        : await _forgetInactiveWorkspace(
-                                            currentPrimary,
-                                          );
-                                    if (removed && dialogContext.mounted) {
-                                      Navigator.of(dialogContext).pop();
-                                    }
-                                  }
-                                : null,
-                            style: TextButton.styleFrom(
-                              foregroundColor: palette.fault,
-                              backgroundColor: palette.fault.withValues(
-                                alpha: 0.14,
-                              ),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 22,
-                                vertical: 15,
-                              ),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(15),
-                              ),
-                            ),
-                            child: const Text(
-                              '移除本地项目',
-                              style: TextStyle(fontWeight: FontWeight.w700),
-                            ),
-                          ),
-                          const Spacer(),
-                          Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              TextButton(
-                                key: const Key('cancel-workspace-edit'),
-                                onPressed: () =>
-                                    Navigator.of(dialogContext).pop(),
-                                style: TextButton.styleFrom(
-                                  foregroundColor: palette.muted,
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 20,
-                                    vertical: 15,
-                                  ),
-                                ),
-                                child: const Text(
-                                  '取消',
-                                  style: TextStyle(fontWeight: FontWeight.w700),
-                                ),
-                              ),
-                              // 兼容旧版调用方仍查找“关闭”文本；视觉上完全隐藏。
-                              Positioned.fill(
-                                child: Opacity(
-                                  opacity: 0,
-                                  child: TextButton(
-                                    onPressed: () =>
-                                        Navigator.of(dialogContext).pop(),
-                                    child: const Text('关闭'),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(width: 20),
-                          FilledButton(
-                            key: const Key('save-workspace-edit'),
-                            onPressed: () async {
-                              await controller.renameWorkspace(
-                                currentPrimary,
-                                nameController.text,
-                              );
-                              if (dialogContext.mounted) {
-                                Navigator.of(dialogContext).pop();
-                              }
-                            },
-                            style: FilledButton.styleFrom(
-                              foregroundColor: Colors.black,
-                              backgroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 30,
-                                vertical: 15,
-                              ),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(15),
-                              ),
-                            ),
-                            child: const Text(
-                              '保存',
-                              style: TextStyle(fontWeight: FontWeight.w700),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          );
-        },
+        onForgetInactiveWorkspace: _forgetInactiveWorkspace,
+        onAddDirectory: _addWorkspaceDirectoryFor,
       ),
     );
     await navigator.push(dialogRoute);
-    // `push` completes when the route is popped, before its reverse
-    // transition has finished. Keep the controller alive until the dialog
-    // subtree is fully removed so TextField cannot reattach to a disposed
-    // controller during that transition.
     await dialogRoute.completed;
     nameController.dispose();
   }
 
-  /// 读取输入框内容、清空编辑器并发送非空任务。
-  /// Reads composer content, clears the editor, and sends a nonempty task.
+  /// 将当前项目的本地历史导出到用户选择的 JSON 文件；文件不包含 API Key。
   Future<bool> _send(ComposerSubmission submission) async {
     final rawPrompt = submission.prompt.trim();
     if (rawPrompt.isEmpty && !submission.hasContext) return false;
@@ -1666,6 +1288,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   }
 
   /// 将当前项目的本地历史导出到用户选择的 JSON 文件；文件不包含 API Key。
+
   /// Exports the current workspace's local history to a user-selected JSON file without API keys.
   Future<void> _exportConversationHistory() async {
     try {
@@ -1697,8 +1320,6 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     }
   }
 
-  /// 选择并确认导入历史 JSON 到当前项目的本地缓存。
-  /// Selects and confirms importing history JSON into the current workspace cache.
   Future<void> _importConversationHistory() async {
     try {
       final selected = await openFile(
@@ -1746,109 +1367,18 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   }
 
   /// 显示账户状态以及 ChatGPT 和 API Key 登录入口。
+  /// 显示账户状态以及 ChatGPT 和 API Key 登录入口。
   /// Shows account status plus ChatGPT and API-key login entry points.
   Future<void> _showAccount() async {
-    final apiKey = TextEditingController();
     await showDialog<void>(
       context: context,
-      builder: (context) => ControllerBuilder(
-        overrideController: widget.controller,
-        builder: (context, controller) {
-          return AlertDialog(
-            title: const Text('账户与登录'),
-            content: SizedBox(
-              width: 420,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('当前状态：${controller.authLabel}'),
-                  if (controller.accountEmail case final email?) ...[
-                    const SizedBox(height: 4),
-                    Text(email),
-                  ],
-                  const SizedBox(height: 16),
-                  if (!controller.canStopRuntime)
-                    const Text('请选择主目录；应用会自动连接本地运行时。')
-                  else ...[
-                    FilledButton.icon(
-                      onPressed: controller.loginInProgress
-                          ? null
-                          : controller.startChatgptLogin,
-                      icon: const Icon(Icons.open_in_new),
-                      label: const Text('使用 ChatGPT 登录'),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: apiKey,
-                      obscureText: true,
-                      autocorrect: false,
-                      enableSuggestions: false,
-                      decoration: const InputDecoration(
-                        labelText: 'OpenAI API Key',
-                        hintText: 'sk-…',
-                        border: OutlineInputBorder(),
-                      ),
-                      onSubmitted: (value) async {
-                        await controller.loginWithApiKey(value);
-                        apiKey.clear();
-                      },
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '密钥不会被此应用写入项目或日志；它会交给本地 Codex 运行时处理。',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 8),
-                    OutlinedButton(
-                      onPressed: controller.loginInProgress
-                          ? null
-                          : () async {
-                              await controller.loginWithApiKey(apiKey.text);
-                              apiKey.clear();
-                            },
-                      child: const Text('使用 API Key 登录'),
-                    ),
-                    if (controller.loginUrl case final authUrl?) ...[
-                      const SizedBox(height: 12),
-                      SelectableText(
-                        authUrl,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      const SizedBox(height: 8),
-                      FilledButton.icon(
-                        onPressed: () async {
-                          final opened = await launchUrl(
-                            Uri.parse(authUrl),
-                            mode: LaunchMode.externalApplication,
-                          );
-                          if (!opened && context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('无法打开浏览器。')),
-                            );
-                          }
-                        },
-                        icon: const Icon(Icons.open_in_browser),
-                        label: const Text('在浏览器中打开登录页'),
-                      ),
-                    ],
-                  ],
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('关闭'),
-              ),
-            ],
-          );
-        },
-      ),
+      builder: (context) =>
+          CodexWorkspaceAccountDialog(overrideController: widget.controller),
     );
-    apiKey.dispose();
   }
 
+  /// 展示由 Codex App Server 原生加载的配置来源，不在应用内收集 Provider 凭据。
+  /// Shows the configuration source loaded natively by App Server without collecting provider credentials.
   /// 展示由 Codex App Server 原生加载的配置来源，不在应用内收集 Provider 凭据。
   /// Shows the configuration source loaded natively by App Server without collecting provider credentials.
   Future<void> _showCodexConfiguration() async {
@@ -1856,141 +1386,13 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (context) => ControllerBuilder(
-        overrideController: widget.controller,
-        builder: (context, controller) => AlertDialog(
-          key: const Key('codex-configuration-dialog'),
-          title: const Text('Codex 配置'),
-          content: SizedBox(
-            width: 520,
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    '模型、Provider、Base URL 和凭据由本地 Codex App Server 按配置优先级直接读取，本应用不再单独收集或保存这些字段。',
-                  ),
-                  const SizedBox(height: 16),
-                  Text('读取状态', style: Theme.of(context).textTheme.labelMedium),
-                  const SizedBox(height: 4),
-                  Text(
-                    controller.codexConfigurationStatusLabel,
-                    key: const Key('codex-configuration-status'),
-                  ),
-                  if (controller.codexConfigurationError case final error?) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      error,
-                      key: const Key('codex-configuration-error'),
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 14),
-                  Text('当前模型', style: Theme.of(context).textTheme.labelMedium),
-                  const SizedBox(height: 4),
-                  SelectableText(
-                    controller.configuredModelLabel,
-                    key: const Key('codex-configured-model'),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '来源：${controller.configuredModelSourceLabel}',
-                    key: const Key('codex-configured-model-source'),
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  const SizedBox(height: 14),
-                  Text(
-                    'Provider',
-                    style: Theme.of(context).textTheme.labelMedium,
-                  ),
-                  const SizedBox(height: 4),
-                  SelectableText(
-                    controller.providerLabel,
-                    key: const Key('codex-configured-provider'),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '来源：${controller.configuredProviderSourceLabel}',
-                    key: const Key('codex-configured-provider-source'),
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  const SizedBox(height: 14),
-                  Text(
-                    '当前 profile',
-                    style: Theme.of(context).textTheme.labelMedium,
-                  ),
-                  const SizedBox(height: 4),
-                  SelectableText(
-                    controller.agentDefaultSettings.profile ?? '默认 profile',
-                    key: const Key('codex-configured-profile'),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '来源：${controller.agentDefaultSettings.profileSource ?? '由 Codex 配置管理'}',
-                    key: const Key('codex-configured-profile-source'),
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  const SizedBox(height: 14),
-                  Text(
-                    '用户配置文件',
-                    style: Theme.of(context).textTheme.labelMedium,
-                  ),
-                  const SizedBox(height: 4),
-                  SelectableText(
-                    controller.codexUserConfigPath,
-                    key: const Key('codex-configuration-path'),
-                  ),
-                  const SizedBox(height: 8),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: TextButton.icon(
-                      key: const Key('codex-open-config-file'),
-                      onPressed: () async {
-                        final path = controller.codexUserConfigPath;
-                        final opened = await launchUrl(
-                          Uri.file(path),
-                          mode: LaunchMode.externalApplication,
-                        );
-                        if (!opened && context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('无法打开 config.toml。')),
-                          );
-                        }
-                      },
-                      icon: const Icon(Icons.open_in_new, size: 16),
-                      label: const Text('打开 config.toml'),
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  Text(
-                    '“已读取”表示模型和 Provider 已由 Codex 运行时解析；凭据、网络和 Base URL 是否可用，仍需成功创建一次任务才能确认。',
-                    key: const Key('codex-configuration-verification-note'),
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    '输入框右下角的模型和推理强度选择只影响后续新建任务，不会改写 Codex 配置，也不会覆盖历史任务原有模型。',
-                    key: const Key('codex-model-selection-scope-note'),
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('关闭'),
-            ),
-          ],
-        ),
-      ),
+      builder: (context) =>
+          CodexConfigurationDialog(overrideController: widget.controller),
     );
   }
 
+  /// 探测并显示 Codex CLI 状态，同时提供路径配置入口。
+  /// Probes and shows Codex CLI status while offering path configuration.
   /// 探测并显示 Codex CLI 状态，同时提供路径配置入口。
   /// Probes and shows Codex CLI status while offering path configuration.
   Future<void> _showRuntime() async {
@@ -1998,164 +1400,14 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (context) => ControllerBuilder(
+      builder: (context) => CodexWorkspaceRuntimeDialog(
         overrideController: widget.controller,
-        builder: (context, controller) {
-          final probe = controller.runtimeProbe;
-          return AlertDialog(
-            title: const Text('Codex CLI 运行时'),
-            content: SizedBox(
-              width: 620,
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (controller.runtimeChecking)
-                      const LinearProgressIndicator()
-                    else if (probe?.isAvailable == true) ...[
-                      const Text('已检测到可用的 Codex CLI。'),
-                      const SizedBox(height: 8),
-                      SelectableText(probe!.executablePath ?? ''),
-                      if (probe.version?.isNotEmpty == true) ...[
-                        const SizedBox(height: 4),
-                        Text(
-                          probe.version!,
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      ],
-                    ] else ...[
-                      Text(controller.runtimeError ?? '尚未检测到 Codex CLI。'),
-                      const SizedBox(height: 12),
-                      const Text('可在终端执行以下官方安装命令：'),
-                      const SizedBox(height: 6),
-                      const SelectableText(
-                        'curl -fsSL https://chatgpt.com/codex/install.sh | sh',
-                      ),
-                    ],
-                    const SizedBox(height: 12),
-                    Text(
-                      '选择的路径仅保存为本应用设置；启动时会再次验证，不依赖 Finder 的 PATH。',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 16),
-                    const Divider(height: 1),
-                    const SizedBox(height: 12),
-                    ListenableBuilder(
-                      listenable: controller.runtimeDiagnostics,
-                      builder: (context, _) {
-                        final logs = controller.runtimeLogs;
-                        return Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Text(
-                                  '最近运行时日志（${logs.length}/200）',
-                                  style: Theme.of(context).textTheme.labelLarge,
-                                ),
-                                const Spacer(),
-                                TextButton(
-                                  onPressed: logs.isEmpty
-                                      ? null
-                                      : controller.clearRuntimeLogs,
-                                  child: const Text('清除'),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 6),
-                            Container(
-                              key: const Key('runtime-diagnostics-log'),
-                              constraints: const BoxConstraints(maxHeight: 180),
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(10),
-                              decoration: BoxDecoration(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.surfaceContainerHighest,
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: SingleChildScrollView(
-                                child: SelectableText(
-                                  logs.isEmpty
-                                      ? '本次应用运行中尚未记录 stderr 或协议日志。'
-                                      : logs
-                                            .map(
-                                              (entry) =>
-                                                  entry.toDiagnosticLine(),
-                                            )
-                                            .join('\n'),
-                                  style: Theme.of(context).textTheme.bodySmall,
-                                ),
-                              ),
-                            ),
-                          ],
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '日志只保留在内存中，最多 200 条；展示和复制前都会脱敏。',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            actions: [
-              TextButton.icon(
-                key: const Key('copy-runtime-diagnostics-button'),
-                onPressed: _copyRuntimeDiagnosticReport,
-                icon: const Icon(Icons.content_copy_outlined, size: 18),
-                label: const Text('复制诊断'),
-              ),
-              TextButton.icon(
-                key: const Key('export-runtime-diagnostics-button'),
-                onPressed: _exportRuntimeDiagnosticReport,
-                icon: const Icon(Icons.save_alt_outlined, size: 18),
-                label: const Text('导出诊断'),
-              ),
-              TextButton(
-                onPressed:
-                    controller.canConfigureRuntime &&
-                        !controller.runtimeChecking
-                    ? () async {
-                        final file = await openFile(
-                          confirmButtonText: '使用此 Codex CLI',
-                        );
-                        if (file != null) {
-                          await controller.setRuntimeExecutable(file.path);
-                        }
-                      }
-                    : null,
-                child: const Text('选择可执行文件'),
-              ),
-              if (controller.canConfigureRuntime)
-                TextButton(
-                  onPressed: controller.runtimeChecking
-                      ? null
-                      : controller.resetRuntimeExecutable,
-                  child: const Text('恢复自动检测'),
-                ),
-              TextButton(
-                onPressed: controller.runtimeChecking
-                    ? null
-                    : controller.inspectRuntime,
-                child: const Text('重新检测'),
-              ),
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('关闭'),
-              ),
-            ],
-          );
-        },
+        onCopyDiagnostics: _copyRuntimeDiagnosticReport,
+        onExportDiagnostics: _exportRuntimeDiagnosticReport,
       ),
     );
   }
 
-  /// 将当前脱敏运行时诊断复制到系统剪贴板，并提示用户可安全分享的范围。
-  /// Copies the current redacted runtime diagnostics to the system clipboard and confirms the shareable scope.
   Future<void> _copyRuntimeDiagnosticReport() async {
     await Clipboard.setData(
       ClipboardData(text: _controller.buildRuntimeDiagnosticReport()),
@@ -2201,26 +1453,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     final name = TextEditingController(text: thread.name ?? thread.preview);
     final nextName = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('重命名任务'),
-        content: TextField(
-          controller: name,
-          autofocus: true,
-          maxLength: 120,
-          decoration: const InputDecoration(labelText: '任务名称'),
-          onSubmitted: (value) => Navigator.of(context).pop(value),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(name.text),
-            child: const Text('保存'),
-          ),
-        ],
-      ),
+      builder: (context) => CodexWorkspaceRenameThreadDialog(controller: name),
     );
     name.dispose();
     if (nextName != null && nextName.trim().isNotEmpty) {
@@ -2279,25 +1512,7 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
   Future<void> _deleteThread(CodexThread thread) async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('永久删除任务？'),
-        content: Text(
-          '“${thread.title}”及其派生任务会从 Codex 中永久删除，无法恢复。本应用的对应本地缓存引用也会移除。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(context).colorScheme.error,
-            ),
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('永久删除'),
-          ),
-        ],
-      ),
+      builder: (context) => CodexWorkspaceDeleteThreadDialog(thread: thread),
     );
     if (confirmed == true) await _controller.deleteThread(thread);
   }
@@ -2309,52 +1524,9 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (context) => ControllerBuilder(
+      builder: (context) => CodexWorkspaceArchivedThreadsDialog(
         overrideController: widget.controller,
-        builder: (context, controller) {
-          return AlertDialog(
-            title: const Text('已归档任务'),
-            content: SizedBox(
-              width: 480,
-              height: 420,
-              child: switch ((
-                controller.archivedThreadsLoading,
-                controller.archivedThreadsError,
-                controller.archivedThreads,
-              )) {
-                (true, _, _) => const Center(
-                  child: CircularProgressIndicator(),
-                ),
-                (_, final String error, _) => Center(child: Text(error)),
-                (_, _, final List<CodexThread> threads) when threads.isEmpty =>
-                  const Center(child: Text('暂无归档任务。')),
-                (_, _, final List<CodexThread> threads) => ListView.separated(
-                  itemCount: threads.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (context, index) {
-                    final thread = threads[index];
-                    return ArchivedThreadTile(
-                      thread: thread,
-                      enabled:
-                          controller.status == RuntimeStatus.ready &&
-                          !controller.isUnarchivingThread(thread.id) &&
-                          !controller.isUpdatingThread(thread.id),
-                      restoring: controller.isUnarchivingThread(thread.id),
-                      onRestore: () => controller.unarchiveThread(thread),
-                      onDelete: () => _deleteThread(thread),
-                    );
-                  },
-                ),
-              },
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('关闭'),
-              ),
-            ],
-          );
-        },
+        onDelete: _deleteThread,
       ),
     );
   }
@@ -2673,84 +1845,9 @@ class CodexWorkspaceState extends ConsumerState<CodexWorkspace>
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (context) => ControllerBuilder(
+      builder: (context) => CodexWorkspaceMarketplacesDialog(
         overrideController: widget.controller,
-        builder: (context, controller) {
-          final error = controller.marketplacesError;
-          return AlertDialog(
-            title: const Text('插件市场'),
-            content: SizedBox(
-              width: 640,
-              height: 420,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (controller.pluginSaving) const LinearProgressIndicator(),
-                  if (controller.pluginActionProgress case final progress?) ...[
-                    const SizedBox(height: 10),
-                    Text(
-                      progress,
-                      key: const Key('marketplace-action-progress'),
-                    ),
-                  ],
-                  if (controller.pluginsError case final actionError?) ...[
-                    const SizedBox(height: 10),
-                    Text(
-                      actionError,
-                      style: TextStyle(color: YeknomPalette.of(context).fault),
-                    ),
-                  ],
-                  const SizedBox(height: 8),
-                  Expanded(
-                    child: controller.marketplacesLoading
-                        ? const Center(child: CircularProgressIndicator())
-                        : error != null
-                        ? Center(child: Text(error))
-                        : controller.marketplaces.isEmpty
-                        ? const Center(child: Text('尚未配置插件市场。'))
-                        : ListView.separated(
-                            itemCount: controller.marketplaces.length,
-                            separatorBuilder: (_, _) =>
-                                const Divider(height: 1),
-                            itemBuilder: (context, index) {
-                              final marketplace =
-                                  controller.marketplaces[index];
-                              return MarketplaceTile(
-                                marketplace: marketplace,
-                                busy: controller.pluginSaving,
-                                onUpgrade: () => controller
-                                    .upgradePluginMarketplace(marketplace.name),
-                                onRemove: () => _removeMarketplace(marketplace),
-                              );
-                            },
-                          ),
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton.icon(
-                onPressed: controller.pluginSaving
-                    ? null
-                    : () => controller.upgradePluginMarketplace(null),
-                icon: const Icon(Icons.system_update_outlined),
-                label: const Text('刷新所有 Git 市场'),
-              ),
-              TextButton.icon(
-                onPressed:
-                    controller.marketplacesLoading || controller.pluginSaving
-                    ? null
-                    : controller.refreshMarketplaces,
-                icon: const Icon(Icons.refresh),
-                label: const Text('刷新'),
-              ),
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('关闭'),
-              ),
-            ],
-          );
-        },
+        onRemove: _removeMarketplace,
       ),
     );
   }

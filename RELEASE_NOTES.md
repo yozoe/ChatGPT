@@ -14,7 +14,7 @@
 - 智能体默认设置现在把 Codex 实际批准策略与本应用的后续任务审批行为分开显示；细粒度策略保持只读，用户 Profile 展示当前生效值和来源，避免把未经证实的切换协议伪装成可用控件。
 - 设置页的未开发入口现在明确禁用，不再进入焦点链或误切换到空白设置页；工作台与设置页使用阅读顺序焦点组，提升键盘导航和窄窗口可达性。
 
-- 收敛 Composer 一致性开发目标：仓库内已实现并测试的能力归入 [CODEX_COMPOSER_PARITY_PLAN.md](docs/development-plans/CODEX_COMPOSER_PARITY_PLAN.md)，官方客户端实测、视觉并排、任务文件最终范围和具体 IDE 插件迁移到独立的 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](docs/development-plans/CODEX_COMPOSER_PARITY_FOLLOWUP.md)，便于后续单独验收。
+- 收敛 Composer 一致性开发目标：仓库内已实现并测试的能力归入 [CODEX_COMPOSER_PARITY_PLAN.md](docs/development-plans/CODEX_COMPOSER_PARITY_PLAN.md)，官方客户端实测、视觉并排、任务文件最终范围和官方 Codex 客户端 IDE 语义迁移到独立的 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](docs/development-plans/CODEX_COMPOSER_PARITY_FOLLOWUP.md)，便于后续单独验收；VS Code 宿主与真实 VSIX smoke 已完成。
 
 - Composer 新增 IDE 宿主上下文接入口，并提供首个独立 VS Code 宿主扩展源码：扩展通过 loopback HTTP discovery 文件向 `codex_desk/ide_context` 提供当前文件、选区和打开标签；`/IDE 上下文` 只有在有效快照到达后才可用，且只有用户明确选择时，首轮任务和运行中方向调整才会通过 App Server `additionalContext` 携带字符串化 JSON。宿主断连或切换项目会清除选择，扩展不会随桌面应用自动安装，也不会向远程主机发送编辑器内容。
 - 新增 [IDE_CONTEXT_HOST_PROTOCOL.md](docs/IDE_CONTEXT_HOST_PROTOCOL.md)，供 VS Code、Xcode 或其他 IDE 宿主实现 `codex_desk/ide_context` 时使用，并明确断连、项目边界和隐私责任。

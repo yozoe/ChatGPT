@@ -1,10 +1,6 @@
 # Codex Composer 与任务文件一致性改造方案（当前开发目标）
 
-<<<<<<<< HEAD:docs/development-plans/CODEX_COMPOSER_PARITY_PLAN.md
-> 本文档描述仓库当前 Composer 与任务文件的实现范围、已交付部分和仍在进行的改造。官方客户端精确行为矩阵、视觉并排验收、任务文件最终范围实测和具体 IDE 插件已移至 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](CODEX_COMPOSER_PARITY_FOLLOWUP.md)；在后续清单完成前，不得将本方案视为与官方客户端完全一致。
-========
-> 本文档当前只覆盖仓库内可实现、可测试并已交付的开发内容。官方客户端精确行为矩阵、视觉并排验收、任务文件最终范围实测和具体 IDE 插件已移至 [Composer一致性后续验收清单.md](Composer一致性后续验收清单.md)，不属于本次目标。
->>>>>>>> 3cd5fa6fc6df357b61b237ac4aae677fc83a0fed:Composer一致性改造方案.md
+> 本文档描述仓库当前 Composer 与任务文件的实现范围、已交付部分和仍在进行的改造。官方客户端精确行为矩阵、视觉并排验收、任务文件最终范围实测和官方 Codex 客户端 IDE 语义已移至 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](CODEX_COMPOSER_PARITY_FOLLOWUP.md)；在后续清单完成前，不得将本方案视为与官方客户端完全一致。
 
 ## 目标
 
@@ -34,11 +30,11 @@ Codex 桌面客户端的私有源码和内部实现不可作为可验证目标�
 
 ### 部分实现或语义不完整
 
-- “IDE 上下文”已提供 `codex_desk/ide_context` 通用宿主通道和独立的首个 VS Code 宿主源码，可接收当前文件、选区和打开标签；有效快照到达后 `/` 项启用，只有用户明确选择后才通过 `turn/start.additionalContext` 或 `turn/steer.additionalContext` 发送字符串化 JSON，断连或切换项目会清除选择。VS Code 扩展不会随桌面应用自动安装；官方未公开来源键与序列化格式，因此仍不能宣称官方桌面 IDE 集成已经完整对齐。当前项目路径继续从 `@`/添加菜单独立提供。
+- “IDE 上下文”已提供 `codex_desk/ide_context` 通用宿主通道和独立的首个 VS Code 宿主源码，可接收当前文件、选区和打开标签；有效快照到达后 `/` 项启用，只有用户明确选择后才通过 `turn/start.additionalContext` 或 `turn/steer.additionalContext` 发送字符串化 JSON，断连或切换项目会清除选择。VS Code → discovery → loopback → Debug Codex Desk 的项目侧连接已通过真实 VSIX smoke 验证；扩展不会随桌面应用自动安装。官方未公开来源键与序列化格式，因此仍不能宣称官方桌面 IDE 集成已经完整对齐。当前项目路径继续从 `@`/添加菜单独立提供。
 - `@` 非空查询已接入 App Server 0.155.0 的 `fuzzyFileSearch`，按主目录和附加工作区顺序展示真实文件/目录建议，保留系统选择器作为浏览更多入口；查询和工作区竞态、加载/错误/空状态、键盘/鼠标选择、窄窗口与符号链接越界均有处理。普通文件和目录在首轮任务和运行中方向调整里同时通过 `mention {name, path}` 结构化输入和提示词路径传递；菜单精确分组、二次排序与官方桌面视觉仍待实测。
 - “录制技能”曾通过选择 `skill-creator` 并追加提示实现，但这不是真正的操作流程录制；当前已禁用，等待公开协议或官方实测证据。
-- “代码审查”已通过结构化 `review/start` 接入，但仍需确认是否覆盖官方完整审查生命周期。
-- 目标、计划和 Skill 已接入真实数据；Goal 的状态记录和运行中目标摘要已补齐，Skill 列表刷新时会重新校验选中路径，但仍需核对官方客户端的精确生命周期、失败恢复和展示规则。
+- “代码审查”已通过结构化 `review/start` 接入，未提交改动、基础分支选择、审查面板和失败反馈均有项目侧实现与测试；是否覆盖官方完整审查生命周期仍需官方客户端证据确认。
+- 目标、计划和 Skill 已接入真实数据；Goal 的状态记录、运行中目标摘要和 Skill 失效重校验均已补齐并通过项目测试，官方客户端的精确生命周期、失败恢复和展示规则仍待补证。
 - 同一 thread 启动后续回合时不再清空既有 `fileChanges` 和最近确认的 `turnDiff`；无文件事件的追问完成后任务文件仍可见并继续持久化，切换任务或应用重启后可从本地加密快照恢复。新聊天仍从空摘要开始。同一 turn 内的聚合 Diff 更新会替换该 turn 的派生文件，后续 turn 则保留既有 thread 摘要；累计文件集合超出最近 turn Diff 覆盖范围时安全撤销保持禁用。该保留策略修复了已复现的数据丢失，但最终展示范围仍需官方桌面实测确认是最新 turn、整个 thread 还是当前 Git 工作树。
 - App Server Schema 已确认 `turn/diff/updated` 的 `diff` 是“该 turn 内所有 file change 的最新聚合 Diff”，而 `thread/read`、`thread/resume` 和 `thread/turns/list` 的历史项按 turn 返回 Diff；这支持当前按 turn 替换 Diff、按 thread 保留文件摘要的实现，但仍不能单独证明官方桌面右侧任务文件的最终展示范围。
 - 本地快照同时按 thread 保存最近的文件摘要与 Diff，使任务切换和重启恢复不再只依赖当前活动任务的全局文件集合；跨轮展示范围仍以官方桌面实测为准。
@@ -50,8 +46,8 @@ Codex 桌面客户端的私有源码和内部实现不可作为可验证目标�
 
 ### 已接入的公开协议能力
 
-- 侧边聊天已通过 ephemeral fork 和独立面板接入；审查模式、嵌套场景和精确焦点规则仍待实测。
-- 创建聊天分支已通过 `thread/fork` 接入并切换到服务端返回线程；工作树选择语义仍待实测。
+- 侧边聊天已通过 ephemeral fork 和独立面板接入，重复创建、任务切换和迟到结果隔离已有项目测试；官方审查模式、嵌套场景和精确焦点规则仍待实测。
+- 创建聊天分支已通过 `thread/fork` 接入并切换到服务端返回线程，协议编码和切换已有项目测试；官方工作树选择语义仍待实测。
 - 主动压缩上下文已通过 `thread/compact/start` 接入，并在确认后进入真实运行状态。
 - 反馈已通过 `feedback/upload` 接入，诊断日志须用户明确勾选。
 
@@ -237,13 +233,9 @@ Codex 桌面客户端的私有源码和内部实现不可作为可验证目标�
 
 实现时只把官方实测确认的字段列为一致性要求。如果 IDE 未连接或协议没有提供数据，入口的隐藏、禁用和说明应与官方一致。当前仅附加项目路径的行为必须标记为降级，不得在没有证据时宣称等同于官方 IDE 上下文。
 
-当前实现提供公开边界内的通用宿主接口，支持 `activeFile`、`activeSelectionContent` / `selectedText`、`selectionRange` 和 `openTabs`；最多保留 64 个打开标签，选区最多 64,000 字符。App Server Schema 要求 `additionalContext` 每项的 `value` 为字符串，因此快照使用 JSON 字符串传入首轮与方向调整请求；宿主连接本身和官方不透明来源格式仍是待完成的集成项。
+当前实现提供公开边界内的通用宿主接口，支持 `activeFile`、`activeSelectionContent` / `selectedText`、`selectionRange` 和 `openTabs`；最多保留 64 个打开标签，选区最多 64,000 字符。App Server Schema 要求 `additionalContext` 每项的 `value` 为字符串，因此快照使用 JSON 字符串传入首轮与方向调整请求；宿主连接和本地 transport 已通过项目侧测试与真实 smoke，官方不透明来源格式仍待补证。
 
-<<<<<<<< HEAD:docs/development-plans/CODEX_COMPOSER_PARITY_PLAN.md
 宿主接入契约见 [IDE_CONTEXT_HOST_PROTOCOL.md](../IDE_CONTEXT_HOST_PROTOCOL.md)，包含 `updateContext` 示例、断连语义、用户选择边界和隐私责任。该契约不表示仓库已经内置某个 IDE 插件。
-========
-宿主接入契约见 [IDE上下文宿主协议.md](IDE上下文宿主协议.md)，包含 `updateContext` 示例、断连语义、用户选择边界和隐私责任。该契约不表示仓库已经内置某个 IDE 插件。
->>>>>>>> 3cd5fa6fc6df357b61b237ac4aae677fc83a0fed:Composer一致性改造方案.md
 
 ### 3.4 当前项目
 
@@ -524,11 +516,7 @@ README、ROADMAP 和 RELEASE_NOTES 只描述当前实现；本开发计划可以
 
 ## 后续文档
 
-<<<<<<<< HEAD:docs/development-plans/CODEX_COMPOSER_PARITY_PLAN.md
-官方客户端实测、视觉并排、任务文件最终范围和具体 IDE 插件见 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](CODEX_COMPOSER_PARITY_FOLLOWUP.md)。这些事项不阻塞公开协议范围内的代码迭代，但在完成前不得将项目宣称为“与官方客户端完全一致”。
-========
-官方客户端实测、视觉并排、任务文件最终范围和具体 IDE 插件见 [Composer一致性后续验收清单.md](Composer一致性后续验收清单.md)。这些事项不阻塞本次仓库开发目标的完成。
->>>>>>>> 3cd5fa6fc6df357b61b237ac4aae677fc83a0fed:Composer一致性改造方案.md
+官方客户端实测、视觉并排、任务文件最终范围和官方 Codex 客户端 IDE 语义见 [CODEX_COMPOSER_PARITY_FOLLOWUP.md](CODEX_COMPOSER_PARITY_FOLLOWUP.md)。这些事项不阻塞公开协议范围内的代码迭代，但在完成前不得将项目宣称为“与官方客户端完全一致”。
 
 ## 已知边界
 

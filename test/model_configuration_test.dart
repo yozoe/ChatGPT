@@ -66,6 +66,143 @@ void main() {
     controller.dispose();
   });
 
+  test(
+    'restores persisted model and effort after controller recreation',
+    () async {
+      final store = FakeRuntimeConfigurationStore();
+      final modelList = [
+        {
+          'id': 'gpt-5',
+          'model': 'gpt-5',
+          'isDefault': true,
+          'supportedReasoningEfforts': [
+            {'reasoningEffort': 'high'},
+          ],
+        },
+      ];
+      final firstController = CodexController(
+        server: FakeCodexAppServer()..modelListResponse = modelList,
+        runtimeConfigurationStore: store,
+      );
+      await firstController.waitForInitialConfiguration();
+      await firstController.refreshReasoningEffortCapabilitiesForTesting();
+      await firstController.setModel('gpt-5');
+      await firstController.setReasoningEffort(ReasoningEffort.high);
+      expect(store.savedModel, 'gpt-5');
+      expect(store.savedReasoningEffort, 'high');
+      firstController.dispose();
+
+      final secondController = CodexController(
+        server: FakeCodexAppServer()..modelListResponse = modelList,
+        runtimeConfigurationStore: store,
+      );
+      await secondController.waitForInitialConfiguration();
+      await secondController.refreshReasoningEffortCapabilitiesForTesting();
+
+      expect(secondController.selectedModelId, 'gpt-5');
+      expect(secondController.reasoningEffort, ReasoningEffort.high);
+      secondController.dispose();
+    },
+  );
+
+  test(
+    'reloads effective agent defaults after reconnecting the runtime',
+    () async {
+      final workspace = await Directory.systemTemp.createTemp(
+        'codex-config-reconnect-',
+      );
+      addTearDown(() => workspace.delete(recursive: true));
+      final server = ManagedRuntimeFakeServer()
+        ..configReadResponse = {
+          'config': {'sandbox_mode': 'read-only'},
+          'origins': const {},
+        };
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      )..workspacePath = workspace.path;
+
+      await controller.startRuntime();
+      expect(controller.status, RuntimeStatus.ready);
+      expect(controller.agentDefaultSettings.sandboxMode.value, 'read-only');
+      expect(server.startCalls, 1);
+
+      server.configReadResponse = {
+        'config': {'sandbox_mode': 'workspace-write'},
+        'origins': const {},
+      };
+      await controller.reconnectRuntime();
+
+      expect(controller.status, RuntimeStatus.ready);
+      expect(
+        controller.agentDefaultSettings.sandboxMode.value,
+        'workspace-write',
+      );
+      expect(server.startCalls, 2);
+      expect(server.stopCalls, 1);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'keeps a running turn on its original model while updating new-task defaults',
+    () async {
+      final server = FakeCodexAppServer()
+        ..modelListResponse = [
+          {
+            'id': 'deep-model',
+            'model': 'deep-model',
+            'isDefault': true,
+            'supportedReasoningEfforts': [
+              {'reasoningEffort': 'high'},
+            ],
+          },
+          {
+            'id': 'fast-model',
+            'model': 'fast-model',
+            'isDefault': false,
+            'supportedReasoningEfforts': [
+              {'reasoningEffort': 'low'},
+            ],
+          },
+        ];
+      final controller = CodexController(
+        server: server,
+        runtimeConfigurationStore: FakeRuntimeConfigurationStore(),
+      );
+      await controller.waitForInitialConfiguration();
+      controller
+        ..workspacePath = '/workspace'
+        ..status = RuntimeStatus.ready;
+      await controller.refreshReasoningEffortCapabilitiesForTesting();
+      await controller.setModel('deep-model');
+      await controller.setReasoningEffort(ReasoningEffort.high);
+
+      expect(await controller.sendPrompt('start a running turn'), isTrue);
+      controller.handleServerEventForTesting(
+        const ServerEvent(
+          method: 'turn/started',
+          params: {
+            'threadId': 'new-thread',
+            'turn': {'id': 'turn-1'},
+          },
+        ),
+      );
+
+      await controller.setModel('fast-model');
+      await controller.setReasoningEffort(ReasoningEffort.low);
+      expect(await controller.steerCurrentTurn('change direction'), isTrue);
+
+      expect(controller.selectedModelId, 'fast-model');
+      expect(controller.reasoningEffort, ReasoningEffort.low);
+      expect(server.startedModel, 'deep-model');
+      expect(server.startedConfig, {'model_reasoning_effort': 'high'});
+      expect(server.steeredTurnThreadId, 'new-thread');
+      expect(server.steeredTurnId, 'turn-1');
+      controller.dispose();
+    },
+  );
+
   test('switching models updates supported reasoning strengths', () async {
     final store = FakeRuntimeConfigurationStore();
     final server = FakeCodexAppServer()

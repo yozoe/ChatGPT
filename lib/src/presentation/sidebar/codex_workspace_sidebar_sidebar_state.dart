@@ -21,12 +21,70 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
   String? _batchWorkspacePath;
   final Set<String> _selectedThreadIds = {};
 
+  late final ProviderContainer _catalogContainer;
+  late ProviderSubscription<CodexThreadCatalogSnapshot> _catalogSubscription;
+  late CodexThreadCatalogSnapshot _threadCatalogSnapshot;
+
   final Map<String, bool> _workspaceExpanded = {};
   final Map<String, AnimationController> _workspaceExpansionControllers = {};
   final ScrollController _taskListScrollController = ScrollController();
   OverlayEntry? _workspaceDetailsEntry;
   Timer? _workspaceDetailsShowTimer;
   Timer? _workspaceDetailsHideTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _catalogContainer = ProviderContainer();
+    _subscribeToThreadCatalog(widget.controller);
+  }
+
+  void _subscribeToThreadCatalog(CodexController controller) {
+    final provider = codexThreadCatalogSnapshotProvider(controller);
+    _threadCatalogSnapshot = _catalogContainer.read(provider);
+    _catalogSubscription = _catalogContainer.listen(provider, (previous, next) {
+      if (!mounted) return;
+      if (_catalogSnapshotsEqual(_threadCatalogSnapshot, next)) return;
+      setState(() => _threadCatalogSnapshot = next);
+    });
+    controller.addListener(_handleCatalogControllerUpdate);
+  }
+
+  bool _catalogSnapshotsEqual(
+    CodexThreadCatalogSnapshot first,
+    CodexThreadCatalogSnapshot second,
+  ) {
+    return first.threadsLoading == second.threadsLoading &&
+        first.threadsError == second.threadsError &&
+        first.archivedThreadsLoading == second.archivedThreadsLoading &&
+        first.archivedThreadsError == second.archivedThreadsError &&
+        listEquals(first.threads, second.threads) &&
+        listEquals(first.archivedThreads, second.archivedThreads) &&
+        mapEquals(first.localThreadStatuses, second.localThreadStatuses);
+  }
+
+  void _handleCatalogControllerUpdate() {
+    final next = CodexThreadCatalogSnapshot.fromValues(
+      threads: widget.controller.threads,
+      archivedThreads: widget.controller.archivedThreads,
+      threadsLoading: widget.controller.threadsLoading,
+      threadsError: widget.controller.threadsError,
+      archivedThreadsLoading: widget.controller.archivedThreadsLoading,
+      archivedThreadsError: widget.controller.archivedThreadsError,
+      localThreadStatuses: widget.controller.localThreadStatusesForSnapshot(),
+    );
+    if (!mounted) return;
+    setState(() => _threadCatalogSnapshot = next);
+  }
+
+  @override
+  void didUpdateWidget(covariant Sidebar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (identical(oldWidget.controller, widget.controller)) return;
+    oldWidget.controller.removeListener(_handleCatalogControllerUpdate);
+    _catalogSubscription.close();
+    _subscribeToThreadCatalog(widget.controller);
+  }
 
   bool _isWorkspaceExpanded(String path) => _workspaceExpanded[path] ?? true;
 
@@ -121,6 +179,9 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    widget.controller.removeListener(_handleCatalogControllerUpdate);
+    _catalogSubscription.close();
+    _catalogContainer.dispose();
     _workspaceDetailsShowTimer?.cancel();
     _workspaceDetailsHideTimer?.cancel();
     _workspaceDetailsEntry?.remove();
@@ -674,6 +735,7 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
   Widget build(BuildContext context) {
     final palette = YeknomPalette.of(context);
     final controller = widget.controller;
+    final catalog = _threadCatalogSnapshot;
     final activePath = controller.workspacePath;
     if (_batchMode && _batchWorkspacePath != activePath) {
       _batchMode = false;
@@ -681,14 +743,14 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
       _selectedThreadIds.clear();
     }
     final visibleThreads = [
-      ...controller.threads.where(
+      ...catalog.threads.where(
         (thread) => controller.isThreadPinned(thread.id),
       ),
-      ...controller.threads.where(
+      ...catalog.threads.where(
         (thread) => !controller.isThreadPinned(thread.id),
       ),
     ];
-    final hasPinnedThreads = controller.threads.any((thread) {
+    final hasPinnedThreads = catalog.threads.any((thread) {
       return controller.isThreadPinned(thread.id);
     });
     final pinnedThreads = visibleThreads
@@ -712,7 +774,7 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
     final workspaceProjectThreadsByPath = <String, List<CodexThread>>{};
     for (final workspace in workspaces) {
       final threads = workspace.primaryPath == activePath
-          ? controller.threads
+          ? catalog.threads
           : (controller.workspaceTaskListFor(workspace.primaryPath)?.threads ??
                 const <CodexThread>[]);
       final pinnedIds = workspace.primaryPath == activePath
@@ -819,7 +881,7 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
       }
       if (_shouldBuildWorkspaceContents(workspacePath)) {
         if (isActiveWorkspace) {
-          if (controller.threadsError case final error?) {
+          if (catalog.threadsError case final error?) {
             addTaskListItem(
               28,
               () => Padding(
@@ -990,9 +1052,9 @@ class SidebarState extends State<Sidebar> with TickerProviderStateMixin {
                 ),
                 const SizedBox(height: 8),
               ],
-              if (controller.threadsLoading && controller.threads.isEmpty)
+              if (catalog.threadsLoading && catalog.threads.isEmpty)
                 const LinearProgressIndicator(minHeight: 2),
-              if (controller.threadsLoading && controller.threads.isEmpty)
+              if (catalog.threadsLoading && catalog.threads.isEmpty)
                 const SizedBox(height: 6),
               Expanded(
                 child: Ink(

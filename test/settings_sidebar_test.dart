@@ -1,9 +1,14 @@
+import 'package:chatgpt/src/app.dart';
 import 'package:chatgpt/src/presentation/workspace/codex_workspace.dart';
 import 'package:chatgpt/src/services/codex_app_server.dart';
+import 'package:chatgpt/src/services/theme_preferences_store.dart';
 import 'package:chatgpt/src/app_controller.dart';
+import 'package:chatgpt/src/theme/yeknom_workbench.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'widget_test_fakes.dart';
 
 void main() {
   testWidgets('sidebar settings and help entries open their surfaces', (
@@ -213,5 +218,49 @@ void main() {
     expect(find.byKey(const Key('codex-configuration-dialog')), findsOneWidget);
     expect(find.text('打开 config.toml'), findsOneWidget);
     expect(find.byKey(const Key('codex-configured-profile')), findsOneWidget);
+  });
+
+  testWidgets('switches the project display mode from the theme menu', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const CodexDeskApp());
+
+    await tester.tap(find.byTooltip('主题：深色 · 午夜'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('theme-mode-light')));
+    await tester.pumpAndSettle();
+
+    expect(
+      Theme.of(tester.element(find.text('Xedoc'))).brightness,
+      Brightness.light,
+    );
+    final picker = tester.widget<Ink>(
+      find.byKey(const Key('workspace-picker-surface')),
+    );
+    expect((picker.decoration! as BoxDecoration).color, Colors.transparent);
+  });
+
+  testWidgets('persists display mode and color preset selections', (
+    tester,
+  ) async {
+    final store = MemoryThemePreferencesStore();
+    await tester.pumpWidget(CodexDeskApp(themePreferencesStore: store));
+
+    await tester.tap(find.byTooltip('主题：深色 · 午夜'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('theme-mode-light')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('主题：浅色 · 午夜'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('theme-preset-obsidian')));
+    await tester.pumpAndSettle();
+
+    expect(
+      store.saved.last,
+      const CodexThemePreferences(
+        mode: ThemeMode.light,
+        preset: YeknomColorPreset.obsidian,
+      ),
+    );
   });
 }

@@ -9,8 +9,6 @@ import 'app_controller_support.dart';
 /// Builds and manages the in-memory runtime diagnostics surface.
 class CodexRuntimeDiagnostics extends ChangeNotifier {
   CodexRuntimeDiagnostics({
-    required List<RuntimeLogEntry> Function() logs,
-    required void Function() clearLogs,
     required CodexRuntimeProbe? Function() probe,
     required RuntimeStatus Function() status,
     required bool Function() serverRunning,
@@ -19,9 +17,7 @@ class CodexRuntimeDiagnostics extends ChangeNotifier {
     required String Function() providerLabel,
     required String Function() authLabel,
     required String? Function() lastError,
-  }) : _logs = logs,
-       _clearLogs = clearLogs,
-       _probe = probe,
+  }) : _probe = probe,
        _status = status,
        _serverRunning = serverRunning,
        _executable = executable,
@@ -32,8 +28,7 @@ class CodexRuntimeDiagnostics extends ChangeNotifier {
 
   static const maximumLogEntries = 200;
 
-  final List<RuntimeLogEntry> Function() _logs;
-  final void Function() _clearLogs;
+  final List<RuntimeLogEntry> _logs = [];
   final CodexRuntimeProbe? Function() _probe;
   final RuntimeStatus Function() _status;
   final bool Function() _serverRunning;
@@ -43,9 +38,36 @@ class CodexRuntimeDiagnostics extends ChangeNotifier {
   final String Function() _authLabel;
   final String? Function() _lastError;
 
+  List<RuntimeLogEntry> get logs => List.unmodifiable(_logs);
+
   void clear() {
-    if (_logs().isEmpty) return;
-    _clearLogs();
+    if (_logs.isEmpty) return;
+    _logs.clear();
+    notifyListeners();
+  }
+
+  /// Clears the in-memory log buffer without notifying UI listeners.
+  /// Used when a new runtime connection starts before its first diagnostic
+  /// event is available.
+  void clearSilently() => _logs.clear();
+
+  /// 将运行时文本脱敏后追加到有界内存日志，并通知诊断订阅者。
+  /// Redacts and appends runtime text to the bounded in-memory log, then notifies diagnostics subscribers.
+  void record(String message, {RuntimeLogLevel? level}) {
+    final value = CodexAppServer.redactDiagnosticText(message).trim();
+    if (value.isEmpty) return;
+    _logs.add(
+      level == null
+          ? RuntimeLogEntry.fromMessage(message: value)
+          : RuntimeLogEntry(
+              message: value,
+              level: level,
+              createdAt: DateTime.now(),
+            ),
+    );
+    if (_logs.length > maximumLogEntries) {
+      _logs.removeRange(0, _logs.length - maximumLogEntries);
+    }
     notifyListeners();
   }
 
@@ -54,7 +76,7 @@ class CodexRuntimeDiagnostics extends ChangeNotifier {
 
   String buildReport() {
     final probe = _probe();
-    final logs = _logs();
+    final logs = _logs;
     final lines = <String>[
       'Codex Desk runtime diagnostics',
       'Generated: ${DateTime.now().toIso8601String()}',
